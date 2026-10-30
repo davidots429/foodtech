@@ -1,0 +1,12 @@
+[project]
+name = "foodtech-python-workspace"
+version = "0.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["apps/business-api", "apps/ai-gateway"]
+

@@ -1,0 +1,35 @@
+.env
+.env.*
+!.env.example
+.aws/
+.venv/
+**/__pycache__/
+*.py[cod]
+node_modules/
+**/dist/
+**/build/
+apps/mock-control/**/bin/
+apps/mock-control/**/obj/
+**/cdk.out/
+*.user
+*.suo
+.idea/
+.vscode/
+tmp/
+*.inspect.ndjson
+
+# Local project instructions and analysis/design records
+.agents/
+.codex/
+AGENTS.md
+artifact_writing_rules.md
+implementation_guidelines.md
+pending_decisions.md
+validation/
+
+# Source references and formal deliverables (kept outside GitHub)
+external/
+research/
+output/
+붙임*.pdf
+
