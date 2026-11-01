@@ -18,6 +18,12 @@ OBSERVATIONS = {name: "합성 시나리오 관찰값" for name in cooking.SCORE_
 CSRF = {"X-CSRF-Token": "test-csrf"}
 
 
+def probe(item_id, temperature="75.0", calibration="OK", missing_second=None):
+    return {"item_id": item_id, "calibration_status": calibration,
+            "samples": [{"at_second": second, "celsius": temperature}
+                        for second in range(61) if second != missing_second]}
+
+
 class CookingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.env = patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false"}, clear=False)
@@ -62,12 +68,7 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
             job = await self.transition(job, event)
         response = await self.client.post(
             f"/api/customer/cooking-jobs/{job['job_id']}/safety/core-check", headers=CSRF,
-            json={"expected_version": job["version"], "probes": [
-                {"item_id": "piece-1", "min_core_celsius": "75.0", "hold_seconds": 60,
-                 "calibration_status": "OK"},
-                {"item_id": "piece-2", "min_core_celsius": "76.1", "hold_seconds": 60,
-                 "calibration_status": "OK"},
-            ]},
+            json={"expected_version": job["version"], "probes": [probe("piece-1"), probe("piece-2", "76.1")]},
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["safety_status"], "PASSED")
@@ -111,9 +112,8 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cleared.status_code, 200)
         self.assertFalse((await self.client.get(path)).json()["current_assessment"]["usable"])
         checked = await self.client.post(path + "/safety/core-check", headers=CSRF,
-                                          json={"expected_version": cleared.json()["version"], "probes": [
-                                              {"item_id": "piece-1", "min_core_celsius": "75",
-                                               "hold_seconds": 60, "calibration_status": "OK"}]})
+                                          json={"expected_version": cleared.json()["version"],
+                                                "probes": [probe("piece-1"), probe("piece-2")]})
         self.assertEqual(checked.status_code, 200)
         self.assertFalse((await self.client.get(path)).json()["current_assessment"]["usable"])
         second = await self.client.post(path + "/assessments", headers=CSRF,
@@ -134,9 +134,8 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         for event in ("PREHEAT_COMPLETED", "COOKING_STARTED", "COOKING_COMPLETED"):
             job = await self.transition(job, event)
         failed = await self.client.post(path + "/safety/core-check", headers=CSRF,
-                                        json={"expected_version": job["version"], "probes": [
-                                            {"item_id": "piece-1", "min_core_celsius": "74.9",
-                                             "hold_seconds": 60, "calibration_status": "OK"}]})
+                                        json={"expected_version": job["version"],
+                                              "probes": [probe("piece-1", "74.9"), probe("piece-2")]})
         self.assertEqual(failed.json()["safety_status"], "FAILED")
         self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
                                                  json=self.assessment_body(failed.json()))).status_code, 409)
@@ -179,6 +178,20 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         self.assertFalse(response.json()["quality_passed"])
         self.assertFalse(response.json()["quality_target"])
+
+    async def test_missing_second_blocks_quality_completion(self):
+        job = await self.create()
+        for event in ("PREHEAT_COMPLETED", "COOKING_STARTED", "COOKING_COMPLETED"):
+            job = await self.transition(job, event)
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        checked = await self.client.post(path + "/safety/core-check", headers=CSRF,
+                                          json={"expected_version": job["version"],
+                                                "probes": [probe("piece-1", missing_second=30), probe("piece-2")]})
+        self.assertEqual(checked.status_code, 200, checked.text)
+        self.assertEqual(checked.json()["safety_status"], "INCOMPLETE")
+        assessment = await self.client.post(path + "/assessments", headers=CSRF,
+                                            json=self.assessment_body(checked.json()))
+        self.assertEqual(assessment.status_code, 409)
 
 
 class DynamoTransactionContractTests(unittest.TestCase):

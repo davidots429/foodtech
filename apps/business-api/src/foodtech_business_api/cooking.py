@@ -100,16 +100,20 @@ class SafetyEvent(StrictModel):
     manual_stop_confirmed: bool = False
 
 
+class CoreSample(StrictModel):
+    at_second: int = Field(ge=0, le=60)
+    celsius: Decimal | None = None
+
+
 class Probe(StrictModel):
     item_id: str = Field(min_length=1, max_length=80)
-    min_core_celsius: Decimal | None = None
-    hold_seconds: int = Field(ge=0, le=3600)
     calibration_status: Literal["OK", "EXPIRED"]
+    samples: list[CoreSample] = Field(min_length=1, max_length=61)
 
 
 class CoreCheck(StrictModel):
     expected_version: int = Field(ge=1)
-    probes: list[Probe] = Field(min_length=1, max_length=1000)
+    probes: list[Probe] = Field(min_length=1, max_length=4)
 
 
 class CompletedAssessment(StrictModel):
@@ -228,11 +232,20 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
     ids = [probe.item_id for probe in body.probes]
     if len(set(ids)) != len(ids):
         raise HTTPException(422, "제품별 탐침 기록이 중복되었습니다.")
-    if any(probe.calibration_status == "OK" and probe.min_core_celsius is not None
-           and probe.hold_seconds >= 60 and probe.min_core_celsius < 75 for probe in body.probes):
+    if len(body.probes) != old["planned_portions"]:
+        raise HTTPException(422, "계획 인분마다 독립 탐침 기록이 필요합니다.")
+    failed = any(probe.calibration_status == "OK" and any(
+        sample.celsius is not None and sample.celsius < 75 for sample in probe.samples)
+        for probe in body.probes)
+    complete = all(
+        probe.calibration_status == "OK" and len(probe.samples) == 61
+        and [sample.at_second for sample in probe.samples] == list(range(61))
+        and all(sample.celsius is not None for sample in probe.samples)
+        for probe in body.probes
+    )
+    if failed:
         status = "FAILED"
-    elif any(probe.calibration_status == "EXPIRED" or probe.min_core_celsius is None or probe.hold_seconds < 60
-             for probe in body.probes):
+    elif not complete:
         status = "INCOMPLETE"
     else:
         status = "PASSED"
