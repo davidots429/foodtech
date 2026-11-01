@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { CookingWorkspace } from "./CookingWorkspace";
 import "./style.css";
 
 type Session = { email: string | null; surface: "customer"; csrf: string; tier: "FREE" };
@@ -90,10 +91,11 @@ function App() {
       <p>조리 데이터와 AI 권고를 운영자가 검토하는 서비스입니다.</p></header>
     {error && <p role="alert" className="error">{error}</p>}
     {loading ? <p>로그인 상태를 확인하는 중입니다.</p> : session ? <>
-      <section><h2>무료 체험</h2><p>{session.email ?? "고객"}님 · 무료 티어</p>
+      <section className="account-summary"><div><h2>무료 체험</h2><p>{session.email ?? "고객"}님 · 무료 티어</p></div>
+        <button onClick={logout}>로그아웃</button>
         {example && <div className="card"><h3>{example.title}</h3><p>{example.message}</p><small>합성 예시 · 읽기 전용</small></div>}
-        <p>챗봇과 실제 업무 기능은 후속 구현에서 연결됩니다.</p>
-        <button onClick={logout}>로그아웃</button></section>
+        <p className="small">챗봇과 AI 권고는 후속 구현에서 연결됩니다.</p></section>
+      <CookingWorkspace csrf={session.csrf} />
       <section><h2>시연용 유료 티어</h2><p className="price">00원</p><p>{notice}</p>
         <p>전환 신청 기능은 아직 구현되지 않았습니다.</p></section>
       <section><h2>계정 보안</h2><p>관리자 추가 인증에 사용할 인증 앱을 등록할 수 있습니다.</p>

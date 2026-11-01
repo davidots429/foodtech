@@ -30,6 +30,6 @@
 
 첫 합성 적재 fixture는 튀김기 기준 배치 `0.8 kg`이다. `0 < 적재율 ≤ 50%`는 `PARTIAL`, `50% < 적재율 ≤ 100%`는 `REFERENCE`다. 적재율은 실제 투입 중량/0.8 kg으로 서버가 검증하며 이는 실제 장비 사양이 아니다. 인분은 이 fixture에서 최대 4인분이다. [fixture](../../fixtures/tonkatsu-business-v1.json)에 경계 예시를 둔다.
 
-`FOODTECH_COOKING_TABLE`이 비어 있으면 로컬 메모리 저장소를 사용한다. 공개 배포에서는 별도 DynamoDB 테이블이 필수다. CDK의 `-c provisionCookingJobs=true`로 개발 테이블을 정의하고 `foodtech-cooking-jobs-dev`를 `ap-southeast-2`에 배포했다. 로컬 API를 이 테이블에 연결하여 합성 작업의 소유자 분리, 안전 차단, 버전 이력, 재조리 연결과 동시 평가 제출의 단일 승자를 검증했다. DynamoDB 숫자형을 API의 정수형으로 정규화한다. 실사용 규모·성능과 배포된 API 실행 역할은 검증하지 않았다. 현재 고객 화면에는 이 API의 UI가 없다.
+`FOODTECH_COOKING_TABLE`이 비어 있으면 로컬 메모리 저장소를 사용한다. 공개 배포에서는 별도 DynamoDB 테이블이 필수다. CDK의 `-c provisionCookingJobs=true`로 개발 테이블을 정의하고 `foodtech-cooking-jobs-dev`를 `ap-southeast-2`에 배포했다. 로컬 API를 이 테이블에 연결하여 합성 작업의 소유자 분리, 안전 차단, 버전 이력, 재조리 연결과 동시 평가 제출의 단일 승자를 검증했다. DynamoDB 숫자형을 API의 정수형으로 정규화한다. 실사용 규모·성능과 배포된 API 실행 역할은 검증하지 않았다. 고객 화면은 생성·상태·안전·평가·재조리를 연결하며, 목록 API가 없어 작업 ID 또는 저장한 주소로 다시 불러온다.
 
 실저장 검증을 재실행하려면 `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev .venv/bin/python tests/live/cooking_dynamodb_check.py`를 저장소 루트에서 실행한다. 스크립트는 계정·테이블을 확인하고 합성 레코드만 생성·삭제한다. 실제 AWS 요청이 발생하므로 실행 전 비용과 계정 상태를 확인한다.

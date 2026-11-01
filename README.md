@@ -1,14 +1,14 @@
 # Foodtech AI Recipe Agent
 
-고객·관리자 웹, Business API, AI Gateway, C# Mock 및 CDK의 실행·빌드 경계를 분리한 monorepo다. 첫 기능으로 Cognito 고객·관리자 인증과 DynamoDB 공유 세션을 구현·실검증했다. 다음 최소 데이터 흐름은 `mockprofile-100-a-001` 합성 fixture에 한정한다. 2026-11-01에 개발용 DynamoDB·SQS FIFO 스택에서 수집 순번 `1, 3, 2`의 복원, 정상 2건·격리 1건의 표준화 결과를 확인했다. AI 호출, 실제 장비 연계, 전체 업무 데이터 모델과 서비스 배포는 아직 없다.
+고객·관리자 웹, Business API, AI Gateway, C# Mock 및 CDK의 실행·빌드 경계를 분리한 monorepo다. Cognito 고객·관리자 인증과 DynamoDB 공유 세션, 돈까스 합성 조리작업·안전·평가 API 및 고객 화면을 구현했다. 최소 데이터 흐름은 `mockprofile-100-a-001` 합성 fixture에 한정한다. 2026-11-01에 개발용 DynamoDB·SQS FIFO 스택에서 수집 순번 `1, 3, 2`의 복원, 정상 2건·격리 1건의 표준화 결과를 확인했다. AI 호출, 실제 장비 연계, 전체 업무 데이터 모델과 서비스 배포는 아직 없다.
 
 ## 폴더
 
 | 경로 | 책임 | 현재 상태 |
 | --- | --- | --- |
-| `apps/customer-web` | 고객 웹(챗봇 포함 예정) | 가입·로그인·합성 예시 화면 |
+| `apps/customer-web` | 고객 웹(챗봇 포함 예정) | 가입·로그인·합성 조리작업·안전·평가 화면 |
 | `apps/admin-web` | 수행자 관리자 웹 | 관리자 로그인·권한 경계 화면 |
-| `apps/business-api` | 업무 API와 BFF | Cognito PKCE·세션·권한 검사, 읽기 전용 예시 API |
+| `apps/business-api` | 업무 API와 BFF | Cognito PKCE·세션·권한 검사, 합성 조리작업·평가 API |
 | `apps/ai-gateway` | 모델 실행 경계 | 경로 없는 FastAPI 객체 |
 | `apps/credential-registration` | 자격증명 등록 경계 | 책임 설명만 |
 | `apps/collection-adapter` | 읽기 전용 수집 | 첫 HTTPS REST poller·DynamoDB 순번 복원·SQS FIFO 전송 |
@@ -22,6 +22,7 @@
 - Node.js 24에서 `npm ci && npm run check`를 실행한다. npm workspaces와 `package-lock.json`을 사용한다.
 - Python 3.12와 uv 0.12.17에서 `uv sync --all-packages --locked`를 실행한다. 버전은 `uv.lock`에 고정되어 있다.
 - `uv run --no-sync python -m unittest discover -s apps/business-api/tests -v`로 인증 경계 테스트를 실행한다.
+- 고객으로 로그인해 합성 조리작업을 생성하면 `작업 ID`와 주소의 `#job=...`으로 다시 불러올 수 있다. 상태 진행 후 제품별 합성 심부온도 표본으로 안전 판정을 기록하고, 7항목 평가·이력·재조리를 확인한다. 작업 목록 API는 아직 없고, 심부온도 입력은 실제 장비 측정이 아니다.
 - `uv run --no-sync python -m unittest discover -s apps/collection-adapter/tests -v`로 첫 정규화·순번·전송 장애 테스트를 실행한다.
 - .NET SDK 10.0.402에서 `dotnet restore apps/mock-control/MockControl.csproj`와 `dotnet build apps/mock-control/MockControl.csproj --no-restore`를 실행한다. 현재 외부 NuGet 패키지는 없다.
 - GitHub Actions의 CI는 Node·Python·Mock 빌드와 C#/Python 실제 HTTPS·해시 통합 검사를 분리한다. PR 검사에는 AWS 권한이 없다.
