@@ -195,6 +195,19 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DynamoTransactionContractTests(unittest.TestCase):
+    def test_dynamodb_numeric_fields_match_local_api_types(self):
+        rows = iter([
+            {"Item": {"version": Decimal(3), "planned_portions": Decimal(2)}},
+            {"Item": {"version": Decimal(1), "scores": {"taste": Decimal(4)}}},
+        ])
+        store = DynamoCookingStore.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(get_item=lambda **_kwargs: next(rows))
+        meta, pointer = store.read("job")
+        self.assertEqual(meta["version"], 3)
+        self.assertIs(type(meta["version"]), int)
+        self.assertEqual(pointer["scores"]["taste"], 4)
+        self.assertIs(type(pointer["scores"]["taste"]), int)
+
     def test_assessment_and_current_pointer_share_conditional_transaction(self):
         calls = []
         store = DynamoCookingStore.__new__(DynamoCookingStore)
