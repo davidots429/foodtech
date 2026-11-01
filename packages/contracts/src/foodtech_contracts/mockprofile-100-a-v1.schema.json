@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://foodtech.example/contracts/mockprofile-100-a-v1.schema.json",
+  "title": "Synthetic vendor-a REST record",
+  "type": "object",
+  "required": ["schemaVersion", "sourceId", "deviceId", "batchId", "recordId", "sequenceNumber", "eventTime", "deviceStatus", "measurements"],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "sourceId": {"type": "string", "minLength": 1, "maxLength": 80},
+    "deviceId": {"const": "mockprofile-100-a-001"},
+    "batchId": {"type": "string", "pattern": "^batch-a-[A-Za-z0-9-]+$"},
+    "recordId": {"type": "string", "pattern": "^rec-a-[A-Za-z0-9-]+$"},
+    "sequenceNumber": {"type": "integer", "minimum": 1, "maximum": 1000000000},
+    "eventTime": {"type": "string", "format": "date-time"},
+    "deviceStatus": {"enum": ["running", "stopped"]},
+    "measurements": {
+      "type": "object",
+      "required": ["temperatureCelsius", "speedRpm", "elapsedSeconds"],
+      "properties": {
+        "temperatureCelsius": {"type": "number"},
+        "speedRpm": {"type": "integer", "minimum": 0},
+        "elapsedSeconds": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "errorReason": {"type": ["string", "null"]},
+    "extensions": {"type": "object"}
+  },
+  "additionalProperties": true
+}

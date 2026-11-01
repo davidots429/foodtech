@@ -1,6 +1,7 @@
-import { App, Duration, RemovalPolicy, Stack, StackProps, Tags } from "aws-cdk-lib";
+import { App, CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 
 const app = new App();
@@ -81,11 +82,51 @@ class AuthIdentityStack extends Stack {
   }
 }
 
+class MinimalDataFlowStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const table = new dynamodb.Table(this, "DataFlow", {
+      tableName: `foodtech-data-flow-${stage}`,
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const queue = (id: string) => new sqs.Queue(this, id, {
+      queueName: `foodtech-${id.toLowerCase()}-${stage}.fifo`,
+      fifo: true,
+      contentBasedDeduplication: false,
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      visibilityTimeout: Duration.seconds(30),
+    });
+    const processingDlq = queue("ProcessingDlq");
+    const quarantine = queue("StandardizationDlq");
+    const ordered = new sqs.Queue(this, "Ordered", {
+      queueName: `foodtech-ordered-${stage}.fifo`,
+      fifo: true,
+      contentBasedDeduplication: false,
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      visibilityTimeout: Duration.seconds(30),
+      deadLetterQueue: { queue: processingDlq, maxReceiveCount: 3 },
+    });
+    new CfnOutput(this, "DataTableName", { value: table.tableName });
+    new CfnOutput(this, "OrderedQueueUrl", { value: ordered.queueUrl });
+    new CfnOutput(this, "StandardizationDlqUrl", { value: quarantine.queueUrl });
+  }
+}
+
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
 if (app.node.tryGetContext("provisionIdentity") === "true") {
   const identity = new AuthIdentityStack(app, `FoodtechAuthIdentity-${stage}`, { env });
   Tags.of(identity).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionDataFlow") === "true") {
+  const dataFlow = new MinimalDataFlowStack(app, `FoodtechMinimalDataFlow-${stage}`, { env });
+  Tags.of(dataFlow).add("Project", "foodtech");
 }
 app.synth();
 

@@ -8,5 +8,5 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-members = ["apps/business-api", "apps/ai-gateway"]
+members = ["apps/business-api", "apps/ai-gateway", "apps/collection-adapter", "apps/standardization-worker", "packages/contracts"]
 
