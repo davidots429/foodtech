@@ -1,6 +1,6 @@
 # Foodtech AI Recipe Agent
 
-고객·관리자 웹, Business API, AI Gateway, C# Mock 및 CDK의 실행·빌드 경계를 분리한 monorepo다. 첫 기능 브랜치에서 Cognito 인증 코드 + PKCE의 Business API 경계와 고객·관리자 로그인 화면, 고객의 읽기 전용 합성 예시 화면을 구현했다. 2026-11-01에 별도 시험용 Cognito 리소스로 고객 가입·이메일 확인·로그인, 관리자 권한 거부와 로그아웃을 실연동 확인했다. AI 호출, 장비 연계, 데이터 저장과 배포는 아직 없다.
+고객·관리자 웹, Business API, AI Gateway, C# Mock 및 CDK의 실행·빌드 경계를 분리한 monorepo다. 첫 기능 브랜치에서 Cognito 인증 코드 + PKCE의 Business API 경계와 고객·관리자 로그인 화면, 고객의 읽기 전용 합성 예시 화면을 구현했다. 2026-11-01에 별도 시험용 Cognito 리소스로 고객 가입·이메일 확인·로그인, 관리자 권한 거부와 로그아웃을 실연동 확인했다. 인증 세션 테이블은 개발 환경에 배포했으며 AI 호출, 장비 연계, 업무 데이터 저장과 서비스 배포는 아직 없다.
 
 ## 폴더
 
