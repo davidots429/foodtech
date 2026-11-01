@@ -28,6 +28,7 @@ def _api_numbers(value):
 class CookingStore(Protocol):
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
     def create(self, pk: str, meta: dict) -> None: ...
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None: ...
     def create_recook(self, parent_pk: str, expected_parent_version: int,
                       new_pk: str, meta: dict) -> None: ...
     def commit(self, pk: str, expected_version: int, meta: dict,
@@ -55,6 +56,15 @@ class MemoryCookingStore:
             if (pk, "META") in self.items:
                 raise Conflict
             self.items[(pk, "META")] = meta.copy()
+
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
+        with self.lock:
+            current = self.items.get((pk, "META"))
+            if not current or current["version"] != expected_version or (stream_pk, "BINDING") in self.items:
+                raise Conflict
+            self.items[(pk, "META")] = meta.copy()
+            self.items[(stream_pk, "BINDING")] = {"pk": stream_pk, "sk": "BINDING", "job_pk": pk,
+                                                   "job_id": meta["job_id"]}
 
     def create_recook(self, parent_pk: str, expected_parent_version: int,
                       new_pk: str, meta: dict) -> None:
@@ -117,6 +127,26 @@ class DynamoCookingStore:
                                 ConditionExpression="attribute_not_exists(pk)")
         except self.client.exceptions.ConditionalCheckFailedException as exc:
             raise Conflict from exc
+
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
+        operations = [
+            {"Put": {"TableName": self.table.name,
+                     "Item": self._item({"pk": pk, "sk": "META", **meta}),
+                     "ConditionExpression": "#version = :expected",
+                     "ExpressionAttributeNames": {"#version": "version"},
+                     "ExpressionAttributeValues": {":expected": {"N": str(expected_version)}}}},
+            {"Put": {"TableName": self.table.name,
+                     "Item": self._item({"pk": stream_pk, "sk": "BINDING", "job_pk": pk,
+                                         "job_id": meta["job_id"]}),
+                     "ConditionExpression": "attribute_not_exists(pk)"}},
+        ]
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            reasons = exc.response.get("CancellationReasons", [])
+            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in reasons):
+                raise Conflict from exc
+            raise
 
     def create_recook(self, parent_pk: str, expected_parent_version: int,
                       new_pk: str, meta: dict) -> None:

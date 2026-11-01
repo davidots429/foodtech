@@ -93,5 +93,9 @@ def dedup_key(record: dict) -> str:
     return "|".join(_component(record[key]) for key in ("sourceId", "schemaVersion", "recordId"))
 
 
+def stream_binding_key(source_id: str, device_id: str, batch_id: str) -> str:
+    return "STREAM#" + "|".join(_component(value) for value in (source_id, device_id, batch_id))
+
+
 def stream_key(record: dict) -> str:
-    return "STREAM#" + "|".join(_component(record[key]) for key in ("sourceId", "deviceId", "batchId"))
+    return stream_binding_key(record["sourceId"], record["deviceId"], record["batchId"])

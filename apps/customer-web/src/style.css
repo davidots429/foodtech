@@ -53,6 +53,8 @@ label input:not([type="checkbox"]), label select { display: block; width: 100%; 
 .lookup-row input { font-family: ui-monospace, monospace; }
 .panel-alert { border: 1px solid currentColor; border-radius: 8px; padding: 10px 14px; background: #fff; }
 .status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.binding-box { border: 1px solid #cbe1d8; background: #f4f8f7; border-radius: 9px; padding: 12px 14px; margin: 14px 0; }
+.binding-box .field-row { margin-bottom: 0; }
 .status-grid > div { background: #f4f8f7; border-radius: 9px; padding: 11px 13px; }
 .status-grid strong, .datum-label { display: block; }
 .datum-label { font-size: .78rem; color: #627a79; margin-bottom: 2px; }

@@ -1,0 +1,18 @@
+{
+  "contractVersion": "1.0",
+  "profileId": "mockprofile-100",
+  "instanceId": "mockprofile-100-a-001",
+  "fixture": "vendor-a",
+  "provenance": "SYNTHETIC",
+  "generatorVersion": "1.0.0",
+  "seed": 100020,
+  "logicalStartTime": "2026-11-02T00:00:00Z",
+  "records": [
+    {"schemaVersion":"1.0","sourceId":"synthetic-rest","deviceId":"mockprofile-100-a-001","batchId":"batch-a-process-high-001","recordId":"rec-a-high-001","sequenceNumber":1,"eventTime":"2026-11-02T00:00:00Z","deviceStatus":"running","measurements":{"temperatureCelsius":181,"speedRpm":60,"elapsedSeconds":0},"errorReason":null,"extensions":{"firmwareVersion":"synthetic-1"}},
+    {"schemaVersion":"1.0","sourceId":"synthetic-rest","deviceId":"mockprofile-100-a-001","batchId":"batch-a-process-high-001","recordId":"rec-a-high-002","sequenceNumber":2,"eventTime":"2026-11-02T00:00:05Z","deviceStatus":"running","measurements":{"temperatureCelsius":181,"speedRpm":60,"elapsedSeconds":5},"errorReason":null,"extensions":{"firmwareVersion":"synthetic-1"}},
+    {"schemaVersion":"1.0","sourceId":"synthetic-rest","deviceId":"mockprofile-100-a-001","batchId":"batch-a-process-high-001","recordId":"rec-a-high-003","sequenceNumber":3,"eventTime":"2026-11-02T00:00:10Z","deviceStatus":"running","measurements":{"temperatureCelsius":181,"speedRpm":60,"elapsedSeconds":10},"errorReason":null,"extensions":{"firmwareVersion":"synthetic-1"}},
+    {"schemaVersion":"1.0","sourceId":"synthetic-rest","deviceId":"mockprofile-100-a-001","batchId":"batch-a-process-high-001","recordId":"rec-a-high-004","sequenceNumber":4,"eventTime":"2026-11-02T00:00:15Z","deviceStatus":"running","measurements":{"temperatureCelsius":181,"speedRpm":60,"elapsedSeconds":15},"errorReason":null,"extensions":{"firmwareVersion":"synthetic-1"}},
+    {"schemaVersion":"1.0","sourceId":"synthetic-rest","deviceId":"mockprofile-100-a-001","batchId":"batch-a-process-high-001","recordId":"rec-a-high-005","sequenceNumber":5,"eventTime":"2026-11-02T00:00:20Z","deviceStatus":"running","measurements":{"temperatureCelsius":181,"speedRpm":60,"elapsedSeconds":20},"errorReason":null,"extensions":{"firmwareVersion":"synthetic-1"}}
+  ],
+  "expected": {"processStatus":"FAILED","temperatureStatus":"HIGH_PROCESS_FAILURE","failureAtSequence":5}
+}

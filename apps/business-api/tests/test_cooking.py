@@ -10,6 +10,7 @@ from boto3.dynamodb.types import TypeSerializer
 from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import DynamoCookingStore, MemoryCookingStore
+from foodtech_contracts import stream_binding_key
 from foodtech_business_api.main import app
 
 
@@ -155,6 +156,24 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "customer-2"
         self.assertEqual((await self.client.get(f"/api/customer/cooking-jobs/{job['job_id']}")).status_code, 404)
 
+    async def test_stream_binding_is_explicit_unique_and_owner_scoped(self):
+        first = await self.create()
+        path = f"/api/customer/cooking-jobs/{first['job_id']}/source-binding"
+        body = {"expected_version": first["version"], "source_id": "synthetic-rest",
+                "device_id": "mockprofile-100-a-001", "batch_id": "batch-a-001"}
+        self.assertEqual((await self.client.post(path, json=body)).status_code, 403)
+        bound = await self.client.post(path, headers=CSRF, json=body)
+        self.assertEqual(bound.status_code, 200, bound.text)
+        self.assertEqual(bound.json()["source_binding"]["batch_id"], "batch-a-001")
+        self.assertEqual((await self.client.post(path, headers=CSRF, json=body)).status_code, 409)
+
+        second = await self.create()
+        second_path = f"/api/customer/cooking-jobs/{second['job_id']}/source-binding"
+        body["expected_version"] = second["version"]
+        self.assertEqual((await self.client.post(second_path, headers=CSRF, json=body)).status_code, 409)
+        self.subject = "customer-2"
+        self.assertEqual((await self.client.post(path, headers=CSRF, json=body)).status_code, 404)
+
     async def test_dynamodb_decimal_counters_can_form_event_keys(self):
         job = await self.create()
         key = (cooking._pk(self.subject, job["job_id"]), "META")
@@ -195,6 +214,20 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DynamoTransactionContractTests(unittest.TestCase):
+    def test_source_binding_and_job_version_share_transaction(self):
+        calls = []
+        store = DynamoCookingStore.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name="test-table")
+        store.serializer = TypeSerializer()
+        store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
+        stream_pk = stream_binding_key("synthetic-rest", "mockprofile-100-a-001", "batch-a-001")
+        store.bind_stream("SCOPE#USER#one#JOB#job", 2, {"job_id": "job", "version": 3}, stream_pk)
+        writes = calls[0]["TransactItems"]
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(writes[0]["Put"]["ConditionExpression"], "#version = :expected")
+        self.assertEqual(writes[1]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
+        self.assertEqual(writes[1]["Put"]["Item"]["pk"], {"S": stream_pk})
+
     def test_dynamodb_numeric_fields_match_local_api_types(self):
         rows = iter([
             {"Item": {"version": Decimal(3), "planned_portions": Decimal(2)}},

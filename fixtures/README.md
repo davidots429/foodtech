@@ -5,3 +5,7 @@
 첫 대표 fixture `mockprofile-100-a-001.json`은 REST/JSON·기본 장비·vendor-a의 합성 사례다. 도착 순서 `1, 3, 2`와 기대 복원 순서 `1, 2, 3`, 세 번째 레코드의 절대영도 미만 격리를 기록한다. 값·필드명·프로토콜 동작은 실제 제조사 사양이 아니다.
 
 `tonkatsu-business-v1.json`은 조리작업·안전·평가 첫 API의 합성 기준 배치와 부분 적재 경계다. 실제 장비 용량이나 제조사 사양이 아니다.
+
+# 자동 온도 공정판정 합성 사례
+
+`tonkatsu-process-high-v1.json`은 첫 REST/JSON Mock 프로파일과 동일한 스키마를 사용한다. `batch-a-process-high-001`에 181°C 표본을 5초 간격으로 0~20초까지 제공하여, 20초 경계에서 `HIGH_PROCESS_FAILURE`가 발생하는 경우를 재현한다. 실제 장비의 운전값이나 호환 사양이 아니다.
