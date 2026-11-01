@@ -28,7 +28,7 @@ if (args.Length > 0 && args[0] == "emit")
 {
     var output = Required(options, "output");
     using var writer = new StreamWriter(output, false, new UTF8Encoding(false));
-    foreach (var record in records) writer.WriteLine(record.GetRawText());
+    foreach (var record in records) writer.WriteLine(JsonSerializer.Serialize(record));
     Console.WriteLine(JsonSerializer.Serialize(new {
         programVersion, profileId = "mockprofile-100", instanceId = "mockprofile-100-a-001",
         provenance = "SYNTHETIC", count = records.Length, output
@@ -87,7 +87,7 @@ app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
     context.Response.Headers["X-Profile-ID"] = "mockprofile-100";
     context.Response.Headers["X-Provenance"] = "SYNTHETIC";
     context.Response.Headers["X-Next-Cursor"] = records.Length.ToString();
-    var lines = string.Join("\n", records.Skip(start).Select(record => record.GetRawText()));
+    var lines = string.Join("\n", records.Skip(start).Select(record => JsonSerializer.Serialize(record)));
     return Results.Text(lines.Length == 0 ? "" : lines + "\n", "application/x-ndjson", Encoding.UTF8);
 });
 
