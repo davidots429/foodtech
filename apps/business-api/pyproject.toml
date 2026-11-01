@@ -2,7 +2,14 @@
 name = "foodtech-business-api"
 version = "0.0.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["fastapi>=0.120,<1", "uvicorn>=0.35,<1"]
+dependencies = [
+    "fastapi>=0.120,<1",
+    "uvicorn>=0.35,<1",
+    "httpx>=0.28,<1",
+    "PyJWT[crypto]>=2.10,<3",
+    "boto3>=1.40,<2",
+    "botocore[crt]>=1.43,<2",
+]
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]
