@@ -105,6 +105,12 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
                 auth._claims(token, settings, settings.admin_client_id, "access")
             self.assertEqual(context.exception.status_code, 401)
 
+    async def test_insecure_cookies_are_local_only(self):
+        with patch.dict(os.environ, {"FOODTECH_CUSTOMER_WEB": "https://public.example.com"}):
+            with self.assertRaises(Exception) as context:
+                auth.Settings.from_env()
+            self.assertEqual(context.exception.status_code, 503)
+
 
 if __name__ == "__main__":
     unittest.main()

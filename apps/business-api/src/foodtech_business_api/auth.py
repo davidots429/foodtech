@@ -6,7 +6,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 import jwt
@@ -49,6 +49,8 @@ class Settings:
             raise HTTPException(503, "Cognito 주소는 HTTPS여야 합니다.")
         if secure and any(not value.startswith("https://") for value in values[4:]):
             raise HTTPException(503, "공개 URL은 HTTPS여야 합니다.")
+        if not secure and any(urlparse(value).hostname not in {"localhost", "127.0.0.1"} for value in values[4:]):
+            raise HTTPException(503, "비보안 쿠키는 로컬 개발에서만 허용됩니다.")
         return cls(*values, secure)
 
     def client(self, surface: str) -> tuple[str, str, str]:
