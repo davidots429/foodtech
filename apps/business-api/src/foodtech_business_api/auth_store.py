@@ -26,6 +26,7 @@ class Session:
     csrf: str
     expires: int
     epoch: int
+    access_token: str | None = None
 
 
 class AuthStore(Protocol):
@@ -110,7 +111,8 @@ class DynamoAuthStore:
     def read_session(self, session_id: str) -> Session | None:
         item = self.table.get_item(Key={"pk": f"SESSION#{session_id}"},
                                    ConsistentRead=True).get("Item")
-        return Session(**{key: item[key] for key in ("surface", "subject", "email", "csrf", "expires", "epoch")}) \
+        return Session(**{key: item[key] for key in ("surface", "subject", "email", "csrf", "expires", "epoch")},
+                       access_token=item.get("access_token")) \
             if item and int(item["expires"]) > time.time() else None
 
     def delete_session(self, session_id: str) -> None:

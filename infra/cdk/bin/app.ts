@@ -55,6 +55,7 @@ class AuthIdentityStack extends Stack {
     const createClient = (name: string, callback: string, web: string) => pool.addClient(name, {
       userPoolClientName: `foodtech-${name.toLowerCase()}-${stage}`,
       generateSecret: false,
+      authFlows: name === "Admin" ? { userPassword: true, userSrp: true } : undefined,
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
       refreshTokenValidity: Duration.days(1),
@@ -64,7 +65,8 @@ class AuthIdentityStack extends Stack {
       oAuth: {
         flows: { authorizationCodeGrant: true },
         callbackUrls: [callback], logoutUrls: [web],
-        scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
+        scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE,
+          ...(name === "Customer" ? [cognito.OAuthScope.COGNITO_ADMIN] : [])],
       },
     });
     const customer = createClient("Customer", customerCallback, customerWeb);

@@ -11,3 +11,6 @@ section { background: white; border: 1px solid #dce8e4; border-radius: 14px; pad
 .button, button { display: inline-block; background: #176858; color: white; border: 0; border-radius: 8px; padding: 10px 18px; font: inherit; cursor: pointer; text-decoration: none; }
 .secondary { background: #dcefe9; color: #17333a; }
 .error { color: #a32929; }
+.totp-secret { display: block; overflow-wrap: anywhere; padding: 12px; margin: 12px 0; background: #f4f8f7; }
+.totp-label { display: block; margin: 12px 0; }
+.totp-label input { display: block; margin-top: 6px; padding: 9px; font: inherit; }

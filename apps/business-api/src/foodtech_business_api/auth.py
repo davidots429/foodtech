@@ -112,11 +112,13 @@ async def _flow(surface: str, settings: Settings, *, signup: bool = False) -> Re
                             LoginFlow(surface, state, verifier, int(time.time() + FLOW_SECONDS)))
     params = {
         "response_type": "code", "client_id": client_id, "redirect_uri": callback,
-        "scope": "openid email profile", "state": state,
+        "scope": "openid email profile aws.cognito.signin.user.admin" if surface == "customer" else "openid email profile",
+        "state": state,
         "code_challenge_method": "S256", "code_challenge": challenge,
     }
     if surface == "admin":
         params["acr_values"] = ADMIN_ACR
+        params["max_age"] = "0"
     query = urlencode(params)
     path = "/signup" if signup else "/oauth2/authorize"
     response = RedirectResponse(f"{settings.domain}{path}?{query}", status_code=303)
@@ -179,7 +181,10 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
             raise HTTPException(401, "인증 주체가 일치하지 않습니다.")
         if surface == "admin" and "foodtech-admin" not in access.get("cognito:groups", []):
             raise HTTPException(403, "관리자 권한이 없습니다.")
-        if surface == "admin" and access.get("acr") != ADMIN_ACR:
+        if surface == "admin" and not (
+            access.get("acr") == ADMIN_ACR
+            or {"pwd", "otp", "mfa"}.issubset(set(access.get("amr") or []))
+        ):
             raise HTTPException(403, "관리자 추가 인증이 필요합니다.")
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         raise HTTPException(401, "로그인을 완료할 수 없습니다.") from exc
@@ -199,8 +204,91 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
         surface, identity["sub"], identity.get("email"), secrets.token_urlsafe(32),
         int(min(time.time() + SESSION_SECONDS, float(access["exp"]))),
         int(principal.get("epoch", 0)),
+        tokens["access_token"],
     ))
     response = RedirectResponse(web, status_code=303)
+    response.delete_cookie(FLOW_COOKIE, path="/api")
+    _cookie(response, SESSION_COOKIE, session_id, SESSION_SECONDS, settings.secure_cookies)
+    return response
+
+
+def _admin_password_auth(client_id: str, username: str, password: str) -> dict:
+    client = boto3.client("cognito-idp", region_name="ap-southeast-2")
+    return client.initiate_auth(
+        ClientId=client_id, AuthFlow="USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": username, "PASSWORD": password},
+    )
+
+
+def _admin_totp_auth(client_id: str, username: str, challenge_session: str, code: str) -> dict:
+    client = boto3.client("cognito-idp", region_name="ap-southeast-2")
+    return client.respond_to_auth_challenge(
+        ClientId=client_id, ChallengeName="SOFTWARE_TOKEN_MFA", Session=challenge_session,
+        ChallengeResponses={"USERNAME": username, "SOFTWARE_TOKEN_MFA_CODE": code},
+    )
+
+
+@router.post("/auth/admin/password")
+async def admin_password(body: dict) -> Response:
+    """Use Cognito's direct MFA challenge when ACR/AMR is unavailable in this pool."""
+    settings = Settings.from_env()
+    username, password = body.get("username"), body.get("password")
+    if not isinstance(username, str) or not 3 <= len(username) <= 320 or not isinstance(password, str) or not password:
+        raise HTTPException(400, "계정과 비밀번호를 입력해야 합니다.")
+    try:
+        result = await asyncio.to_thread(_admin_password_auth, settings.admin_client_id, username, password)
+    except (BotoCoreError, ClientError) as exc:
+        raise HTTPException(401, "로그인 정보를 확인하지 못했습니다.") from exc
+    if result.get("ChallengeName") != "SOFTWARE_TOKEN_MFA" or not result.get("Session"):
+        raise HTTPException(403, "관리자 인증에는 인증 앱 TOTP가 필요합니다.")
+    flow_id = secrets.token_urlsafe(32)
+    await asyncio.to_thread(get_store().save_flow, flow_id, LoginFlow(
+        "admin_totp", username, result["Session"], int(time.time() + FLOW_SECONDS),
+    ))
+    response = JSONResponse({"next": "SOFTWARE_TOKEN_MFA"})
+    response.headers["Cache-Control"] = "no-store"
+    _cookie(response, FLOW_COOKIE, flow_id, FLOW_SECONDS, settings.secure_cookies)
+    return response
+
+
+@router.post("/auth/admin/totp")
+async def admin_totp(request: Request, body: dict) -> Response:
+    settings = Settings.from_env()
+    code = body.get("code")
+    if not isinstance(code, str) or len(code) != 6 or not code.isdigit():
+        raise HTTPException(400, "6자리 인증 코드를 입력해야 합니다.")
+    flow_id = request.cookies.get(FLOW_COOKIE, "")
+    flow = await asyncio.to_thread(get_store().take_flow, flow_id) if flow_id else None
+    if not flow or flow.surface != "admin_totp":
+        raise HTTPException(400, "관리자 인증 요청이 만료되었습니다.")
+    try:
+        result = await asyncio.to_thread(_admin_totp_auth, settings.admin_client_id, flow.state, flow.verifier, code)
+    except (BotoCoreError, ClientError) as exc:
+        raise HTTPException(401, "인증 코드를 확인하지 못했습니다. 다시 로그인해 주세요.") from exc
+    tokens = result.get("AuthenticationResult")
+    if not tokens or result.get("ChallengeName"):
+        raise HTTPException(403, "관리자 추가 인증을 완료하지 못했습니다.")
+    identity = _claims(tokens["IdToken"], settings, settings.admin_client_id, "id")
+    access = _claims(tokens["AccessToken"], settings, settings.admin_client_id, "access")
+    if identity["sub"] != access["sub"] or "foodtech-admin" not in access.get("cognito:groups", []):
+        raise HTTPException(403, "관리자 권한이 없습니다.")
+    store = get_store()
+    principal = await asyncio.to_thread(store.principal, identity["sub"])
+    if principal.get("suspended") or principal.get("admin_blocked"):
+        raise HTTPException(403, "관리자 권한이 회수되었습니다.")
+    if not await _checked_cognito_access(settings, identity["sub"], "admin"):
+        raise HTTPException(403, "현재 계정 권한을 확인할 수 없습니다.")
+    old_session_id = request.cookies.get(SESSION_COOKIE, "")
+    if old_session_id:
+        await asyncio.to_thread(store.delete_session, old_session_id)
+    session_id = secrets.token_urlsafe(32)
+    await asyncio.to_thread(store.save_session, session_id, Session(
+        "admin", identity["sub"], identity.get("email"), secrets.token_urlsafe(32),
+        int(min(time.time() + SESSION_SECONDS, float(access["exp"]))), int(principal.get("epoch", 0)),
+        tokens["AccessToken"],
+    ))
+    response = JSONResponse({"authenticated": True})
+    response.headers["Cache-Control"] = "no-store"
     response.delete_cookie(FLOW_COOKIE, path="/api")
     _cookie(response, SESSION_COOKIE, session_id, SESSION_SECONDS, settings.secure_cookies)
     return response
@@ -217,8 +305,10 @@ async def _session(request: Request, surface: str) -> Session:
     principal = await asyncio.to_thread(store.principal, session.subject)
     if (int(principal.get("epoch", 0)) != session.epoch or principal.get("suspended")
             or (surface == "admin" and principal.get("admin_blocked"))):
+        await asyncio.to_thread(store.delete_session, session_id)
         raise HTTPException(401, "세션 권한이 회수되었습니다.")
     if not await _checked_cognito_access(Settings.from_env(), session.subject, surface):
+        await asyncio.to_thread(store.delete_session, session_id)
         raise HTTPException(401, "현재 계정 권한이 없습니다.")
     return session
 
@@ -244,11 +334,62 @@ async def demo_plan(request: Request) -> dict:
             "businessVerificationEnabled": False}
 
 
+def _totp_start(access_token: str) -> str:
+    client = boto3.client("cognito-idp", region_name="ap-southeast-2")
+    return client.associate_software_token(AccessToken=access_token)["SecretCode"]
+
+
+def _totp_verify(access_token: str, code: str) -> None:
+    client = boto3.client("cognito-idp", region_name="ap-southeast-2")
+    result = client.verify_software_token(AccessToken=access_token, UserCode=code)
+    if result.get("Status") != "SUCCESS":
+        raise ValueError("TOTP verification failed")
+    client.set_user_mfa_preference(
+        AccessToken=access_token,
+        SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
+    )
+
+
+def _csrf(request: Request, session: Session) -> None:
+    if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), session.csrf):
+        raise HTTPException(403, "CSRF 확인에 실패했습니다.")
+
+
+@router.post("/customer/mfa/totp/start")
+async def totp_start(request: Request) -> Response:
+    session = await _session(request, "customer")
+    _csrf(request, session)
+    if not session.access_token:
+        raise HTTPException(401, "다시 로그인해야 합니다.")
+    try:
+        secret = await asyncio.to_thread(_totp_start, session.access_token)
+    except (BotoCoreError, ClientError) as exc:
+        raise HTTPException(503, "인증 앱 등록을 시작하지 못했습니다.") from exc
+    response = JSONResponse({"secret": secret})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/customer/mfa/totp/verify")
+async def totp_verify(request: Request, body: dict) -> dict:
+    session = await _session(request, "customer")
+    _csrf(request, session)
+    if not session.access_token:
+        raise HTTPException(401, "다시 로그인해야 합니다.")
+    code = body.get("code")
+    if not isinstance(code, str) or not code.isdigit() or len(code) != 6:
+        raise HTTPException(400, "6자리 인증 코드를 입력해야 합니다.")
+    try:
+        await asyncio.to_thread(_totp_verify, session.access_token, code)
+    except (BotoCoreError, ClientError, ValueError) as exc:
+        raise HTTPException(400, "인증 코드를 확인하지 못했습니다.") from exc
+    return {"totp": "ENABLED"}
+
+
 @router.post("/{surface}/logout")
 async def logout(surface: str, request: Request) -> Response:
     session = await _session(request, surface)
-    if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), session.csrf):
-        raise HTTPException(403, "CSRF 확인에 실패했습니다.")
+    _csrf(request, session)
     await asyncio.to_thread(get_store().delete_session, request.cookies.get(SESSION_COOKIE, ""))
     settings = Settings.from_env()
     client_id, _, web = settings.client(surface)
@@ -262,8 +403,7 @@ async def logout(surface: str, request: Request) -> Response:
 async def revoke_admin(subject: str, request: Request) -> dict:
     """Project-admin action: deny future admin logins and all existing sessions."""
     session = await _session(request, "admin")
-    if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), session.csrf):
-        raise HTTPException(403, "CSRF 확인에 실패했습니다.")
+    _csrf(request, session)
     if not subject or len(subject) > 128:
         raise HTTPException(400, "대상 식별자가 올바르지 않습니다.")
     await asyncio.to_thread(get_store().block_admin, subject)
@@ -273,8 +413,7 @@ async def revoke_admin(subject: str, request: Request) -> dict:
 @router.post("/admin/users/{subject}/suspend")
 async def suspend_user(subject: str, request: Request) -> dict:
     session = await _session(request, "admin")
-    if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), session.csrf):
-        raise HTTPException(403, "CSRF 확인에 실패했습니다.")
+    _csrf(request, session)
     if not subject or len(subject) > 128:
         raise HTTPException(400, "대상 식별자가 올바르지 않습니다.")
     await asyncio.to_thread(get_store().suspend_user, subject)

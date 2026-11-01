@@ -51,15 +51,19 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(query["code_challenge_method"], ["S256"])
         if surface == "admin":
             self.assertEqual(query["acr_values"], [auth.ADMIN_ACR])
+            self.assertEqual(query["max_age"], ["0"])
+        else:
+            self.assertIn("aws.cognito.signin.user.admin", query["scope"][0].split())
         self.assertIn("HttpOnly", response.headers["set-cookie"])
         return query
 
-    async def callback(self, surface, state, groups=None, acr=None):
+    async def callback(self, surface, state, groups=None, acr=None, amr=None):
         claims = [
             {"sub": "subject-1", "email": "test@example.com"},
             {"sub": "subject-1", "exp": time.time() + 3600,
              "cognito:groups": groups or [],
-             "acr": acr if acr is not None else (auth.ADMIN_ACR if groups else "urn:cognito:loa:1")},
+             "acr": acr if acr is not None else (auth.ADMIN_ACR if groups else "urn:cognito:loa:1"),
+             "amr": amr or []},
         ]
         async def exchange(*args):
             self.assertTrue(args[-1])
@@ -89,9 +93,36 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         state = (await self.login("admin"))["state"][0]
         self.assertEqual((await self.callback("admin", state, ["foodtech-admin"], "urn:cognito:loa:1")).status_code, 403)
         state = (await self.login("admin"))["state"][0]
+        self.assertEqual((await self.callback("admin", state, ["foodtech-admin"], "urn:cognito:loa:1",
+                                              ["pwd", "otp", "mfa"])).status_code, 303)
+        state = (await self.login("admin"))["state"][0]
         self.assertEqual((await self.callback("admin", state, ["foodtech-admin"])).status_code, 303)
         self.assertEqual((await self.client.get("/api/admin/me")).json()["surface"], "admin")
         self.assertEqual((await self.client.get("/api/customer/example")).status_code, 401)
+
+    async def test_admin_direct_login_requires_cognito_totp_challenge(self):
+        password_url = "/api/auth/admin/password"
+        totp_url = "/api/auth/admin/totp"
+        body = {"username": "test@example.com", "password": "test-password"}
+        with patch.object(auth, "_admin_password_auth", return_value={"AuthenticationResult": {}}):
+            self.assertEqual((await self.client.post(password_url, json=body)).status_code, 403)
+        with patch.object(auth, "_admin_password_auth", return_value={
+            "ChallengeName": "SOFTWARE_TOKEN_MFA", "Session": "cognito-challenge-session",
+        }) as start, patch.object(auth, "_admin_totp_auth", return_value={
+            "AuthenticationResult": {"IdToken": "id", "AccessToken": "access"},
+        }) as finish, patch.object(auth, "_claims", side_effect=[
+            {"sub": "subject-1", "email": "test@example.com"},
+            {"sub": "subject-1", "exp": time.time() + 3600, "cognito:groups": ["foodtech-admin"]},
+        ]):
+            response = await self.client.post(password_url, json=body)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["next"], "SOFTWARE_TOKEN_MFA")
+            start.assert_called_once_with("admin-client", body["username"], body["password"])
+            self.assertEqual((await self.client.post(totp_url, json={"code": "123456"})).status_code, 200)
+            finish.assert_called_once_with("admin-client", body["username"],
+                                           "cognito-challenge-session", "123456")
+        self.assertEqual((await self.client.get("/api/admin/me")).json()["surface"], "admin")
+        self.assertEqual((await self.client.post(totp_url, json={"code": "123456"})).status_code, 400)
 
     async def test_admin_revoke_takes_effect_on_next_request_and_login(self):
         state = (await self.login("admin"))["state"][0]
@@ -112,10 +143,32 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         state = (await self.login())["state"][0]
         self.assertEqual((await self.callback("customer", state)).status_code, 403)
 
+    async def test_totp_enrollment_keeps_secret_and_access_token_off_me(self):
+        state = (await self.login())["state"][0]
+        self.assertEqual((await self.callback("customer", state)).status_code, 303)
+        me = (await self.client.get("/api/customer/me")).json()
+        self.assertNotIn("access_token", me)
+        start = "/api/customer/mfa/totp/start"
+        verify = "/api/customer/mfa/totp/verify"
+        self.assertEqual((await self.client.post(start)).status_code, 403)
+        with patch.object(auth, "_totp_start", return_value="TEST-SECRET") as begin, \
+             patch.object(auth, "_totp_verify") as finish:
+            response = await self.client.post(start, headers={"X-CSRF-Token": me["csrf"]})
+            self.assertEqual(response.json(), {"secret": "TEST-SECRET"})
+            begin.assert_called_once_with("access")
+            self.assertEqual((await self.client.post(verify, json={"code": "12"},
+                                                headers={"X-CSRF-Token": me["csrf"]})).status_code, 400)
+            response = await self.client.post(verify, json={"code": "123456"},
+                                              headers={"X-CSRF-Token": me["csrf"]})
+            self.assertEqual(response.json(), {"totp": "ENABLED"})
+            finish.assert_called_once_with("access", "123456")
+
     async def test_external_cognito_revocation_is_checked_on_each_request(self):
         state = (await self.login("admin"))["state"][0]
         self.assertEqual((await self.callback("admin", state, ["foodtech-admin"])).status_code, 303)
         self.cognito_access.return_value = False
+        self.assertEqual((await self.client.get("/api/admin/me")).status_code, 401)
+        self.cognito_access.return_value = True
         self.assertEqual((await self.client.get("/api/admin/me")).status_code, 401)
 
     async def test_state_surface_and_replay_are_rejected(self):
