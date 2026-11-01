@@ -2,6 +2,7 @@
 
 import os
 import threading
+from decimal import Decimal
 from functools import lru_cache
 from typing import Protocol
 
@@ -11,6 +12,17 @@ from boto3.dynamodb.types import TypeSerializer
 
 class Conflict(Exception):
     pass
+
+
+def _api_numbers(value):
+    """Keep DynamoDB numeric values consistent with the local API contract."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else str(value)
+    if isinstance(value, dict):
+        return {key: _api_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_api_numbers(item) for item in value]
+    return value
 
 
 class CookingStore(Protocol):
@@ -97,7 +109,7 @@ class DynamoCookingStore:
         pointer = self.table.get_item(
             Key={"pk": pk, "sk": "ASSESSMENT#CURRENT"}, ConsistentRead=True,
         ).get("Item")
-        return meta, pointer
+        return _api_numbers(meta), _api_numbers(pointer)
 
     def create(self, pk: str, meta: dict) -> None:
         try:
@@ -174,7 +186,7 @@ class DynamoCookingStore:
             results.extend(page.get("Items", []))
             last_key = page.get("LastEvaluatedKey")
             if not last_key:
-                return results
+                return _api_numbers(results)
 
     def events(self, pk: str) -> list[dict]:
         results = []
@@ -188,7 +200,7 @@ class DynamoCookingStore:
             results.extend(page.get("Items", []))
             last_key = page.get("LastEvaluatedKey")
             if not last_key:
-                return sorted(results, key=lambda item: (item["occurred_at"], item["sk"]))
+                return _api_numbers(sorted(results, key=lambda item: (item["occurred_at"], item["sk"])))
 
     def _item(self, item: dict) -> dict:
         return {key: self.serializer.serialize(value) for key, value in item.items()}
