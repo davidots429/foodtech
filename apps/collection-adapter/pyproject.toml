@@ -1,0 +1,15 @@
+[project]
+name = "foodtech-collection-adapter"
+version = "0.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["boto3>=1.40,<2", "httpx>=0.28,<1", "foodtech-contracts"]
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/foodtech_collection_adapter"]
+
+[tool.uv.sources]
+foodtech-contracts = { workspace = true }

@@ -1,0 +1,56 @@
+{
+  "contractVersion": "1.0",
+  "profileId": "mockprofile-100",
+  "instanceId": "mockprofile-100-a-001",
+  "fixture": "vendor-a",
+  "provenance": "SYNTHETIC",
+  "generatorVersion": "1.0.0",
+  "seed": 100001,
+  "logicalStartTime": "2026-11-01T00:00:00Z",
+  "records": [
+    {
+      "schemaVersion": "1.0",
+      "sourceId": "synthetic-rest",
+      "deviceId": "mockprofile-100-a-001",
+      "batchId": "batch-a-001",
+      "recordId": "rec-a-001",
+      "sequenceNumber": 1,
+      "eventTime": "2026-11-01T00:00:00Z",
+      "deviceStatus": "running",
+      "measurements": {"temperatureCelsius": 180.0, "speedRpm": 60, "elapsedSeconds": 0},
+      "errorReason": null,
+      "extensions": {"firmwareVersion": "synthetic-1"}
+    },
+    {
+      "schemaVersion": "1.0",
+      "sourceId": "synthetic-rest",
+      "deviceId": "mockprofile-100-a-001",
+      "batchId": "batch-a-001",
+      "recordId": "rec-a-003",
+      "sequenceNumber": 3,
+      "eventTime": "2026-11-01T00:00:10Z",
+      "deviceStatus": "running",
+      "measurements": {"temperatureCelsius": -300.0, "speedRpm": 60, "elapsedSeconds": 10},
+      "errorReason": null,
+      "extensions": {"firmwareVersion": "synthetic-1"}
+    },
+    {
+      "schemaVersion": "1.0",
+      "sourceId": "synthetic-rest",
+      "deviceId": "mockprofile-100-a-001",
+      "batchId": "batch-a-001",
+      "recordId": "rec-a-002",
+      "sequenceNumber": 2,
+      "eventTime": "2026-11-01T00:00:05Z",
+      "deviceStatus": "running",
+      "measurements": {"temperatureCelsius": 181.5, "speedRpm": 60, "elapsedSeconds": 5},
+      "errorReason": null,
+      "extensions": {"firmwareVersion": "synthetic-1"}
+    }
+  ],
+  "expected": {
+    "releaseSequence": [1, 2, 3],
+    "qualityStatus": ["VALID", "VALID", "QUARANTINED"],
+    "quarantineReason": "HARD_LIMIT_EXCEEDED"
+  }
+}
