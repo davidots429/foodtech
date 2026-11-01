@@ -1,0 +1,16 @@
+{
+  "fixtureId": "tonkatsu-business-v1",
+  "provenance": "SYNTHETIC",
+  "menu": "TONKATSU",
+  "equipmentProfile": "synthetic-fryer",
+  "scaleVersion": "tonkatsu-common-v1",
+  "batchCapacityKg": "0.8",
+  "loadBands": [
+    {"name": "PARTIAL", "minExclusivePercent": "0", "maxInclusivePercent": "50", "exampleMassKg": "0.4"},
+    {"name": "REFERENCE", "minExclusivePercent": "50", "maxInclusivePercent": "100", "exampleMassKg": "0.8"}
+  ],
+  "coreCheck": {"minimumCelsius": "75", "sampleOffsetsSeconds": "0..60 inclusive at 1 Hz", "calibrationStatus": "OK"},
+  "qualityItems": [
+    "ingredient_condition", "preparation", "taste", "texture", "appearance", "aroma", "temperature_suitability"
+  ]
+}

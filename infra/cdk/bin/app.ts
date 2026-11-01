@@ -118,6 +118,21 @@ class MinimalDataFlowStack extends Stack {
   }
 }
 
+class CookingJobsStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const table = new dynamodb.Table(this, "CookingJobs", {
+      tableName: `foodtech-cooking-jobs-${stage}`,
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    new CfnOutput(this, "CookingJobsTableName", { value: table.tableName });
+  }
+}
+
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
 if (app.node.tryGetContext("provisionIdentity") === "true") {
@@ -127,6 +142,10 @@ if (app.node.tryGetContext("provisionIdentity") === "true") {
 if (app.node.tryGetContext("provisionDataFlow") === "true") {
   const dataFlow = new MinimalDataFlowStack(app, `FoodtechMinimalDataFlow-${stage}`, { env });
   Tags.of(dataFlow).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionCookingJobs") === "true") {
+  const cookingJobs = new CookingJobsStack(app, `FoodtechCookingJobs-${stage}`, { env });
+  Tags.of(cookingJobs).add("Project", "foodtech");
 }
 app.synth();
 
