@@ -1,4 +1,4 @@
-# Business API 인증 첫 구현
+# Business API 인증과 첫 조리 업무 흐름
 
 고객 공개 가입과 로그인은 Cognito 관리형 화면에서 시작한다. Business API가 Authorization Code + PKCE의 state·verifier를 관리하고 코드 교환, ID·Access 토큰의 서명·발급자·client·용도를 확인한다. 브라우저에는 HttpOnly 세션 쿠키만 전달한다. 관리형 로그인 토큰에 `acr`·`amr`가 제공되지 않는 시험 Pool에서는 관리자 화면이 별도 App Client의 Cognito `USER_PASSWORD_AUTH` → `SOFTWARE_TOKEN_MFA` 챌린지를 사용한다. 관리자 세션은 Cognito가 실제 TOTP 응답을 승인하고 `foodtech-admin` 그룹과 현재 계정 상태를 확인한 경우에만 발급한다.
 
@@ -19,3 +19,15 @@
 - 2026-11-01 AWS Free Plan의 시험용 Cognito User Pool에서 고객 가입·이메일 확인·Authorization Code/PKCE 토큰 교환·고객 세션·관리자 그룹 거부·로그아웃 후 API 거부를 확인했다. Cognito 관리형 로그인 v2는 시험 계정에서 동작했다. 시험 리소스는 아직 CDK 관리 대상이 아니다.
 - 같은 시험 계정으로 DynamoDB 공유 저장소를 연결해 다시 로그인했다. 세션 생성, API 프로세스 재시작 후 로그인 유지, 로그아웃 후 세션 제거를 실제 AWS 테이블에서 확인했다.
 - 시험 Pool의 관리형 로그인은 TOTP를 완료해도 토큰에 `acr`·`amr`를 넣지 않았다. 관리자 App Client의 직접 인증 경로에서 Cognito `SOFTWARE_TOKEN_MFA` 챌린지 성공 후 관리자 화면 진입을 확인했다. 시험용 관리자 그룹을 즉시 회수하고 다음 화면 요청에서 접근이 거부되는 것도 확인했다. Pool MFA는 `OPTIONAL`을 유지한다.
+
+## 돈까스 합성 조리작업 첫 흐름
+
+`/api/customer/cooking-jobs`는 고객 세션의 `subject`에서 저장 범위를 만들고 상태 변경 요청마다 CSRF와 기대 `version`을 검사한다. 첫 범위는 합성 튀김기 `synthetic-fryer`의 돈까스 작업이다. 생성, 승인된 수동 상태 전이, 심부온도 안전 확인, 안전 이상·해제, 완료 품질평가, 평가 이력과 재조리 연결을 제공한다. 공정 실패 자동판정은 수집 데이터와 규칙 엔진을 연결한 뒤 추가한다. 고객이 `PROCESS_FAILURE_DETECTED`를 임의로 제출하는 API는 제공하지 않는다.
+
+안전 확인은 제품별 유효 탐침의 최저 심부온도가 모두 `75°C` 이상으로 `60초` 이상 유지되었는지 판정한다. 하나라도 유효한 측정에서 미달하면 `FAILED`, 필수값이나 교정 유효성이 부족하면 `INCOMPLETE`다. 이상 의심·확인 중·실패에서는 평가를 완료할 수 없다. 의심 해제나 새 안전 확인만으로 기존 합격 평가를 다시 사용 가능하게 만들지 않으며, 새 완료 평가가 필요하다. 작업 상태·안전 상태의 변경과 근거는 `EVENT#...` 이력에 현재 상태 변경과 함께 원자적으로 기록한다.
+
+품질평가는 초기 공통 척도 `tonkatsu-common-v1`의 7개 항목 모두에 1~5점과 관찰 근거를 요구한다. `해당 없음`은 이 첫 척도에 없다. 종합점수는 합계/35×100이며 모든 항목이 3점 이상일 때 합격, 4점 이상일 때 목표 달성이다. 수정·재평가는 사유와 이전 버전을 기록하고 원본을 보존한다. 새 버전과 `ASSESSMENT#CURRENT` 포인터는 같은 DynamoDB 트랜잭션으로 기록하며 작업 `version` 충돌을 거부한다.
+
+첫 합성 적재 fixture는 튀김기 기준 배치 `0.8 kg`이다. `0 < 적재율 ≤ 50%`는 `PARTIAL`, `50% < 적재율 ≤ 100%`는 `REFERENCE`다. 적재율은 실제 투입 중량/0.8 kg으로 서버가 검증하며 이는 실제 장비 사양이 아니다. 인분은 이 fixture에서 최대 4인분이다. [fixture](../../fixtures/tonkatsu-business-v1.json)에 경계 예시를 둔다.
+
+`FOODTECH_COOKING_TABLE`이 비어 있으면 로컬 메모리 저장소를 사용한다. 공개 배포에서는 별도 DynamoDB 테이블이 필수이며, CDK의 `-c provisionCookingJobs=true`는 아직 합성만 가능하게 정의했다. 새 테이블을 실제 AWS에 배포하거나 실사용 적합성·동시성을 검증하지 않았다. 현재 고객 화면에는 이 API의 UI가 없으며 API 계약과 로컬 테스트가 첫 구현 범위다.
