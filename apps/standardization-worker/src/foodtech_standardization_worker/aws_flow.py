@@ -11,6 +11,7 @@ from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
 
 from .process import Assessment, Finding, QUALITY_RULE_VERSION, assess
+from .process_bridge import DynamoProcessBridge
 
 
 class DynamoStandardizationWorker:
@@ -22,6 +23,8 @@ class DynamoStandardizationWorker:
         self.queue_url = queue_url
         self.dlq_url = dlq_url
         self.serializer = TypeSerializer()
+        cooking_table = os.getenv("FOODTECH_COOKING_TABLE")
+        self.process_bridge = DynamoProcessBridge(cooking_table, region) if cooking_table else None
 
     def run_once(self) -> list[dict]:
         page = self.sqs.receive_message(
@@ -43,8 +46,10 @@ class DynamoStandardizationWorker:
         if existing:
             if existing["quality_status"] == "QUARANTINED":
                 self._send_dlq(reference, existing)
+            process_result = self._publish_process(existing)
             return {"ingestion_event_id": event_id, "quality_status": existing["quality_status"],
-                    "dedup_status": existing["dedup_status"], "replayed": True}
+                    "dedup_status": existing["dedup_status"], "replayed": True,
+                    "process_result": process_result}
         raw_item = self.table.get_item(
             Key={"pk": reference["pk"], "sk": reference["raw_sk"]}, ConsistentRead=True,
         )["Item"]
@@ -72,7 +77,7 @@ class DynamoStandardizationWorker:
             "raw_values": evaluation.raw_values, "corrected_values": evaluation.corrected_values,
             "correction_rule_id": evaluation.correction_rule_id,
             "mapping_version": evaluation.mapping_version, "provenance": evaluation.provenance,
-            "normalized": normalized,
+            "normalized": normalized, "finding_codes": [item.code for item in findings],
         }
         writes = [{"Put": {"TableName": self.table.name, "Item": self._marshal(assessment_item),
                            "ConditionExpression": "attribute_not_exists(pk)"}}]
@@ -90,8 +95,14 @@ class DynamoStandardizationWorker:
             assessment_item = existing
         if assessment_item["quality_status"] == "QUARANTINED":
             self._send_dlq(reference, assessment_item)
+        process_result = self._publish_process(assessment_item)
         return {"ingestion_event_id": event_id, "quality_status": assessment_item["quality_status"],
-                "dedup_status": assessment_item["dedup_status"], "replayed": False}
+                "dedup_status": assessment_item["dedup_status"], "replayed": False,
+                "process_result": process_result}
+
+    def _publish_process(self, assessment: dict) -> str:
+        bridge = getattr(self, "process_bridge", None)
+        return bridge.apply(assessment) if bridge else "NOT_CONFIGURED"
 
     def _deduplicate(self, evaluation: Assessment) -> str:
         key_hash = hashlib.sha256(evaluation.business_dedup_key.encode("utf-8")).hexdigest()

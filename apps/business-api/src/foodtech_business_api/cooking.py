@@ -9,6 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from foodtech_contracts import stream_binding_key
 
 from .auth import _csrf, _session
 from .cooking_store import Conflict, MemoryCookingStore, get_cooking_store
@@ -86,6 +87,13 @@ class NewJob(StrictModel):
     equipment_profile: str = "synthetic-fryer"
 
 
+class SourceBinding(StrictModel):
+    expected_version: int = Field(ge=1)
+    source_id: str = Field(min_length=1, max_length=80)
+    device_id: str = Field(min_length=1, max_length=80)
+    batch_id: str = Field(min_length=1, max_length=80, pattern=r"^batch-a-[A-Za-z0-9-]+$")
+
+
 class Transition(StrictModel):
     event: Literal["PREHEAT_COMPLETED", "PREHEAT_CONDITION_LOST", "COOKING_STARTED",
                    "COOKING_PAUSED", "COOKING_RESUMED", "COOKING_COMPLETED", "COOKING_CANCELED"]
@@ -150,9 +158,30 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "status": "PENDING", "version": 1, "job_state_version": 1,
         "safety_status": "NOT_MEASURED", "safety_version": 0,
         "evaluation_blocked": True, "created_at": _now(), "updated_at": _now(),
-        "source_job_id": None, "recook_reason": None,
+        "source_job_id": None, "recook_reason": None, "source_binding": None,
+        "process_assessment_status": "INSUFFICIENT_DATA", "process_temperature_status": "NOT_MEASURED",
     }
     await _store_call(store, store.create, _pk(session.subject, job_id), meta)
+    return meta
+
+
+@router.post("/{job_id}/source-binding")
+async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dict:
+    _, store, pk, old, _ = await _read(request, job_id, write=True)
+    if int(old["version"]) != body.expected_version:
+        raise _conflict()
+    if old["status"] not in {"PENDING", "READY"} or old.get("source_binding"):
+        raise HTTPException(409, "조리 시작 전, 아직 연결되지 않은 작업에만 수집 배치를 연결할 수 있습니다.")
+    if body.source_id != "synthetic-rest" or body.device_id != "mockprofile-100-a-001":
+        raise HTTPException(422, "첫 자동판정은 승인된 합성 REST 프로파일만 지원합니다.")
+    stream_pk = stream_binding_key(body.source_id, body.device_id, body.batch_id)
+    meta = {**old, "source_binding": {"source_id": body.source_id, "device_id": body.device_id,
+                                       "batch_id": body.batch_id},
+            "version": old["version"] + 1, "updated_at": _now()}
+    try:
+        await _store_call(store, store.bind_stream, pk, int(old["version"]), meta, stream_pk)
+    except Conflict as exc:
+        raise HTTPException(409, "이 수집 배치는 이미 연결되었거나 작업이 변경되었습니다.") from exc
     return meta
 
 
@@ -334,7 +363,8 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
             "status": "PENDING", "version": 1, "job_state_version": 1,
             "safety_status": "NOT_MEASURED", "safety_version": 0,
             "evaluation_blocked": True, "created_at": _now(), "updated_at": _now(),
-            "source_job_id": job_id, "recook_reason": body.reason}
+            "source_job_id": job_id, "recook_reason": body.reason, "source_binding": None,
+            "process_assessment_status": "INSUFFICIENT_DATA", "process_temperature_status": "NOT_MEASURED"}
     try:
         await _store_call(store, store.create_recook, parent_pk, body.expected_version,
                           _pk(session.subject, new_id), meta)

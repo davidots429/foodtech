@@ -12,7 +12,7 @@
 | `apps/ai-gateway` | 모델 실행 경계 | 경로 없는 FastAPI 객체 |
 | `apps/credential-registration` | 자격증명 등록 경계 | 책임 설명만 |
 | `apps/collection-adapter` | 읽기 전용 수집 | 첫 HTTPS REST poller·DynamoDB 순번 복원·SQS FIFO 전송 |
-| `apps/standardization-worker` | 표준화·품질 | 첫 프로파일 매핑·해시·격리·중복 판정 |
+| `apps/standardization-worker` | 표준화·품질·첫 공정판정 | 첫 프로파일 매핑·해시·격리·중복 판정과 연결된 돈까스 작업의 합성 온도판정 |
 | `apps/mock-control` | 시연·시험용 C# Mock | 첫 합성 REST/JSONL·OAuth·연결 단절 구현 |
 | `infra/cdk` | TypeScript IaC | 인증 세션 및 최소 데이터 흐름 스택; Identity 스택은 미배포 |
 | `packages/contracts`, `fixtures` | 공통 계약과 합성 시험자료 | 첫 JSON Schema·정규화 패키지·대표 fixture |
@@ -23,6 +23,7 @@
 - Python 3.12와 uv 0.12.17에서 `uv sync --all-packages --locked`를 실행한다. 버전은 `uv.lock`에 고정되어 있다.
 - `uv run --no-sync python -m unittest discover -s apps/business-api/tests -v`로 인증 경계 테스트를 실행한다.
 - 고객으로 로그인해 합성 조리작업을 생성하면 `작업 ID`와 주소의 `#job=...`으로 다시 불러올 수 있다. 상태 진행 후 제품별 합성 심부온도 표본으로 안전 판정을 기록하고, 7항목 평가·이력·재조리를 확인한다. 작업 목록 API는 아직 없고, 심부온도 입력은 실제 장비 측정이 아니다.
+- 자동 온도 공정판정은 조리 시작 전에 수집 배치를 명시적으로 연결한 작업에만 적용한다. 표준화 Worker에 `FOODTECH_COOKING_TABLE`을 설정하면 유효한 첫 REST/JSON 프로파일의 온도 표본을 작업 상태와 근거 이력에 연결한다. [고온 실패 fixture](fixtures/tonkatsu-process-high-v1.json)는 181°C가 20초 지속되는 합성 사례다. 이 연결의 AWS 실저장 검증과 배포 권한 구성은 아직 수행하지 않았다.
 - `uv run --no-sync python -m unittest discover -s apps/collection-adapter/tests -v`로 첫 정규화·순번·전송 장애 테스트를 실행한다.
 - .NET SDK 10.0.402에서 `dotnet restore apps/mock-control/MockControl.csproj`와 `dotnet build apps/mock-control/MockControl.csproj --no-restore`를 실행한다. 현재 외부 NuGet 패키지는 없다.
 - GitHub Actions의 CI는 Node·Python·Mock 빌드와 C#/Python 실제 HTTPS·해시 통합 검사를 분리한다. PR 검사에는 AWS 권한이 없다.

@@ -25,9 +25,23 @@ const eventLabels: Record<string, string> = {
   COOKING_CANCELED: "조리 취소", SUSPECTED: "이상 의심 신고",
   UNDER_REVIEW: "안전 확인 시작", CLEARED: "이상 의심 해제",
   FAILED: "안전 실패 확정", CORE_CHECK: "합성 심부온도 안전 판정",
+  PROCESS_SAMPLE_ASSESSED: "수집 온도 공정판정", PROCESS_FAILURE_DETECTED: "공정 실패 자동판정",
+};
+const processLabels: Record<CookingJob["process_assessment_status"], string> = {
+  INSUFFICIENT_DATA: "수집값 대기", NORMAL: "정상", WARNING: "주의", FAILED: "공정 실패",
+};
+const temperatureLabels: Record<string, string> = {
+  NOT_MEASURED: "미측정", NORMAL: "정상 범위", LOW_WARNING: "저온 주의",
+  HIGH_WARNING: "고온 주의", LOW_PROCESS_FAILURE: "저온 공정 실패",
+  HIGH_PROCESS_FAILURE: "고온 공정 실패",
+};
+const processReasonLabels: Record<string, string> = {
+  LOW_TEMPERATURE_DURATION: "저온 지속·복원시간 기준 초과",
+  HIGH_TEMPERATURE_DURATION: "고온 지속시간 기준 초과",
 };
 function eventStatusLabel(domain: string, status: string): string {
   if (domain === "COOKING_JOB_STATUS") return jobLabels[status as CookingJob["status"]] ?? status;
+  if (domain === "PROCESS_ASSESSMENT") return processLabels[status as CookingJob["process_assessment_status"]] ?? status;
   return safetyLabels[status as CookingJob["safety_status"]] ?? status;
 }
 const transitions: Record<CookingJob["status"], { event: TransitionEvent; label: string }[]> = {
@@ -70,6 +84,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const [lookupId, setLookupId] = useState("");
   const [plannedPortions, setPlannedPortions] = useState(2);
   const [recipeVersion, setRecipeVersion] = useState("synthetic-v1");
+  const [batchId, setBatchId] = useState("batch-a-001");
   const [loadingJob, setLoadingJob] = useState(false);
   const [busy, setBusy] = useState(false);
   const activeRequest = useRef(false);
@@ -182,6 +197,14 @@ export function CookingWorkspace({ csrf }: Props) {
     }), "작업 상태를 기록했습니다.");
   }
 
+  async function bindSource() {
+    if (!job || !batchId.trim()) { setError("합성 수집 배치 ID를 입력해 주세요."); return; }
+    await action(() => api<CookingJob>(jobPath(job.job_id) + "/source-binding", csrf, {
+      expected_version: job.version, source_id: "synthetic-rest",
+      device_id: "mockprofile-100-a-001", batch_id: batchId.trim(),
+    }), "이 조리작업과 합성 수집 배치를 연결했습니다.");
+  }
+
   async function recordSafety(event: "SUSPECTED" | "UNDER_REVIEW" | "CLEARED" | "FAILED") {
     if (!job || !safetyReason.trim()) { setError("안전 조치의 근거를 입력해 주세요."); return; }
     await action(() => api<CookingJob>(jobPath(job.job_id) + "/safety/events", csrf, {
@@ -279,15 +302,22 @@ export function CookingWorkspace({ csrf }: Props) {
             <div className="status-grid">
               <div><span className="datum-label">작업 상태</span><strong>{jobLabels[job.status]}</strong></div>
               <div><span className="datum-label">안전 상태</span><strong>{safetyLabels[job.safety_status]}</strong></div>
-              <div><span className="datum-label">버전</span><strong>{job.version}</strong></div>
+              <div><span className="datum-label">자동 공정판정</span><strong>{processLabels[job.process_assessment_status] ?? "수집값 대기"}</strong></div>
             </div>
             <p className="small">레시피 {job.recipe_version} · 계획 {job.planned_portions}인분 · 마지막 변경 {timeLabel(job.updated_at)}</p>
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
+            {job.source_binding ? <p className="small">연결된 합성 수집 배치: <code>{job.source_binding.batch_id}</code> · 온도 판정 {temperatureLabels[job.process_temperature_status] ?? job.process_temperature_status}</p>
+              : <div className="binding-box"><p className="small">Mock의 <code>synthetic-rest / mockprofile-100-a-001</code> 배치를 조리 시작 전에 연결해야 수집 온도값으로 자동 공정판정이 실행됩니다.</p>
+                <div className="field-row"><label className="grow">합성 배치 ID
+                  <input maxLength={80} value={batchId} onChange={(event) => setBatchId(event.target.value)} />
+                </label><button type="button" onClick={bindSource} disabled={busy || loadingJob || !["PENDING", "READY"].includes(job.status)}>수집 배치 연결</button></div>
+              </div>}
             {job.source_job_id && <p className="small">원 작업 ID: <code>{job.source_job_id}</code> · 재조리 사유: {job.recook_reason}{" "}
               <button type="button" className="text-button" onClick={() => void loadJob(job.source_job_id!)} disabled={busy || loadingJob}>원 작업 열기</button></p>}
             <div className="actions">
               {availableTransitions.map(({ event, label }) => <button type="button" key={event} onClick={() => recordTransition(event)}
                 disabled={busy || loadingJob} className={event === "COOKING_CANCELED" ? "danger" : ""}>{label}</button>)}
+              <button type="button" className="secondary" onClick={() => void loadJob(job.job_id)} disabled={busy || loadingJob}>최신 상태 확인</button>
             </div>
             {availableTransitions.length === 0 && <p className="muted">현재 기록할 수 있는 조리 상태 전이가 없습니다.</p>}
           </section>
@@ -412,7 +442,7 @@ export function CookingWorkspace({ csrf }: Props) {
             {[...events].reverse().map((item) => <li key={item.sk}>
               <strong>{eventStatusLabel(item.domain, item.from_status)} → {eventStatusLabel(item.domain, item.to_status)}</strong>
               <small>{eventLabels[item.trigger] ?? item.trigger} · {timeLabel(item.occurred_at)}</small>
-              {item.reason && <small>{item.reason}</small>}
+              {item.reason && <small>{processReasonLabels[item.reason] ?? item.reason}</small>}
             </li>)}
           </ol>}
         </section>

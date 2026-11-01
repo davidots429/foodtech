@@ -30,6 +30,9 @@ export type CookingJob = {
   evaluation_blocked: boolean;
   source_job_id: string | null;
   recook_reason: string | null;
+  source_binding: { source_id: string; device_id: string; batch_id: string } | null;
+  process_assessment_status: "INSUFFICIENT_DATA" | "NORMAL" | "WARNING" | "FAILED";
+  process_temperature_status: string;
   updated_at: string;
 };
 
