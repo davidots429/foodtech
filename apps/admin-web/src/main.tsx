@@ -32,7 +32,7 @@ function App() {
     {loading ? <p>로그인 상태를 확인하는 중입니다.</p> : session ? <section>
       <h2>관리자 인증됨</h2><p>{session.email ?? "관리자"}</p>
       <p>관리 기능은 후속 구현에서 연결됩니다.</p><button onClick={logout}>로그아웃</button>
-    </section> : <section><h2>관리자 로그인</h2><p>관리자 계정은 공개 가입으로 생성할 수 없습니다.</p>
+    </section> : <section><h2>관리자 로그인</h2><p>관리자 권한은 공개 가입으로 부여되지 않습니다.</p>
       <a className="button" href="/api/auth/admin/login">로그인</a></section>}
   </main>;
 }

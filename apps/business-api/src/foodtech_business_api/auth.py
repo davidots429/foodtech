@@ -1,6 +1,7 @@
 """Initial Cognito code/PKCE BFF and server-owned browser sessions."""
 
 import base64
+import asyncio
 import hashlib
 import os
 import secrets
@@ -10,8 +11,12 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 import jwt
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+
+from .auth_store import LoginFlow, Session, get_store
 
 router = APIRouter(prefix="/api")
 SESSION_COOKIE = "ft_session"
@@ -19,6 +24,7 @@ FLOW_COOKIE = "ft_login_flow"
 FLOW_SECONDS = 300
 SESSION_SECONDS = 3600
 DEMO_NOTICE = "실제 과금이 발생하지 않으며 사업자 진위 조회를 수행하지 않는 비영리 시연 기능입니다."
+ADMIN_ACR = "urn:cognito:loa:4"
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,8 @@ class Settings:
         if not all(values):
             raise HTTPException(503, "Cognito 설정이 완료되지 않았습니다.")
         secure = os.getenv("FOODTECH_SECURE_COOKIES", "true").lower() == "true"
+        if secure and not os.getenv("FOODTECH_AUTH_TABLE"):
+            raise HTTPException(503, "배포 환경에는 공유 인증 저장소가 필요합니다.")
         if not values[0].startswith("https://") or not values[1].startswith("https://"):
             raise HTTPException(503, "Cognito 주소는 HTTPS여야 합니다.")
         if secure and any(not value.startswith("https://") for value in values[4:]):
@@ -61,28 +69,6 @@ class Settings:
         raise HTTPException(404)
 
 
-@dataclass
-class LoginFlow:
-    surface: str
-    state: str
-    verifier: str
-    expires: float
-
-
-@dataclass
-class Session:
-    surface: str
-    subject: str
-    email: str | None
-    csrf: str
-    expires: float
-
-
-# Local single-process stores. A shared expiring store is required before deployment.
-flows: dict[str, LoginFlow] = {}
-sessions: dict[str, Session] = {}
-
-
 def _cookie(response: Response, name: str, value: str, max_age: int, secure: bool) -> None:
     response.set_cookie(
         name, value, max_age=max_age, httponly=True, secure=secure,
@@ -90,22 +76,48 @@ def _cookie(response: Response, name: str, value: str, max_age: int, secure: boo
     )
 
 
-def _flow(surface: str, settings: Settings, *, signup: bool = False) -> RedirectResponse:
+def _cognito_access(settings: Settings, subject: str, surface: str) -> bool:
+    """Check current account and admin group, including changes outside this API."""
+    client = boto3.client("cognito-idp", region_name="ap-southeast-2")
+    pool_id = settings.issuer.rsplit("/", 1)[-1]
+    try:
+        user = client.admin_get_user(UserPoolId=pool_id, Username=subject)
+        if not user.get("Enabled", False) or user.get("UserStatus") != "CONFIRMED":
+            return False
+        if surface == "admin":
+            pages = client.get_paginator("admin_list_groups_for_user").paginate(
+                UserPoolId=pool_id, Username=subject,
+            )
+            return any(group.get("GroupName") == "foodtech-admin"
+                       for page in pages for group in page.get("Groups", []))
+        return True
+    except client.exceptions.UserNotFoundException:
+        return False
+
+
+async def _checked_cognito_access(settings: Settings, subject: str, surface: str) -> bool:
+    try:
+        return await asyncio.to_thread(_cognito_access, settings, subject, surface)
+    except (BotoCoreError, ClientError) as exc:
+        raise HTTPException(503, "현재 계정 권한을 확인할 수 없습니다.") from exc
+
+
+async def _flow(surface: str, settings: Settings, *, signup: bool = False) -> RedirectResponse:
     client_id, callback, _ = settings.client(surface)
-    now = time.time()
-    for key, item in tuple(flows.items()):
-        if item.expires < now:
-            flows.pop(key, None)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     flow_id = secrets.token_urlsafe(32)
     state = secrets.token_urlsafe(32)
-    flows[flow_id] = LoginFlow(surface, state, verifier, time.time() + FLOW_SECONDS)
-    query = urlencode({
+    await asyncio.to_thread(get_store().save_flow, flow_id,
+                            LoginFlow(surface, state, verifier, int(time.time() + FLOW_SECONDS)))
+    params = {
         "response_type": "code", "client_id": client_id, "redirect_uri": callback,
         "scope": "openid email profile", "state": state,
         "code_challenge_method": "S256", "code_challenge": challenge,
-    })
+    }
+    if surface == "admin":
+        params["acr_values"] = ADMIN_ACR
+    query = urlencode(params)
     path = "/signup" if signup else "/oauth2/authorize"
     response = RedirectResponse(f"{settings.domain}{path}?{query}", status_code=303)
     _cookie(response, FLOW_COOKIE, flow_id, FLOW_SECONDS, settings.secure_cookies)
@@ -114,12 +126,12 @@ def _flow(surface: str, settings: Settings, *, signup: bool = False) -> Redirect
 
 @router.get("/auth/{surface}/login")
 async def login(surface: str) -> RedirectResponse:
-    return _flow(surface, Settings.from_env())
+    return await _flow(surface, Settings.from_env())
 
 
 @router.get("/auth/customer/signup")
 async def signup() -> RedirectResponse:
-    return _flow("customer", Settings.from_env(), signup=True)
+    return await _flow("customer", Settings.from_env(), signup=True)
 
 
 def _claims(token: str, settings: Settings, client_id: str, use: str) -> dict:
@@ -156,8 +168,8 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
     settings = Settings.from_env()
     client_id, callback_url, web = settings.client(surface)
     flow_id = request.cookies.get(FLOW_COOKIE, "")
-    flow = flows.pop(flow_id, None)
-    if not flow or flow.surface != surface or flow.expires < time.time() or not code or not secrets.compare_digest(flow.state, state):
+    flow = await asyncio.to_thread(get_store().take_flow, flow_id) if flow_id else None
+    if not flow or flow.surface != surface or not code or not secrets.compare_digest(flow.state, state):
         raise HTTPException(400, "로그인 요청이 만료되었거나 일치하지 않습니다.")
     try:
         tokens = await _exchange(settings, client_id, callback_url, code, flow.verifier)
@@ -167,62 +179,103 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
             raise HTTPException(401, "인증 주체가 일치하지 않습니다.")
         if surface == "admin" and "foodtech-admin" not in access.get("cognito:groups", []):
             raise HTTPException(403, "관리자 권한이 없습니다.")
+        if surface == "admin" and access.get("acr") != ADMIN_ACR:
+            raise HTTPException(403, "관리자 추가 인증이 필요합니다.")
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         raise HTTPException(401, "로그인을 완료할 수 없습니다.") from exc
-    sessions.pop(request.cookies.get(SESSION_COOKIE, ""), None)
+    store = get_store()
+    principal = await asyncio.to_thread(store.principal, identity["sub"])
+    if principal.get("suspended"):
+        raise HTTPException(403, "이용이 중단된 계정입니다.")
+    if surface == "admin" and principal.get("admin_blocked"):
+        raise HTTPException(403, "관리자 권한이 회수되었습니다.")
+    if not await _checked_cognito_access(settings, identity["sub"], surface):
+        raise HTTPException(403, "현재 계정 권한을 확인할 수 없습니다.")
+    old_session_id = request.cookies.get(SESSION_COOKIE, "")
+    if old_session_id:
+        await asyncio.to_thread(store.delete_session, old_session_id)
     session_id = secrets.token_urlsafe(32)
-    sessions[session_id] = Session(
+    await asyncio.to_thread(store.save_session, session_id, Session(
         surface, identity["sub"], identity.get("email"), secrets.token_urlsafe(32),
-        min(time.time() + SESSION_SECONDS, float(access["exp"])),
-    )
+        int(min(time.time() + SESSION_SECONDS, float(access["exp"]))),
+        int(principal.get("epoch", 0)),
+    ))
     response = RedirectResponse(web, status_code=303)
     response.delete_cookie(FLOW_COOKIE, path="/api")
     _cookie(response, SESSION_COOKIE, session_id, SESSION_SECONDS, settings.secure_cookies)
     return response
 
 
-def _session(request: Request, surface: str) -> Session:
+async def _session(request: Request, surface: str) -> Session:
     if surface not in {"customer", "admin"}:
         raise HTTPException(404)
     session_id = request.cookies.get(SESSION_COOKIE, "")
-    session = sessions.get(session_id)
-    if session and session.expires < time.time():
-        sessions.pop(session_id, None)
-    if not session or session.expires < time.time() or session.surface != surface:
+    store = get_store()
+    session = await asyncio.to_thread(store.read_session, session_id) if session_id else None
+    if not session or session.surface != surface:
         raise HTTPException(401, "로그인이 필요합니다.")
+    principal = await asyncio.to_thread(store.principal, session.subject)
+    if (int(principal.get("epoch", 0)) != session.epoch or principal.get("suspended")
+            or (surface == "admin" and principal.get("admin_blocked"))):
+        raise HTTPException(401, "세션 권한이 회수되었습니다.")
+    if not await _checked_cognito_access(Settings.from_env(), session.subject, surface):
+        raise HTTPException(401, "현재 계정 권한이 없습니다.")
     return session
 
 
 @router.get("/{surface}/me")
 async def me(surface: str, request: Request) -> dict:
-    session = _session(request, surface)
+    session = await _session(request, surface)
     return {"email": session.email, "surface": session.surface, "csrf": session.csrf,
             "tier": "FREE" if surface == "customer" else None}
 
 
 @router.get("/customer/example")
 async def example(request: Request) -> dict:
-    _session(request, "customer")
+    await _session(request, "customer")
     return {"source": "SYNTHETIC", "readOnly": True,
             "title": "예시 조리 데이터", "message": "고객별 작업과 분리된 읽기 전용 시연 자료입니다."}
 
 
 @router.get("/customer/demo-plan")
 async def demo_plan(request: Request) -> dict:
-    _session(request, "customer")
+    await _session(request, "customer")
     return {"price": "00원", "notice": DEMO_NOTICE, "billingEnabled": False,
             "businessVerificationEnabled": False}
 
 
 @router.post("/{surface}/logout")
 async def logout(surface: str, request: Request) -> Response:
-    session = _session(request, surface)
+    session = await _session(request, surface)
     if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), session.csrf):
         raise HTTPException(403, "CSRF 확인에 실패했습니다.")
-    sessions.pop(request.cookies.get(SESSION_COOKIE, ""), None)
+    await asyncio.to_thread(get_store().delete_session, request.cookies.get(SESSION_COOKIE, ""))
     settings = Settings.from_env()
     client_id, _, web = settings.client(surface)
     logout_url = f"{settings.domain}/logout?{urlencode({'client_id': client_id, 'logout_uri': web})}"
     response = JSONResponse({"logoutUrl": logout_url})
     response.delete_cookie(SESSION_COOKIE, path="/api")
     return response
+
+
+@router.post("/admin/users/{subject}/revoke-admin")
+async def revoke_admin(subject: str, request: Request) -> dict:
+    """Project-admin action: deny future admin logins and all existing sessions."""
+    session = await _session(request, "admin")
+    if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), session.csrf):
+        raise HTTPException(403, "CSRF 확인에 실패했습니다.")
+    if not subject or len(subject) > 128:
+        raise HTTPException(400, "대상 식별자가 올바르지 않습니다.")
+    await asyncio.to_thread(get_store().block_admin, subject)
+    return {"subject": subject, "adminAccess": "REVOKED"}
+
+
+@router.post("/admin/users/{subject}/suspend")
+async def suspend_user(subject: str, request: Request) -> dict:
+    session = await _session(request, "admin")
+    if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), session.csrf):
+        raise HTTPException(403, "CSRF 확인에 실패했습니다.")
+    if not subject or len(subject) > 128:
+        raise HTTPException(400, "대상 식별자가 올바르지 않습니다.")
+    await asyncio.to_thread(get_store().suspend_user, subject)
+    return {"subject": subject, "account": "SUSPENDED"}

@@ -1,6 +1,6 @@
 # Foodtech AI Recipe Agent
 
-고객·관리자 웹, Business API, AI Gateway, C# Mock 및 CDK의 실행·빌드 경계를 분리한 monorepo다. 첫 기능 브랜치에서 Cognito 인증 코드 + PKCE의 Business API 경계와 고객·관리자 로그인 화면, 고객의 읽기 전용 합성 예시 화면을 구현했다. Cognito 리소스 생성·실연동, AI 호출, 장비 연계, 데이터 저장과 배포는 아직 없다.
+고객·관리자 웹, Business API, AI Gateway, C# Mock 및 CDK의 실행·빌드 경계를 분리한 monorepo다. 첫 기능 브랜치에서 Cognito 인증 코드 + PKCE의 Business API 경계와 고객·관리자 로그인 화면, 고객의 읽기 전용 합성 예시 화면을 구현했다. 2026-11-01에 별도 시험용 Cognito 리소스로 고객 가입·이메일 확인·로그인, 관리자 권한 거부와 로그아웃을 실연동 확인했다. AI 호출, 장비 연계, 데이터 저장과 배포는 아직 없다.
 
 ## 폴더
 
@@ -14,7 +14,7 @@
 | `apps/collection-adapter` | 읽기 전용 수집 | 책임 설명만 |
 | `apps/standardization-worker` | 표준화·품질 | 책임 설명만 |
 | `apps/mock-control` | 시연·시험용 C# Mock | .NET 10 콘솔 시작점 |
-| `infra/cdk` | TypeScript IaC | 빈 CDK App, 스택 없음 |
+| `infra/cdk` | TypeScript IaC | 인증 세션 테이블 스택 및 별도 환경용 Cognito 스택 정의 |
 | `packages/contracts`, `fixtures` | 공통 계약과 합성 시험자료 | 자리만 마련 |
 
 ## 로컬 확인
@@ -27,7 +27,7 @@
 
 ## 저장소와 배포
 
-초기 환경을 `main`에 올린 뒤 기능별 브랜치에서 작업하고, `main` 병합은 PR로 진행한다. 문제 해결은 issue와 별도 브랜치로 추적한다. 실제 저장소 식별자·AWS Role·OIDC 신뢰 조건이 정해지면 **명시적 실행 전용** 배포 workflow를 별도로 작성한다. 지금은 CDK 스택·배포 workflow·AWS 자원을 만들거나 실행하지 않는다.
+초기 환경을 `main`에 올린 뒤 기능별 브랜치에서 작업하고, `main` 병합은 PR로 진행한다. 문제 해결은 issue와 별도 브랜치로 추적한다. 실제 저장소 식별자·AWS Role·OIDC 신뢰 조건이 정해지면 **명시적 실행 전용** 배포 workflow를 별도로 작성한다. 인증 세션 테이블 스택은 CDK로 정의해 개발 환경에 배포했고 배포 workflow는 아직 없다. 시험용 Cognito 리소스는 AWS CLI로 생성했으며 CDK에서 아직 관리하지 않는다.
 
 인증 기능의 로컬 설정·실행 방법과 아직 필요한 실제 Cognito 설정은 [Business API 안내](apps/business-api/README.md)에 적었다.
 

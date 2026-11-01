@@ -9,6 +9,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from foodtech_business_api import auth
+from foodtech_business_api.auth_store import MemoryStore
 from foodtech_business_api.main import app
 
 
@@ -30,11 +31,16 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         self.env = patch.dict(os.environ, ENV)
         self.env.start()
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8000", follow_redirects=False)
-        auth.flows.clear()
-        auth.sessions.clear()
+        self.store = MemoryStore()
+        self.store_patch = patch.object(auth, "get_store", return_value=self.store)
+        self.store_patch.start()
+        self.cognito_patch = patch.object(auth, "_cognito_access", return_value=True)
+        self.cognito_access = self.cognito_patch.start()
 
     async def asyncTearDown(self):
         await self.client.aclose()
+        self.store_patch.stop()
+        self.cognito_patch.stop()
         self.env.stop()
 
     async def login(self, surface="customer"):
@@ -43,14 +49,17 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         query = parse_qs(urlparse(response.headers["location"]).query)
         self.assertEqual(query["response_type"], ["code"])
         self.assertEqual(query["code_challenge_method"], ["S256"])
+        if surface == "admin":
+            self.assertEqual(query["acr_values"], [auth.ADMIN_ACR])
         self.assertIn("HttpOnly", response.headers["set-cookie"])
         return query
 
-    async def callback(self, surface, state, groups=None):
+    async def callback(self, surface, state, groups=None, acr=None):
         claims = [
             {"sub": "subject-1", "email": "test@example.com"},
             {"sub": "subject-1", "exp": time.time() + 3600,
-             "cognito:groups": groups or []},
+             "cognito:groups": groups or [],
+             "acr": acr if acr is not None else (auth.ADMIN_ACR if groups else "urn:cognito:loa:1")},
         ]
         async def exchange(*args):
             self.assertTrue(args[-1])
@@ -78,9 +87,36 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.callback("admin", state)).status_code, 403)
         self.assertEqual((await self.client.get("/api/admin/me")).status_code, 401)
         state = (await self.login("admin"))["state"][0]
+        self.assertEqual((await self.callback("admin", state, ["foodtech-admin"], "urn:cognito:loa:1")).status_code, 403)
+        state = (await self.login("admin"))["state"][0]
         self.assertEqual((await self.callback("admin", state, ["foodtech-admin"])).status_code, 303)
         self.assertEqual((await self.client.get("/api/admin/me")).json()["surface"], "admin")
         self.assertEqual((await self.client.get("/api/customer/example")).status_code, 401)
+
+    async def test_admin_revoke_takes_effect_on_next_request_and_login(self):
+        state = (await self.login("admin"))["state"][0]
+        self.assertEqual((await self.callback("admin", state, ["foodtech-admin"])).status_code, 303)
+        csrf = (await self.client.get("/api/admin/me")).json()["csrf"]
+        route = "/api/admin/users/subject-1/revoke-admin"
+        self.assertEqual((await self.client.post(route)).status_code, 403)
+        self.assertEqual((await self.client.post(route, headers={"X-CSRF-Token": csrf})).status_code, 200)
+        self.assertEqual((await self.client.get("/api/admin/me")).status_code, 401)
+        state = (await self.login("admin"))["state"][0]
+        self.assertEqual((await self.callback("admin", state, ["foodtech-admin"])).status_code, 403)
+
+    async def test_suspension_takes_effect_on_next_customer_request(self):
+        state = (await self.login())["state"][0]
+        self.assertEqual((await self.callback("customer", state)).status_code, 303)
+        self.store.suspend_user("subject-1")
+        self.assertEqual((await self.client.get("/api/customer/me")).status_code, 401)
+        state = (await self.login())["state"][0]
+        self.assertEqual((await self.callback("customer", state)).status_code, 403)
+
+    async def test_external_cognito_revocation_is_checked_on_each_request(self):
+        state = (await self.login("admin"))["state"][0]
+        self.assertEqual((await self.callback("admin", state, ["foodtech-admin"])).status_code, 303)
+        self.cognito_access.return_value = False
+        self.assertEqual((await self.client.get("/api/admin/me")).status_code, 401)
 
     async def test_state_surface_and_replay_are_rejected(self):
         state = (await self.login())["state"][0]
