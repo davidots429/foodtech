@@ -22,7 +22,7 @@
 
 ## 돈까스 합성 조리작업 첫 흐름
 
-`/api/customer/cooking-jobs`는 고객 세션의 `subject`에서 저장 범위를 만들고 상태 변경 요청마다 CSRF와 기대 `version`을 검사한다. 첫 범위는 합성 튀김기 `synthetic-fryer`의 돈까스 작업이다. 생성, 승인된 수동 상태 전이, 심부온도 안전 확인, 안전 이상·해제, 완료 품질평가, 평가 이력과 재조리 연결을 제공한다. 공정 실패 자동판정은 수집 데이터와 규칙 엔진을 연결한 뒤 추가한다. 고객이 `PROCESS_FAILURE_DETECTED`를 임의로 제출하는 API는 제공하지 않는다.
+`/api/customer/cooking-jobs`는 고객 세션의 `subject`에서 저장 범위를 만들고 상태 변경 요청마다 CSRF와 기대 `version`을 검사한다. 첫 범위는 합성 튀김기 `synthetic-fryer`의 돈까스 작업이다. 생성, 승인된 수동 상태 전이, 심부온도 안전 확인, 안전 이상·해제, 완료 품질평가, 평가 이력과 재조리 연결을 제공한다. 연결된 합성 배치의 표준화된 온도값에 대해서는 자동 공정판정을 수행한다. 고객이 `PROCESS_FAILURE_DETECTED`를 임의로 제출하는 API는 제공하지 않는다.
 
 안전 확인은 계획 인분마다 독립 탐침의 0~60초 1Hz 합성 시계열 61개를 요구한다. 모든 유효 표본이 `75°C` 이상이면 `PASSED`, 유효 표본 하나라도 미달하면 `FAILED`, 시간축·필수값·교정 유효성이 부족하면 `INCOMPLETE`다. 이상 의심·확인 중·실패에서는 평가를 완료할 수 없다. 의심 해제나 새 안전 확인만으로 기존 합격 평가를 다시 사용 가능하게 만들지 않으며, 새 완료 평가가 필요하다. 작업 상태·안전 상태의 변경과 근거는 `EVENT#...` 이력에 현재 상태 변경과 함께 원자적으로 기록한다.
 
@@ -39,3 +39,5 @@
 조리작업의 `POST /api/customer/cooking-jobs/{job_id}/source-binding`은 고객 세션·CSRF·작업 버전을 확인한 뒤 조리 시작 전 `synthetic-rest / mockprofile-100-a-001 / batch-a-...` 배치를 한 작업에만 연결한다. 같은 배치를 다른 작업에 다시 연결하지 않는다. 연결 정보는 작업 메타와 역방향 바인딩을 같은 DynamoDB 트랜잭션으로 기록한다. 고객 화면에서는 배치 연결 뒤 조리를 시작하고 새로고침으로 자동판정을 확인한다.
 
 표준화 Worker가 같은 `FOODTECH_COOKING_TABLE`을 사용하면 중복이 아닌 유효한 정규화 표본을 바인딩된 `RUNNING` 또는 `PAUSED` 작업에 반영한다. 저온·고온 지속 및 저온 복원시간의 첫 합성 온도 규칙만 적용한다. 실패가 확정되면 공정판정과 작업 상태 `FAILED`, 평가 차단, 원본 수신 ID·규칙 버전이 있는 사건을 원자적으로 기록한다. 이미 격리된 값과 늦은 이벤트는 현재 판정에 사용하지 않고, 결손은 연속시간을 끊는다. 장비 제어·안전판정·품질평가는 별개다. 두께·실제 인양시각 기반 시간 판정, 실제 장비 호환성과 현장 성능은 이 범위에 없다.
+
+개발용 AWS 테이블·FIFO 큐에서 [합성 고온 fixture](../../fixtures/tonkatsu-process-high-v1.json)를 수집 어댑터에 직접 넣어 5건 처리, 마지막 `HIGH_PROCESS_FAILURE`, 재처리 `REPLAYED` 및 시험 항목 정리를 확인했다. 재실행 명령은 `AWS_PROFILE=foodtech uv run --no-sync python tests/live/process_flow_dynamodb_check.py`다. C# Mock HTTPS/OAuth·실제 Cognito 경로와 배포 실행 역할은 포함하지 않는다.
