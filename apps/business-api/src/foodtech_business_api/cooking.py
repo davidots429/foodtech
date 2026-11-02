@@ -10,6 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.tonkatsu_process import RULE_VERSION, cooking_time_status, process_status, thickness_profile
 
 from .auth import _csrf, _session
 from .cooking_store import Conflict, MemoryCookingStore, get_cooking_store
@@ -84,6 +85,7 @@ class StrictModel(BaseModel):
 class NewJob(StrictModel):
     planned_portions: int = Field(gt=0, le=4)
     recipe_version: str = Field(min_length=1, max_length=80)
+    thickness_cm: Decimal = Field(gt=0, max_digits=4, decimal_places=2)
     equipment_profile: str = "synthetic-fryer"
 
 
@@ -99,6 +101,8 @@ class Transition(StrictModel):
                    "COOKING_PAUSED", "COOKING_RESUMED", "COOKING_COMPLETED", "COOKING_CANCELED"]
     expected_version: int = Field(ge=1)
     reason: str | None = Field(default=None, max_length=500)
+    actual_placed_at: datetime | None = None
+    actual_lifted_at: datetime | None = None
 
 
 class SafetyEvent(StrictModel):
@@ -150,16 +154,25 @@ async def create_job(request: Request, body: NewJob) -> dict:
     session, store = await _context(request, write=True)
     if body.equipment_profile != "synthetic-fryer":
         raise HTTPException(422, "첫 흐름은 합성 튀김기 프로파일만 지원합니다.")
+    thickness_status, thickness_band = thickness_profile(body.thickness_cm)
+    if thickness_status == "ABOVE_RANGE":
+        raise HTTPException(422, "PROFILE_REJECTED: 두께가 합성 돈까스 프로파일 상한 2.0cm를 넘습니다.")
     job_id = str(uuid.uuid4())
     meta = {
         "job_id": job_id, "owner_subject": session.subject, "menu": "TONKATSU",
         "provenance": "SYNTHETIC", "equipment_profile": body.equipment_profile,
         "recipe_version": body.recipe_version, "planned_portions": body.planned_portions,
+        "thickness_cm": str(body.thickness_cm), "thickness_profile": thickness_band,
+        "thickness_time_rule_version": RULE_VERSION,
         "status": "PENDING", "version": 1, "job_state_version": 1,
         "safety_status": "NOT_MEASURED", "safety_version": 0,
         "evaluation_blocked": True, "created_at": _now(), "updated_at": _now(),
         "source_job_id": None, "recook_reason": None, "source_binding": None,
-        "process_assessment_status": "INSUFFICIENT_DATA", "process_temperature_status": "NOT_MEASURED",
+        "actual_placed_at": None, "actual_lifted_at": None,
+        "completion_recorded_at": None, "actual_cooking_seconds": None,
+        "process_assessment_status": process_status("NOT_MEASURED", thickness_status, "NOT_MEASURED"),
+        "process_temperature_status": "NOT_MEASURED", "process_thickness_status": thickness_status,
+        "process_time_status": "NOT_MEASURED",
     }
     await _store_call(store, store.create, _pk(session.subject, job_id), meta)
     return meta
@@ -207,16 +220,62 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
         raise HTTPException(409, "이 상태에서는 해당 전이를 사용할 수 없습니다.")
     if old["safety_status"] in {"SUSPECTED", "UNDER_REVIEW", "FAILED"} and next_status not in {"FAILED", "CANCELED"}:
         raise HTTPException(409, "안전 확인 중에는 조리 진행을 허용하지 않습니다.")
+    now = datetime.now(timezone.utc)
+    placed_at = None
+    lifted_at = None
+    time_status = old.get("process_time_status", "NOT_MEASURED")
+    cooking_seconds = None
+    if body.event == "COOKING_STARTED":
+        if body.actual_placed_at is None or body.actual_lifted_at is not None or \
+                body.actual_placed_at.tzinfo is None:
+            raise HTTPException(422, "투입시각은 시간대를 포함해 입력해야 합니다.")
+        placed_at = body.actual_placed_at.astimezone(timezone.utc)
+        if placed_at > now:
+            raise HTTPException(422, "투입시각은 현재보다 미래일 수 없습니다.")
+    elif body.event == "COOKING_COMPLETED":
+        if body.actual_lifted_at is None or body.actual_placed_at is not None or \
+                body.actual_lifted_at.tzinfo is None:
+            raise HTTPException(422, "인양시각은 시간대를 포함해 입력해야 합니다.")
+        lifted_at = body.actual_lifted_at.astimezone(timezone.utc)
+        previous_placed = old.get("actual_placed_at")
+        if not previous_placed:
+            raise HTTPException(409, "투입시각이 기록되지 않아 조리시간을 판정할 수 없습니다.")
+        placed_at = datetime.fromisoformat(previous_placed.replace("Z", "+00:00"))
+        if lifted_at < placed_at or lifted_at > now:
+            raise HTTPException(422, "인양시각은 투입 이후이면서 현재 이전이어야 합니다.")
+        cooking_seconds = int((lifted_at - placed_at).total_seconds())
+        time_status = cooking_time_status(old.get("thickness_profile"), cooking_seconds)
+        if time_status in {"EARLY_REMOVAL", "MAX_TIME_EXCEEDED"}:
+            next_status = "FAILED"
     meta = {**old, "status": next_status, "version": old["version"] + 1,
             "job_state_version": old["job_state_version"] + 1, "updated_at": _now(),
             "last_transition_event": body.event, "last_transition_reason": body.reason}
+    if body.event == "COOKING_STARTED":
+        meta["actual_placed_at"] = placed_at.isoformat().replace("+00:00", "Z")
+    elif body.event == "COOKING_COMPLETED":
+        meta.update({"actual_lifted_at": lifted_at.isoformat().replace("+00:00", "Z"),
+                     "completion_recorded_at": now.isoformat().replace("+00:00", "Z"),
+                     "completion_recording_delay_seconds": int((now - lifted_at).total_seconds()),
+                     "actual_cooking_seconds": cooking_seconds, "process_time_status": time_status})
+        meta["process_assessment_status"] = process_status(
+            old.get("process_temperature_status", "NOT_MEASURED"),
+            old.get("process_thickness_status", "NOT_MEASURED"), time_status,
+            data_gap=bool(old.get("process_assessment", {}).get("data_gap")),
+        )
+        if next_status == "FAILED":
+            meta["last_transition_reason"] = time_status
     if next_status in {"FAILED", "CANCELED"}:
         meta["evaluation_blocked"] = True
     new_pointer = _blocked_pointer(pointer, "JOB_TERMINAL_FAILURE") if next_status in {"FAILED", "CANCELED"} else None
     event = {"sk": f"EVENT#JOB#{int(meta['job_state_version']):012d}",
              "domain": "COOKING_JOB_STATUS", "trigger": body.event,
              "from_status": old["status"], "to_status": next_status,
-             "reason": body.reason, "actor": session.subject, "occurred_at": _now()}
+             "reason": meta["last_transition_reason"], "actor": session.subject, "occurred_at": _now(),
+             "actual_placed_at": meta.get("actual_placed_at") if body.event == "COOKING_STARTED" else None,
+             "actual_lifted_at": meta.get("actual_lifted_at") if body.event == "COOKING_COMPLETED" else None,
+             "actual_cooking_seconds": cooking_seconds,
+             "process_time_status": time_status if body.event == "COOKING_COMPLETED" else None,
+             "thickness_time_rule_version": RULE_VERSION if body.event == "COOKING_COMPLETED" else None}
     await _commit(store, pk, old, meta, pointer=new_pointer, event=event)
     return meta
 
@@ -360,11 +419,18 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
     meta = {"job_id": new_id, "owner_subject": session.subject, "menu": old["menu"],
             "provenance": "SYNTHETIC", "equipment_profile": old["equipment_profile"],
             "recipe_version": old["recipe_version"], "planned_portions": old["planned_portions"],
+            "thickness_cm": old.get("thickness_cm"), "thickness_profile": old.get("thickness_profile"),
+            "thickness_time_rule_version": old.get("thickness_time_rule_version", RULE_VERSION),
             "status": "PENDING", "version": 1, "job_state_version": 1,
             "safety_status": "NOT_MEASURED", "safety_version": 0,
             "evaluation_blocked": True, "created_at": _now(), "updated_at": _now(),
             "source_job_id": job_id, "recook_reason": body.reason, "source_binding": None,
-            "process_assessment_status": "INSUFFICIENT_DATA", "process_temperature_status": "NOT_MEASURED"}
+            "actual_placed_at": None, "actual_lifted_at": None,
+            "completion_recorded_at": None, "actual_cooking_seconds": None,
+            "process_assessment_status": process_status("NOT_MEASURED", old.get("process_thickness_status", "NOT_MEASURED"), "NOT_MEASURED"),
+            "process_temperature_status": "NOT_MEASURED",
+            "process_thickness_status": old.get("process_thickness_status", "NOT_MEASURED"),
+            "process_time_status": "NOT_MEASURED"}
     try:
         await _store_call(store, store.create_recook, parent_pk, body.expected_version,
                           _pk(session.subject, new_id), meta)

@@ -23,6 +23,8 @@ export type CookingJob = {
   equipment_profile: string;
   recipe_version: string;
   planned_portions: number;
+  thickness_cm?: string;
+  thickness_profile?: "THIN" | "STANDARD" | "THICK" | null;
   status: JobStatus;
   version: number;
   safety_status: SafetyStatus;
@@ -33,6 +35,11 @@ export type CookingJob = {
   source_binding: { source_id: string; device_id: string; batch_id: string } | null;
   process_assessment_status: "INSUFFICIENT_DATA" | "NORMAL" | "WARNING" | "FAILED";
   process_temperature_status: string;
+  process_thickness_status?: string;
+  process_time_status?: string;
+  actual_placed_at?: string | null;
+  actual_lifted_at?: string | null;
+  actual_cooking_seconds?: number | null;
   updated_at: string;
 };
 

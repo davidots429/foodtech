@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -110,7 +111,8 @@ async def main() -> None:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                          base_url="http://local") as client:
                 job = await post(client, "/api/customer/cooking-jobs",
-                                 {"planned_portions": 2, "recipe_version": "synthetic-process-live-v1"}, 201)
+                                 {"planned_portions": 2, "recipe_version": "synthetic-process-live-v1",
+                                  "thickness_cm": "1.20"}, 201)
                 job_pk = cooking._pk(subject, job["job_id"])
                 path = f"/api/customer/cooking-jobs/{job['job_id']}"
                 job = await post(client, path + "/source-binding", {
@@ -119,7 +121,9 @@ async def main() -> None:
                 })
                 for event in ("PREHEAT_COMPLETED", "COOKING_STARTED"):
                     job = await post(client, path + "/transitions",
-                                     {"expected_version": job["version"], "event": event})
+                                     {"expected_version": job["version"], "event": event,
+                                      **({"actual_placed_at": datetime.now(timezone.utc).isoformat()}
+                                         if event == "COOKING_STARTED" else {})})
 
                 for record in records:
                     released = ingestor.ingest(json.dumps(record, separators=(",", ":")))

@@ -9,6 +9,7 @@ import json
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -88,7 +89,8 @@ async def main() -> None:
              patch.object(cooking, "get_cooking_store", return_value=store):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
                 job = await checked_post(client, "/api/customer/cooking-jobs",
-                                         {"planned_portions": 2, "recipe_version": "synthetic-v1"}, 201)
+                                         {"planned_portions": 2, "recipe_version": "synthetic-v1",
+                                          "thickness_cm": "1.20"}, 201)
                 pk = cooking._pk(subject, job["job_id"])
                 created_pks.append(pk)
                 path = f"/api/customer/cooking-jobs/{job['job_id']}"
@@ -97,9 +99,16 @@ async def main() -> None:
                 assert isolated.status_code == 404
                 current_subject = subject
 
+                placed_at = datetime.now(timezone.utc) - timedelta(seconds=300)
                 for event in ("PREHEAT_COMPLETED", "COOKING_STARTED", "COOKING_COMPLETED"):
+                    timing = ({"actual_placed_at": placed_at.isoformat()} if event == "COOKING_STARTED"
+                              else {"actual_lifted_at": (placed_at + timedelta(seconds=300)).isoformat()}
+                              if event == "COOKING_COMPLETED" else {})
                     job = await checked_post(client, path + "/transitions",
-                                             {"event": event, "expected_version": job["version"]})
+                                             {"event": event, "expected_version": job["version"], **timing})
+                assert job["thickness_profile"] == "STANDARD"
+                assert job["actual_cooking_seconds"] == 300
+                assert job["process_time_status"] == "NORMAL"
 
                 incomplete = await checked_post(client, path + "/safety/core-check", {
                     "expected_version": job["version"],

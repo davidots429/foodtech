@@ -28,7 +28,7 @@ const eventLabels: Record<string, string> = {
   PROCESS_SAMPLE_ASSESSED: "수집 온도 공정판정", PROCESS_FAILURE_DETECTED: "공정 실패 자동판정",
 };
 const processLabels: Record<CookingJob["process_assessment_status"], string> = {
-  INSUFFICIENT_DATA: "수집값 대기", NORMAL: "정상", WARNING: "주의", FAILED: "공정 실패",
+  INSUFFICIENT_DATA: "판정 자료 대기", NORMAL: "정상", WARNING: "주의", FAILED: "공정 실패",
 };
 const temperatureLabels: Record<string, string> = {
   NOT_MEASURED: "미측정", NORMAL: "정상 범위", LOW_WARNING: "저온 주의",
@@ -38,6 +38,17 @@ const temperatureLabels: Record<string, string> = {
 const processReasonLabels: Record<string, string> = {
   LOW_TEMPERATURE_DURATION: "저온 지속·복원시간 기준 초과",
   HIGH_TEMPERATURE_DURATION: "고온 지속시간 기준 초과",
+  EARLY_REMOVAL: "두께 기준보다 이른 인양",
+  MAX_TIME_EXCEEDED: "두께 기준의 최대 조리시간 초과",
+};
+const thicknessLabels: Record<string, string> = {
+  IN_RANGE: "허용 범위", BELOW_RANGE: "기준보다 얇음 · 주의", ABOVE_RANGE: "프로파일 적용 불가",
+};
+const timeLabels: Record<string, string> = {
+  NOT_MEASURED: "인양 전", NOT_APPLICABLE: "두께 프로파일 적용 불가",
+  EARLY_REMOVAL: "조기 인양 · 실패", SHORT_WARNING: "시간 부족 · 주의",
+  NORMAL: "정상", DELAY_WARNING: "지연 · 주의",
+  EXTENDED_COOKING: "권장시간 초과 · 주의", MAX_TIME_EXCEEDED: "최대시간 초과 · 실패",
 };
 function eventStatusLabel(domain: string, status: string): string {
   if (domain === "COOKING_JOB_STATUS") return jobLabels[status as CookingJob["status"]] ?? status;
@@ -72,6 +83,9 @@ function timeLabel(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ko-KR");
 }
+function localDateTime(value: Date): string {
+  return new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
 function scoreLabel(value: number): string {
   return ["", "매우 나쁨", "나쁨", "보통", "좋음", "매우 좋음"][value] ?? "";
 }
@@ -84,6 +98,9 @@ export function CookingWorkspace({ csrf }: Props) {
   const [lookupId, setLookupId] = useState("");
   const [plannedPortions, setPlannedPortions] = useState(2);
   const [recipeVersion, setRecipeVersion] = useState("synthetic-v1");
+  const [thicknessCm, setThicknessCm] = useState("1.20");
+  const [placedAt, setPlacedAt] = useState(() => localDateTime(new Date()));
+  const [liftedAt, setLiftedAt] = useState(() => localDateTime(new Date()));
   const [batchId, setBatchId] = useState("batch-a-001");
   const [loadingJob, setLoadingJob] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -181,9 +198,13 @@ export function CookingWorkspace({ csrf }: Props) {
     if (!Number.isInteger(plannedPortions) || plannedPortions < 1 || plannedPortions > 4 || !recipeVersion.trim()) {
       setError("계획 인분은 1~4, 레시피 버전은 필수입니다."); return;
     }
+    if (!thicknessCm || !Number.isFinite(Number(thicknessCm)) || Number(thicknessCm) <= 0 || Number(thicknessCm) > 2) {
+      setError("합성 제품의 최대 두께는 0 초과~2.00cm로 입력해 주세요. 2.00cm 초과는 프로파일에서 제외됩니다."); return;
+    }
     await action(
       () => api<CookingJob>("/api/customer/cooking-jobs", csrf, {
-        planned_portions: plannedPortions, recipe_version: recipeVersion.trim(), equipment_profile: "synthetic-fryer",
+        planned_portions: plannedPortions, recipe_version: recipeVersion.trim(),
+        thickness_cm: thicknessCm, equipment_profile: "synthetic-fryer",
       }),
       "합성 조리작업을 생성했습니다.", (created) => created.job_id,
     );
@@ -192,9 +213,22 @@ export function CookingWorkspace({ csrf }: Props) {
   async function recordTransition(event: TransitionEvent) {
     if (!job) return;
     if (event === "COOKING_CANCELED" && !window.confirm("이 조리작업을 취소하고 종료할까요?")) return;
-    await action(() => api<CookingJob>(jobPath(job.job_id) + "/transitions", csrf, {
-      event, expected_version: job.version,
-    }), "작업 상태를 기록했습니다.");
+    const body: { event: TransitionEvent; expected_version: number; actual_placed_at?: string; actual_lifted_at?: string } =
+      { event, expected_version: job.version };
+    if (event === "COOKING_STARTED" || event === "COOKING_COMPLETED") {
+      const entered = new Date(event === "COOKING_STARTED" ? placedAt : liftedAt);
+      if (Number.isNaN(entered.getTime()) || entered.getTime() > Date.now()) {
+        setError("투입·인양 시각은 현재 이전의 유효한 시각이어야 합니다."); return;
+      }
+      if (event === "COOKING_STARTED") body.actual_placed_at = entered.toISOString();
+      else {
+        if (job.actual_placed_at && entered.getTime() < new Date(job.actual_placed_at).getTime()) {
+          setError("인양 시각은 기록된 투입 시각 이후여야 합니다."); return;
+        }
+        body.actual_lifted_at = entered.toISOString();
+      }
+    }
+    await action(() => api<CookingJob>(jobPath(job.job_id) + "/transitions", csrf, body), "작업 상태와 공정판정을 기록했습니다.");
   }
 
   async function bindSource() {
@@ -288,6 +322,8 @@ export function CookingWorkspace({ csrf }: Props) {
               onChange={(event) => setPlannedPortions(Number(event.target.value))} /></label>
             <label>레시피 버전 <input maxLength={80} value={recipeVersion}
               onChange={(event) => setRecipeVersion(event.target.value)} /></label>
+            <label>제품 최대 두께(cm) <input type="number" min="0.01" max="2.00" step="0.01" value={thicknessCm}
+              onChange={(event) => setThicknessCm(event.target.value)} /></label>
           </div>
           <button type="button" onClick={createJob} disabled={busy || loadingJob}>합성 조리작업 만들기</button>
           <div className="lookup-row"><label>기존 작업 ID
@@ -305,6 +341,10 @@ export function CookingWorkspace({ csrf }: Props) {
               <div><span className="datum-label">자동 공정판정</span><strong>{processLabels[job.process_assessment_status] ?? "수집값 대기"}</strong></div>
             </div>
             <p className="small">레시피 {job.recipe_version} · 계획 {job.planned_portions}인분 · 마지막 변경 {timeLabel(job.updated_at)}</p>
+            <p className="small">두께 {job.thickness_cm ?? "미기록"}cm · {job.thickness_profile ?? "프로파일 없음"}
+              {" "}({thicknessLabels[job.process_thickness_status ?? ""] ?? "미판정"})</p>
+            <p className="small">실제 조리시간 {job.actual_cooking_seconds == null ? "인양 전" : `${job.actual_cooking_seconds}초`}
+              {" "}· 시간 판정 {timeLabels[job.process_time_status ?? "NOT_MEASURED"] ?? "미판정"}</p>
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
             {job.source_binding ? <p className="small">연결된 합성 수집 배치: <code>{job.source_binding.batch_id}</code> · 온도 판정 {temperatureLabels[job.process_temperature_status] ?? job.process_temperature_status}</p>
               : <div className="binding-box"><p className="small">Mock의 <code>synthetic-rest / mockprofile-100-a-001</code> 배치를 조리 시작 전에 연결해야 수집 온도값으로 자동 공정판정이 실행됩니다.</p>
@@ -314,6 +354,14 @@ export function CookingWorkspace({ csrf }: Props) {
               </div>}
             {job.source_job_id && <p className="small">원 작업 ID: <code>{job.source_job_id}</code> · 재조리 사유: {job.recook_reason}{" "}
               <button type="button" className="text-button" onClick={() => void loadJob(job.source_job_id!)} disabled={busy || loadingJob}>원 작업 열기</button></p>}
+            {job.status === "READY" && <div className="field-row"><label>합성 재료 투입 시각
+              <input type="datetime-local" value={placedAt} onChange={(event) => setPlacedAt(event.target.value)} />
+            </label><button type="button" className="secondary" onClick={() => setPlacedAt(localDateTime(new Date()))}>현재 시각 입력</button></div>}
+            {job.status === "RUNNING" && <div className="field-row"><label>합성 바스켓 인양 시각
+              <input type="datetime-local" value={liftedAt} onChange={(event) => setLiftedAt(event.target.value)} />
+            </label><button type="button" className="secondary" onClick={() => setLiftedAt(localDateTime(new Date()))}>현재 시각 입력</button></div>}
+            {(job.status === "READY" || job.status === "RUNNING") &&
+              <p className="small">시연용 합성 시각입니다. 실제 조리시간은 인양 시각에서 투입 시각을 뺀 값이며, 두께별 승인 경계로 판정합니다.</p>}
             <div className="actions">
               {availableTransitions.map(({ event, label }) => <button type="button" key={event} onClick={() => recordTransition(event)}
                 disabled={busy || loadingJob} className={event === "COOKING_CANCELED" ? "danger" : ""}>{label}</button>)}

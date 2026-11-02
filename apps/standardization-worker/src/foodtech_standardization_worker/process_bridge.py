@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import boto3
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.tonkatsu_process import process_status
 
 from .process_rules import advance
 
@@ -55,9 +56,13 @@ class DynamoProcessBridge:
                 return "OLD_OR_INVALID_SAMPLE"
             if old.get("process_assessment", {}).get("last_ingestion_event_id") == event_id:
                 return "REPLAYED"
-            failed = state["status"] == "FAILED"
+            overall_status = process_status(
+                state["temperature_status"], old.get("process_thickness_status", "NOT_MEASURED"),
+                old.get("process_time_status", "NOT_MEASURED"), data_gap=state["data_gap"],
+            )
+            failed = overall_status == "FAILED"
             new = {**old, "version": int(old["version"]) + 1,
-                   "process_assessment": state, "process_assessment_status": state["status"],
+                   "process_assessment": state, "process_assessment_status": overall_status,
                    "process_temperature_status": state["temperature_status"],
                    "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
             if failed:
@@ -69,10 +74,11 @@ class DynamoProcessBridge:
             event = {**event_key, "domain": "PROCESS_ASSESSMENT",
                      "trigger": "PROCESS_FAILURE_DETECTED" if failed else "PROCESS_SAMPLE_ASSESSED",
                      "from_status": old.get("process_assessment_status", "INSUFFICIENT_DATA"),
-                     "to_status": state["status"],
+                     "to_status": overall_status,
                      "reason": state["failure_reason"] if failed else None,
                      "temperature_status": state["temperature_status"],
                      "rule_version": state["rule_version"], "ingestion_event_id": event_id,
+                     "thickness_time_rule_version": old.get("thickness_time_rule_version"),
                      "source_assessment_pk": assessment["pk"],
                      "occurred_at": new["updated_at"]}
             operations = [
@@ -86,7 +92,7 @@ class DynamoProcessBridge:
             ]
             try:
                 self.client.transact_write_items(TransactItems=operations)
-                return "FAILED" if failed else state["status"]
+                return overall_status
             except self.client.exceptions.TransactionCanceledException as exc:
                 if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
                     return "REPLAYED"

@@ -84,6 +84,31 @@ class ProcessBridgeTests(unittest.TestCase):
         self.assertEqual(result, "UNBOUND")
         self.assertEqual(bridge.client.calls, 0)
 
+    def test_normal_temperature_does_not_clear_thickness_warning(self):
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
+                   "batch_id": "batch-a-thin-001"}
+        stream_pk = stream_binding_key(**binding)
+        job_pk = "SCOPE#USER#customer-1#JOB#thin"
+        table = FakeTable({
+            (stream_pk, "BINDING"): {"pk": stream_pk, "sk": "BINDING", "job_pk": job_pk},
+            (job_pk, "META"): {"pk": job_pk, "sk": "META", "source_binding": binding,
+                                "status": "RUNNING", "version": 1, "job_state_version": 2,
+                                "process_thickness_status": "BELOW_RANGE",
+                                "process_time_status": "NOT_MEASURED",
+                                "process_assessment_status": "WARNING"},
+        })
+        bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
+        result = bridge.apply({
+            "pk": "EVENT#normal", "ingestion_event_id": "normal", "dedup_status": "UNIQUE",
+            "quality_status": "VALID", "finding_codes": [],
+            "normalized": {**binding, "device_status": "RUNNING",
+                           "event_time": "2026-11-02T00:00:00Z",
+                           "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}},
+        })
+        self.assertEqual(result, "WARNING")
+        self.assertEqual(table.items[(job_pk, "META")]["process_assessment_status"], "WARNING")
+
 
 if __name__ == "__main__":
     unittest.main()
