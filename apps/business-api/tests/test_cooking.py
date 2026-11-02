@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import DynamoCookingStore, MemoryCookingStore
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.tonkatsu_process import cooking_time_status, process_status, thickness_profile
 from foodtech_business_api.main import app
 
 
@@ -51,14 +53,21 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
 
     async def create(self):
         response = await self.client.post("/api/customer/cooking-jobs", headers=CSRF,
-                                          json={"planned_portions": 2, "recipe_version": "recipe-v1"})
+                                          json={"planned_portions": 2, "recipe_version": "recipe-v1",
+                                                "thickness_cm": "1.20"})
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
     async def transition(self, job, event, reason=None):
+        body = {"event": event, "expected_version": job["version"], "reason": reason}
+        if event == "COOKING_STARTED":
+            self.placed_at = datetime.now(timezone.utc) - timedelta(seconds=300)
+            body["actual_placed_at"] = self.placed_at.isoformat()
+        elif event == "COOKING_COMPLETED":
+            body["actual_lifted_at"] = (self.placed_at + timedelta(seconds=300)).isoformat()
         response = await self.client.post(
             f"/api/customer/cooking-jobs/{job['job_id']}/transitions", headers=CSRF,
-            json={"event": event, "expected_version": job["version"], "reason": reason},
+            json=body,
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
@@ -150,7 +159,8 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_owner_and_csrf_boundary(self):
         response = await self.client.post("/api/customer/cooking-jobs",
-                                          json={"planned_portions": 2, "recipe_version": "v1"})
+                                          json={"planned_portions": 2, "recipe_version": "v1",
+                                                "thickness_cm": "1.20"})
         self.assertEqual(response.status_code, 403)
         job = await self.create()
         self.subject = "customer-2"
@@ -211,6 +221,103 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         assessment = await self.client.post(path + "/assessments", headers=CSRF,
                                             json=self.assessment_body(checked.json()))
         self.assertEqual(assessment.status_code, 409)
+
+    async def test_thickness_profile_and_actual_time_are_recorded(self):
+        job = await self.create()
+        self.assertEqual(job["thickness_profile"], "STANDARD")
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        job = await self.transition(job, "COOKING_STARTED")
+        self.assertIsNotNone(job["actual_placed_at"])
+        job = await self.transition(job, "COOKING_COMPLETED")
+        self.assertEqual(job["status"], "COMPLETED")
+        self.assertEqual(job["actual_cooking_seconds"], 300)
+        self.assertEqual(job["process_time_status"], "NORMAL")
+        self.assertGreaterEqual(job["completion_recording_delay_seconds"], 0)
+
+    async def test_early_lift_fails_job_and_blocks_assessment(self):
+        job = await self.create()
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        job = await self.transition(job, "COOKING_STARTED")
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        response = await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_COMPLETED", "expected_version": job["version"],
+            "actual_lifted_at": (self.placed_at + timedelta(seconds=269)).isoformat(),
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        failed = response.json()
+        self.assertEqual(failed["status"], "FAILED")
+        self.assertEqual(failed["process_time_status"], "EARLY_REMOVAL")
+        self.assertEqual(failed["process_assessment_status"], "FAILED")
+        self.assertTrue(failed["evaluation_blocked"])
+        self.assertEqual((await self.client.post(path + "/safety/core-check", headers=CSRF,
+                                                 json={"expected_version": failed["version"],
+                                                       "probes": [probe("piece-1"), probe("piece-2")]})).status_code, 409)
+
+    async def test_missing_or_invalid_lift_time_is_rejected(self):
+        job = await self.create()
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        job = await self.transition(job, "COOKING_STARTED")
+        path = f"/api/customer/cooking-jobs/{job['job_id']}/transitions"
+        for timing in ({}, {"actual_lifted_at": (self.placed_at - timedelta(seconds=1)).isoformat()}):
+            response = await self.client.post(path, headers=CSRF, json={
+                "event": "COOKING_COMPLETED", "expected_version": job["version"], **timing,
+            })
+            self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual((await self.client.get(path.removesuffix("/transitions"))).json()["job"]["status"], "RUNNING")
+
+    async def test_out_of_profile_thickness_is_rejected(self):
+        response = await self.client.post("/api/customer/cooking-jobs", headers=CSRF,
+                                          json={"planned_portions": 2, "recipe_version": "v1",
+                                                "thickness_cm": "2.01"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("PROFILE_REJECTED", response.json()["detail"])
+
+    async def test_below_range_thickness_remains_warning_after_normal_time(self):
+        response = await self.client.post("/api/customer/cooking-jobs", headers=CSRF,
+                                          json={"planned_portions": 2, "recipe_version": "v1",
+                                                "thickness_cm": "0.49"})
+        self.assertEqual(response.status_code, 201, response.text)
+        job = response.json()
+        self.assertEqual(job["process_thickness_status"], "BELOW_RANGE")
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        job = await self.transition(job, "COOKING_STARTED")
+        job = await self.transition(job, "COOKING_COMPLETED")
+        self.assertEqual(job["status"], "COMPLETED")
+        self.assertEqual(job["process_time_status"], "NOT_APPLICABLE")
+        self.assertEqual(job["process_assessment_status"], "WARNING")
+
+
+class TonkatsuProcessRuleTests(unittest.TestCase):
+    def test_thickness_boundaries(self):
+        cases = [("0.49", "BELOW_RANGE", None), ("0.50", "IN_RANGE", "THIN"),
+                 ("0.99", "IN_RANGE", "THIN"), ("1.00", "IN_RANGE", "STANDARD"),
+                 ("1.49", "IN_RANGE", "STANDARD"), ("1.50", "IN_RANGE", "THICK"),
+                 ("2.00", "IN_RANGE", "THICK"), ("2.01", "ABOVE_RANGE", None)]
+        for value, status, profile in cases:
+            with self.subTest(value=value):
+                self.assertEqual(thickness_profile(Decimal(value)), (status, profile))
+
+    def test_all_time_boundaries(self):
+        for profile, values in {
+            "THIN": (150, 165, 195, 210, 240),
+            "STANDARD": (270, 285, 315, 330, 360),
+            "THICK": (330, 345, 375, 390, 420),
+        }.items():
+            early, short, normal, delay, maximum = values
+            expected = [(early - 1, "EARLY_REMOVAL"), (early, "SHORT_WARNING"),
+                        (short - 1, "SHORT_WARNING"), (short, "NORMAL"),
+                        (normal, "NORMAL"), (normal + 1, "DELAY_WARNING"),
+                        (delay, "DELAY_WARNING"), (delay + 1, "EXTENDED_COOKING"),
+                        (maximum, "EXTENDED_COOKING"), (maximum + 1, "MAX_TIME_EXCEEDED")]
+            for second, status in expected:
+                with self.subTest(profile=profile, second=second):
+                    self.assertEqual(cooking_time_status(profile, second), status)
+
+    def test_combined_severity_preserves_warning_and_failure(self):
+        self.assertEqual(process_status("NORMAL", "BELOW_RANGE", "NORMAL"), "WARNING")
+        self.assertEqual(process_status("NORMAL", "IN_RANGE", "MAX_TIME_EXCEEDED"), "FAILED")
+        self.assertEqual(process_status("NOT_MEASURED", "IN_RANGE", "NORMAL"), "INSUFFICIENT_DATA")
+        self.assertEqual(process_status("NORMAL", "IN_RANGE", "NOT_MEASURED"), "INSUFFICIENT_DATA")
 
 
 class DynamoTransactionContractTests(unittest.TestCase):
