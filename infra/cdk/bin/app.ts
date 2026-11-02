@@ -1,6 +1,7 @@
 import { App, CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as iam from "aws-cdk-lib/aws-iam";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 
@@ -112,9 +113,28 @@ class MinimalDataFlowStack extends Stack {
       visibilityTimeout: Duration.seconds(30),
       deadLetterQueue: { queue: processingDlq, maxReceiveCount: 3 },
     });
+    const workerRole = new iam.Role(this, "StandardizationWorkerTaskRole", {
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
+        conditions: {
+          ArnLike: {
+            "aws:SourceArn": `arn:${this.partition}:ecs:${this.region}:${this.account}:*`,
+          },
+          StringEquals: { "aws:SourceAccount": this.account },
+        },
+      }),
+      description: "ECS task access for Foodtech standardization and process assessment",
+    });
+    table.grant(workerRole, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
+    const cookingTable = dynamodb.Table.fromTableName(
+      this, "CookingJobsForWorker", `foodtech-cooking-jobs-${stage}`,
+    );
+    cookingTable.grant(workerRole, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
+    ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
+    quarantine.grant(workerRole, "sqs:SendMessage");
     new CfnOutput(this, "DataTableName", { value: table.tableName });
     new CfnOutput(this, "OrderedQueueUrl", { value: ordered.queueUrl });
     new CfnOutput(this, "StandardizationDlqUrl", { value: quarantine.queueUrl });
+    new CfnOutput(this, "StandardizationWorkerTaskRoleArn", { value: workerRole.roleArn });
   }
 }
 
