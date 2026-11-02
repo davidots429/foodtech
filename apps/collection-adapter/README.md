@@ -4,5 +4,7 @@
 
 필요한 환경 변수는 `FOODTECH_MOCK_BASE_URL`, `FOODTECH_MOCK_CLIENT_ID`, `FOODTECH_MOCK_CLIENT_SECRET`, `FOODTECH_MOCK_CA_FILE`, `FOODTECH_DATA_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`이다. AWS 자격증명은 표준 프로필 또는 실행 역할로 전달한다. `python -m foodtech_collection_adapter --polls 1`로 실행한다.
 
+Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`처럼 별도 커서 키를 지정한다. 기본 키 `default`는 기존 커서와 호환된다. 커서 항목에는 발견한 `Source + Device + Batch` 스트림을 함께 기록하여 다음 실행에서도 그 스트림의 순번 결손 만료를 확인한다. 수집 CLI는 특정 배치 하나로 고정된 drain 대신 실제 받은 레코드의 스트림을 사용한다.
+
 첫 구현은 단일 합성 스트림의 최소 흐름이다. REST timeout 5초, 전송 오류 1회 재시도, 순번 결손 대기 5초, lease 30초를 초기 계약으로 둔다. 동시 다중 Task·장기 보류 상태·실패 복구·대규모 부하는 후속 적합성 검증 대상이다. 비정상 JSON과 식별자 누락의 S3 Ingestion DLQ는 이 슬라이스에 포함하지 않는다.
 

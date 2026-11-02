@@ -22,18 +22,25 @@ class DynamoOrderedIngestor:
         self.queue_url = queue_url
         self.serializer = TypeSerializer()
 
-    def cursor(self) -> int:
-        item = self.table.get_item(
-            Key={"pk": "MOCK#mockprofile-100-a-001", "sk": "CURSOR"}, ConsistentRead=True,
-        ).get("Item")
-        return int(item["cursor"]) if item else 0
+    @staticmethod
+    def _cursor_pk(cursor_key: str) -> str:
+        return "MOCK#mockprofile-100-a-001" + ("" if cursor_key == "default" else f"#{cursor_key}")
 
-    def save_cursor(self, cursor: int) -> None:
+    def cursor_state(self, cursor_key: str = "default") -> tuple[int, set[str]]:
+        item = self.table.get_item(
+            Key={"pk": self._cursor_pk(cursor_key), "sk": "CURSOR"}, ConsistentRead=True,
+        ).get("Item")
+        return (int(item["cursor"]), set(item.get("streams", []))) if item else (0, set())
+
+    def cursor(self) -> int:
+        return self.cursor_state()[0]
+
+    def save_cursor(self, cursor: int, streams: set[str] | None = None, cursor_key: str = "default") -> None:
         self.table.update_item(
-            Key={"pk": "MOCK#mockprofile-100-a-001", "sk": "CURSOR"},
-            UpdateExpression="SET #cursor = :cursor",
-            ExpressionAttributeNames={"#cursor": "cursor"},
-            ExpressionAttributeValues={":cursor": cursor},
+            Key={"pk": self._cursor_pk(cursor_key), "sk": "CURSOR"},
+            UpdateExpression="SET #cursor = :cursor, #streams = :streams",
+            ExpressionAttributeNames={"#cursor": "cursor", "#streams": "streams"},
+            ExpressionAttributeValues={":cursor": cursor, ":streams": sorted(streams or set())},
         )
 
     def ingest(self, raw: str, now: float | None = None) -> list[Received]:
