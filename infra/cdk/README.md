@@ -1,6 +1,6 @@
 # AWS CDK 개발 인프라
 
-`-c provisionAiExecutionRegistry=true`는 별도 `FoodtechAiExecutionRegistry-dev` 스택을 합성한다. DynamoDB On-demand 테이블 `foodtech-ai-execution-registry-dev`는 실행·모델·자격증명 메타데이터·동의·월별 한도를 저장한다. `pk=EXEC#<실행 ID>, sk=META`로 Gateway가 실행 ID를 직접 조회한다. AWS 관리형 저장 암호화, 시점 복구, 결과 항목의 `expires` TTL과 `RETAIN` 제거 정책을 적용한다. TTL은 비동기 물리 삭제이므로 90일 Hard Delete의 최종 보장은 별도 삭제 작업이 필요하다. 키 원문·암호문은 이 테이블에 저장하지 않는다. 이 스택과 실행 역할은 아직 배포되지 않았다.
+`-c provisionAiExecutionRegistry=true`는 별도 `FoodtechAiExecutionRegistry-dev` 스택을 합성한다. DynamoDB On-demand 테이블 `foodtech-ai-execution-registry-dev`는 실행·모델·자격증명 메타데이터·동의·월별 한도를 저장한다. `pk=EXEC#<실행 ID>, sk=META`로 Gateway가 실행 ID를 직접 조회한다. AWS 관리형 저장 암호화, 시점 복구, 결과 항목의 `expires` TTL과 `RETAIN` 제거 정책을 적용한다. TTL은 비동기 물리 삭제이므로 90일 Hard Delete의 최종 보장은 별도 삭제 작업이 필요하다. 키 원문·암호문은 이 테이블에 저장하지 않는다. 2026-11-07에 개발 계정 `ap-southeast-2`에 이 스택을 배포했다. Gateway 실행 역할은 아직 배포되지 않았으며, 로컬 검증은 개발자 AWS 세션으로 수행했다.
 
 `FoodtechAuthSessions-dev`는 만료 시각(`expires`)이 있는 인증 흐름·세션과 관리자 권한 회수 상태를 저장하는 DynamoDB 테이블을 만든다. 앱은 `FOODTECH_AUTH_TABLE=foodtech-auth-sessions-dev`로 연결한다. TTL은 물리 삭제용이며 애플리케이션이 만료를 직접 검사한다.
 
