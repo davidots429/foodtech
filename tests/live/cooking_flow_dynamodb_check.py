@@ -165,6 +165,55 @@ async def check_competing_update(client, subject: str, store: DynamoCookingStore
             "worker_result": outcomes[0], "retry_process_status": completed["process_assessment_status"]}
 
 
+async def check_safety_interruption(client, subject: str, store: DynamoCookingStore,
+                                    created: list[str]) -> dict:
+    placed_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+    job, path = await create_running(client, subject, created, placed_at)
+    held = await post(client, path + "/safety/events", {
+        "event": "SUSPECTED", "expected_version": job["version"],
+        "reason": "synthetic discoloration", "partial_scores": {"ingredient_condition": 4},
+        "partial_observations": {"ingredient_condition": "synthetic pre-cook check"},
+    })
+    assert held["status"] == "SAFETY_HOLD" and held["evaluation_status"] == "INTERRUPTED"
+    assert held["manual_stop_confirmed_at"] is None
+    blocked = await client.post(path + "/assessments", headers=HEADERS, json={
+        "expected_version": held["version"], "expected_current_version": 0, "kind": "INITIAL",
+        "scores": {name: 4 for name in cooking.SCORE_ITEMS},
+        "observations": {name: "synthetic" for name in cooking.SCORE_ITEMS},
+        "planned_portions": 2, "actual_portions": 2, "actual_mass_kg": "0.4",
+        "load_percent": "50", "load_band": "PARTIAL",
+    })
+    assert blocked.status_code == 409, blocked.text
+    premature_clear = await client.post(path + "/safety/events", headers=HEADERS, json={
+        "event": "CLEARED", "expected_version": held["version"], "reason": "synthetic check",
+    })
+    assert premature_clear.status_code == 409
+    reviewed = await post(client, path + "/safety/events", {
+        "event": "UNDER_REVIEW", "expected_version": held["version"],
+        "reason": "operator manually stopped synthetic device", "manual_stop_confirmed": True,
+        "manual_stopped_at": datetime.now(timezone.utc).isoformat(),
+    })
+    assert reviewed["manual_stop_confirmed_at"] is not None
+    cleared = await post(client, path + "/safety/events", {
+        "event": "CLEARED", "expected_version": reviewed["version"],
+        "reason": "synthetic concern excluded",
+    })
+    assert cleared["status"] == "SAFETY_HOLD"
+    resumed = await post(client, path + "/transitions", {
+        "event": "COOKING_RESUMED", "expected_version": cleared["version"],
+        "reason": "operator chose to resume",
+    })
+    assert resumed["status"] == "RUNNING"
+    events = store.events(cooking._pk(subject, job["job_id"]))
+    suspected = [item for item in events if item.get("trigger") == "SUSPECTED"]
+    assert len(suspected) == 1
+    assert suspected[0]["partial_scores"] == {"ingredient_condition": 4}
+    assert suspected[0]["partial_observations"] == {"ingredient_condition": "synthetic pre-cook check"}
+    assert store.assessments(cooking._pk(subject, job["job_id"])) == []
+    return {"hold_status": held["status"], "assessment_block_http": blocked.status_code,
+            "premature_clear_http": premature_clear.status_code, "resumed_status": resumed["status"]}
+
+
 async def main() -> None:
     if os.getenv("AWS_PROFILE") != "foodtech" or os.getenv("FOODTECH_COOKING_TABLE") != TABLE:
         raise SystemExit("Use the foodtech profile and exact development cooking table.")
@@ -189,8 +238,10 @@ async def main() -> None:
                 early = await check_time_failure(client, subject, created, 269, "EARLY_REMOVAL")
                 maximum = await check_time_failure(client, subject, created, 361, "MAX_TIME_EXCEEDED")
                 race = await check_competing_update(client, subject, store, created, bindings)
+                safety = await check_safety_interruption(client, subject, store, created)
                 print(json.dumps({"account": ACCOUNT, "region": REGION, "table": TABLE,
-                                  "early": early, "maximum": maximum, "race": race}), flush=True)
+                                  "early": early, "maximum": maximum, "race": race,
+                                  "safety": safety}), flush=True)
     finally:
         cleanup_errors = []
         for pk in created + bindings:

@@ -1,4 +1,4 @@
-export type JobStatus = "PENDING" | "READY" | "RUNNING" | "PAUSED" | "COMPLETED" | "FAILED" | "CANCELED";
+export type JobStatus = "PENDING" | "READY" | "RUNNING" | "PAUSED" | "SAFETY_HOLD" | "COMPLETED" | "FAILED" | "CANCELED";
 export type SafetyStatus = "NOT_MEASURED" | "PASSED" | "FAILED" | "INCOMPLETE" | "SUSPECTED" | "UNDER_REVIEW" | "CLEARED";
 export type TransitionEvent = "PREHEAT_COMPLETED" | "PREHEAT_CONDITION_LOST" | "COOKING_STARTED" |
   "COOKING_PAUSED" | "COOKING_RESUMED" | "COOKING_COMPLETED" | "COOKING_CANCELED";
@@ -30,6 +30,10 @@ export type CookingJob = {
   safety_status: SafetyStatus;
   safety_version: number;
   evaluation_blocked: boolean;
+  evaluation_status: "NOT_COMPLETED" | "INTERRUPTED" | "COMPLETED";
+  safety_hold_requested_at?: string | null;
+  manual_stop_confirmed_at?: string | null;
+  manual_stopped_at?: string | null;
   source_job_id: string | null;
   recook_reason: string | null;
   source_binding: { source_id: string; device_id: string; batch_id: string } | null;
@@ -80,6 +84,10 @@ export type JobEvent = {
   to_status: string;
   reason?: string | null;
   occurred_at: string;
+  manual_stop_confirmed_at?: string | null;
+  manual_stopped_at?: string | null;
+  partial_scores?: Partial<Record<ScoreKey, number>>;
+  partial_observations?: Partial<Record<ScoreKey, string>>;
 };
 
 export type JobSnapshot = { job: CookingJob; current_assessment: CurrentAssessment | null };
