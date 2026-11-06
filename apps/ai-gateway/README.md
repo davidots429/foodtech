@@ -9,6 +9,10 @@
 - 외부 모델의 tenant 소유·공급자 일치·사용 가능한 자격증명 버전, 민감정보 로컬 전용 및 외부 전송 승인·동의
 - 사용자·공급자·프로젝트의 예상 비용 한도와 호출 잔여량, 일반 작업의 가용한 로컬 기본 모델 fallback
 
-`Decision`은 정책 판정이며 모델 응답이나 비용 예약이 아니다. 현 단계에는 Registry의 영속 구현, 내부 IAM/mTLS 인증, 한도 원자적 예약, KMS 복호화, LangChain/LiteLLM 공급자 호출, 실행 이력 저장이 없다. 따라서 FastAPI에는 실행 endpoint를 열지 않았다. 이 경계가 구현되기 전에는 실제 모델 호출이 일어나지 않는다.
+`DynamoRegistry`는 실행·모델·자격증명 메타데이터·동의·월별 한도를 별도 DynamoDB 테이블에 저장한다. `EXEC#<실행 ID>`를 기본 키로 직접 `GetItem`하며 일관된 읽기를 사용한다. 자격증명 레코드에는 `vault:` 참조만 저장하고 키 원문·암호문은 저장하지 않는다. 한도는 `YYYY-MM` 기간의 tenant, provider, project 세 범위로 관리한다. 관리 주체가 각 기간의 레코드를 먼저 생성해야 하며 모든 수정자는 `version`을 증가시켜야 한다.
+
+`GatewayService.prepare(인증된 Caller, 실행 ID)`는 서버 저장 기록을 다시 읽고 정책 판정 후, `PENDING -> RESERVED` 상태와 세 범위의 예상 비용·호출 잔여량을 DynamoDB 트랜잭션 하나로 갱신한다. 모델·자격증명·동의 기록의 읽은 버전도 같은 트랜잭션에서 확인한다. 선택된 로컬 fallback은 원 실행에 임의 적용하지 않고 새 실행 생성을 요구한다. `finish`는 `RESERVED -> SUCCEEDED/FAILED`와 실제 비용 차액 정산을 하나의 트랜잭션으로 처리한다. 예약된 호출 수는 시도 후 복구하지 않는다.
+
+내부 IAM/mTLS 호출자 인증, 암호화 Vault, 실제 모델 호출과 HTTP 실행 endpoint는 아직 없다. FastAPI에는 실행 endpoint를 열지 않았고 실제 모델 호출은 일어나지 않는다. 레지스트리 테이블은 CDK의 `provisionAiExecutionRegistry=true`로 선택적으로 합성하며 아직 배포하지 않았다.
 
 로컬 검사는 `uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v`로 실행한다. 자격증명 값·암호문·프롬프트 원문을 시험 입력에 넣지 않는다.
