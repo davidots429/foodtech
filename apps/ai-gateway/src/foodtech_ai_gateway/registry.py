@@ -6,7 +6,7 @@ separate encrypted credential vault and is never accepted here.
 
 from dataclasses import asdict
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
@@ -131,6 +131,15 @@ class DynamoRegistry:
         item = self._get("EXEC", execution_id)
         return item["state"] if item else None
 
+    def execution_result(self, execution_id: str) -> dict[str, Any] | None:
+        item = self.table.get_item(
+            Key={"pk": _key("EXEC", execution_id)["pk"], "sk": "RESULT"},
+            ConsistentRead=True,
+        ).get("Item")
+        if item and item.get("expires", 0) <= int(datetime.now(timezone.utc).timestamp()):
+            return None
+        return item
+
     def model(self, model_id: str) -> Model | None:
         item = self._get("MODEL", model_id)
         if not item:
@@ -234,8 +243,13 @@ class DynamoRegistry:
         except self.client.exceptions.TransactionCanceledException as error:
             raise RegistryConflict("execution or authorization record changed, or limit exhausted") from error
 
-    def finish(self, execution_id: str, *, succeeded: bool, actual_cost_usd: Decimal) -> None:
-        """Settle actual cost and terminal state together; a claimed call stays consumed."""
+    def finish(self, execution_id: str, *, succeeded: bool, actual_cost_usd: Decimal,
+               response_text: str | None = None, error_code: str | None = None) -> None:
+        """Persist result, settle cost and terminal state in one transaction."""
+        if succeeded != (response_text is not None) or (not succeeded and not error_code):
+            raise ValueError("success requires a response; failure requires an error code")
+        if response_text is not None and len(response_text.encode("utf-8")) > 16384:
+            raise ValueError("model response exceeds the first-flow limit")
         item = self._get("EXEC", execution_id)
         if not item or item["state"] != "RESERVED" or actual_cost_usd < 0:
             raise RegistryConflict("execution is not reserved or actual cost is invalid")
@@ -253,6 +267,16 @@ class DynamoRegistry:
                                                            ":reserved": "RESERVED", ":one": 1,
                                                            ":actual": actual_cost_usd,
                                                            ":v": self._read_versions[execution_key["pk"]]})}}]
+        completed_at = datetime.now(timezone.utc)
+        result = {"pk": execution_key["pk"], "sk": "RESULT",
+                  "state": "SUCCEEDED" if succeeded else "FAILED",
+                  "model_id": item["model_id"], "provider": provider,
+                  "actual_cost_usd": actual_cost_usd,
+                  "completed_at": completed_at.isoformat(),
+                  "expires": int((completed_at + timedelta(days=90)).timestamp()),
+                  "response_text": response_text, "error_code": error_code}
+        changes.append({"Put": {"TableName": self.table_name, "Item": self._av(result),
+                                "ConditionExpression": "attribute_not_exists(pk)"}})
         for scope, identifier in (("TENANT", tenant_id), ("PROVIDER", provider),
                                   ("PROJECT", "GLOBAL")):
             key = _key("LIMIT", self._limit_id(scope, identifier))

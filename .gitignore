@@ -17,6 +17,7 @@ apps/mock-control/**/obj/
 .vscode/
 tmp/
 *.inspect.ndjson
+/models/
 
 # Local project instructions and analysis/design records
 .agents/

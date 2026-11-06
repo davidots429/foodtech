@@ -1,5 +1,7 @@
 # Business API 인증과 첫 조리 업무 흐름
 
+`POST /api/customer/ai/guidance`는 고객 세션·CSRF를 확인한 뒤 업무 API의 클라이언트 인증서로 Gateway에 mTLS 연결한다. Gateway에서 실행 ID를 만들고 그 ID로 로컬 AI 실행을 요청한다. 브라우저는 Gateway URL·인증서·모델 ID·자격증명을 받지 않는다. 이 첫 흐름은 `GENERAL_GUIDE`와 로컬 `llama3.1:8b`에 한정되며 실제 과금은 없다. Gateway mTLS 설정이 없으면 503으로 거절한다.
+
 고객 공개 가입과 로그인은 Cognito 관리형 화면에서 시작한다. Business API가 Authorization Code + PKCE의 state·verifier를 관리하고 코드 교환, ID·Access 토큰의 서명·발급자·client·용도를 확인한다. 브라우저에는 HttpOnly 세션 쿠키만 전달한다. 관리형 로그인 토큰에 `acr`·`amr`가 제공되지 않는 시험 Pool에서는 관리자 화면이 별도 App Client의 Cognito `USER_PASSWORD_AUTH` → `SOFTWARE_TOKEN_MFA` 챌린지를 사용한다. 관리자 세션은 Cognito가 실제 TOTP 응답을 승인하고 `foodtech-admin` 그룹과 현재 계정 상태를 확인한 경우에만 발급한다.
 
 ## 실행

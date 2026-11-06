@@ -1,7 +1,19 @@
 """Execution-ID-only gateway entry point for the authenticated internal caller."""
 
+from dataclasses import dataclass
+from decimal import Decimal
+
 from .policy import Caller, Decision, GatewayPolicy
+from .ollama import OllamaClient, OllamaFailure
 from .registry import DynamoRegistry, RegistryConflict
+
+
+@dataclass(frozen=True)
+class ExecutionOutcome:
+    execution_id: str
+    state: str
+    response_text: str | None = None
+    error_code: str | None = None
 
 
 class GatewayService:
@@ -30,3 +42,29 @@ class GatewayService:
         except RegistryConflict:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         return decision
+
+    async def execute_local(self, caller: Caller, execution_id: str, prompt: str,
+                            ollama: OllamaClient) -> ExecutionOutcome:
+        execution = self.registry.execution(execution_id)
+        if not execution or execution.tenant_id != caller.tenant_id:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="EXECUTION_NOT_FOUND")
+        model = self.registry.model(execution.model_id)
+        if not model or not model.local:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="LOCAL_MODEL_REQUIRED")
+        decision = self.prepare(caller, execution_id)
+        if not decision.allowed:
+            return ExecutionOutcome(execution_id, "DENIED", error_code=decision.code)
+        try:
+            result = await ollama.generate(decision.model_id, prompt)
+        except OllamaFailure as error:
+            self.registry.finish(execution_id, succeeded=False,
+                                 actual_cost_usd=Decimal("0"), error_code=error.code)
+            return ExecutionOutcome(execution_id, "FAILED", error_code=error.code)
+        except Exception:
+            self.registry.finish(execution_id, succeeded=False,
+                                 actual_cost_usd=Decimal("0"),
+                                 error_code="OLLAMA_UNEXPECTED_ERROR")
+            return ExecutionOutcome(execution_id, "FAILED", error_code="OLLAMA_UNEXPECTED_ERROR")
+        self.registry.finish(execution_id, succeeded=True,
+                             actual_cost_usd=Decimal("0"), response_text=result.text)
+        return ExecutionOutcome(execution_id, "SUCCEEDED", response_text=result.text)
