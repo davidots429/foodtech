@@ -9,7 +9,7 @@
 | `apps/customer-web` | 고객 웹(챗봇 포함 예정) | 가입·로그인·합성 조리작업·안전·평가 화면 |
 | `apps/admin-web` | 수행자 관리자 웹 | 관리자 로그인·권한 경계 화면 |
 | `apps/business-api` | 업무 API와 BFF | Cognito PKCE·세션·권한 검사, 합성 조리작업·평가 API |
-| `apps/ai-gateway` | 모델 실행 경계 | 경로 없는 FastAPI 객체 |
+| `apps/ai-gateway` | 모델 실행 경계 | 실행별 모델·키·Tier·동의·한도 정책 검사. 내부 인증과 실제 모델 호출은 미연결 |
 | `apps/credential-registration` | 자격증명 등록 경계 | 책임 설명만 |
 | `apps/collection-adapter` | 읽기 전용 수집 | 첫 HTTPS REST poller·DynamoDB 순번 복원·SQS FIFO 전송 |
 | `apps/standardization-worker` | 표준화·품질·첫 공정판정 | 첫 프로파일 매핑·해시·격리·중복 판정과 연결된 돈까스 작업의 합성 온도판정 |
