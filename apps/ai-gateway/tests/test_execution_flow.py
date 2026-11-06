@@ -97,6 +97,7 @@ class ExecutionFlowTests(unittest.IsolatedAsyncioTestCase):
             body = json.loads(request.content)
             self.assertEqual(body["model"], "llama3.1:8b")
             self.assertEqual(body["options"]["num_ctx"], 4096)
+            self.assertEqual(body["options"]["num_predict"], 128)
             self.assertFalse(body["stream"])
             return httpx.Response(200, json={"response": "모델 응답", "done": True,
                                              "prompt_eval_count": 4, "eval_count": 3})

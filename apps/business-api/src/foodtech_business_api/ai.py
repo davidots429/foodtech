@@ -36,7 +36,7 @@ def _gateway_settings() -> tuple[str, str, str, str]:
 def _client(ca: str, cert: str, key: str) -> httpx.AsyncClient:
     context = ssl.create_default_context(cafile=ca)
     context.load_cert_chain(certfile=cert, keyfile=key)
-    return httpx.AsyncClient(verify=context, timeout=75, trust_env=False)
+    return httpx.AsyncClient(verify=context, timeout=195, trust_env=False)
 
 
 @router.post("/guidance")

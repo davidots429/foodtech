@@ -19,4 +19,10 @@
 
 필수 환경변수는 Gateway의 `FOODTECH_AI_REGISTRY_TABLE`, `FOODTECH_GATEWAY_SERVER_CERT`, `FOODTECH_GATEWAY_SERVER_KEY`, `FOODTECH_GATEWAY_BUSINESS_CA`와 업무 API의 `FOODTECH_GATEWAY_URL`, `FOODTECH_GATEWAY_CA`, `FOODTECH_BUSINESS_CLIENT_CERT`, `FOODTECH_BUSINESS_CLIENT_KEY`다. Gateway의 `FOODTECH_OLLAMA_URL` 기본값은 `http://127.0.0.1:11434`이며 loopback URL만 허용한다. 현재 월의 tenant·ollama provider·project 한도와 승인된 `llama3.1:8b` 모델 레코드를 먼저 준비해야 실행된다.
 
+서버 배포 시 Ollama는 Gateway가 접근하는 같은 호스트의 loopback에서 실행하는 첫 계약이다. 서버의 GPU 드라이버·VRAM·실제 사용 가능 메모리, 4K context의 모델 적재 여부, CPU offload, 동시 요청·대기열·OOM·p95 지연을 서버에서 재검증한다. 승인된 최소 목표인 전용 GPU VRAM 8GB 이상은 서버 선정 기준이며, 개발 PC의 성공 여부를 서버 성능 증거로 대체하지 않는다. 서버가 별도 AI 호스트를 써야 한다면 loopback 제한을 해제하기 전에 내부 전송 인증·네트워크 경계를 다시 설계한다.
+
+2026-11-06 개발 PC에서 Ollama 0.40.15와 `llama3.1:8b`를 실제 실행했다. GTX 1650 Ti 4GB의 4K context 적재는 Ollama 표시상 GPU 83%·CPU 17%였고 첫 합성 한국어 요청은 모델 적재를 포함해 96.2초, 출력 78토큰이었다. 이는 단일 로컬 기능 확인이며 서버의 지연·처리량·품질 기준이 아니다. 첫 흐름의 출력 상한은 128토큰, Ollama 호출 timeout은 180초, 업무 API의 Gateway timeout은 195초로 두었다. 서버 GPU에서 실측 후 다시 조정한다.
+
+같은 날 합성 고객 요청을 업무 API HTTP 경로 → 실제 mTLS Gateway → 실제 Ollama → 실행 결과 저장까지 통과시켜 `SUCCEEDED`와 저장 응답 일치를 확인했다. 없는 모델의 실제 Ollama HTTP 오류는 `FAILED / OLLAMA_HTTP_ERROR`로 저장됐다. 이 시험에서는 고객 세션·CSRF를 대역으로, 레지스트리는 메모리 시험 구현으로 사용했다. 실제 Cognito 세션·DynamoDB 저장소·서버 GPU가 결합된 검증은 아직 수행하지 않았다.
+
 로컬 검사는 `uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v`로 실행한다. 자격증명 값·암호문·프롬프트 원문을 시험 입력에 넣지 않는다.

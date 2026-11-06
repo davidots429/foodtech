@@ -20,7 +20,7 @@ class OllamaResult:
 
 
 class OllamaClient:
-    def __init__(self, base_url: str = "http://127.0.0.1:11434", *, timeout: float = 60,
+    def __init__(self, base_url: str = "http://127.0.0.1:11434", *, timeout: float = 180,
                  transport: httpx.AsyncBaseTransport | None = None):
         parsed = urlparse(base_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or \
@@ -37,7 +37,7 @@ class OllamaClient:
                 response = await client.post(
                     f"{self.base_url}/api/generate",
                     json={"model": model_id, "prompt": prompt, "stream": False,
-                          "options": {"num_ctx": 4096}},
+                          "options": {"num_ctx": 4096, "num_predict": 128}},
                 )
             response.raise_for_status()
             value = response.json()
