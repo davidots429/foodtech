@@ -18,10 +18,13 @@ class GatewayService:
         if decision.fallback_used:
             return Decision(False, "FALLBACK_REQUIRES_NEW_EXECUTION",
                             decision.model_id, requires_new_execution=True)
+        authorized_versions = self.registry.snapshot_versions()
         execution = self.registry.execution(execution_id)
         model = self.registry.model(decision.model_id) if decision.model_id else None
         if not execution or not model or execution.tenant_id != caller.tenant_id:
             return Decision(False, "EXECUTION_NOT_FOUND")
+        if self.registry.snapshot_versions() != authorized_versions:
+            return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         try:
             self.registry.reserve(execution, model.provider)
         except RegistryConflict:

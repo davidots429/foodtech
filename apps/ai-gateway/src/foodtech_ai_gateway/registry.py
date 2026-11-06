@@ -72,6 +72,9 @@ class DynamoRegistry:
             self._read_versions[key["pk"]] = int(item["version"])
         return item
 
+    def snapshot_versions(self) -> dict[str, int]:
+        return dict(self._read_versions)
+
     def _put_new(self, kind: str, identifier: str, fields: dict[str, Any]) -> None:
         item = {**_key(kind, identifier), **fields, "version": 1}
         self.table.put_item(Item=item, ConditionExpression=Attr("pk").not_exists())

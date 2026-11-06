@@ -161,6 +161,22 @@ class RegistryTests(unittest.TestCase):
                          "EXECUTION_NOT_FOUND")
         self.assertFalse(self.client.calls)
 
+    def test_authorized_execution_change_before_claim_is_rejected(self):
+        original = self.registry.execution
+        reads = 0
+
+        def racing_read(execution_id):
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                self.resource.table.items[("EXEC#run-1", "META")]["version"] += 1
+            return original(execution_id)
+
+        self.registry.execution = racing_read
+        decision = self.service.prepare(Caller("business-api", "tenant-a"), "run-1")
+        self.assertEqual(decision.code, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
+        self.assertFalse(self.client.calls)
+
     def test_concurrent_limit_change_cancels_entire_reservation(self):
         key = ("LIMIT#2026-11#PROJECT#GLOBAL", "META")
         self.client.before_commit = lambda: self.resource.table.items[key].update(
