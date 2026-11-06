@@ -130,7 +130,7 @@ async def main() -> None:
                 snapshot = (await client.get(path)).json()
                 job = await checked_post(client, path + "/safety/events", {
                     "event": "SUSPECTED", "expected_version": snapshot["job"]["version"],
-                    "reason": "synthetic odor", "manual_stop_confirmed": True,
+                    "reason": "synthetic odor",
                 })
                 blocked = (await client.get(path)).json()
                 assert blocked["current_assessment"]["version"] == 1, blocked["current_assessment"]

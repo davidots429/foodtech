@@ -27,9 +27,11 @@ TRANSITIONS = {
     ("READY", "COOKING_STARTED"): "RUNNING",
     ("RUNNING", "COOKING_PAUSED"): "PAUSED",
     ("PAUSED", "COOKING_RESUMED"): "RUNNING",
+    ("SAFETY_HOLD", "COOKING_RESUMED"): "RUNNING",
     ("RUNNING", "COOKING_COMPLETED"): "COMPLETED",
     ("RUNNING", "COOKING_CANCELED"): "CANCELED",
     ("PAUSED", "COOKING_CANCELED"): "CANCELED",
+    ("SAFETY_HOLD", "COOKING_CANCELED"): "CANCELED",
 }
 
 
@@ -110,6 +112,9 @@ class SafetyEvent(StrictModel):
     expected_version: int = Field(ge=1)
     reason: str = Field(min_length=1, max_length=500)
     manual_stop_confirmed: bool = False
+    manual_stopped_at: datetime | None = None
+    partial_scores: dict[str, StrictInt] = Field(default_factory=dict)
+    partial_observations: dict[str, str] = Field(default_factory=dict)
 
 
 class CoreSample(StrictModel):
@@ -166,7 +171,10 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "thickness_time_rule_version": RULE_VERSION,
         "status": "PENDING", "version": 1, "job_state_version": 1,
         "safety_status": "NOT_MEASURED", "safety_version": 0,
-        "evaluation_blocked": True, "created_at": _now(), "updated_at": _now(),
+        "evaluation_blocked": True, "evaluation_status": "NOT_COMPLETED",
+        "safety_hold_requested_at": None, "manual_stop_confirmed_at": None,
+        "manual_stopped_at": None,
+        "created_at": _now(), "updated_at": _now(),
         "source_job_id": None, "recook_reason": None, "source_binding": None,
         "actual_placed_at": None, "actual_lifted_at": None,
         "completion_recorded_at": None, "actual_cooking_seconds": None,
@@ -218,8 +226,14 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
     next_status = TRANSITIONS.get((old["status"], body.event))
     if not next_status:
         raise HTTPException(409, "이 상태에서는 해당 전이를 사용할 수 없습니다.")
-    if old["safety_status"] in {"SUSPECTED", "UNDER_REVIEW", "FAILED"} and next_status not in {"FAILED", "CANCELED"}:
+    if old["safety_status"] in {"SUSPECTED", "UNDER_REVIEW", "FAILED"} and next_status != "CANCELED":
         raise HTTPException(409, "안전 확인 중에는 조리 진행을 허용하지 않습니다.")
+    if old["status"] == "SAFETY_HOLD":
+        if body.event == "COOKING_RESUMED" and (old["safety_status"] != "CLEARED" or
+                                                   not old.get("manual_stop_confirmed_at")):
+            raise HTTPException(409, "수동 중단 확인과 의심 해제 후에만 조리를 재개할 수 있습니다.")
+        if not body.reason or not body.reason.strip():
+            raise HTTPException(422, "안전 보류 작업의 재개·취소 사유가 필요합니다.")
     now = datetime.now(timezone.utc)
     placed_at = None
     lifted_at = None
@@ -297,15 +311,61 @@ async def safety_event(job_id: str, request: Request, body: SafetyEvent) -> dict
     }
     if old["safety_status"] not in allowed[body.event]:
         raise HTTPException(409, "이 안전 상태에서는 해당 조치를 사용할 수 없습니다.")
+    if set(body.partial_scores) - set(SCORE_ITEMS) or any(score < 1 or score > 5 for score in body.partial_scores.values()):
+        raise HTTPException(422, "중단 전 평가 점수는 승인된 7개 항목의 1~5점만 기록할 수 있습니다.")
+    if set(body.partial_observations) - set(SCORE_ITEMS) or any(
+            not value.strip() or len(value) > 500 for value in body.partial_observations.values()):
+        raise HTTPException(422, "중단 전 관찰 근거는 승인된 항목의 500자 이내 내용만 기록할 수 있습니다.")
+    if body.event != "SUSPECTED" and (body.partial_scores or body.partial_observations):
+        raise HTTPException(422, "중단 전 관찰값은 이상 의심 신고와 함께 기록해야 합니다.")
+    if old["status"] == "SAFETY_HOLD" and body.event == "CLEARED" and not (
+            old.get("manual_stop_confirmed_at") or body.manual_stop_confirmed):
+        raise HTTPException(409, "조리 중 안전 이상은 운영자의 수동 중단 확인 후 해제할 수 있습니다.")
+    now = _now()
+    job_status = old["status"]
+    if body.event == "SUSPECTED" and job_status in {"RUNNING", "PAUSED"}:
+        job_status = "SAFETY_HOLD"
+    elif body.event == "FAILED" and job_status == "SAFETY_HOLD":
+        job_status = "FAILED"
+    stop_confirmed_at = None if body.event == "SUSPECTED" else old.get("manual_stop_confirmed_at")
+    stopped_at = None if body.event == "SUSPECTED" else old.get("manual_stopped_at")
+    if body.manual_stopped_at and not body.manual_stop_confirmed:
+        raise HTTPException(422, "수동 중단 시각에는 운영자의 중단 확인이 필요합니다.")
+    if body.manual_stop_confirmed:
+        if old["status"] not in {"RUNNING", "PAUSED", "SAFETY_HOLD"}:
+            raise HTTPException(422, "조리 중인 작업의 수동 중단만 확인할 수 있습니다.")
+        if not stop_confirmed_at:
+            if body.manual_stopped_at is None or body.manual_stopped_at.tzinfo is None:
+                raise HTTPException(422, "수동 중단 시각은 시간대를 포함해 입력해야 합니다.")
+            actual_stop = body.manual_stopped_at.astimezone(timezone.utc)
+            placed = old.get("actual_placed_at")
+            if actual_stop > datetime.now(timezone.utc) or (placed and actual_stop < datetime.fromisoformat(
+                    placed.replace("Z", "+00:00"))):
+                raise HTTPException(422, "수동 중단 시각은 재료 투입 이후이면서 현재 이전이어야 합니다.")
+            stopped_at = actual_stop.isoformat().replace("+00:00", "Z")
+            stop_confirmed_at = now
     meta = {**old, "safety_status": body.event, "safety_version": old["safety_version"] + 1,
-            "version": old["version"] + 1, "evaluation_blocked": True, "updated_at": _now(),
+            "status": job_status, "job_state_version": int(old["job_state_version"]) + (job_status != old["status"]),
+            "version": old["version"] + 1, "evaluation_blocked": True, "updated_at": now,
             "safety_reason": body.reason, "safety_reporter": session.subject,
-            "manual_stop_confirmed": body.manual_stop_confirmed}
+            "manual_stop_confirmed": bool(stop_confirmed_at),
+            "manual_stop_confirmed_at": stop_confirmed_at,
+            "manual_stopped_at": stopped_at,
+            "safety_hold_requested_at": now if job_status == "SAFETY_HOLD" and old["status"] != "SAFETY_HOLD"
+                                        else old.get("safety_hold_requested_at"),
+            "evaluation_status": "INTERRUPTED" if body.event in {"SUSPECTED", "FAILED"}
+                                 else old.get("evaluation_status", "NOT_COMPLETED")}
     event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}",
              "domain": "SAFETY_STATUS", "trigger": body.event,
              "from_status": old["safety_status"], "to_status": body.event,
-             "reason": body.reason, "manual_stop_confirmed": body.manual_stop_confirmed,
-             "actor": session.subject, "occurred_at": _now()}
+             "from_job_status": old["status"], "to_job_status": job_status,
+             "reason": body.reason, "manual_stop_confirmed": bool(stop_confirmed_at),
+             "manual_stop_confirmed_at": stop_confirmed_at,
+             "manual_stopped_at": stopped_at,
+             "partial_scores": body.partial_scores if body.event == "SUSPECTED" else {},
+             "partial_observations": body.partial_observations if body.event == "SUSPECTED" else {},
+             "evaluation_status": meta["evaluation_status"],
+             "actor": session.subject, "occurred_at": now}
     await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{body.event}"), event=event)
     return meta
 
@@ -397,7 +457,8 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
                    "assessment_sk": assessment["sk"], "quality_passed": assessment["quality_passed"],
                    "quality_target": assessment["quality_target"], "score_percent": str(score),
                    "safety_version": old["safety_version"]}
-    meta = {**old, "version": old["version"] + 1, "updated_at": _now()}
+    meta = {**old, "version": old["version"] + 1, "updated_at": _now(),
+            "evaluation_status": "COMPLETED"}
     await _commit(store, pk, old, meta, assessment, new_pointer)
     return assessment
 
@@ -423,7 +484,10 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
             "thickness_time_rule_version": old.get("thickness_time_rule_version", RULE_VERSION),
             "status": "PENDING", "version": 1, "job_state_version": 1,
             "safety_status": "NOT_MEASURED", "safety_version": 0,
-            "evaluation_blocked": True, "created_at": _now(), "updated_at": _now(),
+            "evaluation_blocked": True, "evaluation_status": "NOT_COMPLETED",
+            "safety_hold_requested_at": None, "manual_stop_confirmed_at": None,
+            "manual_stopped_at": None,
+            "created_at": _now(), "updated_at": _now(),
             "source_job_id": job_id, "recook_reason": body.reason, "source_binding": None,
             "actual_placed_at": None, "actual_lifted_at": None,
             "completion_recorded_at": None, "actual_cooking_seconds": None,

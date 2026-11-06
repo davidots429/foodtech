@@ -11,7 +11,7 @@ type ObservationForm = Record<ScoreKey, string>;
 
 const jobLabels: Record<CookingJob["status"], string> = {
   PENDING: "대기", READY: "준비 완료", RUNNING: "조리 중", PAUSED: "일시 정지",
-  COMPLETED: "조리 완료", FAILED: "공정 실패", CANCELED: "취소",
+  SAFETY_HOLD: "안전 확인으로 진행 보류", COMPLETED: "조리 완료", FAILED: "실패", CANCELED: "취소",
 };
 const safetyLabels: Record<CookingJob["safety_status"], string> = {
   NOT_MEASURED: "안전 확인 전", PASSED: "안전 통과", FAILED: "안전 실패",
@@ -70,6 +70,10 @@ const transitions: Record<CookingJob["status"], { event: TransitionEvent; label:
     { event: "COOKING_RESUMED", label: "조리 재개" },
     { event: "COOKING_CANCELED", label: "조리 취소" },
   ],
+  SAFETY_HOLD: [
+    { event: "COOKING_RESUMED", label: "안전 확인 후 조리 재개" },
+    { event: "COOKING_CANCELED", label: "안전 보류 작업 취소" },
+  ],
   COMPLETED: [], FAILED: [], CANCELED: [],
 };
 
@@ -121,6 +125,8 @@ export function CookingWorkspace({ csrf }: Props) {
   const [assessmentKind, setAssessmentKind] = useState<"REVISION" | "REASSESSMENT">("REASSESSMENT");
   const [assessmentReason, setAssessmentReason] = useState("");
   const [recookReason, setRecookReason] = useState("");
+  const [transitionReason, setTransitionReason] = useState("");
+  const [manualStoppedAt, setManualStoppedAt] = useState(() => localDateTime(new Date()));
 
   const refresh = useCallback(async (id: string) => {
     setLoadingJob(true);
@@ -147,6 +153,8 @@ export function CookingWorkspace({ csrf }: Props) {
         setOverallSatisfaction("");
         setAssessmentReason("");
         setRecookReason("");
+        setTransitionReason("");
+        setManualStoppedAt(localDateTime(new Date()));
         loadedJobId.current = id;
       }
       window.history.replaceState(null, "", `#job=${encodeURIComponent(id)}`);
@@ -213,8 +221,12 @@ export function CookingWorkspace({ csrf }: Props) {
   async function recordTransition(event: TransitionEvent) {
     if (!job) return;
     if (event === "COOKING_CANCELED" && !window.confirm("이 조리작업을 취소하고 종료할까요?")) return;
-    const body: { event: TransitionEvent; expected_version: number; actual_placed_at?: string; actual_lifted_at?: string } =
+    if (job.status === "SAFETY_HOLD" && !transitionReason.trim()) {
+      setError("안전 보류 작업의 재개·취소 사유를 입력해 주세요."); return;
+    }
+    const body: { event: TransitionEvent; expected_version: number; reason?: string; actual_placed_at?: string; actual_lifted_at?: string } =
       { event, expected_version: job.version };
+    if (job.status === "SAFETY_HOLD") body.reason = transitionReason.trim();
     if (event === "COOKING_STARTED" || event === "COOKING_COMPLETED") {
       const entered = new Date(event === "COOKING_STARTED" ? placedAt : liftedAt);
       if (Number.isNaN(entered.getTime()) || entered.getTime() > Date.now()) {
@@ -241,8 +253,24 @@ export function CookingWorkspace({ csrf }: Props) {
 
   async function recordSafety(event: "SUSPECTED" | "UNDER_REVIEW" | "CLEARED" | "FAILED") {
     if (!job || !safetyReason.trim()) { setError("안전 조치의 근거를 입력해 주세요."); return; }
+    const confirmStop = ["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) && manualStopConfirmed;
+    let stoppedAt: string | undefined;
+    if (confirmStop && (event === "SUSPECTED" || !job.manual_stop_confirmed_at)) {
+      const entered = new Date(manualStoppedAt);
+      if (Number.isNaN(entered.getTime()) || entered.getTime() > Date.now() ||
+          (job.actual_placed_at && entered.getTime() < new Date(job.actual_placed_at).getTime())) {
+        setError("수동 중단 시각은 재료 투입 이후이면서 현재 이전이어야 합니다."); return;
+      }
+      stoppedAt = entered.toISOString();
+    }
+    const partialScores = Object.fromEntries(scoreItems.filter(({ key }) => scores[key] !== "")
+      .map(({ key }) => [key, scores[key]]));
+    const partialObservations = Object.fromEntries(scoreItems.filter(({ key }) => observations[key].trim())
+      .map(({ key }) => [key, observations[key].trim()]));
     await action(() => api<CookingJob>(jobPath(job.job_id) + "/safety/events", csrf, {
-      event, expected_version: job.version, reason: safetyReason.trim(), manual_stop_confirmed: manualStopConfirmed,
+      event, expected_version: job.version, reason: safetyReason.trim(), manual_stop_confirmed: confirmStop,
+      ...(stoppedAt ? { manual_stopped_at: stoppedAt } : {}),
+      ...(event === "SUSPECTED" ? { partial_scores: partialScores, partial_observations: partialObservations } : {}),
     }), "안전 상태와 근거를 기록했습니다.");
   }
 
@@ -367,14 +395,19 @@ export function CookingWorkspace({ csrf }: Props) {
                 disabled={busy || loadingJob} className={event === "COOKING_CANCELED" ? "danger" : ""}>{label}</button>)}
               <button type="button" className="secondary" onClick={() => void loadJob(job.job_id)} disabled={busy || loadingJob}>최신 상태 확인</button>
             </div>
+            {job.status === "SAFETY_HOLD" && <label>안전 보류 작업의 재개·취소 사유
+              <input value={transitionReason} maxLength={500} onChange={(event) => setTransitionReason(event.target.value)}
+                placeholder="현장 확인 결과와 운영자 결정" />
+            </label>}
             {availableTransitions.length === 0 && <p className="muted">현재 기록할 수 있는 조리 상태 전이가 없습니다.</p>}
           </section>
 
           <section className="subcard" aria-labelledby="safety-title">
             <h3 id="safety-title">3. 안전 확인</h3>
             {job.safety_status === "SUSPECTED" || job.safety_status === "UNDER_REVIEW" || job.safety_status === "FAILED"
-              ? <p className="warning">안전 이상 상태입니다. 평가와 제공 판단을 진행하지 마세요. 장비 중단은 운영자가 현장에서 직접 확인합니다.</p>
+              ? <p className="warning">안전 이상 상태입니다. 평가와 제공 판단을 진행하지 마세요. 장비는 자동 정지되지 않습니다. 운영자가 현장에서 직접 중단하고 확인해야 합니다.</p>
               : null}
+            {job.status === "SAFETY_HOLD" && <p className="warning">조리 진행 기록이 보류되었습니다. 현장 수동 중단: {job.manual_stopped_at ? timeLabel(job.manual_stopped_at) : "미확인"}. 의심 해제 후 운영자가 재개 또는 취소를 선택합니다.</p>}
             <div className="field-row">
               <label className="grow">안전 이상·조치 근거
                 <input value={safetyReason} maxLength={500} onChange={(event) => setSafetyReason(event.target.value)}
@@ -382,7 +415,12 @@ export function CookingWorkspace({ csrf }: Props) {
               </label>
             </div>
             <label className="check-line"><input type="checkbox" checked={manualStopConfirmed}
-              onChange={(event) => setManualStopConfirmed(event.target.checked)} /> 운영자가 장비에서 수동 중단했음을 확인</label>
+              disabled={!(["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status))}
+              onChange={(event) => { setManualStopConfirmed(event.target.checked); if (event.target.checked) setManualStoppedAt(localDateTime(new Date())); }} /> 운영자가 장비에서 수동 중단했음을 확인</label>
+            {manualStopConfirmed && ["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) &&
+              (!job.manual_stop_confirmed_at || job.safety_status === "CLEARED") &&
+              <label>현장 수동 중단 시각 <input type="datetime-local" value={manualStoppedAt}
+                onChange={(event) => setManualStoppedAt(event.target.value)} /></label>}
             <div className="actions">
               {["NOT_MEASURED", "PASSED", "INCOMPLETE", "CLEARED"].includes(job.safety_status) &&
                 <button type="button" className="danger" disabled={busy || !safetyReason.trim()}
@@ -390,7 +428,9 @@ export function CookingWorkspace({ csrf }: Props) {
               {job.safety_status === "SUSPECTED" &&
                 <button type="button" disabled={busy || !safetyReason.trim()} onClick={() => recordSafety("UNDER_REVIEW")}>확인 중으로 전환</button>}
               {["SUSPECTED", "UNDER_REVIEW"].includes(job.safety_status) && <>
-                <button type="button" disabled={busy || !safetyReason.trim()} onClick={() => recordSafety("CLEARED")}>이상 의심 해제</button>
+                <button type="button" disabled={busy || !safetyReason.trim() ||
+                  (job.status === "SAFETY_HOLD" && !job.manual_stop_confirmed_at && !manualStopConfirmed)}
+                  onClick={() => recordSafety("CLEARED")}>이상 의심 해제</button>
                 <button type="button" className="danger" disabled={busy || !safetyReason.trim()} onClick={() => recordSafety("FAILED")}>안전 실패 확정</button>
               </>}
             </div>
@@ -417,6 +457,7 @@ export function CookingWorkspace({ csrf }: Props) {
           <section className="subcard" aria-labelledby="assessment-title">
             <h3 id="assessment-title">4. 품질평가</h3>
             <p className="small">공통 척도 v1 · 7항목 동일 가중 · 항목별 1~5점. 초기 척도에는 ‘해당 없음’이 없습니다.</p>
+            {job.evaluation_status === "INTERRUPTED" && <p className="warning">안전 이상으로 평가가 중단되었습니다. 종합점수는 미산출이며 신고 당시 입력한 점수·관찰값은 안전 이력에 보존됩니다.</p>}
             {!canAssess && <p className="warning">작업 완료와 안전 통과가 확인되기 전에는 평가를 완료할 수 없습니다. 과거 품질 합격은 현재 제공 허가가 아닙니다.</p>}
             {current && <p className={current.usable ? "small" : "warning"}>
               현재 평가 포인터 v{current.version}: {current.usable ? "사용 가능" : `사용 차단 (${current.blocked_reason ?? "안전 확인 필요"})`}
@@ -431,7 +472,9 @@ export function CookingWorkspace({ csrf }: Props) {
                   onChange={(event) => setObservations((old) => ({ ...old, [key]: event.target.value }))} placeholder="관찰한 사실" /></label>
               </div>)}
             </div>
-            <p className="preview">{previewScore ? `입력 점수 미리보기 ${previewScore}점 / 100점` : "7개 점수를 모두 선택하면 종합점수 미리보기가 표시됩니다."}</p>
+            <p className="preview">{job.evaluation_status === "INTERRUPTED" && job.safety_status !== "CLEARED" && job.safety_status !== "PASSED"
+              ? "안전 확인 중 · 종합점수 미산출"
+              : previewScore ? `입력 점수 미리보기 ${previewScore}점 / 100점` : "7개 점수를 모두 선택하면 종합점수 미리보기가 표시됩니다."}</p>
             <div className="field-row">
               <label>실제 인분 <input type="number" min="1" max="4" step="1" value={actualPortions}
                 onChange={(event) => setActualPortions(Number(event.target.value))} /></label>
@@ -491,6 +534,11 @@ export function CookingWorkspace({ csrf }: Props) {
               <strong>{eventStatusLabel(item.domain, item.from_status)} → {eventStatusLabel(item.domain, item.to_status)}</strong>
               <small>{eventLabels[item.trigger] ?? item.trigger} · {timeLabel(item.occurred_at)}</small>
               {item.reason && <small>{processReasonLabels[item.reason] ?? item.reason}</small>}
+              {item.manual_stop_confirmed_at && <small>운영자 수동 중단 확인: {timeLabel(item.manual_stop_confirmed_at)}</small>}
+              {item.manual_stopped_at && <small>현장 수동 중단 시각: {timeLabel(item.manual_stopped_at)}</small>}
+              {scoreItems.map(({ key, label }) => item.partial_scores?.[key] !== undefined || item.partial_observations?.[key]
+                ? <small key={key}>중단 전 {label}: {item.partial_scores?.[key] ?? "점수 미입력"} · {item.partial_observations?.[key] ?? "관찰 미입력"}</small>
+                : null)}
             </li>)}
           </ol>}
         </section>

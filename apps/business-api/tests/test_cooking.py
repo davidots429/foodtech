@@ -109,7 +109,7 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         job = current["job"]
         suspect = await self.client.post(path + "/safety/events", headers=CSRF,
                                          json={"event": "SUSPECTED", "expected_version": job["version"],
-                                               "reason": "합성 이취", "manual_stop_confirmed": True})
+                                               "reason": "합성 이취"})
         self.assertEqual(suspect.status_code, 200, suspect.text)
         current = (await self.client.get(path)).json()
         self.assertFalse(current["current_assessment"]["usable"])
@@ -156,6 +156,88 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recook.json()["source_job_id"], job["job_id"])
         self.assertNotEqual(recook.json()["job_id"], job["job_id"])
         self.assertEqual((await self.client.get(path)).json()["job"]["safety_status"], "FAILED")
+
+    async def test_cooking_safety_hold_requires_manual_stop_and_explicit_resume(self):
+        job = await self.create()
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        job = await self.transition(job, "COOKING_STARTED")
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        suspected = await self.client.post(path + "/safety/events", headers=CSRF, json={
+            "event": "SUSPECTED", "expected_version": job["version"],
+            "reason": "합성 이취 발견", "partial_scores": {"ingredient_condition": 4},
+            "partial_observations": {"ingredient_condition": "투입 전 육안 확인"},
+        })
+        self.assertEqual(suspected.status_code, 200, suspected.text)
+        held = suspected.json()
+        self.assertEqual(held["status"], "SAFETY_HOLD")
+        self.assertEqual(held["evaluation_status"], "INTERRUPTED")
+        self.assertTrue(held["evaluation_blocked"])
+        self.assertIsNone(held["manual_stop_confirmed_at"])
+        self.assertIsNotNone(held["safety_hold_requested_at"])
+        self.assertEqual((await self.client.get(path)).json()["current_assessment"], None)
+        events = (await self.client.get(path + "/events")).json()
+        self.assertEqual(events[-1]["partial_scores"], {"ingredient_condition": 4})
+        self.assertEqual(events[-1]["partial_observations"], {"ingredient_condition": "투입 전 육안 확인"})
+        self.assertFalse(events[-1]["manual_stop_confirmed"])
+        self.assertEqual((await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_RESUMED", "expected_version": held["version"], "reason": "재개 시도",
+        })).status_code, 409)
+        self.assertEqual((await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_COMPLETED", "expected_version": held["version"],
+            "actual_lifted_at": datetime.now(timezone.utc).isoformat(),
+        })).status_code, 409)
+        self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
+                                                 json=self.assessment_body(held))).status_code, 409)
+        self.assertEqual((await self.client.post(path + "/safety/events", headers=CSRF, json={
+            "event": "CLEARED", "expected_version": held["version"], "reason": "이상 없음",
+        })).status_code, 409)
+        self.assertEqual((await self.client.post(path + "/safety/events", headers=CSRF, json={
+            "event": "UNDER_REVIEW", "expected_version": held["version"],
+            "reason": "수동 중단 시각 누락", "manual_stop_confirmed": True,
+        })).status_code, 422)
+        reviewed = await self.client.post(path + "/safety/events", headers=CSRF, json={
+            "event": "UNDER_REVIEW", "expected_version": held["version"],
+            "reason": "운영자가 현장에서 중단 후 확인", "manual_stop_confirmed": True,
+            "manual_stopped_at": datetime.now(timezone.utc).isoformat(),
+        })
+        self.assertEqual(reviewed.status_code, 200, reviewed.text)
+        self.assertIsNotNone(reviewed.json()["manual_stop_confirmed_at"])
+        self.assertIsNotNone(reviewed.json()["manual_stopped_at"])
+        cleared = await self.client.post(path + "/safety/events", headers=CSRF, json={
+            "event": "CLEARED", "expected_version": reviewed.json()["version"],
+            "reason": "합성 조사 결과 안전 이상 배제",
+        })
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertEqual(cleared.json()["status"], "SAFETY_HOLD")
+        self.assertEqual((await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_RESUMED", "expected_version": cleared.json()["version"],
+        })).status_code, 422)
+        resumed = await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_RESUMED", "expected_version": cleared.json()["version"],
+            "reason": "현장 확인 후 재개",
+        })
+        self.assertEqual(resumed.status_code, 200, resumed.text)
+        self.assertEqual(resumed.json()["status"], "RUNNING")
+        self.assertEqual(resumed.json()["evaluation_status"], "INTERRUPTED")
+
+    async def test_safety_failure_terminates_held_job_without_quality_score(self):
+        job = await self.create()
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        job = await self.transition(job, "COOKING_STARTED")
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        held = await self.client.post(path + "/safety/events", headers=CSRF, json={
+            "event": "SUSPECTED", "expected_version": job["version"], "reason": "합성 변색",
+        })
+        failed = await self.client.post(path + "/safety/events", headers=CSRF, json={
+            "event": "FAILED", "expected_version": held.json()["version"], "reason": "안전 문제 배제 불가",
+        })
+        self.assertEqual(failed.status_code, 200, failed.text)
+        self.assertEqual(failed.json()["status"], "FAILED")
+        self.assertEqual(failed.json()["evaluation_status"], "INTERRUPTED")
+        self.assertEqual((await self.client.get(path)).json()["current_assessment"], None)
+        self.assertEqual((await self.client.get(path + "/assessments")).json(), [])
+        self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
+                                                 json=self.assessment_body(failed.json()))).status_code, 409)
 
     async def test_owner_and_csrf_boundary(self):
         response = await self.client.post("/api/customer/cooking-jobs",

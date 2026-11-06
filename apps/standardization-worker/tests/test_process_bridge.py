@@ -84,6 +84,27 @@ class ProcessBridgeTests(unittest.TestCase):
         self.assertEqual(result, "UNBOUND")
         self.assertEqual(bridge.client.calls, 0)
 
+    def test_safety_hold_does_not_accept_process_updates(self):
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
+                   "batch_id": "batch-a-safety-hold"}
+        stream_pk = stream_binding_key(**binding)
+        job_pk = "SCOPE#USER#customer-1#JOB#held"
+        table = FakeTable({
+            (stream_pk, "BINDING"): {"pk": stream_pk, "sk": "BINDING", "job_pk": job_pk},
+            (job_pk, "META"): {"pk": job_pk, "sk": "META", "source_binding": binding,
+                                "status": "SAFETY_HOLD", "version": 4,
+                                "process_assessment_status": "INSUFFICIENT_DATA"},
+        })
+        bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
+        result = bridge.apply({
+            "pk": "EVENT#held", "ingestion_event_id": "held", "dedup_status": "UNIQUE",
+            "quality_status": "VALID", "normalized": {**binding, "device_status": "RUNNING"},
+        })
+        self.assertEqual(result, "JOB_NOT_ACTIVE")
+        self.assertEqual(bridge.client.calls, 0)
+        self.assertEqual(table.items[(job_pk, "META")]["status"], "SAFETY_HOLD")
+
     def test_normal_temperature_does_not_clear_thickness_warning(self):
         binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
                    "batch_id": "batch-a-thin-001"}
