@@ -75,6 +75,8 @@ class Credential:
     provider: str
     state: str
     expires_at: datetime | None
+    tenant_pseudonym: str | None = None
+    vault_ref: str | None = None
 
 
 @dataclass(frozen=True)

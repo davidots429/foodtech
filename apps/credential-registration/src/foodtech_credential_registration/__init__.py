@@ -1,0 +1,1 @@
+"""Credential registration storage boundary."""

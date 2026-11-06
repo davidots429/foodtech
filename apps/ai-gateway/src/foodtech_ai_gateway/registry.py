@@ -154,7 +154,7 @@ class DynamoRegistry:
         item = self._get("CREDENTIAL", credential_id)
         if not item:
             return None
-        fields = {name: item[name] for name in Credential.__dataclass_fields__}
+        fields = {name: item.get(name) for name in Credential.__dataclass_fields__}
         fields["expires_at"] = _time(fields["expires_at"])
         return Credential(**fields)
 

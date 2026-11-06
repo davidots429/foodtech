@@ -204,7 +204,9 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.registry.create_credential(credential, vault_ref="plaintext-key")
         self.registry.create_credential(credential, vault_ref="vault:tenant-a/key-1")
-        self.assertEqual(self.registry.credential("key-1"), credential)
+        stored = self.registry.credential("key-1")
+        self.assertEqual(stored.vault_ref, "vault:tenant-a/key-1")
+        self.assertEqual(stored.tenant_id, credential.tenant_id)
         self.assertNotIn("plaintext", str(self.resource.table.items))
 
     def test_external_execution_reads_model_credential_and_consent_records(self):
