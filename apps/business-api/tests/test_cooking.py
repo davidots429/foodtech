@@ -253,6 +253,68 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
                                                  json={"expected_version": failed["version"],
                                                        "probes": [probe("piece-1"), probe("piece-2")]})).status_code, 409)
 
+    async def test_maximum_time_exceeded_fails_job_and_preserves_evidence(self):
+        job = await self.create()
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        placed_at = datetime.now(timezone.utc) - timedelta(seconds=400)
+        started = await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_STARTED", "expected_version": job["version"],
+            "actual_placed_at": placed_at.isoformat(),
+        })
+        self.assertEqual(started.status_code, 200, started.text)
+        job = started.json()
+        response = await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_COMPLETED", "expected_version": job["version"],
+            "actual_lifted_at": (placed_at + timedelta(seconds=361)).isoformat(),
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        failed = response.json()
+        self.assertEqual(failed["status"], "FAILED")
+        self.assertEqual(failed["actual_cooking_seconds"], 361)
+        self.assertEqual(failed["process_time_status"], "MAX_TIME_EXCEEDED")
+        self.assertTrue(failed["evaluation_blocked"])
+        self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
+                                                 json=self.assessment_body(failed))).status_code, 409)
+        events = (await self.client.get(path + "/events")).json()
+        self.assertEqual(events[-1]["process_time_status"], "MAX_TIME_EXCEEDED")
+
+    async def test_concurrent_process_update_rejects_stale_completion(self):
+        job = await self.create()
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        job = await self.transition(job, "COOKING_STARTED")
+        pk = cooking._pk(self.subject, job["job_id"])
+        original_commit = self.store.commit
+
+        def worker_wins_commit(item_pk, expected_version, meta, assessment=None, pointer=None, event=None):
+            if event and event.get("trigger") == "COOKING_COMPLETED":
+                worker_meta = {**self.store.items[(pk, "META")],
+                               "version": expected_version + 1,
+                               "process_temperature_status": "HIGH_WARNING",
+                               "process_assessment_status": "WARNING"}
+                original_commit(pk, expected_version, worker_meta,
+                                event={"sk": "EVENT#PROCESS#concurrent", "domain": "PROCESS_ASSESSMENT",
+                                       "trigger": "PROCESS_SAMPLE_ASSESSED", "occurred_at": cooking._now()})
+            return original_commit(item_pk, expected_version, meta, assessment, pointer, event)
+
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        with patch.object(self.store, "commit", side_effect=worker_wins_commit):
+            response = await self.client.post(path + "/transitions", headers=CSRF, json={
+                "event": "COOKING_COMPLETED", "expected_version": job["version"],
+                "actual_lifted_at": (self.placed_at + timedelta(seconds=300)).isoformat(),
+            })
+        self.assertEqual(response.status_code, 409, response.text)
+        current = (await self.client.get(path)).json()["job"]
+        self.assertEqual(current["status"], "RUNNING")
+        self.assertEqual(current["process_temperature_status"], "HIGH_WARNING")
+        retry = await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_COMPLETED", "expected_version": current["version"],
+            "actual_lifted_at": (self.placed_at + timedelta(seconds=300)).isoformat(),
+        })
+        self.assertEqual(retry.status_code, 200, retry.text)
+        self.assertEqual(retry.json()["process_assessment_status"], "WARNING")
+        self.assertEqual(len((await self.client.get(path + "/events")).json()), 4)
+
     async def test_missing_or_invalid_lift_time_is_rejected(self):
         job = await self.create()
         job = await self.transition(job, "PREHEAT_COMPLETED")
