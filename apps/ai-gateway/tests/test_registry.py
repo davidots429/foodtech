@@ -69,7 +69,14 @@ class AtomicClient:
             self.before_commit = None
         self.calls.append(TransactItems)
         updates = []
+        puts = []
         for action in TransactItems:
+            if "Put" in action:
+                value = self._decode(action["Put"]["Item"])
+                if (value["pk"], value["sk"]) in self.table.items:
+                    raise TransactionCanceledException()
+                puts.append(value)
+                continue
             spec = action.get("Update") or action["ConditionCheck"]
             key = self._decode(spec["Key"])
             values = self._decode(spec["ExpressionAttributeValues"])
@@ -109,6 +116,8 @@ class AtomicClient:
                     item["remaining_usd"] += values[":refund"]
                 if "TENANT#" in key["pk"] and ":cost" in values:
                     item["calls_remaining"] -= 1
+        for value in puts:
+            self.table.items[(value["pk"], value["sk"])] = value
 
 
 class RegistryTests(unittest.TestCase):
@@ -136,8 +145,10 @@ class RegistryTests(unittest.TestCase):
                          Decimal("0.8"))
         self.assertEqual(self.service.prepare(Caller("business-api", "tenant-a"), "run-1").code,
                          "LIMIT_EXCEEDED")
-        self.registry.finish("run-1", succeeded=True, actual_cost_usd=Decimal("0.1"))
+        self.registry.finish("run-1", succeeded=True, actual_cost_usd=Decimal("0.1"),
+                             response_text="합성 조리 안내")
         self.assertEqual(self.registry.execution_state("run-1"), "SUCCEEDED")
+        self.assertEqual(self.registry.execution_result("run-1")["response_text"], "합성 조리 안내")
         self.assertEqual(self.registry.budget("tenant-a", "ollama").project_remaining_usd,
                          Decimal("0.9"))
 
@@ -151,8 +162,10 @@ class RegistryTests(unittest.TestCase):
     def test_settlement_exceeding_remaining_budget_is_atomic(self):
         self.assertTrue(self.service.prepare(Caller("business-api", "tenant-a"), "run-1").allowed)
         with self.assertRaises(Exception):
-            self.registry.finish("run-1", succeeded=True, actual_cost_usd=Decimal("2"))
+            self.registry.finish("run-1", succeeded=True, actual_cost_usd=Decimal("2"),
+                                 response_text="cannot be committed")
         self.assertEqual(self.registry.execution_state("run-1"), "RESERVED")
+        self.assertIsNone(self.registry.execution_result("run-1"))
         self.assertEqual(self.registry.budget("tenant-a", "ollama").project_remaining_usd,
                          Decimal("0.8"))
 
