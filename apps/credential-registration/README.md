@@ -8,5 +8,5 @@
 
 개발용 실검증은 저장소 루트에서 `AWS_PROFILE=foodtech uv run --no-sync python tests/live/credential_vault_check.py`로 재실행한다. 더미 키만 저장·복호화하고 잘못된 context를 거부한 뒤 시험 항목을 삭제한다. AWS KMS·DynamoDB 요청 비용이 발생한다.
 
-2026-11-07 IAM 시뮬레이터에서 등록 역할의 `GenerateDataKey`와 Gateway 역할의 `Decrypt`는 허용되고 반대 방향은 거부됐다. Vault 테이블 접근은 두 역할 모두 조직 정책 평가에서 거부로 표시됐다. 개발자 자격증명으로 수행한 위 실검증은 ECS 역할의 실제 접근 성공을 증명하지 않으므로, 역할을 서비스에 연결하기 전에 조직 정책과 실제 Task 실행을 확인해야 한다.
+2026-11-07 두 역할을 각각 임시 Fargate Task에 연결해 실제 호출을 시험했다. 등록 역할은 Vault `PutItem`·KMS `GenerateDataKey`에 성공하고 `GetItem`·`Decrypt`는 거부됐다. Gateway 역할은 Vault `GetItem`·KMS `Decrypt`에 성공하고 `PutItem`·`GenerateDataKey`는 거부됐다. IAM 시뮬레이터는 실제 Vault 접근에 성공한 개발 역할까지 조직 정책 거부로 표시했으나, 실제 Task의 성공·거부 결과는 의도한 권한 경계와 일치했다. 시험 리소스는 정리했다. 실제 서비스 Task Definition 연결은 후속이다.
 
