@@ -10,6 +10,8 @@ from .ollama import OllamaClient
 from .policy import Caller, Execution, Feature
 from .registry import DynamoRegistry
 from .service import GatewayService
+from .provider import LiteLLMProvider
+from .vault import DynamoCredentialVault
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -45,7 +47,12 @@ def _service(request: Request) -> GatewayService:
         raise HTTPException(503, "AI registry is not configured")
     period = datetime.now(timezone.utc).strftime("%Y-%m")
     registry = DynamoRegistry(table, period, local_models={"llama3.1:8b"})
-    return GatewayService(registry)
+    vault_table = os.getenv("FOODTECH_CREDENTIAL_VAULT_TABLE", "")
+    key_arns = {value.strip() for value in os.getenv("FOODTECH_CREDENTIAL_KMS_KEY_ARNS", "").split(",")
+                if value.strip()}
+    vault = (DynamoCredentialVault(vault_table, os.getenv("FOODTECH_STAGE", "dev"), key_arns)
+             if vault_table and key_arns else None)
+    return GatewayService(registry, vault=vault, provider=LiteLLMProvider() if vault else None)
 
 
 @app.post("/internal/ai/executions", status_code=201)
@@ -65,8 +72,15 @@ async def invoke_execution(request: Request, execution_id: str, body: InvokeExec
     service = _service(request)
     ollama = getattr(request.app.state, "ollama_client", None) or OllamaClient(
         os.getenv("FOODTECH_OLLAMA_URL", "http://127.0.0.1:11434"))
-    outcome = await service.execute_local(Caller("business-api", body.tenant_id),
-                                          execution_id, body.prompt, ollama)
+    execution = service.registry.execution(execution_id)
+    if not execution or execution.tenant_id != body.tenant_id:
+        raise HTTPException(403, "EXECUTION_NOT_FOUND")
+    if execution.model_id == "llama3.1:8b":
+        outcome = await service.execute_local(Caller("business-api", body.tenant_id),
+                                              execution_id, body.prompt, ollama)
+    else:
+        outcome = await service.execute_external(Caller("business-api", body.tenant_id),
+                                                 execution_id, body.prompt)
     if outcome.state == "DENIED":
         raise HTTPException(403, outcome.error_code)
     return {"execution_id": outcome.execution_id, "state": outcome.state,

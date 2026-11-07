@@ -2,7 +2,14 @@
 name = "foodtech-ai-gateway"
 version = "0.0.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["boto3>=1.40,<2", "fastapi>=0.120,<1", "httpx>=0.28,<1", "uvicorn>=0.35,<1"]
+dependencies = [
+    "aws-encryption-sdk[mpl]==4.0.7",
+    "boto3>=1.40,<2",
+    "fastapi>=0.120,<1",
+    "httpx>=0.28,<1",
+    "litellm-core==1.108.1",
+    "uvicorn>=0.35,<1",
+]
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

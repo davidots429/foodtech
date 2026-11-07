@@ -2,6 +2,7 @@ import { App, CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as kms from "aws-cdk-lib/aws-kms";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 
@@ -170,6 +171,66 @@ class AiExecutionRegistryStack extends Stack {
   }
 }
 
+class CredentialVaultStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const keyPeriod = app.node.tryGetContext("credentialKeyPeriod");
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(keyPeriod ?? "")) {
+      throw new Error("credentialKeyPeriod must be YYYY-MM for the initial key pool");
+    }
+    const table = new dynamodb.Table(this, "CredentialVault", {
+      tableName: `foodtech-ai-credential-vault-${stage}`,
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true, recoveryPeriodInDays: 7 },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const key = new kms.Key(this, "CredentialStorageKey", {
+      alias: `alias/foodtech/ai-credential-${stage}-${keyPeriod}`,
+      description: "Foodtech external AI credential envelope wrapping key",
+      enableKeyRotation: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const taskTrust = () => new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
+      conditions: {
+        ArnLike: { "aws:SourceArn": `arn:${this.partition}:ecs:${this.region}:${this.account}:*` },
+        StringEquals: { "aws:SourceAccount": this.account },
+      },
+    });
+    const registration = new iam.Role(this, "CredentialRegistrationTaskRole", {
+      assumedBy: taskTrust(),
+      description: "Write-only credential vault and data-key generation for registration",
+    });
+    const gateway = new iam.Role(this, "AiGatewayTaskRole", {
+      assumedBy: taskTrust(),
+      description: "Credential vault read and storage-key decrypt for AI Gateway only",
+    });
+    table.grant(registration, "dynamodb:PutItem");
+    table.grant(gateway, "dynamodb:GetItem");
+    const registry = dynamodb.Table.fromTableName(
+      this, "ExecutionRegistryForGateway", `foodtech-ai-execution-registry-${stage}`,
+    );
+    registry.grant(gateway, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+      "dynamodb:ConditionCheckItem");
+    const restrictContext = (grant: iam.Grant) => {
+      for (const statement of [...grant.principalStatements, ...grant.resourceStatements]) {
+        statement.addCondition("StringEquals", {
+          "kms:EncryptionContext:purpose": "EXTERNAL_AI_CREDENTIAL",
+          "kms:EncryptionContext:environment": stage,
+        });
+      }
+    };
+    restrictContext(key.grant(registration, "kms:GenerateDataKey"));
+    restrictContext(key.grant(gateway, "kms:Decrypt"));
+    new CfnOutput(this, "CredentialVaultTableName", { value: table.tableName });
+    new CfnOutput(this, "CredentialStorageKeyArn", { value: key.keyArn });
+    new CfnOutput(this, "CredentialRegistrationTaskRoleArn", { value: registration.roleArn });
+    new CfnOutput(this, "AiGatewayTaskRoleArn", { value: gateway.roleArn });
+  }
+}
+
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
 if (app.node.tryGetContext("provisionIdentity") === "true") {
@@ -187,6 +248,10 @@ if (app.node.tryGetContext("provisionCookingJobs") === "true") {
 if (app.node.tryGetContext("provisionAiExecutionRegistry") === "true") {
   const registry = new AiExecutionRegistryStack(app, `FoodtechAiExecutionRegistry-${stage}`, { env });
   Tags.of(registry).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionCredentialVault") === "true") {
+  const vault = new CredentialVaultStack(app, `FoodtechCredentialVault-${stage}`, { env });
+  Tags.of(vault).add("Project", "foodtech");
 }
 app.synth();
 

@@ -15,7 +15,7 @@
 
 직접 내부 HTTP의 첫 구현에는 mTLS를 사용한다. `python -m foodtech_ai_gateway.serve`는 loopback HTTPS에서 서버 인증서·키와 **업무 API 전용 CA**를 요구하고, 클라이언트 인증서가 없으면 TLS 단계에서 연결을 거절한다. 앱의 내부 경로도 전용 mTLS 실행기와 HTTPS가 아니면 거절한다. 임의의 신원 헤더를 인증 근거로 사용하지 않는다. 서버 인증서의 SAN에는 `127.0.0.1`을 넣고 업무 API의 클라이언트 인증서만 전용 CA로 서명한다. 개발용 인증서·키는 저장소 밖에서 관리한다. 향후 배포 진입 계층에서 IAM 인증이 가능하면 이 경계를 재검토한다.
 
-`POST /internal/ai/executions`는 인증된 업무 API가 전달한 tenant 범위에 `GENERAL_GUIDE`·`llama3.1:8b` 로컬 실행을 생성한다. `POST /internal/ai/executions/{execution_id}/invoke`는 요청의 실행 ID로 기록을 다시 읽고 정책·한도 예약 후 loopback Ollama `/api/generate`에 `stream=false`, `num_ctx=4096`으로 요청한다. 결과 또는 정규화된 실패 코드를 `RESULT` 항목과 종료 상태·실제 비용 정산에 함께 기록한다. 프롬프트 원문은 레지스트리에 넣지 않는다. 결과 원문에는 90일 TTL을 설정했으며 정해진 시점의 Hard Delete 보장은 별도 삭제 작업에서 구현해야 한다. 이 첫 경로는 로컬 기본 모델만 지원하며 외부 공급자 키 복호화·호출, LangChain/LiteLLM 통합은 후속이다.
+`POST /internal/ai/executions`는 인증된 업무 API가 전달한 tenant 범위에 `GENERAL_GUIDE`·`llama3.1:8b` 로컬 실행을 생성한다. `POST /internal/ai/executions/{execution_id}/invoke`는 요청의 실행 ID로 기록을 다시 읽고 정책·한도 예약 후 로컬 실행은 loopback Ollama `/api/generate`에 `stream=false`, `num_ctx=4096`으로 요청한다. 승인된 외부 실행 기록은 아래 저장 자격증명·LiteLLM 경계를 거친다. 결과 또는 정규화된 실패 코드를 `RESULT` 항목과 종료 상태·실제 비용 정산에 함께 기록한다. 프롬프트 원문은 레지스트리에 넣지 않는다. 결과 원문에는 90일 TTL을 설정했으며 정해진 시점의 Hard Delete 보장은 별도 삭제 작업에서 구현해야 한다. 고객이 외부 실행을 생성하는 화면·API는 후속 작업이다.
 
 필수 환경변수는 Gateway의 `FOODTECH_AI_REGISTRY_TABLE`, `FOODTECH_GATEWAY_SERVER_CERT`, `FOODTECH_GATEWAY_SERVER_KEY`, `FOODTECH_GATEWAY_BUSINESS_CA`와 업무 API의 `FOODTECH_GATEWAY_URL`, `FOODTECH_GATEWAY_CA`, `FOODTECH_BUSINESS_CLIENT_CERT`, `FOODTECH_BUSINESS_CLIENT_KEY`다. Gateway의 `FOODTECH_OLLAMA_URL` 기본값은 `http://127.0.0.1:11434`이며 loopback URL만 허용한다. 현재 월의 tenant·ollama provider·project 한도와 승인된 `llama3.1:8b` 모델 레코드를 먼저 준비해야 실행된다.
 
@@ -28,3 +28,11 @@
 2026-11-07에는 [실저장 검증 스크립트](../../tests/live/ai_gateway_dynamodb_check.py)로 같은 업무 API → 실제 mTLS Gateway → 실제 Ollama → 개발용 DynamoDB 레지스트리 경로를 결합했다. 합성 요청의 `SUCCEEDED`와 응답 본문 저장 일치, Ollama 종료 후 `FAILED / OLLAMA_UNAVAILABLE`, 두 실행의 tenant 호출 잔여량 `2→1→0`을 확인했다. 시험 레코드는 삭제했고 테이블 항목 수 0을 확인했다. 재실행 명령은 저장소 루트에서 `AWS_PROFILE=foodtech uv run --no-sync python tests/live/ai_gateway_dynamodb_check.py`다. 스크립트는 로컬 Ollama와 Gateway를 임시 실행하며 AWS 요청이 발생한다. 고객 세션·CSRF는 합성 대역이고, 실제 Cognito 세션·배포된 Gateway 실행 역할·서버 GPU 성능은 아직 검증하지 않았다.
 
 로컬 검사는 `uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v`로 실행한다. 자격증명 값·암호문·프롬프트 원문을 시험 입력에 넣지 않는다.
+
+## 저장 자격증명과 외부 공급자 첫 실행 경계
+
+이미 승인된 외부 실행 기록의 ID로 들어온 요청은 모델·credential·동의·tenant 소유권·Tier·한도를 레지스트리에서 다시 확인한다. `FOODTECH_CREDENTIAL_VAULT_TABLE`과 `FOODTECH_CREDENTIAL_KMS_KEY_ARNS`가 설정된 Gateway에서만 Vault를 일관되게 읽는다. Vault ref는 `vault:<credential_id>`로 고정하고 credential의 tenant 가명값·provider·환경·허용 KMS 키 ARN과 비교한다. 저장 암호문은 AWS Encryption SDK 4.0.7의 committing signed suite `0x0578`과 `REQUIRE_ENCRYPT_REQUIRE_DECRYPT`로 복호화한다. KMS keyring은 서버가 허용한 키만 사용하고 encryption context의 소유자·목적·환경·버전이 맞아야 평문을 반환한다.
+
+공급자 호출은 LiteLLM Core 1.108.1의 비동기 `acompletion`을 사용하며 `openai/`, `gemini/`, `anthropic/`의 서버 레지스트리 모델만 허용한다. API 키는 호출별 인자로만 전달하고 응답·오류·레지스트리에 기록하지 않는다. 오류는 정해진 코드로만 반환한다. 호출 뒤 `bytearray`는 모든 경로에서 덮어쓰지만 Python 문자열·라이브러리 내부 복사본의 완전 소거는 보장하지 않는다. LiteLLM 비용 목록은 패키지에 포함된 버전으로 고정하여 시작 시 별도 네트워크 조회를 막는다. 공급자 오류 시 실제 청구액을 즉시 알 수 없으므로 예약 비용을 보존한다.
+
+2026-11-07 개발용 KMS·Vault 테이블에서 더미 키의 암호화·복호화, 잘못된 context 거부, 실제 DynamoDB 실행 레지스트리의 동의·예약·성공 결과와 한도 차감을 검증했다. 외부 공급자는 네트워크 대역으로 처리했으며 실제 키·유료 API 요청은 없었다. 시험 후 두 테이블 항목 수는 0이다. [재실행 스크립트](../../tests/live/credential_vault_check.py)를 사용한다. 별도의 임시 Fargate Task에서 Gateway 역할의 Vault `GetItem`·KMS `Decrypt` 허용과 반대 방향 권한 거부도 확인했다. 외부 실행 생성·고지·실동의 UI, 전송 RSA 암호화·등록 API, 가격 상한의 보수적 산정과 청구 대사, 실제 공급자 네트워크·egress, tenant STS tag 조건과 서비스 Task Definition 연결은 후속이다. 현재 Business API의 고객 AI 경로는 로컬 모델만 생성한다.

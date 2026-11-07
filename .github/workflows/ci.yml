@@ -33,6 +33,7 @@ jobs:
       - run: uv run --no-sync python -c "from foodtech_business_api.main import app as business; from foodtech_ai_gateway.main import app as gateway; assert business.title and gateway.title"
       - run: uv run --no-sync python -m unittest discover -s apps/business-api/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v
+      - run: uv run --no-sync python -m unittest discover -s apps/credential-registration/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/collection-adapter/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/standardization-worker/tests -v
 
