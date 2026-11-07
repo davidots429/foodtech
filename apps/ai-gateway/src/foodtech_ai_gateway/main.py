@@ -12,6 +12,7 @@ from .registry import DynamoRegistry
 from .service import GatewayService
 from .provider import LiteLLMProvider
 from .vault import DynamoCredentialVault
+from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -27,6 +28,22 @@ class NewExecution(StrictBody):
 class InvokeExecution(StrictBody):
     tenant_id: str = Field(min_length=1, max_length=128)
     prompt: str = Field(min_length=1, max_length=4000)
+
+
+class ExternalPreview(StrictBody):
+    tenant_id: str = Field(min_length=1, max_length=128)
+    model_id: str = Field(min_length=1, max_length=128)
+    credential_id: str = Field(min_length=1, max_length=128)
+
+
+class ExternalConfirm(StrictBody):
+    tenant_id: str = Field(min_length=1, max_length=128)
+    notice_version: str = Field(min_length=1, max_length=64)
+
+
+def _external_enabled() -> None:
+    if os.getenv("FOODTECH_EXTERNAL_EXECUTION_ENABLED") != "true":
+        raise HTTPException(503, "EXTERNAL_EXECUTION_DISABLED")
 
 
 def _internal(request: Request) -> None:
@@ -79,9 +96,56 @@ async def invoke_execution(request: Request, execution_id: str, body: InvokeExec
         outcome = await service.execute_local(Caller("business-api", body.tenant_id),
                                               execution_id, body.prompt, ollama)
     else:
-        outcome = await service.execute_external(Caller("business-api", body.tenant_id),
-                                                 execution_id, body.prompt)
+        raise HTTPException(403, "EXTERNAL_FIXTURE_CONFIRMATION_REQUIRED")
     if outcome.state == "DENIED":
         raise HTTPException(403, outcome.error_code)
     return {"execution_id": outcome.execution_id, "state": outcome.state,
             "response_text": outcome.response_text, "error_code": outcome.error_code}
+
+
+@app.post("/internal/ai/external/preview", status_code=201)
+async def external_preview(request: Request, body: ExternalPreview) -> dict:
+    _internal(request)
+    _external_enabled()
+    try:
+        return ExternalFlow(_service(request).registry).preview(
+            body.tenant_id, body.model_id, body.credential_id)
+    except ExternalFlowError as error:
+        raise HTTPException(409, error.code) from None
+
+
+@app.post("/internal/ai/external/quotes/{quote_id}/confirm")
+async def external_confirm(request: Request, quote_id: str, body: ExternalConfirm) -> dict:
+    _internal(request)
+    _external_enabled()
+    service = _service(request)
+    try:
+        execution_id = ExternalFlow(service.registry).confirm(
+            body.tenant_id, quote_id, body.notice_version)
+    except ExternalFlowError as error:
+        raise HTTPException(409, error.code) from None
+    outcome = await service.execute_external(
+        Caller("business-api", body.tenant_id), execution_id, FIXTURE_PROMPT)
+    if outcome.state == "DENIED":
+        raise HTTPException(403, outcome.error_code)
+    result = service.registry.execution_result(execution_id)
+    return {"execution_id": outcome.execution_id, "state": outcome.state,
+            "response_text": outcome.response_text, "error_code": outcome.error_code,
+            "actual_cost_usd": str(result["actual_cost_usd"]) if result else None,
+            "settlement_status": result.get("settlement_status") if result else None}
+
+
+@app.get("/internal/ai/executions/{execution_id}/status")
+async def execution_status(request: Request, execution_id: str, tenant_id: str) -> dict:
+    _internal(request)
+    service = _service(request)
+    execution = service.registry.execution(execution_id)
+    if not execution or execution.tenant_id != tenant_id:
+        raise HTTPException(404, "EXECUTION_NOT_FOUND")
+    state = service.registry.execution_state(execution_id)
+    result = service.registry.execution_result(execution_id)
+    return {"execution_id": execution_id, "state": state,
+            "response_text": result.get("response_text") if result else None,
+            "error_code": result.get("error_code") if result else None,
+            "actual_cost_usd": str(result["actual_cost_usd"]) if result else None,
+            "settlement_status": result.get("settlement_status") if result else None}
