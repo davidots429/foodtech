@@ -2,6 +2,8 @@
 
 고객의 자격증명 등록은 `GET /api/customer/credentials/transfer-key`와 `POST /api/customer/credentials`로 제공한다. 고객 세션과 현재 Cognito 접근을 확인하고 등록 시 CSRF를 검사한다. 브라우저는 Web Crypto RSA-OAEP-SHA-256으로 API 키 값만 암호화하고, 업무 API는 공급자·버전·암호문과 서버 세션의 고객 ID를 전용 mTLS 등록 서비스에 전달한다. 키 원문이나 저장용 복호화 권한은 업무 API에 없다. `FOODTECH_REGISTRATION_URL`·`FOODTECH_REGISTRATION_CA`와 업무 API 클라이언트 인증서가 필요하며, 등록 서비스가 없으면 실패를 반환한다. 외부 공급자 호출·동의·비용 예약은 이 등록 화면에서 실행하지 않는다.
 
+고객의 합성 외부 AI 시험은 `/api/customer/ai/external/preview`에서 모델·자격증명 ID를 보내 견적을 받고, 표시된 외부 전송과 비용 가능성에 명시 동의한 경우에만 `/api/customer/ai/external/quotes/{id}/confirm`으로 실행한다. 두 요청 모두 고객 세션과 CSRF를 검사하고 tenant ID는 서버 세션에서만 가져온다. `/api/customer/ai/executions/{id}/status`는 확인 요청이 끊긴 경우 결과를 다시 읽는다. 업무 API는 Gateway에 고정된 합성 질문의 내용이나 저장된 API 키를 받지 않는다. Gateway의 외부 실행 설정이 꺼져 있으면 견적을 만들 수 없다.
+
 `POST /api/customer/ai/guidance`는 고객 세션·CSRF를 확인한 뒤 업무 API의 클라이언트 인증서로 Gateway에 mTLS 연결한다. Gateway에서 실행 ID를 만들고 그 ID로 로컬 AI 실행을 요청한다. 브라우저는 Gateway URL·인증서·모델 ID·자격증명을 받지 않는다. 이 첫 흐름은 `GENERAL_GUIDE`와 로컬 `llama3.1:8b`에 한정되며 실제 과금은 없다. Gateway mTLS 설정이 없으면 503으로 거절한다.
 
 고객 공개 가입과 로그인은 Cognito 관리형 화면에서 시작한다. Business API가 Authorization Code + PKCE의 state·verifier를 관리하고 코드 교환, ID·Access 토큰의 서명·발급자·client·용도를 확인한다. 브라우저에는 HttpOnly 세션 쿠키만 전달한다. 관리형 로그인 토큰에 `acr`·`amr`가 제공되지 않는 시험 Pool에서는 관리자 화면이 별도 App Client의 Cognito `USER_PASSWORD_AUTH` → `SOFTWARE_TOKEN_MFA` 챌린지를 사용한다. 관리자 세션은 Cognito가 실제 TOTP 응답을 승인하고 `foodtech-admin` 그룹과 현재 계정 상태를 확인한 경우에만 발급한다.

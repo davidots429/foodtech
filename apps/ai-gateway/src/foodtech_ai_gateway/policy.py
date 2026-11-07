@@ -66,6 +66,9 @@ class Model:
     activated_at: datetime | None
     custom: bool = False
     approved_by: str | None = None
+    input_cost_ceiling_usd: Decimal | None = None
+    output_cost_ceiling_usd: Decimal | None = None
+    price_version: str | None = None
 
 
 @dataclass(frozen=True)
