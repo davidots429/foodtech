@@ -527,12 +527,16 @@ source = { editable = "apps/credential-registration" }
 dependencies = [
     { name = "aws-encryption-sdk", extra = ["mpl"] },
     { name = "boto3" },
+    { name = "fastapi" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aws-encryption-sdk", extras = ["mpl"], specifier = "==4.0.7" },
     { name = "boto3", specifier = ">=1.40,<2" },
+    { name = "fastapi", specifier = ">=0.120,<1" },
+    { name = "uvicorn", specifier = ">=0.35,<1" },
 ]
 
 [[package]]
