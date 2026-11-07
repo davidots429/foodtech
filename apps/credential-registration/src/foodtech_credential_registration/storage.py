@@ -33,6 +33,12 @@ class CredentialWriter:
 
     def store(self, credential_id: str, tenant_pseudonym: str, provider: str,
               plaintext: bytearray, *, pool_version: str, shard_id: str) -> None:
+        item = self.encrypt_item(credential_id, tenant_pseudonym, provider, plaintext,
+                                 pool_version=pool_version, shard_id=shard_id)
+        self.table.put_item(Item=item, ConditionExpression=Attr("pk").not_exists())
+
+    def encrypt_item(self, credential_id: str, tenant_pseudonym: str, provider: str,
+                     plaintext: bytearray, *, pool_version: str, shard_id: str) -> dict:
         try:
             if not credential_id or len(credential_id) > 256 or not tenant_pseudonym or \
                     provider not in {"openai", "google", "anthropic"} or \
@@ -54,7 +60,7 @@ class CredentialWriter:
                                                   encryption_context=context, algorithm=SUITE)
             if header.algorithm != SUITE:
                 raise ValueError("unsupported credential encryption suite")
-            self.table.put_item(Item={
+            return {
                 "pk": f"CREDENTIAL#{credential_id}", "sk": "META", "state": "ACTIVE",
                 "credential_id": credential_id, "tenant_pseudonym": tenant_pseudonym,
                 "provider": provider, "environment": self.environment,
@@ -62,6 +68,6 @@ class CredentialWriter:
                 "shard_id": shard_id, "key_arn": self.key_arn,
                 # The AWS Encryption SDK message includes the encrypted data key.
                 "ciphertext": ciphertext,
-            }, ConditionExpression=Attr("pk").not_exists())
+            }
         finally:
             plaintext[:] = b"\x00" * len(plaintext)

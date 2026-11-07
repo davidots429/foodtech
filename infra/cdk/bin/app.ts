@@ -193,6 +193,20 @@ class CredentialVaultStack extends Stack {
       enableKeyRotation: true,
       removalPolicy: RemovalPolicy.RETAIN,
     });
+    const transferKey = new kms.Key(this, "CredentialTransferKey", {
+      alias: `alias/foodtech/ai-credential-transfer-${stage}-${keyPeriod}`,
+      description: "Foodtech browser-to-registration RSA-OAEP transfer key",
+      keySpec: kms.KeySpec.RSA_4096,
+      keyUsage: kms.KeyUsage.ENCRYPT_DECRYPT,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const hmacKey = new kms.Key(this, "CredentialPseudonymKey", {
+      alias: `alias/foodtech/ai-credential-hmac-${stage}-${keyPeriod}`,
+      description: "Foodtech credential tenant pseudonym HMAC key",
+      keySpec: kms.KeySpec.HMAC_256,
+      keyUsage: kms.KeyUsage.GENERATE_VERIFY_MAC,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
     const taskTrust = () => new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
       conditions: {
         ArnLike: { "aws:SourceArn": `arn:${this.partition}:ecs:${this.region}:${this.account}:*` },
@@ -214,6 +228,7 @@ class CredentialVaultStack extends Stack {
     );
     registry.grant(gateway, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
       "dynamodb:ConditionCheckItem");
+    registry.grant(registration, "dynamodb:PutItem");
     const restrictContext = (grant: iam.Grant) => {
       for (const statement of [...grant.principalStatements, ...grant.resourceStatements]) {
         statement.addCondition("StringEquals", {
@@ -224,8 +239,16 @@ class CredentialVaultStack extends Stack {
     };
     restrictContext(key.grant(registration, "kms:GenerateDataKey"));
     restrictContext(key.grant(gateway, "kms:Decrypt"));
+    transferKey.grant(registration, "kms:GetPublicKey");
+    const transferDecrypt = transferKey.grant(registration, "kms:Decrypt");
+    for (const statement of [...transferDecrypt.principalStatements, ...transferDecrypt.resourceStatements]) {
+      statement.addCondition("StringEquals", { "kms:EncryptionAlgorithm": "RSAES_OAEP_SHA_256" });
+    }
+    hmacKey.grant(registration, "kms:GenerateMac");
     new CfnOutput(this, "CredentialVaultTableName", { value: table.tableName });
     new CfnOutput(this, "CredentialStorageKeyArn", { value: key.keyArn });
+    new CfnOutput(this, "CredentialTransferKeyArn", { value: transferKey.keyArn });
+    new CfnOutput(this, "CredentialPseudonymKeyArn", { value: hmacKey.keyArn });
     new CfnOutput(this, "CredentialRegistrationTaskRoleArn", { value: registration.roleArn });
     new CfnOutput(this, "AiGatewayTaskRoleArn", { value: gateway.roleArn });
   }
