@@ -1,8 +1,12 @@
 import { App, CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as ecr from "aws-cdk-lib/aws-ecr";
+import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
+import * as logs from "aws-cdk-lib/aws-logs";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 
@@ -172,6 +176,12 @@ class AiExecutionRegistryStack extends Stack {
 }
 
 class CredentialVaultStack extends Stack {
+  readonly registrationRole: iam.Role;
+  readonly gatewayRole: iam.Role;
+  readonly vaultTable: dynamodb.Table;
+  readonly storageKey: kms.Key;
+  readonly transferKey: kms.Key;
+  readonly hmacKey: kms.Key;
   constructor(scope: Construct, id: string, props: StackProps) {
     super(scope, id, props);
     const keyPeriod = app.node.tryGetContext("credentialKeyPeriod");
@@ -221,6 +231,12 @@ class CredentialVaultStack extends Stack {
       assumedBy: taskTrust(),
       description: "Credential vault read and storage-key decrypt for AI Gateway only",
     });
+    this.registrationRole = registration;
+    this.gatewayRole = gateway;
+    this.vaultTable = table;
+    this.storageKey = key;
+    this.transferKey = transferKey;
+    this.hmacKey = hmacKey;
     table.grant(registration, "dynamodb:PutItem");
     table.grant(gateway, "dynamodb:GetItem");
     const registry = dynamodb.Table.fromTableName(
@@ -254,6 +270,99 @@ class CredentialVaultStack extends Stack {
   }
 }
 
+class AiServiceTasksStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps, vault: CredentialVaultStack) {
+    super(scope, id, props);
+    const required = (name: string): string => {
+      const value = app.node.tryGetContext(name);
+      if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
+      return value.trim();
+    };
+    const image = (name: string): ecs.ContainerImage => {
+      const repositoryName = required(`${name}Repository`);
+      const tag = required(`${name}Tag`);
+      if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repositoryName) ||
+          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
+        throw new Error(`${name} requires a valid ECR repository and immutable version tag`);
+      }
+      const repository = ecr.Repository.fromRepositoryName(this, `${name}Ecr`, repositoryName);
+      return ecs.ContainerImage.fromEcrRepository(repository, tag);
+    };
+    const registrationImage = image("registrationImage");
+    const gatewayImage = image("gatewayImage");
+    const tlsSecret = (name: string) => {
+      const arn = required(name);
+      if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(arn)) {
+        throw new Error(`${name} must be a complete Secrets Manager ARN`);
+      }
+      return secretsmanager.Secret.fromSecretCompleteArn(this, name, arn);
+    };
+    const registrationTls = tlsSecret("registrationTlsSecretArn");
+    const gatewayTls = tlsSecret("gatewayTlsSecretArn");
+    const definition = (name: string, role: iam.IRole, memory: number, secret: secretsmanager.ISecret) => {
+      const task = new ecs.FargateTaskDefinition(this, `${name}Task`, {
+        cpu: 512, memoryLimitMiB: memory, taskRole: role,
+        runtimePlatform: { operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+          cpuArchitecture: ecs.CpuArchitecture.X86_64 },
+      });
+      const logGroup = new logs.LogGroup(this, `${name}Logs`, {
+        logGroupName: `/foodtech/${stage}/${name.toLowerCase()}`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      const tlsSecrets = {
+        FOODTECH_TLS_SERVER_CERT_PEM: ecs.Secret.fromSecretsManager(secret, "server_cert_pem"),
+        FOODTECH_TLS_SERVER_KEY_PEM: ecs.Secret.fromSecretsManager(secret, "server_key_pem"),
+        FOODTECH_TLS_BUSINESS_CA_PEM: ecs.Secret.fromSecretsManager(secret, "business_ca_pem"),
+      };
+      return { task, logGroup, tlsSecrets };
+    };
+    const registration = definition("CredentialRegistration", vault.registrationRole, 1024, registrationTls);
+    registration.task.addContainer("App", {
+      image: registrationImage,
+      essential: true,
+      user: "10001",
+      environment: {
+        FOODTECH_SERVICE: "credential-registration",
+        FOODTECH_REGISTRATION_BIND_HOST: "0.0.0.0",
+        FOODTECH_STAGE: stage,
+        FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
+        FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
+        FOODTECH_CREDENTIAL_STORAGE_KEY_ARN: vault.storageKey.keyArn,
+        FOODTECH_CREDENTIAL_TRANSFER_KEY_ARN: vault.transferKey.keyArn,
+        FOODTECH_CREDENTIAL_TRANSFER_KEY_VERSION: required("credentialKeyPeriod"),
+        FOODTECH_CREDENTIAL_HMAC_KEY_ARN: vault.hmacKey.keyArn,
+        FOODTECH_CREDENTIAL_HMAC_KEY_VERSION: required("credentialHmacVersion"),
+      },
+      secrets: registration.tlsSecrets,
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "app", logGroup: registration.logGroup }),
+      portMappings: [{ containerPort: 8444, protocol: ecs.Protocol.TCP }],
+    });
+    registrationTls.grantRead(registration.task.executionRole!);
+    const gateway = definition("AiGateway", vault.gatewayRole, 2048, gatewayTls);
+    gateway.task.addContainer("App", {
+      image: gatewayImage,
+      essential: true,
+      user: "10001",
+      environment: {
+        FOODTECH_SERVICE: "ai-gateway",
+        FOODTECH_GATEWAY_BIND_HOST: "0.0.0.0",
+        FOODTECH_STAGE: stage,
+        FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
+        FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
+        FOODTECH_CREDENTIAL_KMS_KEY_ARNS: vault.storageKey.keyArn,
+        FOODTECH_EXTERNAL_EXECUTION_ENABLED: "false",
+      },
+      secrets: gateway.tlsSecrets,
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "app", logGroup: gateway.logGroup }),
+      portMappings: [{ containerPort: 8443, protocol: ecs.Protocol.TCP }],
+    });
+    gatewayTls.grantRead(gateway.task.executionRole!);
+    new CfnOutput(this, "CredentialRegistrationTaskArn", { value: registration.task.taskDefinitionArn });
+    new CfnOutput(this, "AiGatewayTaskArn", { value: gateway.task.taskDefinitionArn });
+  }
+}
+
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
 if (app.node.tryGetContext("provisionIdentity") === "true") {
@@ -275,6 +384,12 @@ if (app.node.tryGetContext("provisionAiExecutionRegistry") === "true") {
 if (app.node.tryGetContext("provisionCredentialVault") === "true") {
   const vault = new CredentialVaultStack(app, `FoodtechCredentialVault-${stage}`, { env });
   Tags.of(vault).add("Project", "foodtech");
+  if (app.node.tryGetContext("provisionAiServiceTasks") === "true") {
+    const tasks = new AiServiceTasksStack(app, `FoodtechAiServiceTasks-${stage}`, { env }, vault);
+    Tags.of(tasks).add("Project", "foodtech");
+  }
+} else if (app.node.tryGetContext("provisionAiServiceTasks") === "true") {
+  throw new Error("provisionAiServiceTasks requires provisionCredentialVault=true");
 }
 app.synth();
 

@@ -1,4 +1,7 @@
 {
-  "app": "npx tsx bin/app.ts"
+  "app": "npx tsx bin/app.ts",
+  "context": {
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
+  }
 }
 

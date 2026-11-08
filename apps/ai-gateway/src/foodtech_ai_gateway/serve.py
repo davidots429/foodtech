@@ -17,7 +17,8 @@ def main() -> None:
     if not os.getenv("FOODTECH_AI_REGISTRY_TABLE"):
         raise ValueError("AI registry table is required")
     app.state.mtls_listener = True
-    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("FOODTECH_GATEWAY_PORT", "8443")),
+    uvicorn.run(app, host=os.getenv("FOODTECH_GATEWAY_BIND_HOST", "127.0.0.1"),
+                port=int(os.getenv("FOODTECH_GATEWAY_PORT", "8443")),
                 ssl_certfile=cert, ssl_keyfile=key, ssl_ca_certs=business_ca,
                 ssl_cert_reqs=ssl.CERT_REQUIRED, proxy_headers=False, access_log=False)
 
