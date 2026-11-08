@@ -24,6 +24,8 @@
 
 같은 하네스에 `--aws --smoke-only`를 붙이면 기존 `foodtech` 개발용 DynamoDB·KMS에서 더미 키의 전송 복호화·저장 암호화·재조회와 견적·동의·예약·정산을 HTTP/mTLS 경로로 검증한다. 실행 전 두 개발용 테이블이 비어 있어야 하며, 종료 시 생성한 항목을 삭제한다. 2026-11-08 이 경로도 통과했고 종료 후 레지스트리와 Vault가 각각 0건임을 확인했다. 이 모드에서도 고객 인증과 외부 공급자 응답은 합성 대역이며 유료 공급자 API를 호출하지 않는다. AWS KMS·DynamoDB 요청 비용은 발생할 수 있다.
 
+실제 Cognito 고객 세션까지 연결하려면 로컬 `.env`의 기존 개발용 Cognito callback·공유 인증 테이블 설정을 준비하고 `AWS_PROFILE=foodtech uv run --no-sync python tests/live/customer_external_cognito_harness.py`를 실행한다. 개발용 레지스트리·Vault가 비어 있어야 시작한다. 계정 소유자가 Cognito 화면에서 비밀번호와 필요한 TOTP를 직접 입력한 뒤 고객 화면에 합성 시험 키를 등록하고, 견적·동의·실행·상태를 확인한다. 종료 시 하네스가 생성한 레지스트리·Vault 항목을 삭제한다. 공급자 응답은 합성 대역이며 실제 유료 API 요청은 없다. Cognito·KMS·DynamoDB 사용에 따른 AWS 요청 비용은 발생할 수 있다.
+
 ## 구현 경계
 
 - 로그인 흐름과 세션은 DynamoDB 테이블이 지정되면 공유된다. 비어 있으면 로컬 개발용 메모리 저장소를 사용하며 재시작 시 로그아웃된다. DynamoDB TTL 삭제는 비동기이므로 API는 모든 읽기에서 만료 시각을 직접 검사한다.
