@@ -19,6 +19,7 @@ function App() {
   const [totpStatus, setTotpStatus] = useState("");
   const [totpBusy, setTotpBusy] = useState(false);
   const [totpCompleted, setTotpCompleted] = useState(false);
+  const [credentialId, setCredentialId] = useState("");
   const totpRequestActive = useRef(false);
 
   useEffect(() => {
@@ -98,8 +99,9 @@ function App() {
         {example && <div className="card"><h3>{example.title}</h3><p>{example.message}</p><small>합성 예시 · 읽기 전용</small></div>}
         <p className="small">챗봇과 AI 권고는 후속 구현에서 연결됩니다.</p></section>
       <CookingWorkspace csrf={session.csrf} />
-      <CredentialEnrollment csrf={session.csrf} />
-      <ExternalAiTrial csrf={session.csrf} />
+      <CredentialEnrollment csrf={session.csrf} onRegistered={setCredentialId} />
+      <ExternalAiTrial csrf={session.csrf} credentialId={credentialId}
+        onCredentialIdChange={setCredentialId} />
       <section><h2>시연용 유료 티어</h2><p className="price">00원</p><p>{notice}</p>
         <p>전환 신청 기능은 아직 구현되지 않았습니다.</p></section>
       <section><h2>계정 보안</h2><p>관리자 추가 인증에 사용할 인증 앱을 등록할 수 있습니다.</p>

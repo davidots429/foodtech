@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Quote = {
   quote_id: string;
@@ -21,27 +21,36 @@ type Outcome = {
   settlement_status?: string | null;
 };
 
-export function ExternalAiTrial({ csrf }: { csrf: string }) {
-  const [credentialId, setCredentialId] = useState("");
+export function ExternalAiTrial({ csrf, credentialId, onCredentialIdChange }: {
+  csrf: string; credentialId: string; onCredentialIdChange: (value: string) => void;
+}) {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [agreed, setAgreed] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const active = useRef(false);
+  const currentCredentialId = useRef(credentialId);
+  currentCredentialId.current = credentialId;
+
+  useEffect(() => {
+    setQuote(null); setAgreed(false); setOutcome(null); setError("");
+  }, [credentialId]);
 
   async function preview() {
     if (active.current) return;
+    const requestedCredentialId = credentialId.trim();
     active.current = true;
     setBusy(true); setError(""); setQuote(null); setOutcome(null); setAgreed(false);
     try {
       const response = await fetch("/api/customer/ai/external/preview", {
         method: "POST", credentials: "same-origin", cache: "no-store",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-        body: JSON.stringify({ model_id: "gpt-4o-mini", credential_id: credentialId.trim() }),
+        body: JSON.stringify({ model_id: "gpt-4o-mini", credential_id: requestedCredentialId }),
       });
       if (!response.ok) throw new Error("견적을 만들지 못했습니다. 모델·자격증명·한도 또는 시연 설정을 확인해 주세요.");
-      setQuote(await response.json() as Quote);
+      const nextQuote = await response.json() as Quote;
+      if (currentCredentialId.current.trim() === requestedCredentialId) setQuote(nextQuote);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "견적을 만들지 못했습니다.");
     } finally { active.current = false; setBusy(false); }
@@ -84,7 +93,7 @@ export function ExternalAiTrial({ csrf }: { csrf: string }) {
     <p>서버가 만든 합성 조리 질문만 전송합니다. 실제 고객 질문·레시피·장비 데이터는 이 기능에서 전송하지 않습니다.</p>
     <p className="small">플랫폼 유료 티어의 실제 과금은 없는 비영리 시연입니다. 외부 AI 공급자 API는 등록한 키의 계정에 비용을 청구할 수 있으므로, 관리자가 시험을 활성화한 경우에만 실행됩니다.</p>
     <label>등록한 자격증명 ID
-      <input value={credentialId} onChange={(event) => { setCredentialId(event.target.value); setQuote(null); setAgreed(false); }}
+      <input value={credentialId} onChange={(event) => onCredentialIdChange(event.target.value)}
         maxLength={128} autoComplete="off" disabled={busy} />
     </label>
     <button type="button" onClick={preview} disabled={busy || !credentialId.trim()}>견적 확인</button>
