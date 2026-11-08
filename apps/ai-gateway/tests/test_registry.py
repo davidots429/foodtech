@@ -89,6 +89,10 @@ class AtomicClient:
                         ":tenant" in values and item["tenant_id"] != values[":tenant"]
                     ):
                         raise TransactionCanceledException()
+                elif key["pk"].startswith("QUOTE#"):
+                    if item["state"] != values[":open"] or item["tenant_id"] != values[":tenant"] or \
+                            item["expires"] <= values[":now"]:
+                        raise TransactionCanceledException()
                 elif ":cost" in values:
                     if item["remaining_usd"] < values[":cost"] or (
                         "TENANT#" in key["pk"] and item["calls_remaining"] < 1
@@ -107,12 +111,19 @@ class AtomicClient:
                     item["reserved_provider"] = values[":provider"]
                 else:
                     item["actual_cost_usd"] = values[":actual"]
+                    item["settlement_status"] = values[":settlement"]
+            elif key["pk"].startswith("QUOTE#"):
+                item["state"] = values[":used"]
             else:
                 if ":cost" in values:
                     item["remaining_usd"] -= values[":cost"]
+                elif ":zero" in values:
+                    item["remaining_usd"] = values[":zero"]
+                    if "TENANT#" in key["pk"]:
+                        item["calls_remaining"] = 0
                 elif ":delta" in values:
                     item["remaining_usd"] -= values[":delta"]
-                else:
+                elif ":refund" in values:
                     item["remaining_usd"] += values[":refund"]
                 if "TENANT#" in key["pk"] and ":cost" in values:
                     item["calls_remaining"] -= 1
@@ -159,15 +170,18 @@ class RegistryTests(unittest.TestCase):
         validate_parameters({"TransactItems": self.client.calls[-1],
                              "ClientRequestToken": "11111111-1111-1111-1111-111111111111"}, shape)
 
-    def test_settlement_exceeding_remaining_budget_is_atomic(self):
+    def test_cost_above_reservation_is_recorded_and_freezes_all_limits(self):
         self.assertTrue(self.service.prepare(Caller("business-api", "tenant-a"), "run-1").allowed)
-        with self.assertRaises(Exception):
-            self.registry.finish("run-1", succeeded=True, actual_cost_usd=Decimal("2"),
-                                 response_text="cannot be committed")
-        self.assertEqual(self.registry.execution_state("run-1"), "RESERVED")
-        self.assertIsNone(self.registry.execution_result("run-1"))
+        self.registry.finish("run-1", succeeded=True, actual_cost_usd=Decimal("2"),
+                             response_text="requires reconciliation")
+        self.assertEqual(self.registry.execution_state("run-1"), "SUCCEEDED")
+        self.assertEqual(self.registry.execution_result("run-1")["unreconciled_usd"],
+                         Decimal("1.8"))
+        self.assertEqual(self.registry.execution_result("run-1")["settlement_status"],
+                         "REVIEW_REQUIRED")
+        self.assertEqual(self.registry.budget("tenant-a", "ollama").calls_remaining, 0)
         self.assertEqual(self.registry.budget("tenant-a", "ollama").project_remaining_usd,
-                         Decimal("0.8"))
+                         Decimal("0"))
 
     def test_tenant_mismatch_cannot_consume_budget(self):
         self.assertEqual(self.service.prepare(Caller("business-api", "tenant-b"), "run-1").code,

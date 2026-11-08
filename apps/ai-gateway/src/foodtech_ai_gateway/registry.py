@@ -109,6 +109,55 @@ class DynamoRegistry:
         fields["consented_at"] = _iso(value.consented_at)
         self._put_new("CONSENT", value.consent_id, fields)
 
+    def create_quote(self, quote_id: str, fields: dict[str, Any]) -> None:
+        self._put_new("QUOTE", quote_id, {**fields, "state": "OPEN"})
+
+    def quote(self, quote_id: str) -> dict[str, Any] | None:
+        return self._get("QUOTE", quote_id)
+
+    def confirm_quote(self, quote: dict[str, Any], consent: Consent,
+                      execution: Execution) -> None:
+        """Consume a preview and create its consent and execution atomically."""
+        if quote["quote_id"] != consent.consent_id or quote["execution_id"] != execution.execution_id or \
+                quote["tenant_id"] != execution.tenant_id or consent.tenant_id != execution.tenant_id or \
+                consent.execution_id != execution.execution_id or \
+                quote["model_id"] != execution.model_id or quote["credential_id"] != execution.credential_id or \
+                quote["estimated_cost_usd"] != execution.estimated_cost_usd:
+            raise ValueError("quote and execution do not match")
+        quote_key = _key("QUOTE", quote["quote_id"])
+        quote_version = self._read_versions.get(quote_key["pk"])
+        if quote_version is None:
+            raise RegistryConflict("quote was not read consistently")
+        consent_fields = asdict(consent)
+        consent_fields["consented_at"] = _iso(consent.consented_at)
+        execution_fields = asdict(execution)
+        execution_fields["feature"] = execution.feature.value
+        execution_fields["state"] = "PENDING"
+        now = int(datetime.now(timezone.utc).timestamp())
+        items = [{"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
+                  "UpdateExpression": "SET #s = :used, #v = #v + :one",
+                  "ConditionExpression": "#s = :open AND #v = :v AND expires > :now AND tenant_id = :tenant",
+                  "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
+                  "ExpressionAttributeValues": self._av({":used": "USED", ":open": "OPEN",
+                                                         ":one": 1, ":v": quote_version,
+                                                         ":now": now, ":tenant": execution.tenant_id})}},
+                 {"Put": {"TableName": self.table_name,
+                          "Item": self._av({**_key("CONSENT", consent.consent_id),
+                                            **consent_fields, "version": 1}),
+                          "ConditionExpression": "attribute_not_exists(pk)"}},
+                 {"Put": {"TableName": self.table_name,
+                          "Item": self._av({**_key("EXEC", execution.execution_id),
+                                            **execution_fields, "version": 1}),
+                          "ConditionExpression": "attribute_not_exists(pk)"}}]
+        for kind, identifier in (("MODEL", execution.model_id),
+                                 ("CREDENTIAL", execution.credential_id)):
+            items.append(self._condition(kind, identifier))
+        try:
+            token = str(uuid5(NAMESPACE_URL, f"{self.table_name}:confirm:{quote['quote_id']}"))
+            self.client.transact_write_items(TransactItems=items, ClientRequestToken=token)
+        except self.client.exceptions.TransactionCanceledException as error:
+            raise RegistryConflict("quote expired, changed or already used") from error
+
     def create_limit(self, scope: str, identifier: str, remaining_usd: Decimal,
                      *, calls_remaining: int | None = None) -> None:
         if scope not in {"TENANT", "PROVIDER", "PROJECT"} or remaining_usd < 0 or \
@@ -144,7 +193,7 @@ class DynamoRegistry:
         item = self._get("MODEL", model_id)
         if not item:
             return None
-        fields = {name: item[name] for name in Model.__dataclass_fields__}
+        fields = {name: item.get(name) for name in Model.__dataclass_fields__}
         fields["tier"] = Tier(fields["tier"])
         fields["approved_at"] = _time(fields["approved_at"])
         fields["activated_at"] = _time(fields["activated_at"])
@@ -258,20 +307,25 @@ class DynamoRegistry:
         if self.budget(tenant_id, provider) is None:
             raise RegistryConflict("limit record is missing")
         delta = actual_cost_usd - item["estimated_cost_usd"]
+        overage = max(delta, Decimal("0"))
+        settlement_status = "REVIEW_REQUIRED" if overage else "SETTLED"
         execution_key = _key("EXEC", execution_id)
         changes = [{"Update": {"TableName": self.table_name, "Key": self._av(execution_key),
-                    "UpdateExpression": "SET #s = :final, #v = #v + :one, actual_cost_usd = :actual",
+                    "UpdateExpression": "SET #s = :final, #v = #v + :one, actual_cost_usd = :actual, settlement_status = :settlement",
                     "ConditionExpression": "#s = :reserved AND #v = :v",
                     "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
                     "ExpressionAttributeValues": self._av({":final": "SUCCEEDED" if succeeded else "FAILED",
                                                            ":reserved": "RESERVED", ":one": 1,
                                                            ":actual": actual_cost_usd,
+                                                           ":settlement": settlement_status,
                                                            ":v": self._read_versions[execution_key["pk"]]})}}]
         completed_at = datetime.now(timezone.utc)
         result = {"pk": execution_key["pk"], "sk": "RESULT",
                   "state": "SUCCEEDED" if succeeded else "FAILED",
                   "model_id": item["model_id"], "provider": provider,
                   "actual_cost_usd": actual_cost_usd,
+                  "settlement_status": settlement_status,
+                  "unreconciled_usd": overage,
                   "completed_at": completed_at.isoformat(),
                   "expires": int((completed_at + timedelta(days=90)).timestamp()),
                   "response_text": response_text, "error_code": error_code}
@@ -281,14 +335,20 @@ class DynamoRegistry:
                                   ("PROJECT", "GLOBAL")):
             key = _key("LIMIT", self._limit_id(scope, identifier))
             version = self._read_versions[key["pk"]]
-            operation = "- :delta" if delta >= 0 else "+ :refund"
-            values: dict[str, Any] = {":one": 1, ":v": version}
-            values[":delta" if delta >= 0 else ":refund"] = delta if delta >= 0 else -delta
             condition = "#v = :v"
-            if delta > 0:
-                condition += " AND remaining_usd >= :delta"
+            values: dict[str, Any] = {":one": 1, ":v": version}
+            if overage:
+                values[":zero"] = Decimal("0")
+                update = "SET remaining_usd = :zero, #v = #v + :one"
+                if scope == "TENANT":
+                    update += ", calls_remaining = :zero"
+            elif delta < 0:
+                values[":refund"] = -delta
+                update = "SET remaining_usd = remaining_usd + :refund, #v = #v + :one"
+            else:
+                update = "SET #v = #v + :one"
             changes.append({"Update": {"TableName": self.table_name, "Key": self._av(key),
-                            "UpdateExpression": f"SET remaining_usd = remaining_usd {operation}, #v = #v + :one",
+                            "UpdateExpression": update,
                             "ConditionExpression": condition,
                             "ExpressionAttributeNames": {"#v": "version"},
                             "ExpressionAttributeValues": self._av(values)}})
