@@ -1,5 +1,6 @@
 import { App, CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
+import * as codebuild from "aws-cdk-lib/aws-codebuild";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -363,6 +364,87 @@ class AiServiceTasksStack extends Stack {
   }
 }
 
+class AiImagePublishingStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const repository = (id: string, name: string) => {
+      const repo = new ecr.Repository(this, id, {
+        repositoryName: `foodtech/${name}`,
+        imageTagMutability: ecr.TagMutability.IMMUTABLE,
+        encryption: ecr.RepositoryEncryption.AES_256,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      repo.addLifecycleRule({ maxImageCount: 5, rulePriority: 1 });
+      new CfnOutput(this, `${id}Name`, { value: repo.repositoryName });
+      return repo;
+    };
+    const registration = repository("CredentialRegistrationImages", "credential-registration");
+    const gateway = repository("AiGatewayImages", "ai-gateway");
+    const logKey = new kms.Key(this, "ImageBuildLogKey", {
+      enableKeyRotation: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+      description: "Encrypt Foodtech image build logs",
+    });
+    logKey.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [new iam.ServicePrincipal(`logs.${this.region}.${this.urlSuffix}`)],
+      actions: ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:Describe*"],
+      resources: ["*"],
+      conditions: { ArnEquals: {
+        "kms:EncryptionContext:aws:logs:arn":
+          `arn:${this.partition}:logs:${this.region}:${this.account}:log-group:/foodtech/${stage}/ai-image-builds`,
+      } },
+    }));
+    const logGroup = new logs.LogGroup(this, "ImageBuildLogs", {
+      logGroupName: `/foodtech/${stage}/ai-image-builds`,
+      encryptionKey: logKey,
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const project = new codebuild.Project(this, "AiImageBuilder", {
+      projectName: `foodtech-ai-images-${stage}`,
+      description: "Explicit, commit-pinned development image publishing without GitHub AWS credentials",
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        computeType: codebuild.ComputeType.MEDIUM,
+        privileged: true,
+      },
+      timeout: Duration.minutes(30),
+      logging: { cloudWatch: { logGroup } },
+      environmentVariables: {
+        SOURCE_SHA: { value: "REQUIRED_AT_START_BUILD" },
+        REGISTRATION_REPOSITORY: { value: registration.repositoryUri },
+        GATEWAY_REPOSITORY: { value: gateway.repositoryUri },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: "0.2",
+        phases: {
+          pre_build: { commands: [
+            "echo \"$SOURCE_SHA\" | grep -Eq '^[0-9a-f]{40}$'",
+            "git clone --depth 1 --branch main https://github.com/davidots429/foodtech.git source",
+            "test \"$(git -C source rev-parse HEAD)\" = \"$SOURCE_SHA\"",
+            "aws ecr get-login-password --region \"$AWS_DEFAULT_REGION\" | docker login --username AWS --password-stdin \"${REGISTRATION_REPOSITORY%%/*}\"",
+            "IMAGE_TAG=sha-$(echo \"$SOURCE_SHA\" | cut -c1-12)",
+          ] },
+          build: { commands: [
+            "docker build -f source/infra/containers/ai-service.Dockerfile --build-arg FOODTECH_PACKAGE=foodtech-credential-registration -t \"$REGISTRATION_REPOSITORY:$IMAGE_TAG\" source",
+            "docker build -f source/infra/containers/ai-service.Dockerfile --build-arg FOODTECH_PACKAGE=foodtech-ai-gateway -t \"$GATEWAY_REPOSITORY:$IMAGE_TAG\" source",
+            "docker push \"$REGISTRATION_REPOSITORY:$IMAGE_TAG\"",
+            "docker push \"$GATEWAY_REPOSITORY:$IMAGE_TAG\"",
+          ] },
+        },
+      }),
+    });
+    registration.grantPullPush(project);
+    gateway.grantPullPush(project);
+    const logGrant = logKey.grant(project, "kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*",
+      "kms:GenerateDataKey*", "kms:Describe*");
+    for (const statement of logGrant.principalStatements) {
+      statement.addCondition("StringEquals", { "kms:ViaService": `logs.${this.region}.${this.urlSuffix}` });
+    }
+    new CfnOutput(this, "ImageBuildProjectName", { value: project.projectName });
+  }
+}
+
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
 if (app.node.tryGetContext("provisionIdentity") === "true") {
@@ -390,6 +472,10 @@ if (app.node.tryGetContext("provisionCredentialVault") === "true") {
   }
 } else if (app.node.tryGetContext("provisionAiServiceTasks") === "true") {
   throw new Error("provisionAiServiceTasks requires provisionCredentialVault=true");
+}
+if (app.node.tryGetContext("provisionAiImagePublishing") === "true") {
+  const publishing = new AiImagePublishingStack(app, `FoodtechAiImagePublishing-${stage}`, { env });
+  Tags.of(publishing).add("Project", "foodtech");
 }
 app.synth();
 

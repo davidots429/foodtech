@@ -20,6 +20,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiImagePublishing-dev --strict -c provisionAiImagePublishing=true --output /tmp/foodtech-ai-image-cdk
+        working-directory: infra/cdk
 
   python:
     runs-on: ubuntu-latest
