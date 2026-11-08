@@ -16,6 +16,14 @@
 4. `uv sync --all-packages --locked` 후 `uv run --no-sync uvicorn foodtech_business_api.main:app --host 127.0.0.1 --port 8000 --no-access-log`을 실행한다. 콜백 URL의 일회용 인증 코드가 접근 로그에 남지 않도록 한다. 다른 터미널에서 `npm run dev -w @foodtech/customer-web`과 `npm run dev -w @foodtech/admin-web`을 실행한다.
 5. 고객 `http://127.0.0.1:5173`, 관리자 `http://127.0.0.1:5174`에서 확인한다. 두 Vite 개발 서버는 `/api`를 로컬 Business API로 전달한다.
 
+### 고객 외부 AI 흐름의 로컬 브라우저 검증
+
+저장소 루트에서 `uv run --no-sync python tests/live/customer_external_browser_harness.py`를 실행하면 고객 웹, 업무 API, 자격증명 등록 서비스와 AI Gateway가 로컬 HTTP/mTLS 경로로 시작한다. 출력된 주소에서 합성 키 `synthetic-browser-key`를 등록하면 생성된 자격증명 ID가 외부 AI 시험 화면에 자동 입력된다. 이어서 견적 확인, 외부 전송 고지 동의, 실행 및 결과·정산을 확인한다. 종료는 `Ctrl+C`다. 브라우저 없이 같은 경로를 검사하려면 `--smoke-only`를 붙인다.
+
+2026-11-08에 위 합성 경로의 HTTP 검사와 고객 화면 클릭 검증을 마쳤다. 등록·견적·동의·실행·정산이 완료됐고 mTLS 서비스 연결을 확인했다. 이 하네스의 고객 세션, 레지스트리, KMS·Vault와 외부 공급자는 명시적인 메모리 시험 대역이다. AWS API나 유료 공급자 API를 호출하지 않으며 실제 자격증명을 입력하지 않는다. 실제 Cognito 로그인과 AWS 저장소를 결합한 브라우저 검증, 서비스 Task 배포와 실제 공급자 응답은 별도 검증 대상이다.
+
+같은 하네스에 `--aws --smoke-only`를 붙이면 기존 `foodtech` 개발용 DynamoDB·KMS에서 더미 키의 전송 복호화·저장 암호화·재조회와 견적·동의·예약·정산을 HTTP/mTLS 경로로 검증한다. 실행 전 두 개발용 테이블이 비어 있어야 하며, 종료 시 생성한 항목을 삭제한다. 2026-11-08 이 경로도 통과했고 종료 후 레지스트리와 Vault가 각각 0건임을 확인했다. 이 모드에서도 고객 인증과 외부 공급자 응답은 합성 대역이며 유료 공급자 API를 호출하지 않는다. AWS KMS·DynamoDB 요청 비용은 발생할 수 있다.
+
 ## 구현 경계
 
 - 로그인 흐름과 세션은 DynamoDB 테이블이 지정되면 공유된다. 비어 있으면 로컬 개발용 메모리 저장소를 사용하며 재시작 시 로그아웃된다. DynamoDB TTL 삭제는 비동기이므로 API는 모든 읽기에서 만료 시각을 직접 검사한다.

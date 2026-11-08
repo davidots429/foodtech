@@ -32,7 +32,9 @@ async function encrypt(secret: Uint8Array, descriptor: TransferKey): Promise<str
   return btoa(String.fromCharCode(...new Uint8Array(ciphertext)));
 }
 
-export function CredentialEnrollment({ csrf }: { csrf: string }) {
+export function CredentialEnrollment({ csrf, onRegistered }: {
+  csrf: string; onRegistered?: (credentialId: string) => void;
+}) {
   const [provider, setProvider] = useState<Provider>("openai");
   const [secretValue, setSecretValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -70,6 +72,7 @@ export function CredentialEnrollment({ csrf }: { csrf: string }) {
       });
       if (!response.ok) throw new Error("등록을 완료하지 못했습니다. 새 키를 입력해 다시 시도해 주세요.");
       const result: { credential_id: string } = await response.json();
+      onRegistered?.(result.credential_id);
       setMessage(`등록되었습니다. 자격증명 ID: ${result.credential_id}`);
     } catch (failure) {
       cachedKey.current = null;
