@@ -1,5 +1,15 @@
 # AWS CDK 개발 인프라
 
+## AI 서비스 Task Definition 초안
+
+`-c provisionCredentialVault=true -c provisionAiServiceTasks=true`는 별도 `FoodtechAiServiceTasks-dev` 스택에 자격증명 등록기와 AI Gateway의 Fargate Task Definition을 만든다. 각 Task는 기존 Vault 스택의 **서로 다른** 업무 역할을 사용한다. 실행 역할은 해당 ECR 이미지와 Secrets Manager TLS 자료를 읽고 CloudWatch Logs에 기록한다. 등록기는 Vault 쓰기와 KMS 전송·저장·가명화 권한, Gateway는 Vault 읽기와 저장 키 복호화 권한을 유지한다. 외부 공급자 실행은 기본 비활성이다.
+
+필수 CDK context: `credentialKeyPeriod`, `credentialHmacVersion`, `registrationImageRepository`, `registrationImageTag`, `gatewayImageRepository`, `gatewayImageTag`, `registrationTlsSecretArn`, `gatewayTlsSecretArn`. 이미지 태그는 `latest`를 허용하지 않는다. TLS Secret 두 개는 각각 JSON 키 `server_cert_pem`, `server_key_pem`, `business_ca_pem`을 가져야 한다. 인증서 개인키와 CA는 저장소와 Task Definition의 일반 환경변수에 넣지 않는다. ECS 실행 역할이 Secret 값을 주입하고 컨테이너 시작기가 권한 `0600`의 임시 파일로 작성한다. 이미지 빌드는 `infra/containers/ai-service.Dockerfile`에 `FOODTECH_PACKAGE=foodtech-credential-registration` 또는 `foodtech-ai-gateway`를 전달한다. CI는 두 이미지를 빌드만 하며 게시하지 않는다.
+
+두 Task의 리스너는 컨테이너 안에서 `0.0.0.0`에 결합한다. 실제 실행 전에 업무 API가 두 서비스에만 접근할 수 있는 **사설 서브넷·보안 그룹**, 서비스 DNS와 일치하는 서버 인증서 SAN, 업무 API 전용 클라이언트 인증서를 마련해야 한다. 현재 Task Definition은 ECS Service, Cluster, 네트워크, 이미지 게시, TLS Secret 생성, 업무 API 주소 설정을 만들지 않는다. 따라서 합성 성공만으로 종단간 배포가 완료된 것은 아니다. Gateway의 Ollama 기본 주소도 같은 Task의 loopback이다. 서버 GPU·Ollama 배치가 결정되기 전에는 로컬 모델 호출을 배포 검증 결과로 간주하지 않는다.
+
+현재 개발 계정에는 서비스용 ECR 저장소와 TLS Secret이 아직 없다. 실행 전에 이미지와 Secret을 준비하고 실제 ARN·태그로 합성해야 한다. Fargate 상시 실행은 요금이 발생하므로 Task Definition 합성과 서비스 배포를 분리한다.
+
 `-c provisionCredentialVault=true -c credentialKeyPeriod=2026-11`은 `FoodtechCredentialVault-dev` 스택을 합성한다. 2026-11-07 개발 계정 `ap-southeast-2`에 Vault DynamoDB On-demand 테이블, PITR 7일, 저장용 대칭 KMS 키와 별도 등록·Gateway ECS Task 역할을 배포했다. KMS 키·테이블은 `RETAIN`이다. 등록 역할은 Vault `PutItem`·저장 키 `GenerateDataKey`, Gateway 역할은 Vault `GetItem`·저장 키 `Decrypt` 및 AI 실행 레지스트리 접근만 허용한다. KMS 역할 정책은 `purpose=EXTERNAL_AI_CREDENTIAL`, `environment=dev` context를 요구한다. KMS 키와 PITR은 리소스를 유지하는 동안 비용이 발생할 수 있다. 실제 서비스 Task Definition 연결은 후속이다.
 
 같은 날 두 역할을 각각 임시 ECS Fargate Task의 `taskRoleArn`에 연결해 실제 AWS API를 시험했다. 등록 역할은 Vault `PutItem`·KMS `GenerateDataKey`가 성공하고 `GetItem`·`Decrypt`가 `AccessDeniedException`으로 거부됐다. Gateway 역할은 Vault `GetItem`·KMS `Decrypt`가 성공하고 `PutItem`·`GenerateDataKey`가 거부됐다. 합성 Vault 항목과 임시 클러스터·Task 정의·실행 역할·보안 그룹·로그 그룹은 시험 후 정리했다. IAM 시뮬레이터는 실제 Vault 읽기에 성공한 개발 역할까지 조직 정책 거부로 표시했으므로, 이 계정의 해당 시뮬레이션 결과를 실제 Task 요청 결과보다 우선하지 않는다. 이 시험은 역할의 AWS API 권한을 검증한 것이며 실제 서비스 배포·외부 공급자 호출 증거는 아니다.
