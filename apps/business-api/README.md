@@ -1,5 +1,7 @@
 # Business API 인증과 첫 조리 업무 흐름
 
+고객의 `POST /api/customer/ai/chat`은 세션·CSRF를 검사하고 최대 최근 5개 메시지의 `user/assistant` 순서를 검증한다. 서버는 고객 ID를 세션에서 가져와 mTLS Gateway의 기존 로컬 `GENERAL_GUIDE` 실행을 호출한다. 대화 내용은 브라우저가 다음 질문의 맥락으로 보낼 때만 사용하고 업무 API는 대화 저장소를 만들지 않는다. Gateway는 실행 상태·결과와 월별 한도만 관리하며 프롬프트 원문을 레지스트리에 기록하지 않는다. Ollama와 모델·한도 레코드가 준비되지 않으면 답변을 생성할 수 없다.
+
 고객의 자격증명 등록은 `GET /api/customer/credentials/transfer-key`와 `POST /api/customer/credentials`로 제공한다. 고객 세션과 현재 Cognito 접근을 확인하고 등록 시 CSRF를 검사한다. 브라우저는 Web Crypto RSA-OAEP-SHA-256으로 API 키 값만 암호화하고, 업무 API는 공급자·버전·암호문과 서버 세션의 고객 ID를 전용 mTLS 등록 서비스에 전달한다. 키 원문이나 저장용 복호화 권한은 업무 API에 없다. `FOODTECH_REGISTRATION_URL`·`FOODTECH_REGISTRATION_CA`와 업무 API 클라이언트 인증서가 필요하며, 등록 서비스가 없으면 실패를 반환한다. 외부 공급자 호출·동의·비용 예약은 이 등록 화면에서 실행하지 않는다.
 
 고객의 합성 외부 AI 시험은 `/api/customer/ai/external/preview`에서 모델·자격증명 ID를 보내 견적을 받고, 표시된 외부 전송과 비용 가능성에 명시 동의한 경우에만 `/api/customer/ai/external/quotes/{id}/confirm`으로 실행한다. 두 요청 모두 고객 세션과 CSRF를 검사하고 tenant ID는 서버 세션에서만 가져온다. `/api/customer/ai/executions/{id}/status`는 확인 요청이 끊긴 경우 결과를 다시 읽는다. 업무 API는 Gateway에 고정된 합성 질문의 내용이나 저장된 API 키를 받지 않는다. Gateway의 외부 실행 설정이 꺼져 있으면 견적을 만들 수 없다.

@@ -1,20 +1,20 @@
 # Foodtech AI Recipe Agent
 
-고객·관리자 웹, Business API, AI Gateway, C# Mock 및 CDK의 실행·빌드 경계를 분리한 monorepo다. Cognito 고객·관리자 인증과 DynamoDB 공유 세션, 돈까스 합성 조리작업·안전·평가 API 및 고객 화면을 구현했다. 최소 데이터 흐름은 `mockprofile-100-a-001` 합성 fixture에 한정한다. 2026-11-01에 개발용 DynamoDB·SQS FIFO 스택에서 수집 순번 `1, 3, 2`의 복원, 정상 2건·격리 1건의 표준화 결과를 확인했다. AI 호출, 실제 장비 연계, 전체 업무 데이터 모델과 서비스 배포는 아직 없다.
+고객·관리자 웹, Business API, AI Gateway, C# Mock 및 CDK의 실행·빌드 경계를 분리한 monorepo다. Cognito 고객·관리자 인증과 DynamoDB 공유 세션, 돈까스 합성 조리작업·안전·평가 API 및 고객 화면을 구현했다. 고객 화면에는 로컬 AI 조리 상담과 별도의 합성 외부 AI 시험 기능이 있다. 최소 데이터 흐름은 `mockprofile-100-a-001` 합성 fixture에 한정한다. 2026-11-01에 개발용 DynamoDB·SQS FIFO 스택에서 수집 순번 `1, 3, 2`의 복원, 정상 2건·격리 1건의 표준화 결과를 확인했다. 실제 장비 연계, 전체 업무 데이터 모델과 서비스 배포는 아직 없다.
 
 ## 폴더
 
 | 경로 | 책임 | 현재 상태 |
 | --- | --- | --- |
-| `apps/customer-web` | 고객 웹(챗봇 포함 예정) | 가입·로그인·합성 조리작업·안전·평가 화면 |
+| `apps/customer-web` | 고객 웹 | 가입·로그인·합성 조리작업·안전·평가, 로컬 AI 채팅과 합성 외부 AI 시험 화면 |
 | `apps/admin-web` | 수행자 관리자 웹 | 관리자 로그인·권한 경계 화면 |
 | `apps/business-api` | 업무 API와 BFF | Cognito PKCE·세션·권한 검사, 합성 조리작업·평가 API |
-| `apps/ai-gateway` | 모델 실행 경계 | 실행별 모델·키·Tier·동의·한도 정책 검사. 내부 인증과 실제 모델 호출은 미연결 |
-| `apps/credential-registration` | 자격증명 등록 경계 | 책임 설명만 |
+| `apps/ai-gateway` | 모델 실행 경계 | 실행별 모델·키·Tier·동의·한도 정책 검사, mTLS와 로컬 Ollama·외부 공급자 어댑터 |
+| `apps/credential-registration` | 자격증명 등록 경계 | 전송 키 복호화·저장 암호화와 분리된 ECS 역할 계약 |
 | `apps/collection-adapter` | 읽기 전용 수집 | 첫 HTTPS REST poller·DynamoDB 순번 복원·SQS FIFO 전송 |
 | `apps/standardization-worker` | 표준화·품질·첫 공정판정 | 첫 프로파일 매핑·해시·격리·중복 판정과 연결된 돈까스 작업의 합성 온도판정 |
 | `apps/mock-control` | 시연·시험용 C# Mock | 첫 합성 REST/JSONL·OAuth·연결 단절 구현 |
-| `infra/cdk` | TypeScript IaC | 인증 세션 및 최소 데이터 흐름 스택; Identity 스택은 미배포 |
+| `infra/cdk` | TypeScript IaC | 인증·데이터·Vault 스택, AI 서비스 Task·이미지 게시 초안; ECS와 이미지 게시 스택은 미배포 |
 | `packages/contracts`, `fixtures` | 공통 계약과 합성 시험자료 | 첫 JSON Schema·정규화 패키지·대표 fixture |
 
 ## 로컬 확인
@@ -22,6 +22,7 @@
 - Node.js 24에서 `npm ci && npm run check`를 실행한다. npm workspaces와 `package-lock.json`을 사용한다.
 - Python 3.12와 uv 0.12.17에서 `uv sync --all-packages --locked`를 실행한다. 버전은 `uv.lock`에 고정되어 있다.
 - `uv run --no-sync python -m unittest discover -s apps/business-api/tests -v`로 인증 경계 테스트를 실행한다.
+- 고객의 로컬 AI 채팅은 `POST /api/customer/ai/chat`을 사용한다. 최근 대화만 요청에 포함하고 새로고침하면 화면 기록이 사라진다. 실행에는 로컬 Ollama, mTLS Gateway와 승인된 모델·월별 한도 레코드가 필요하다. 실제 공급자 키나 외부 전송은 이 경로에 사용하지 않는다.
 - 고객으로 로그인해 합성 조리작업을 생성하면 `작업 ID`와 주소의 `#job=...`으로 다시 불러올 수 있다. 상태 진행 후 제품별 합성 심부온도 표본으로 안전 판정을 기록하고, 7항목 평가·이력·재조리를 확인한다. 작업 목록 API는 아직 없고, 심부온도 입력은 실제 장비 측정이 아니다.
 - 자동 온도 공정판정은 조리 시작 전에 수집 배치를 명시적으로 연결한 작업에만 적용한다. 표준화 Worker에 `FOODTECH_COOKING_TABLE`을 설정하면 유효한 첫 REST/JSON 프로파일의 온도 표본을 작업 상태와 근거 이력에 연결한다. [고온 실패 fixture](fixtures/tonkatsu-process-high-v1.json)는 181°C가 20초 지속되는 합성 사례다. 개발용 DynamoDB·SQS FIFO에서 수집 어댑터 입력부터 자동 공정 실패·재처리 방지·시험 데이터 정리까지 검증했다. Mock HTTPS/OAuth 경로와 배포된 Worker 역할의 권한은 이 실험 범위가 아니다.
 - 조리시간 실패·동시 갱신의 개발용 DynamoDB 검증은 `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev uv run --no-sync python tests/live/cooking_flow_dynamodb_check.py`로 명시적으로 실행한다. 시험은 합성 조리작업 4건과 바인딩 1건을 생성하고 `finally`에서 정리한다. 조기 종료·최대시간 초과의 실패·평가 차단, Worker 선행 갱신 시 409 응답과 최신 버전 재시도의 경고 보존을 확인한다. 배포된 Worker 실행 역할 및 실제 병렬 운영 부하는 이 시험 범위가 아니다.
