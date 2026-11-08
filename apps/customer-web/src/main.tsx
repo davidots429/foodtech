@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { CookingWorkspace } from "./CookingWorkspace";
 import { CredentialEnrollment } from "./CredentialEnrollment";
 import { ExternalAiTrial } from "./ExternalAiTrial";
+import { LocalChat } from "./LocalChat";
 import "./style.css";
 
 type Session = { email: string | null; surface: "customer"; csrf: string; tier: "FREE" };
@@ -97,7 +98,8 @@ function App() {
       <section className="account-summary"><div><h2>무료 체험</h2><p>{session.email ?? "고객"}님 · 무료 티어</p></div>
         <button onClick={logout}>로그아웃</button>
         {example && <div className="card"><h3>{example.title}</h3><p>{example.message}</p><small>합성 예시 · 읽기 전용</small></div>}
-        <p className="small">챗봇과 AI 권고는 후속 구현에서 연결됩니다.</p></section>
+        <p className="small">조리 상담은 로컬 AI로 실행되며 결과는 검토 후 활용합니다.</p></section>
+      <LocalChat csrf={session.csrf} />
       <CookingWorkspace csrf={session.csrf} />
       <CredentialEnrollment csrf={session.csrf} onRegistered={setCredentialId} />
       <ExternalAiTrial csrf={session.csrf} credentialId={credentialId}
