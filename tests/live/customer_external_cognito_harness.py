@@ -12,7 +12,6 @@ import signal
 import socket
 import subprocess
 import tempfile
-from contextlib import suppress
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -145,10 +144,13 @@ async def run() -> None:
                                                    cert=registration_cert, key=registration_key, ca=ca))
             servers.append(await base.start_server(base.business_app, business_listener))
             with (Path(temp.name) / "vite.log").open("wb") as log:
+                web_env = {name: value for name, value in os.environ.items()
+                           if not name.startswith(("FOODTECH_", "AWS_"))}
+                web_env["FOODTECH_API_PROXY_TARGET"] = "http://127.0.0.1:8000"
                 vite = subprocess.Popen(
                     ["npm", "run", "dev", "--workspace=@foodtech/customer-web", "--",
                      "--host", "127.0.0.1"], cwd=base.ROOT, stdout=log, stderr=log,
-                    env={**os.environ, "FOODTECH_API_PROXY_TARGET": "http://127.0.0.1:8000"})
+                    env=web_env)
                 await base.wait_for_web()
                 print(json.dumps({"url": "http://127.0.0.1:5173/",
                                   "synthetic_key": base.DUMMY_KEY,
@@ -158,12 +160,17 @@ async def run() -> None:
                 loop = asyncio.get_running_loop()
                 for sig in (signal.SIGINT, signal.SIGTERM):
                     loop.add_signal_handler(sig, stop.set)
-                with suppress(TimeoutError):
+                try:
                     await asyncio.wait_for(stop.wait(), timeout=900)
+                except TimeoutError:
+                    pass
     finally:
         if vite and vite.poll() is None:
             vite.terminate()
-            with suppress(subprocess.TimeoutExpired):
+            try:
+                await asyncio.to_thread(vite.wait, 10)
+            except subprocess.TimeoutExpired:
+                vite.kill()
                 await asyncio.to_thread(vite.wait, 10)
         for server, _task in servers:
             server.should_exit = True
