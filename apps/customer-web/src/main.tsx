@@ -4,9 +4,10 @@ import { CookingWorkspace } from "./CookingWorkspace";
 import { CredentialEnrollment } from "./CredentialEnrollment";
 import { ExternalAiTrial } from "./ExternalAiTrial";
 import { LocalChat } from "./LocalChat";
+import { TierConversion } from "./TierConversion";
 import "./style.css";
 
-type Session = { email: string | null; surface: "customer"; csrf: string; tier: "FREE" };
+type Session = { email: string | null; surface: "customer"; csrf: string; tier: "FREE" | "DEMO_PAID" };
 type Example = { source: "SYNTHETIC"; readOnly: true; title: string; message: string };
 const notice = "실제 과금이 발생하지 않으며 사업자 진위 조회를 수행하지 않는 비영리 시연 기능입니다.";
 
@@ -95,7 +96,7 @@ function App() {
       <p>조리 데이터와 AI 권고를 운영자가 검토하는 서비스입니다.</p></header>
     {error && <p role="alert" className="error">{error}</p>}
     {loading ? <p>로그인 상태를 확인하는 중입니다.</p> : session ? <>
-      <section className="account-summary"><div><h2>무료 체험</h2><p>{session.email ?? "고객"}님 · 무료 티어</p></div>
+      <section className="account-summary"><div><h2>계정</h2><p>{session.email ?? "고객"}님 · {session.tier === "DEMO_PAID" ? "시연용 유료 티어 · 00원" : "무료 티어"}</p>{session.tier === "DEMO_PAID" && <p>{notice}</p>}</div>
         <button onClick={logout}>로그아웃</button>
         {example && <div className="card"><h3>{example.title}</h3><p>{example.message}</p><small>합성 예시 · 읽기 전용</small></div>}
         <p className="small">조리 상담은 로컬 AI로 실행되며 결과는 검토 후 활용합니다.</p></section>
@@ -104,8 +105,7 @@ function App() {
       <CredentialEnrollment csrf={session.csrf} onRegistered={setCredentialId} />
       <ExternalAiTrial csrf={session.csrf} credentialId={credentialId}
         onCredentialIdChange={setCredentialId} />
-      <section><h2>시연용 유료 티어</h2><p className="price">00원</p><p>{notice}</p>
-        <p>전환 신청 기능은 아직 구현되지 않았습니다.</p></section>
+      <TierConversion csrf={session.csrf} onTierChanged={tier => setSession(previous => previous ? { ...previous, tier } : previous)} />
       <section><h2>계정 보안</h2><p>관리자 추가 인증에 사용할 인증 앱을 등록할 수 있습니다.</p>
         {totpCompleted ? null : !totpSecret ? <button type="button" onClick={startTotp} disabled={totpBusy}>인증 앱 등록 시작</button> : <>
           <p>인증 앱에서 수동 설정을 선택하고 아래 등록 키를 입력하세요. 키와 인증 코드를 다른 사람에게 공유하지 마세요.</p>

@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from .auth_store import LoginFlow, Session, get_store
+from .tier_store import get_tier_store
 
 router = APIRouter(prefix="/api")
 SESSION_COOKIE = "ft_session"
@@ -316,8 +317,10 @@ async def _session(request: Request, surface: str) -> Session:
 @router.get("/{surface}/me")
 async def me(surface: str, request: Request) -> dict:
     session = await _session(request, surface)
+    current_tier = await asyncio.to_thread(get_tier_store().current, session.subject) if surface == "customer" else None
+    tier = None if surface == "admin" else "DEMO_PAID" if current_tier and current_tier["status"] == "APPROVED_FOR_DEMO" else "FREE"
     return {"email": session.email, "surface": session.surface, "csrf": session.csrf,
-            "tier": "FREE" if surface == "customer" else None}
+            "tier": tier}
 
 
 @router.get("/customer/example")

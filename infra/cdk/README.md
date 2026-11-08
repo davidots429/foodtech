@@ -1,5 +1,7 @@
 # AWS CDK 개발 인프라
 
+`-c provisionTierRequests=true`는 시연용 티어 신청을 위한 `FoodtechTierRequests-dev` 스택을 합성한다. `foodtech-tier-requests-dev` DynamoDB On-demand 테이블에 고객별 현재 상태, 신청 기록과 검토 기록을 함께 저장하고, `PendingRequests` GSI로 관리자 검토 대기 항목을 조회한다. 현재 상태 변경과 이력 쓰기는 조건부 트랜잭션을 사용한다. PITR 7일, AWS 관리형 암호화, `RETAIN` 정책을 설정했다. 이는 배포되지 않은 코드이며 `FOODTECH_TIER_TABLE` 환경변수와 업무 API 역할 권한을 연결해야 실제 운영할 수 있다.
+
 ## 개발 이미지 게시 경로
 
 `-c provisionAiImagePublishing=true`는 `FoodtechAiImagePublishing-dev`에 등록기·Gateway 전용 ECR 저장소와 명시적으로 시작하는 CodeBuild 프로젝트를 합성한다. 두 저장소는 태그 변경을 금지하고 각각 최근 이미지 5개를 유지한다. CodeBuild 역할은 이 두 저장소의 이미지 업로드와 전용 로그 그룹 기록에 한정한다. 빌드 로그는 별도 KMS 키로 암호화한다. ECR 저장 용량, CodeBuild 실행 시간과 KMS 키 유지에는 비용이 발생할 수 있다.

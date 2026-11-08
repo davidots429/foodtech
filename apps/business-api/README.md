@@ -1,5 +1,7 @@
 # Business API 인증과 첫 조리 업무 흐름
 
+시연용 유료 티어 신청은 `POST /api/customer/tier-requests`와 `GET /api/customer/tier-requests/current`로 제공한다. 고객 ID는 세션에서만 가져오고, 신청에는 사업자명과 시험용 사업자등록번호를 받는다. 번호 전체는 저장하지 않고 끝 네 자리만 신청·검토 기록에 남긴다. 관리자는 별도 관리자 세션에서 `GET /api/admin/tier-requests/pending`으로 대기 목록을 보고 `POST /api/admin/tier-requests/{subject}/{application_id}/decision`으로 승인 또는 거절한다. 승인 상태만 고객 `/me`의 `DEMO_PAID` 티어로 반영한다. 쓰기는 CSRF와 조건부 트랜잭션을 사용하며, 실제 과금·결제 수단 수집·사업자 진위 조회는 없다. 유료 표시에는 `00원`과 시연 고지를 함께 둔다. 로컬은 메모리 저장소를 쓰고, 공유 저장소는 `FOODTECH_TIER_TABLE`로 지정한다. 현재 이 기능은 코드·CDK 합성까지만 검증했으며 AWS 테이블은 아직 배포하지 않았다.
+
 고객의 `POST /api/customer/ai/chat`은 세션·CSRF를 검사하고 최대 최근 5개 메시지의 `user/assistant` 순서를 검증한다. 서버는 고객 ID를 세션에서 가져와 mTLS Gateway의 기존 로컬 `GENERAL_GUIDE` 실행을 호출한다. 대화 내용은 브라우저가 다음 질문의 맥락으로 보낼 때만 사용하고 업무 API는 대화 저장소를 만들지 않는다. Gateway는 실행 상태·결과와 월별 한도만 관리하며 프롬프트 원문을 레지스트리에 기록하지 않는다. Ollama와 모델·한도 레코드가 준비되지 않으면 답변을 생성할 수 없다.
 
 고객의 자격증명 등록은 `GET /api/customer/credentials/transfer-key`와 `POST /api/customer/credentials`로 제공한다. 고객 세션과 현재 Cognito 접근을 확인하고 등록 시 CSRF를 검사한다. 브라우저는 Web Crypto RSA-OAEP-SHA-256으로 API 키 값만 암호화하고, 업무 API는 공급자·버전·암호문과 서버 세션의 고객 ID를 전용 mTLS 등록 서비스에 전달한다. 키 원문이나 저장용 복호화 권한은 업무 API에 없다. `FOODTECH_REGISTRATION_URL`·`FOODTECH_REGISTRATION_CA`와 업무 API 클라이언트 인증서가 필요하며, 등록 서비스가 없으면 실패를 반환한다. 외부 공급자 호출·동의·비용 예약은 이 등록 화면에서 실행하지 않는다.
