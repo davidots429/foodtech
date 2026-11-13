@@ -14,6 +14,13 @@ class Conflict(Exception):
     pass
 
 
+def _only_result_already_exists(exc: Exception, operation_count: int) -> bool:
+    reasons = exc.response.get("CancellationReasons", [])
+    return (len(reasons) == operation_count and
+            all(reason.get("Code") in (None, "None") for reason in reasons[:-1]) and
+            reasons[-1].get("Code") == "ConditionalCheckFailed")
+
+
 def _api_numbers(value):
     """Keep DynamoDB numeric values consistent with the local API contract."""
     if isinstance(value, Decimal):
@@ -335,11 +342,12 @@ class DynamoCookingStore:
         try:
             self.client.transact_write_items(TransactItems=operations)
         except self.client.exceptions.TransactionCanceledException as exc:
-            if any(reason.get("Code") == "ConditionalCheckFailed"
-                   for reason in exc.response.get("CancellationReasons", [])):
+            if _only_result_already_exists(exc, len(operations)):
                 existing = self.comparison(candidate_pk, record["comparison_id"])
                 if existing:
                     return existing
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
                 raise Conflict from exc
             raise
         return {"sk": f"COMPARISON#{record['comparison_id']}", **record}
@@ -383,11 +391,12 @@ class DynamoCookingStore:
         try:
             self.client.transact_write_items(TransactItems=operations)
         except self.client.exceptions.TransactionCanceledException as exc:
-            if any(reason.get("Code") == "ConditionalCheckFailed"
-                   for reason in exc.response.get("CancellationReasons", [])):
+            if _only_result_already_exists(exc, len(operations)):
                 existing = self.aggregate(pk, record["result_id"])
                 if existing:
                     return existing
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
                 raise Conflict from exc
             raise
         return {"sk": f"RESULT#{record['result_id']}", **record}
