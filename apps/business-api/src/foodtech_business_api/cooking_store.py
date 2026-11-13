@@ -42,6 +42,9 @@ class CookingStore(Protocol):
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
                         record: dict) -> dict: ...
+    def aggregate(self, pk: str, result_id: str) -> dict | None: ...
+    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None]],
+                       record: dict) -> dict: ...
 
 
 class MemoryCookingStore:
@@ -139,6 +142,28 @@ class MemoryCookingStore:
                         not current_pointer["usable"] or \
                         current_pointer["safety_version"] != meta["safety_version"]:
                     raise Conflict
+            if key not in self.items:
+                self.items[key] = {"sk": key[1], **record}
+            return self.items[key].copy()
+
+    def aggregate(self, pk: str, result_id: str) -> dict | None:
+        with self.lock:
+            item = self.items.get((pk, f"RESULT#{result_id}"))
+            return item.copy() if item else None
+
+    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None]],
+                       record: dict) -> dict:
+        with self.lock:
+            for job_pk, meta, pointer in snapshots:
+                current_meta = self.items.get((job_pk, "META"))
+                current_pointer = self.items.get((job_pk, "ASSESSMENT#CURRENT"))
+                if not current_meta or any(current_meta.get(field) != meta.get(field) for field in
+                                           ("version", "status", "safety_status", "evaluation_blocked")) or \
+                        (current_pointer is None) != (pointer is None) or \
+                        (pointer is not None and any(current_pointer.get(field) != pointer.get(field) for field in
+                                                     ("version", "usable", "safety_version"))):
+                    raise Conflict
+            key = (pk, f"RESULT#{record['result_id']}")
             if key not in self.items:
                 self.items[key] = {"sk": key[1], **record}
             return self.items[key].copy()
@@ -318,6 +343,54 @@ class DynamoCookingStore:
                 raise Conflict from exc
             raise
         return {"sk": f"COMPARISON#{record['comparison_id']}", **record}
+
+    def aggregate(self, pk: str, result_id: str) -> dict | None:
+        item = self.table.get_item(Key={"pk": pk, "sk": f"RESULT#{result_id}"},
+                                   ConsistentRead=True).get("Item")
+        return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
+
+    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None]],
+                       record: dict) -> dict:
+        operations = []
+        for job_pk, meta, pointer in snapshots:
+            operations.append({"ConditionCheck": {
+                "TableName": self.table.name, "Key": self._item({"pk": job_pk, "sk": "META"}),
+                "ConditionExpression": "#v = :v AND #s = :s AND safety_status = :safety AND evaluation_blocked = :blocked",
+                "ExpressionAttributeNames": {"#v": "version", "#s": "status"},
+                "ExpressionAttributeValues": self._item({":v": int(meta["version"]), ":s": meta["status"],
+                                                          ":safety": meta["safety_status"],
+                                                          ":blocked": meta["evaluation_blocked"]}),
+            }})
+            if pointer is None:
+                operations.append({"ConditionCheck": {
+                    "TableName": self.table.name,
+                    "Key": self._item({"pk": job_pk, "sk": "ASSESSMENT#CURRENT"}),
+                    "ConditionExpression": "attribute_not_exists(pk)",
+                }})
+            else:
+                operations.append({"ConditionCheck": {
+                    "TableName": self.table.name,
+                    "Key": self._item({"pk": job_pk, "sk": "ASSESSMENT#CURRENT"}),
+                    "ConditionExpression": "#v = :v AND usable = :usable AND safety_version = :safety",
+                    "ExpressionAttributeNames": {"#v": "version"},
+                    "ExpressionAttributeValues": self._item({":v": int(pointer["version"]),
+                                                              ":usable": pointer["usable"],
+                                                              ":safety": int(pointer["safety_version"])}),
+                }})
+        operations.append({"Put": {"TableName": self.table.name,
+                                   "Item": self._item({"pk": pk, "sk": f"RESULT#{record['result_id']}", **record}),
+                                   "ConditionExpression": "attribute_not_exists(pk)"}})
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
+                existing = self.aggregate(pk, record["result_id"])
+                if existing:
+                    return existing
+                raise Conflict from exc
+            raise
+        return {"sk": f"RESULT#{record['result_id']}", **record}
 
     def _item(self, item: dict) -> dict:
         return {key: self.serializer.serialize(value) for key, value in item.items()}
