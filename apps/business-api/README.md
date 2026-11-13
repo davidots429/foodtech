@@ -1,5 +1,7 @@
 # Business API 인증과 첫 조리 업무 흐름
 
+`POST /api/customer/cooking-jobs/{candidate_job_id}/comparisons`는 같은 고객의 이전 작업 ID를 받아 두 작업의 현재 유효한 완료 평가를 비교한다. 메뉴·평가척도·장비가 같고 조리량 구간이 같거나 인접한 현재 합성 프로파일에서만 항목별 점수 변화와 합계 변화, 품질 합격 상태를 계산한다. 합계가 2점 이상 오르면 개별 조리의 `개선 관찰`로 표시하지만 레시피 버전 전체의 개선 확정은 `미평가`로 유지한다. 비교에 사용한 작업·안전·평가 버전과 산식 버전을 포함한 불변 파생 기록은 후속 비교에서 덮어쓰지 않으며, `GET /api/customer/cooking-jobs/{candidate_job_id}/comparisons/{comparison_id}`로 다시 읽을 수 있다. 중복 비교는 같은 기록을 반환하고, 저장 중 현재 평가·안전 상태가 변경되면 거부한다. 실제 AWS 동시성 검증은 아직 진행하지 않았다.
+
 시연용 유료 티어 신청은 `POST /api/customer/tier-requests`와 `GET /api/customer/tier-requests/current`로 제공한다. 고객 ID는 세션에서만 가져오고, 신청에는 사업자명과 시험용 사업자등록번호를 받는다. 번호 전체는 저장하지 않고 끝 네 자리만 신청·검토 기록에 남긴다. 관리자는 별도 관리자 세션에서 `GET /api/admin/tier-requests/pending`으로 대기 목록을 보고 `POST /api/admin/tier-requests/{subject}/{application_id}/decision`으로 승인 또는 거절한다. 승인 상태만 고객 `/me`의 `DEMO_PAID` 티어로 반영한다. 쓰기는 CSRF와 조건부 트랜잭션을 사용하며, 실제 과금·결제 수단 수집·사업자 진위 조회는 없다. 유료 표시에는 `00원`과 시연 고지를 함께 둔다. 로컬은 메모리 저장소를 쓰고, 공유 저장소는 `FOODTECH_TIER_TABLE`로 지정한다. 현재 이 기능은 코드·CDK 합성까지만 검증했으며 AWS 테이블은 아직 배포하지 않았다.
 
 고객의 `POST /api/customer/ai/chat`은 세션·CSRF를 검사하고 최대 최근 5개 메시지의 `user/assistant` 순서를 검증한다. 서버는 고객 ID를 세션에서 가져와 mTLS Gateway의 기존 로컬 `GENERAL_GUIDE` 실행을 호출한다. 대화 내용은 브라우저가 다음 질문의 맥락으로 보낼 때만 사용하고 업무 API는 대화 저장소를 만들지 않는다. Gateway는 실행 상태·결과와 월별 한도만 관리하며 프롬프트 원문을 레지스트리에 기록하지 않는다. Ollama와 모델·한도 레코드가 준비되지 않으면 답변을 생성할 수 없다.
