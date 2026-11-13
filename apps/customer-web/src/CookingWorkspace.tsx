@@ -4,6 +4,7 @@ import {
   type Assessment, type AssessmentKind, type CookingJob, type CurrentAssessment,
   type JobEvent, type JobSnapshot, type Probe, type ScoreKey, type TransitionEvent,
 } from "./cookingApi";
+import { AssessmentAggregate } from "./AssessmentAggregate";
 
 type Props = { csrf: string };
 type ScoreForm = Record<ScoreKey, number | "">;
@@ -555,8 +556,11 @@ export function CookingWorkspace({ csrf }: Props) {
             </div>}
           </section>
 
+          <AssessmentAggregate csrf={csrf} currentJobId={job.job_id} recipeVersion={job.recipe_version}
+            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band} />
+
           <section className="subcard" aria-labelledby="recook-title">
-            <h3 id="recook-title">6. 재조리 연결</h3>
+            <h3 id="recook-title">7. 재조리 연결</h3>
             <p className="small">재조리는 기존 결과를 덮어쓰지 않고 새 작업으로 생성합니다.</p>
             <div className="field-row"><label className="grow">재조리 사유
               <input value={recookReason} maxLength={500} onChange={(event) => setRecookReason(event.target.value)} />
