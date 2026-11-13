@@ -148,6 +148,52 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 409)
         self.assertFalse(any(key[1].startswith("RESULT#") for key in self.store.items))
 
+    async def test_status_and_explicit_refresh_preserve_old_result(self):
+        created = await self.client.post("/api/customer/assessment-aggregates", json=self._body(),
+                                         headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(created.status_code, 201, created.text)
+        original = created.json()
+        path = f"/api/customer/assessment-aggregates/{original['group_id']}/results/{original['result_id']}"
+        current = await self.client.get(path + "/status")
+        self.assertEqual(current.json()["status"], "CURRENT")
+        self.assertEqual(current.json()["changed_job_ids"], [])
+        self.assertEqual((await self.client.post(path + "/refresh")).status_code, 403)
+        unchanged = await self.client.post(path + "/refresh", headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(unchanged.status_code, 201, unchanged.text)
+        self.assertEqual(unchanged.json()["result_id"], original["result_id"])
+
+        second_pk = cooking._pk(self.subject, self.second_id)
+        self.store.items[(second_pk, "META")].update(version=4, safety_status="PASSED", evaluation_blocked=False)
+        self.store.items[(second_pk, "ASSESSMENT#CURRENT")]["usable"] = True
+        stale = await self.client.get(path + "/status")
+        self.assertEqual(stale.json()["status"], "STALE")
+        self.assertEqual(stale.json()["changed_job_ids"], [self.second_id])
+        refreshed = await self.client.post(path + "/refresh", headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(refreshed.status_code, 201, refreshed.text)
+        revised = refreshed.json()
+        self.assertEqual(revised["group_id"], original["group_id"])
+        self.assertNotEqual(revised["result_id"], original["result_id"])
+        self.assertEqual(revised["sample_count"], 2)
+        self.assertEqual((await self.client.get(path)).json()["sample_count"], 1)
+        revised_path = f"/api/customer/assessment-aggregates/{revised['group_id']}/results/{revised['result_id']}"
+        self.assertEqual((await self.client.get(revised_path + "/status")).json()["status"], "CURRENT")
+        self.assertEqual((await self.client.post(revised_path + "/refresh",
+                         headers={"X-CSRF-Token": "test-csrf"})).json()["result_id"], revised["result_id"])
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(path + "/status")).status_code, 404)
+        self.assertEqual((await self.client.post(path + "/refresh",
+                         headers={"X-CSRF-Token": "test-csrf"})).status_code, 404)
+
+    async def test_status_checks_pointer_usability_without_version_change(self):
+        original = (await self.client.post("/api/customer/assessment-aggregates", json=self._body(),
+                    headers={"X-CSRF-Token": "test-csrf"})).json()
+        first_pk = cooking._pk(self.subject, self.first_id)
+        self.store.items[(first_pk, "ASSESSMENT#CURRENT")]["usable"] = False
+        path = f"/api/customer/assessment-aggregates/{original['group_id']}/results/{original['result_id']}"
+        status = await self.client.get(path + "/status")
+        self.assertEqual(status.json()["status"], "STALE")
+        self.assertEqual(status.json()["changed_job_ids"], [self.first_id])
+
 
 class AggregateTransactionContractTests(unittest.TestCase):
     def test_dynamo_write_checks_all_selected_job_snapshots(self):
