@@ -28,8 +28,8 @@ TABLE = "foodtech-cooking-jobs-dev"
 CSRF = {"X-CSRF-Token": "derived-validation-csrf"}
 
 
-async def post(client: httpx.AsyncClient, path: str, body: dict, expected: int = 201) -> dict:
-    response = await client.post(path, json=body, headers=CSRF)
+async def post(client: httpx.AsyncClient, path: str, body: dict | None = None, expected: int = 201) -> dict:
+    response = await client.post(path, json=body if body is not None else {}, headers=CSRF)
     if response.status_code != expected:
         raise AssertionError(f"{path}: expected {expected}, got {response.status_code}: {response.text}")
     return response.json()
