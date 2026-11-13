@@ -8,7 +8,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .cooking import SCORE_ITEMS, _context, _pk, _store_call
 from .cooking_store import Conflict
@@ -74,8 +74,7 @@ def _reason(meta: dict, pointer: dict | None, assessment: dict | None,
     return None
 
 
-@router.post("", status_code=201)
-async def create_aggregate(request: Request, body: AggregateRequest) -> dict:
+async def _calculate(session, store, body: AggregateRequest) -> dict:
     if body.period_start.tzinfo is None or body.period_end.tzinfo is None:
         raise HTTPException(422, "집계 기간에는 시간대가 필요합니다.")
     start = body.period_start.astimezone(timezone.utc)
@@ -88,7 +87,6 @@ async def create_aggregate(request: Request, body: AggregateRequest) -> dict:
     recipe = body.recipe_version.strip()
     if not recipe:
         raise HTTPException(422, "레시피 버전을 입력해야 합니다.")
-    session, store = await _context(request, write=True)
     selection = {"job_ids": ids, "period_start": start.isoformat(), "period_end": end.isoformat(),
                  "menu": "TONKATSU", "equipment_profile": "synthetic-fryer",
                  "recipe_version": recipe, "scale_version": "tonkatsu-common-v1",
@@ -109,7 +107,11 @@ async def create_aggregate(request: Request, body: AggregateRequest) -> dict:
         snapshots.append((pk, meta, pointer))
         reference = {"job_id": job_id, "job_version": int(meta["version"]),
                      "safety_version": int(meta["safety_version"]),
+                     "job_status": meta["status"], "safety_status": meta["safety_status"],
+                     "evaluation_blocked": meta["evaluation_blocked"],
                      "assessment_version": int(pointer["version"]) if pointer else None,
+                     "assessment_usable": pointer["usable"] if pointer else None,
+                     "assessment_safety_version": int(pointer["safety_version"]) if pointer else None,
                      "included": reason is None, "exclusion_reason": reason}
         references.append(reference)
         if reason is None:
@@ -140,14 +142,75 @@ async def create_aggregate(request: Request, body: AggregateRequest) -> dict:
         raise HTTPException(409, "집계 중 평가 또는 안전 상태가 변경되었습니다. 다시 계산해 주세요.") from exc
 
 
-@router.get("/{group_id}/results/{result_id}")
-async def get_aggregate(group_id: str, result_id: str, request: Request) -> dict:
-    if any(len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
-           for value in (group_id, result_id)):
+@router.post("", status_code=201)
+async def create_aggregate(request: Request, body: AggregateRequest) -> dict:
+    session, store = await _context(request, write=True)
+    return await _calculate(session, store, body)
+
+
+def _valid_hash(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+async def _record(request: Request, group_id: str, result_id: str, *, write: bool = False):
+    if not _valid_hash(group_id) or not _valid_hash(result_id):
         raise HTTPException(400, "집계 기록 ID가 올바르지 않습니다.")
-    session, store = await _context(request)
+    session, store = await _context(request, write=write)
     pk = f"SCOPE#USER#{session.subject}#AGGREGATE#{group_id}"
     record = await _store_call(store, store.aggregate, pk, result_id)
-    if not record:
+    if not record or record.get("group_id") != group_id or record.get("result_id") != result_id:
         raise HTTPException(404, "집계 기록을 찾을 수 없습니다.")
+    return session, store, record
+
+
+@router.get("/{group_id}/results/{result_id}")
+async def get_aggregate(group_id: str, result_id: str, request: Request) -> dict:
+    _, _, record = await _record(request, group_id, result_id)
     return record
+
+
+@router.get("/{group_id}/results/{result_id}/status")
+async def aggregate_status(group_id: str, result_id: str, request: Request) -> dict:
+    session, store, record = await _record(request, group_id, result_id)
+    changed = []
+    for reference in record["references"]:
+        job_id = reference["job_id"]
+        meta, pointer = await _store_call(store, store.read, _pk(session.subject, job_id))
+        if not meta or int(meta["version"]) != int(reference["job_version"]) or \
+                int(meta["safety_version"]) != int(reference["safety_version"]) or \
+                (int(pointer["version"]) if pointer else None) != reference["assessment_version"] or \
+                ("job_status" in reference and meta["status"] != reference["job_status"]) or \
+                any(meta.get(field) != reference[field] for field in
+                    ("safety_status", "evaluation_blocked") if field in reference) or \
+                ("assessment_usable" in reference and
+                 (pointer["usable"] if pointer else None) != reference["assessment_usable"]) or \
+                ("assessment_safety_version" in reference and
+                 (int(pointer["safety_version"]) if pointer else None) != reference["assessment_safety_version"]):
+            changed.append(job_id)
+    return {"group_id": group_id, "result_id": result_id,
+            "status": "STALE" if changed else "CURRENT", "changed_job_ids": changed,
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+@router.post("/{group_id}/results/{result_id}/refresh", status_code=201)
+async def refresh_aggregate(group_id: str, result_id: str, request: Request) -> dict:
+    session, store, record = await _record(request, group_id, result_id, write=True)
+    selection = record["selection"]
+    if _hash(selection) != group_id:
+        raise HTTPException(409, "집계 그룹 조건이 변경되었습니다.")
+    try:
+        body = AggregateRequest.model_validate({key: selection[key] for key in
+                                                ("job_ids", "period_start", "period_end",
+                                                 "recipe_version", "load_band")})
+    except (KeyError, ValidationError) as exc:
+        raise HTTPException(409, "저장된 집계 조건을 다시 사용할 수 없습니다.") from exc
+    normalized = {"job_ids": sorted(str(value) for value in body.job_ids),
+                  "period_start": body.period_start.astimezone(timezone.utc).isoformat(),
+                  "period_end": body.period_end.astimezone(timezone.utc).isoformat(),
+                  "menu": "TONKATSU", "equipment_profile": "synthetic-fryer",
+                  "recipe_version": body.recipe_version.strip(), "scale_version": "tonkatsu-common-v1",
+                  "load_band": body.load_band}
+    if normalized != selection:
+        raise HTTPException(409, "집계 그룹 조건이 변경되었습니다.")
+    result = await _calculate(session, store, body)
+    return result

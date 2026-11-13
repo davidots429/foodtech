@@ -47,6 +47,8 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
   const [startDate, setStartDate] = useState(localDate(new Date(today.getFullYear(), today.getMonth(), 1)));
   const [endDate, setEndDate] = useState(localDate(today));
   const [result, setResult] = useState<AggregateResult | null>(null);
+  const [freshness, setFreshness] = useState<"CURRENT" | "STALE" | null>(null);
+  const [changedJobIds, setChangedJobIds] = useState<string[]>([]);
   const [groupId, setGroupId] = useState("");
   const [resultId, setResultId] = useState("");
   const [message, setMessage] = useState("");
@@ -55,7 +57,20 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
   useEffect(() => {
     setIdsText(currentJobId); setRecipe(recipeVersion); setLoadBand(defaultLoadBand ?? "PARTIAL");
     setResult(null); setGroupId(""); setResultId("");
+    setFreshness(null); setChangedJobIds([]);
   }, [currentJobId]);
+
+  async function checkFreshness(group: string, resultKey: string) {
+    try {
+      const status = await api<{ status: "CURRENT" | "STALE"; changed_job_ids: string[] }>(
+        `/api/customer/assessment-aggregates/${group}/results/${resultKey}/status`);
+      setFreshness(status.status); setChangedJobIds(status.changed_job_ids);
+      return true;
+    } catch {
+      setFreshness(null); setChangedJobIds([]);
+      return false;
+    }
+  }
 
   async function calculate() {
     const ids = idsText.split(/[\s,]+/).map(value => value.trim()).filter(Boolean);
@@ -70,7 +85,9 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
         recipe_version: recipe.trim(), load_band: loadBand,
       });
       setResult(next); setGroupId(next.group_id); setResultId(next.result_id);
-      setMessage("선택 표본의 기술 통계를 새 파생 결과로 기록했습니다.");
+      setFreshness(null); setChangedJobIds([]);
+      const checked = await checkFreshness(next.group_id, next.result_id);
+      setMessage("선택 표본의 기술 통계를 기록했습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
     } catch (error) { setMessage(error instanceof Error ? error.message : "집계를 계산하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -81,9 +98,28 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     }
     setBusy(true); setMessage("");
     try {
-      setResult(await api<AggregateResult>(`/api/customer/assessment-aggregates/${groupId}/results/${resultId}`));
-      setMessage("저장된 집계 결과를 불러왔습니다.");
+      const saved = await api<AggregateResult>(`/api/customer/assessment-aggregates/${groupId}/results/${resultId}`);
+      setResult(saved);
+      setFreshness(null); setChangedJobIds([]);
+      const checked = await checkFreshness(saved.group_id, saved.result_id);
+      setMessage("저장된 집계 결과를 불러왔습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
     } catch (error) { setMessage(error instanceof Error ? error.message : "집계 결과를 읽지 못했습니다."); }
+    finally { setBusy(false); }
+  }
+
+  async function refresh() {
+    if (!result || busy) return;
+    setBusy(true); setMessage("");
+    try {
+      const next = await api<AggregateResult>(
+        `/api/customer/assessment-aggregates/${result.group_id}/results/${result.result_id}/refresh`, csrf, {});
+      setResult(next); setGroupId(next.group_id); setResultId(next.result_id);
+      setFreshness(null); setChangedJobIds([]);
+      const checked = await checkFreshness(next.group_id, next.result_id);
+      setMessage((next.result_id === result.result_id ? "입력 버전이 같아 기존 결과를 유지했습니다." :
+        "현재 평가를 반영한 새 결과 버전을 기록했습니다. 이전 결과는 보존됩니다.") +
+        (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
+    } catch (error) { setMessage(error instanceof Error ? error.message : "재계산을 완료하지 못했습니다."); }
     finally { setBusy(false); }
   }
 
@@ -105,8 +141,15 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
       <label>저장된 결과 ID <input value={resultId} onChange={event => setResultId(event.target.value)} /></label>
       <button type="button" className="secondary" onClick={load} disabled={busy}>과거 결과 불러오기</button>
     </div>
+    {result && <div className="actions">
+      <button type="button" className="secondary" onClick={() => void checkFreshness(result.group_id, result.result_id)
+        .then(checked => setMessage(checked ? "조회 시점의 입력 버전을 확인했습니다." : "최신성을 확인하지 못했습니다."))} disabled={busy}>결과 최신성 확인</button>
+      <button type="button" onClick={refresh} disabled={busy}>현재 평가로 다시 계산</button>
+    </div>}
     {message && <p role="status">{message}</p>}
     {result && <div className="card">
+      <p className={freshness === "STALE" ? "warning" : "small"}>결과 최신성: {freshness === "STALE" ? "원본 변경으로 과거 결과" : freshness === "CURRENT" ? "조회 시점의 현재 입력과 일치" : "확인 전"}</p>
+      {changedJobIds.length > 0 && <p className="small">변경된 작업: {changedJobIds.join(", ")}</p>}
       <p>사용 표본 {result.sample_count}건 · 제외 {result.excluded_count}건 · 평균 종합 조리품질 점수 {result.mean_quality_score_percent ?? "미산출"}</p>
       <p>품질 합격률 {result.quality_pass_rate_percent === null ? "미산출" : `${result.quality_pass_rate_percent}%`} · 목표 달성률 {result.quality_target_rate_percent === null ? "미산출" : `${result.quality_target_rate_percent}%`}</p>
       {result.item_score_means && <ul>{scoreItems.map(({ key, label }) => <li key={key}>{label} 평균 {result.item_score_means![key]} / 5점</li>)}</ul>}
