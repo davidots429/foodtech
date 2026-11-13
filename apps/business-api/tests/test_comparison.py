@@ -146,6 +146,59 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 409)
         self.assertFalse(any(key[1].startswith("COMPARISON#") for key in self.store.items))
 
+    async def test_status_and_refresh_keep_historical_comparison(self):
+        first = await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                                       headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(first.status_code, 201, first.text)
+        original = first.json()
+        path = self._path() + "/" + original["comparison_id"]
+        self.assertEqual((await self.client.get(path + "/status")).json()["status"], "CURRENT")
+        self.assertEqual((await self.client.post(path + "/refresh")).status_code, 403)
+        same = await self.client.post(path + "/refresh", headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(same.status_code, 201, same.text)
+        self.assertEqual(same.json()["comparison_id"], original["comparison_id"])
+
+        candidate_pk = cooking._pk(self.subject, self.candidate_id)
+        meta = self.store.items[(candidate_pk, "META")]
+        pointer = self.store.items[(candidate_pk, "ASSESSMENT#CURRENT")]
+        revision = self.store.items[(candidate_pk, pointer["assessment_sk"])].copy()
+        revision["sk"] = "ASSESSMENT#REV#000000000002"
+        revision["version"] = 2
+        revision["scores"] = {name: 3 for name in cooking.SCORE_ITEMS}
+        revision["score_percent"] = "60.00"
+        self.store.items[(candidate_pk, revision["sk"])] = revision
+        meta["version"] += 1
+        pointer["version"] = 2
+        pointer["assessment_sk"] = revision["sk"]
+        stale = (await self.client.get(path + "/status")).json()
+        self.assertEqual(stale["status"], "STALE")
+        self.assertEqual(stale["changed_job_ids"], [self.candidate_id])
+        updated = await self.client.post(path + "/refresh", headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(updated.status_code, 201, updated.text)
+        newer = updated.json()
+        self.assertNotEqual(newer["comparison_id"], original["comparison_id"])
+        self.assertEqual(newer["score_total_delta"], 0)
+        self.assertEqual((await self.client.get(path)).json()["score_total_delta"], 7)
+        self.assertEqual((await self.client.get(self._path() + "/" + newer["comparison_id"] + "/status"))
+                         .json()["status"], "CURRENT")
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(path + "/status")).status_code, 404)
+        self.assertEqual((await self.client.post(path + "/refresh",
+                         headers={"X-CSRF-Token": "test-csrf"})).status_code, 404)
+
+    async def test_safety_invalidation_marks_stale_and_blocks_refresh(self):
+        original = (await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                    headers={"X-CSRF-Token": "test-csrf"})).json()
+        baseline_pk = cooking._pk(self.subject, self.baseline_id)
+        self.store.items[(baseline_pk, "ASSESSMENT#CURRENT")]["usable"] = False
+        path = self._path() + "/" + original["comparison_id"]
+        stale = (await self.client.get(path + "/status")).json()
+        self.assertEqual(stale["status"], "STALE")
+        self.assertEqual(stale["changed_job_ids"], [self.baseline_id])
+        blocked = await self.client.post(path + "/refresh", headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual((await self.client.get(path)).json()["score_total_delta"], 7)
+
 
 class ComparisonTransactionContractTests(unittest.TestCase):
     def test_dynamo_write_checks_both_current_jobs_and_pointers(self):

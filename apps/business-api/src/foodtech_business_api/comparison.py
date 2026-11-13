@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
-from .cooking import SCORE_ITEMS, _read, _store_call
+from .cooking import SCORE_ITEMS, _pk, _read, _store_call
 from .cooking_store import Conflict
 
 router = APIRouter(prefix="/api/customer/cooking-jobs", tags=["assessment-comparison"])
@@ -93,10 +93,42 @@ async def compare(candidate_job_id: UUID, request: Request, body: ComparisonRequ
 
 @router.get("/{candidate_job_id}/comparisons/{comparison_id}")
 async def get_comparison(candidate_job_id: UUID, comparison_id: str, request: Request) -> dict:
+    _, _, record = await _record(candidate_job_id, comparison_id, request)
+    return record
+
+
+async def _record(candidate_job_id: UUID, comparison_id: str, request: Request, *, write: bool = False):
     if len(comparison_id) != 64 or any(char not in "0123456789abcdef" for char in comparison_id):
         raise HTTPException(400, "비교 기록 ID가 올바르지 않습니다.")
-    _, store, pk, _, _ = await _read(request, str(candidate_job_id))
+    session, store, pk, _, _ = await _read(request, str(candidate_job_id), write=write)
     record = await _store_call(store, store.comparison, pk, comparison_id)
-    if not record:
+    if not record or record.get("candidate_job_id") != str(candidate_job_id) or \
+            record.get("comparison_id") != comparison_id:
         raise HTTPException(404, "비교 기록을 찾을 수 없습니다.")
-    return record
+    return session, store, record
+
+
+@router.get("/{candidate_job_id}/comparisons/{comparison_id}/status")
+async def comparison_status(candidate_job_id: UUID, comparison_id: str, request: Request) -> dict:
+    session, store, record = await _record(candidate_job_id, comparison_id, request)
+    changed = []
+    for role in ("baseline", "candidate"):
+        job_id = record[f"{role}_job_id"]
+        meta, pointer = await _store_call(store, store.read, _pk(session.subject, job_id))
+        if not meta or not _usable(meta, pointer) or \
+                int(meta["version"]) != int(record[f"{role}_job_version"]) or \
+                int(meta["safety_version"]) != int(record[f"{role}_safety_version"]) or \
+                int(pointer["version"]) != int(record[f"{role}_assessment_version"]):
+            changed.append(job_id)
+    return {"comparison_id": comparison_id, "status": "STALE" if changed else "CURRENT",
+            "changed_job_ids": changed, "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+@router.post("/{candidate_job_id}/comparisons/{comparison_id}/refresh", status_code=201)
+async def refresh_comparison(candidate_job_id: UUID, comparison_id: str, request: Request) -> dict:
+    _, _, record = await _record(candidate_job_id, comparison_id, request, write=True)
+    try:
+        baseline_id = UUID(record["baseline_job_id"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(409, "저장된 비교 조건을 다시 사용할 수 없습니다.") from exc
+    return await compare(candidate_job_id, request, ComparisonRequest(baseline_job_id=baseline_id))
