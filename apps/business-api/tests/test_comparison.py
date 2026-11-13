@@ -11,7 +11,7 @@ from boto3.dynamodb.types import TypeSerializer
 
 from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
-from foodtech_business_api.cooking_store import DynamoCookingStore, MemoryCookingStore
+from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore, MemoryCookingStore
 from foodtech_business_api.main import app
 
 
@@ -216,3 +216,27 @@ class ComparisonTransactionContractTests(unittest.TestCase):
         self.assertEqual(sum("Put" in item for item in items), 1)
         self.assertIn("usable = :true", items[1]["ConditionCheck"]["ConditionExpression"])
         self.assertIn("evaluation_blocked = :false", items[0]["ConditionCheck"]["ConditionExpression"])
+
+    def test_existing_result_does_not_hide_stale_input(self):
+        class Canceled(Exception):
+            def __init__(self, codes):
+                self.response = {"CancellationReasons": [{"Code": code} for code in codes]}
+
+        store = object.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name="test-cooking")
+        store.client = MagicMock()
+        store.client.exceptions.TransactionCanceledException = Canceled
+        store.serializer = TypeSerializer()
+        meta = {"version": 3, "safety_version": 1}
+        pointer = {"version": 1}
+        record = {"comparison_id": "a" * 64}
+        with patch.object(store, "comparison", return_value=record):
+            store.client.transact_write_items.side_effect = Canceled(
+                ["None", "None", "None", "None", "ConditionalCheckFailed"])
+            self.assertEqual(store.save_comparison("baseline", "candidate", meta, meta,
+                                                   pointer, pointer, record), record)
+            store.client.transact_write_items.side_effect = Canceled(
+                ["ConditionalCheckFailed", "None", "None", "None", "ConditionalCheckFailed"])
+            with self.assertRaises(Conflict):
+                store.save_comparison("baseline", "candidate", meta, meta,
+                                      pointer, pointer, record)
