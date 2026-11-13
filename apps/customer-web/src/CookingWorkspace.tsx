@@ -8,6 +8,19 @@ import {
 type Props = { csrf: string };
 type ScoreForm = Record<ScoreKey, number | "">;
 type ObservationForm = Record<ScoreKey, string>;
+type Comparison = {
+  comparison_id: string; baseline_job_id: string; candidate_job_id: string;
+  baseline_assessment_version: number; candidate_assessment_version: number;
+  baseline_recipe_version: string; candidate_recipe_version: string;
+  baseline_actual_portions: number; candidate_actual_portions: number;
+  baseline_actual_mass_kg: string; candidate_actual_mass_kg: string;
+  baseline_load_percent: string; candidate_load_percent: string;
+  baseline_score_percent: string; candidate_score_percent: string;
+  baseline_quality_passed: boolean; candidate_quality_passed: boolean;
+  score_deltas: Record<ScoreKey, number>; score_total_delta: number;
+  improvement_status: "OBSERVED" | "NOT_OBSERVED";
+  recipe_improvement_status: "NOT_EVALUATED"; compared_at: string;
+};
 
 const jobLabels: Record<CookingJob["status"], string> = {
   PENDING: "대기", READY: "준비 완료", RUNNING: "조리 중", PAUSED: "일시 정지",
@@ -126,6 +139,9 @@ export function CookingWorkspace({ csrf }: Props) {
   const [assessmentReason, setAssessmentReason] = useState("");
   const [recookReason, setRecookReason] = useState("");
   const [transitionReason, setTransitionReason] = useState("");
+  const [baselineJobId, setBaselineJobId] = useState("");
+  const [comparisonId, setComparisonId] = useState("");
+  const [comparison, setComparison] = useState<Comparison | null>(null);
   const [manualStoppedAt, setManualStoppedAt] = useState(() => localDateTime(new Date()));
 
   const refresh = useCallback(async (id: string) => {
@@ -141,6 +157,9 @@ export function CookingWorkspace({ csrf }: Props) {
       setEvents(audit);
       setLookupId(id);
       if (loadedJobId.current !== id) {
+        setBaselineJobId(snapshot.job.source_job_id ?? "");
+        setComparisonId("");
+        setComparison(null);
         setProbeTemps(Array(snapshot.job.planned_portions).fill("75.0"));
         setProbeExpired(Array(snapshot.job.planned_portions).fill(false));
         setSimulateGap(false);
@@ -325,6 +344,27 @@ export function CookingWorkspace({ csrf }: Props) {
     }), "원 작업과 연결된 별도 재조리 작업을 만들었습니다.", (created) => created.job_id);
   }
 
+  async function compareJobs() {
+    if (!job || !/^[0-9a-f-]{36}$/i.test(baselineJobId.trim())) {
+      setError("비교할 이전 작업의 UUID를 입력해 주세요."); return;
+    }
+    await action(() => api<Comparison>(jobPath(job.job_id) + "/comparisons", csrf,
+      { baseline_job_id: baselineJobId.trim() }).then((result) => {
+        setComparison(result); setComparisonId(result.comparison_id); return result;
+      }), "현재 유효한 두 평가를 비교하고 결과 버전을 보존했습니다.");
+  }
+
+  async function loadComparison() {
+    if (!job || !/^[0-9a-f]{64}$/.test(comparisonId.trim())) {
+      setError("비교 기록 ID는 64자리 해시여야 합니다."); return;
+    }
+    setError("");
+    try {
+      setComparison(await api<Comparison>(jobPath(job.job_id) + "/comparisons/" + comparisonId.trim()));
+      setStatus("저장된 비교 기록을 불러왔습니다.");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "비교 기록을 읽지 못했습니다."); }
+  }
+
   const scoreValues = Object.values(scores).filter((value): value is number => value !== "");
   const previewScore = scoreValues.length === 7 ? (scoreValues.reduce((sum, value) => sum + value, 0) / 35 * 100).toFixed(2) : null;
   const load = loadForMass(Number(massKg));
@@ -495,8 +535,28 @@ export function CookingWorkspace({ csrf }: Props) {
             <button type="button" onClick={submitAssessment} disabled={busy || !canAssess}>완료 평가 기록</button>
           </section>
 
+          <section className="subcard" aria-labelledby="comparison-title">
+            <h3 id="comparison-title">5. 조리 평가 비교</h3>
+            <p className="small">같은 메뉴·척도·장비의 두 작업에서 현재 유효한 완료 평가만 비교합니다. 항목 합계가 2점 이상 오르면 ‘개선 관찰’로 기록하지만 레시피 버전 전체의 개선 확정은 아닙니다.</p>
+            <div className="field-row"><label className="grow">이전 작업 ID
+              <input value={baselineJobId} onChange={(event) => setBaselineJobId(event.target.value)} placeholder="비교할 작업 UUID" />
+            </label><button type="button" onClick={compareJobs} disabled={busy || loadingJob || !current?.usable}>현재 평가 비교</button></div>
+            <div className="field-row"><label className="grow">저장된 비교 기록 ID
+              <input value={comparisonId} onChange={(event) => setComparisonId(event.target.value)} placeholder="64자리 비교 해시" />
+            </label><button type="button" className="secondary" onClick={loadComparison} disabled={busy || loadingJob}>기록 불러오기</button></div>
+            {comparison && <div className="card">
+              <p><strong>{comparison.improvement_status === "OBSERVED" ? "개선 관찰" : "개선 관찰 기준 미달"}</strong> · 항목 합계 변화 {comparison.score_total_delta >= 0 ? "+" : ""}{comparison.score_total_delta}점</p>
+              <p>종합 조리품질 점수 {comparison.baseline_score_percent} → {comparison.candidate_score_percent} / 100점</p>
+              <p>품질 합격: 이전 {comparison.baseline_quality_passed ? "합격" : "불합격"} · 이후 {comparison.candidate_quality_passed ? "합격" : "불합격"}</p>
+              <p className="small">이전 {comparison.baseline_recipe_version} 평가 v{comparison.baseline_assessment_version} · 이후 {comparison.candidate_recipe_version} 평가 v{comparison.candidate_assessment_version} · {timeLabel(comparison.compared_at)}</p>
+              <p className="small">조리량: 이전 {comparison.baseline_actual_portions}인분 · {comparison.baseline_actual_mass_kg}kg · 적재율 {comparison.baseline_load_percent}%, 이후 {comparison.candidate_actual_portions}인분 · {comparison.candidate_actual_mass_kg}kg · 적재율 {comparison.candidate_load_percent}%</p>
+              <ul>{scoreItems.map(({ key, label }) => <li key={key}>{label}: {comparison.score_deltas[key] >= 0 ? "+" : ""}{comparison.score_deltas[key]}점</li>)}</ul>
+              <p className="small">레시피 전체 개선 확정: 미평가 · 저장된 파생 기록 <code>{comparison.comparison_id}</code></p>
+            </div>}
+          </section>
+
           <section className="subcard" aria-labelledby="recook-title">
-            <h3 id="recook-title">5. 재조리 연결</h3>
+            <h3 id="recook-title">6. 재조리 연결</h3>
             <p className="small">재조리는 기존 결과를 덮어쓰지 않고 새 작업으로 생성합니다.</p>
             <div className="field-row"><label className="grow">재조리 사유
               <input value={recookReason} maxLength={500} onChange={(event) => setRecookReason(event.target.value)} />

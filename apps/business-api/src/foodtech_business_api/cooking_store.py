@@ -36,6 +36,12 @@ class CookingStore(Protocol):
                event: dict | None = None) -> None: ...
     def assessments(self, pk: str) -> list[dict]: ...
     def events(self, pk: str) -> list[dict]: ...
+    def assessment(self, pk: str, version: int) -> dict | None: ...
+    def comparison(self, pk: str, comparison_id: str) -> dict | None: ...
+    def save_comparison(self, baseline_pk: str, candidate_pk: str,
+                        baseline_meta: dict, candidate_meta: dict,
+                        baseline_pointer: dict, candidate_pointer: dict,
+                        record: dict) -> dict: ...
 
 
 class MemoryCookingStore:
@@ -103,6 +109,39 @@ class MemoryCookingStore:
             events = [value.copy() for (item_pk, sk), value in self.items.items()
                       if item_pk == pk and sk.startswith("EVENT#")]
             return sorted(events, key=lambda item: (item["occurred_at"], item["sk"]))
+
+    def assessment(self, pk: str, version: int) -> dict | None:
+        with self.lock:
+            item = self.items.get((pk, f"ASSESSMENT#REV#{version:012d}"))
+            return item.copy() if item else None
+
+    def comparison(self, pk: str, comparison_id: str) -> dict | None:
+        with self.lock:
+            item = self.items.get((pk, f"COMPARISON#{comparison_id}"))
+            return item.copy() if item else None
+
+    def save_comparison(self, baseline_pk: str, candidate_pk: str,
+                        baseline_meta: dict, candidate_meta: dict,
+                        baseline_pointer: dict, candidate_pointer: dict,
+                        record: dict) -> dict:
+        with self.lock:
+            key = (candidate_pk, f"COMPARISON#{record['comparison_id']}")
+            for pk, meta, pointer in ((baseline_pk, baseline_meta, baseline_pointer),
+                                      (candidate_pk, candidate_meta, candidate_pointer)):
+                current_meta = self.items.get((pk, "META"))
+                current_pointer = self.items.get((pk, "ASSESSMENT#CURRENT"))
+                if not current_meta or not current_pointer or \
+                        current_meta["version"] != meta["version"] or \
+                        current_meta["status"] != "COMPLETED" or \
+                        current_meta["safety_status"] != "PASSED" or \
+                        current_meta["evaluation_blocked"] or \
+                        current_pointer["version"] != pointer["version"] or \
+                        not current_pointer["usable"] or \
+                        current_pointer["safety_version"] != meta["safety_version"]:
+                    raise Conflict
+            if key not in self.items:
+                self.items[key] = {"sk": key[1], **record}
+            return self.items[key].copy()
 
 
 class DynamoCookingStore:
@@ -231,6 +270,54 @@ class DynamoCookingStore:
             last_key = page.get("LastEvaluatedKey")
             if not last_key:
                 return _api_numbers(sorted(results, key=lambda item: (item["occurred_at"], item["sk"])))
+
+    def assessment(self, pk: str, version: int) -> dict | None:
+        item = self.table.get_item(Key={"pk": pk, "sk": f"ASSESSMENT#REV#{version:012d}"},
+                                   ConsistentRead=True).get("Item")
+        return _api_numbers(item)
+
+    def comparison(self, pk: str, comparison_id: str) -> dict | None:
+        item = self.table.get_item(Key={"pk": pk, "sk": f"COMPARISON#{comparison_id}"},
+                                   ConsistentRead=True).get("Item")
+        return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
+
+    def save_comparison(self, baseline_pk: str, candidate_pk: str,
+                        baseline_meta: dict, candidate_meta: dict,
+                        baseline_pointer: dict, candidate_pointer: dict,
+                        record: dict) -> dict:
+        operations = []
+        for pk, meta, pointer in ((baseline_pk, baseline_meta, baseline_pointer),
+                                  (candidate_pk, candidate_meta, candidate_pointer)):
+            operations.extend([
+                {"ConditionCheck": {"TableName": self.table.name,
+                                    "Key": self._item({"pk": pk, "sk": "META"}),
+                                    "ConditionExpression": "#v = :v AND #s = :completed AND safety_status = :passed AND evaluation_blocked = :false",
+                                    "ExpressionAttributeNames": {"#v": "version", "#s": "status"},
+                                    "ExpressionAttributeValues": self._item({":v": int(meta["version"]),
+                                                                              ":completed": "COMPLETED", ":passed": "PASSED",
+                                                                              ":false": False})}},
+                {"ConditionCheck": {"TableName": self.table.name,
+                                    "Key": self._item({"pk": pk, "sk": "ASSESSMENT#CURRENT"}),
+                                    "ConditionExpression": "#v = :v AND usable = :true AND safety_version = :safety",
+                                    "ExpressionAttributeNames": {"#v": "version"},
+                                    "ExpressionAttributeValues": self._item({":v": int(pointer["version"]),
+                                                                              ":true": True, ":safety": int(meta["safety_version"])})}},
+            ])
+        operations.append({"Put": {"TableName": self.table.name,
+                                   "Item": self._item({"pk": candidate_pk,
+                                                       "sk": f"COMPARISON#{record['comparison_id']}", **record}),
+                                   "ConditionExpression": "attribute_not_exists(pk)"}})
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
+                existing = self.comparison(candidate_pk, record["comparison_id"])
+                if existing:
+                    return existing
+                raise Conflict from exc
+            raise
+        return {"sk": f"COMPARISON#{record['comparison_id']}", **record}
 
     def _item(self, item: dict) -> dict:
         return {key: self.serializer.serialize(value) for key, value in item.items()}
