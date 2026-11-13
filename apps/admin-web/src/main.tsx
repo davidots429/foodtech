@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { TierReview } from "./TierReview";
 import "./style.css";
 
 type Session = { email: string | null; surface: "admin"; csrf: string };
@@ -64,7 +65,7 @@ function App() {
     {error && <p role="alert" className="error">{error}</p>}
     {loading ? <p>로그인 상태를 확인하는 중입니다.</p> : session ? <section>
       <h2>관리자 인증됨</h2><p>{session.email ?? "관리자"}</p>
-      <p>관리 기능은 후속 구현에서 연결됩니다.</p><button onClick={logout}>로그아웃</button>
+      <button onClick={logout}>로그아웃</button><TierReview csrf={session.csrf} />
     </section> : <section><h2>관리자 로그인</h2><p>관리자 권한은 공개 가입으로 부여되지 않습니다.</p>
       <form onSubmit={authenticate}>
         {challenge ? <><label htmlFor="totp">인증 앱의 6자리 코드</label><input id="totp" value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" maxLength={6} required /></>

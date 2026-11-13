@@ -159,6 +159,28 @@ class CookingJobsStack extends Stack {
   }
 }
 
+class TierRequestsStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const table = new dynamodb.Table(this, "TierRequests", {
+      tableName: `foodtech-tier-requests-${stage}`,
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true, recoveryPeriodInDays: 7 },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    table.addGlobalSecondaryIndex({
+      indexName: "PendingRequests",
+      partitionKey: { name: "queue_status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "queue_sort", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    new CfnOutput(this, "TierRequestsTableName", { value: table.tableName });
+  }
+}
+
 class AiExecutionRegistryStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps) {
     super(scope, id, props);
@@ -458,6 +480,10 @@ if (app.node.tryGetContext("provisionDataFlow") === "true") {
 if (app.node.tryGetContext("provisionCookingJobs") === "true") {
   const cookingJobs = new CookingJobsStack(app, `FoodtechCookingJobs-${stage}`, { env });
   Tags.of(cookingJobs).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionTierRequests") === "true") {
+  const tierRequests = new TierRequestsStack(app, `FoodtechTierRequests-${stage}`, { env });
+  Tags.of(tierRequests).add("Project", "foodtech");
 }
 if (app.node.tryGetContext("provisionAiExecutionRegistry") === "true") {
   const registry = new AiExecutionRegistryStack(app, `FoodtechAiExecutionRegistry-${stage}`, { env });
