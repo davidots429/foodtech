@@ -124,6 +124,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const [busy, setBusy] = useState(false);
   const activeRequest = useRef(false);
   const loadedJobId = useRef<string | null>(null);
+  const loadedJobVersion = useRef<number | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [safetyReason, setSafetyReason] = useState("");
@@ -143,6 +144,8 @@ export function CookingWorkspace({ csrf }: Props) {
   const [baselineJobId, setBaselineJobId] = useState("");
   const [comparisonId, setComparisonId] = useState("");
   const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [comparisonFreshness, setComparisonFreshness] = useState<"CURRENT" | "STALE" | null>(null);
+  const [comparisonChangedJobs, setComparisonChangedJobs] = useState<string[]>([]);
   const [manualStoppedAt, setManualStoppedAt] = useState(() => localDateTime(new Date()));
 
   const refresh = useCallback(async (id: string) => {
@@ -157,10 +160,16 @@ export function CookingWorkspace({ csrf }: Props) {
       setAssessments(history);
       setEvents(audit);
       setLookupId(id);
+      if (loadedJobId.current === id && loadedJobVersion.current !== snapshot.job.version) {
+        setComparisonFreshness(null);
+        setComparisonChangedJobs([]);
+      }
       if (loadedJobId.current !== id) {
         setBaselineJobId(snapshot.job.source_job_id ?? "");
         setComparisonId("");
         setComparison(null);
+        setComparisonFreshness(null);
+        setComparisonChangedJobs([]);
         setProbeTemps(Array(snapshot.job.planned_portions).fill("75.0"));
         setProbeExpired(Array(snapshot.job.planned_portions).fill(false));
         setSimulateGap(false);
@@ -177,6 +186,7 @@ export function CookingWorkspace({ csrf }: Props) {
         setManualStoppedAt(localDateTime(new Date()));
         loadedJobId.current = id;
       }
+      loadedJobVersion.current = snapshot.job.version;
       window.history.replaceState(null, "", `#job=${encodeURIComponent(id)}`);
     } finally {
       setLoadingJob(false);
@@ -345,13 +355,30 @@ export function CookingWorkspace({ csrf }: Props) {
     }), "원 작업과 연결된 별도 재조리 작업을 만들었습니다.", (created) => created.job_id);
   }
 
+  async function checkComparison(candidateId: string, id: string): Promise<boolean> {
+    try {
+      const latest = await api<{ status: "CURRENT" | "STALE"; changed_job_ids: string[] }>(
+        jobPath(candidateId) + "/comparisons/" + id + "/status");
+      setComparisonFreshness(latest.status);
+      setComparisonChangedJobs(latest.changed_job_ids);
+      return true;
+    } catch {
+      setComparisonFreshness(null);
+      setComparisonChangedJobs([]);
+      return false;
+    }
+  }
+
   async function compareJobs() {
     if (!job || !/^[0-9a-f-]{36}$/i.test(baselineJobId.trim())) {
       setError("비교할 이전 작업의 UUID를 입력해 주세요."); return;
     }
     await action(() => api<Comparison>(jobPath(job.job_id) + "/comparisons", csrf,
-      { baseline_job_id: baselineJobId.trim() }).then((result) => {
-        setComparison(result); setComparisonId(result.comparison_id); return result;
+      { baseline_job_id: baselineJobId.trim() }).then(async (result) => {
+        setComparison(result); setComparisonId(result.comparison_id);
+        setComparisonFreshness(null); setComparisonChangedJobs([]);
+        await checkComparison(job.job_id, result.comparison_id);
+        return result;
       }), "현재 유효한 두 평가를 비교하고 결과 버전을 보존했습니다.");
   }
 
@@ -361,9 +388,24 @@ export function CookingWorkspace({ csrf }: Props) {
     }
     setError("");
     try {
-      setComparison(await api<Comparison>(jobPath(job.job_id) + "/comparisons/" + comparisonId.trim()));
-      setStatus("저장된 비교 기록을 불러왔습니다.");
+      const saved = await api<Comparison>(jobPath(job.job_id) + "/comparisons/" + comparisonId.trim());
+      setComparison(saved);
+      setComparisonFreshness(null); setComparisonChangedJobs([]);
+      const checked = await checkComparison(job.job_id, saved.comparison_id);
+      setStatus("저장된 비교 기록을 불러왔습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "비교 기록을 읽지 못했습니다."); }
+  }
+
+  async function refreshComparison() {
+    if (!job || !comparison) return;
+    const previousId = comparison.comparison_id;
+    await action(() => api<Comparison>(jobPath(job.job_id) + "/comparisons/" + previousId + "/refresh", csrf, {})
+      .then(async result => {
+        setComparison(result); setComparisonId(result.comparison_id);
+        setComparisonFreshness(null); setComparisonChangedJobs([]);
+        await checkComparison(job.job_id, result.comparison_id);
+        return result;
+      }), "현재 평가로 다시 비교했습니다. 이전 결과는 보존됩니다.");
   }
 
   const scoreValues = Object.values(scores).filter((value): value is number => value !== "");
@@ -545,7 +587,17 @@ export function CookingWorkspace({ csrf }: Props) {
             <div className="field-row"><label className="grow">저장된 비교 기록 ID
               <input value={comparisonId} onChange={(event) => setComparisonId(event.target.value)} placeholder="64자리 비교 해시" />
             </label><button type="button" className="secondary" onClick={loadComparison} disabled={busy || loadingJob}>기록 불러오기</button></div>
+            {comparison && <div className="actions">
+              <button type="button" className="secondary" onClick={() => void checkComparison(comparison.candidate_job_id, comparison.comparison_id)
+                .then(checked => setStatus(checked ? "조회 시점의 비교 입력을 확인했습니다." : "최신성을 확인하지 못했습니다."))}
+                disabled={busy || loadingJob}>결과 최신성 확인</button>
+              <button type="button" onClick={refreshComparison} disabled={busy || loadingJob}>현재 평가로 다시 비교</button>
+            </div>}
             {comparison && <div className="card">
+              <p className={comparisonFreshness === "STALE" ? "warning" : "small"}>결과 최신성: {
+                comparisonFreshness === "STALE" ? "입력 변경으로 과거 결과" :
+                comparisonFreshness === "CURRENT" ? "조회 시점의 현재 입력과 일치" : "확인 전"}</p>
+              {comparisonChangedJobs.length > 0 && <p className="small">변경된 작업: {comparisonChangedJobs.join(", ")}</p>}
               <p><strong>{comparison.improvement_status === "OBSERVED" ? "개선 관찰" : "개선 관찰 기준 미달"}</strong> · 항목 합계 변화 {comparison.score_total_delta >= 0 ? "+" : ""}{comparison.score_total_delta}점</p>
               <p>종합 조리품질 점수 {comparison.baseline_score_percent} → {comparison.candidate_score_percent} / 100점</p>
               <p>품질 합격: 이전 {comparison.baseline_quality_passed ? "합격" : "불합격"} · 이후 {comparison.candidate_quality_passed ? "합격" : "불합격"}</p>
