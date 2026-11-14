@@ -134,6 +134,31 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "another-customer"
         self.assertEqual((await self.client.get(path)).status_code, 404)
 
+    async def test_group_result_history_is_scoped_and_paginated(self):
+        body = self._body()
+        first = (await self.client.post("/api/customer/assessment-aggregates", json=body,
+                                       headers={"X-CSRF-Token": "test-csrf"})).json()
+        second_pk = cooking._pk(self.subject, self.second_id)
+        self.store.items[(second_pk, "META")].update(version=4, safety_status="PASSED",
+                                                      evaluation_blocked=False)
+        self.store.items[(second_pk, "ASSESSMENT#CURRENT")]["usable"] = True
+        second = (await self.client.post("/api/customer/assessment-aggregates", json=body,
+                                        headers={"X-CSRF-Token": "test-csrf"})).json()
+        path = f"/api/customer/assessment-aggregates/{first['group_id']}/results"
+        first_page = (await self.client.get(path, params={"limit": 1})).json()
+        self.assertEqual(len(first_page["items"]), 1)
+        self.assertTrue(first_page["next_cursor"])
+        self.assertEqual(first_page["current_result_id"], second["result_id"])
+        second_page = (await self.client.get(path, params={"limit": 1,
+                                                           "cursor": first_page["next_cursor"]})).json()
+        self.assertEqual(len(second_page["items"]), 1)
+        self.assertIsNone(second_page["next_cursor"])
+        self.assertEqual({item["result_id"] for item in first_page["items"] + second_page["items"]},
+                         {first["result_id"], second["result_id"]})
+        self.assertEqual((await self.client.get(path, params={"cursor": "bad"})).status_code, 400)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(path)).status_code, 404)
+
     async def test_empty_denominator_is_not_zero(self):
         first_pk = cooking._pk(self.subject, self.first_id)
         self.store.items[(first_pk, "META")]["safety_status"] = "FAILED"
@@ -284,6 +309,31 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AggregateTransactionContractTests(unittest.TestCase):
+    def test_dynamo_result_history_query_uses_group_partition_and_cursor(self):
+        store = object.__new__(DynamoCookingStore)
+        store.table = MagicMock()
+        group_pk = "SCOPE#USER#owner#AGGREGATE#" + "a" * 64
+        result_id = "b" * 64
+        result = {"pk": group_pk, "sk": f"RESULT#{result_id}", "result_id": result_id,
+                  "created_at": "2026-11-15T00:00:00Z", "sample_count": 2,
+                  "excluded_count": 0, "mean_quality_score_percent": "80.00"}
+        store.table.query.return_value = {
+            "Items": [result, {**result, "sk": "RESULT#" + "c" * 64, "result_id": "c" * 64}],
+        }
+        page = store.list_aggregate_results(group_pk, 1, result_id)
+        self.assertEqual(page["items"][0]["result_id"], result_id)
+        self.assertEqual(page["next_cursor"], result_id)
+        args = store.table.query.call_args.kwargs
+        self.assertEqual(args["ExclusiveStartKey"], {"pk": group_pk, "sk": f"RESULT#{result_id}"})
+        self.assertEqual(args["Limit"], 2)
+        self.assertTrue(args["ConsistentRead"])
+        store.table.query.return_value = {"Items": [result],
+                                          "LastEvaluatedKey": {"pk": group_pk,
+                                                               "sk": f"RESULT#{result_id}"}}
+        self.assertEqual(store.list_aggregate_results(group_pk, 1, None)["next_cursor"], result_id)
+        store.table.query.return_value = {"Items": [result]}
+        self.assertIsNone(store.list_aggregate_results(group_pk, 1, None)["next_cursor"])
+
     def test_dynamo_related_group_query_uses_job_partition_and_cursor(self):
         store = object.__new__(DynamoCookingStore)
         store.table = MagicMock()

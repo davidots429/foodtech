@@ -172,6 +172,7 @@ async def verify() -> None:
                 pks.append(aggregate_pk)
                 aggregate_record = (f"/api/customer/assessment-aggregates/{aggregate['group_id']}"
                                     f"/results/{aggregate['result_id']}")
+                result_history = f"/api/customer/assessment-aggregates/{aggregate['group_id']}/results"
                 aggregate_current = f"/api/customer/assessment-aggregates/{aggregate['group_id']}/current"
                 related_groups = f"/api/customer/assessment-aggregates/jobs/{candidate['job_id']}/groups"
                 assert aggregate["sample_count"] == 1
@@ -180,11 +181,13 @@ async def verify() -> None:
                 assert len(group_list["items"]) == 1 and group_list["next_cursor"] is None
                 assert group_list["items"][0]["group_id"] == aggregate["group_id"]
                 assert group_list["items"][0]["result_id"] == aggregate["result_id"]
+                assert (await get(client, result_history))["current_result_id"] == aggregate["result_id"]
                 assert (await get(client, aggregate_record + "/status"))["status"] == "CURRENT"
 
                 # Reproduce a result saved before dependency and current-pointer indexing.
                 store.table.delete_item(Key={"pk": aggregate_pk, "sk": "CURRENT"})
                 assert (await client.get(aggregate_current)).status_code == 404
+                assert (await get(client, result_history))["current_result_id"] is None
                 assert (await get(client, related_groups))["items"][0]["result_id"] is None
                 for selected in (baseline, candidate):
                     store.table.delete_item(Key={"pk": cooking._pk(subject, selected["job_id"]),
@@ -226,6 +229,14 @@ async def verify() -> None:
                 assert (await get(client, aggregate_current))["result_id"] == restated_aggregate["result_id"]
                 assert (await get(client, related_groups))["items"][0]["result_id"] == \
                     restated_aggregate["result_id"]
+                first_history = await get(client, result_history + "?limit=1")
+                assert len(first_history["items"]) == 1 and first_history["next_cursor"]
+                second_history = await get(client, result_history + "?limit=1&cursor=" +
+                                           first_history["next_cursor"])
+                assert len(second_history["items"]) == 1 and second_history["next_cursor"] is None
+                assert {item["result_id"] for item in first_history["items"] + second_history["items"]} == \
+                    {aggregate["result_id"], restated_aggregate["result_id"]}
+                assert first_history["current_result_id"] == restated_aggregate["result_id"]
                 await asyncio.to_thread(refresher._refresh_dependents, candidate_pk)
                 assert store.table.query(KeyConditionExpression=Key("pk").eq(aggregate_pk) &
                                          Key("sk").begins_with("RESULT#"), ConsistentRead=True,
@@ -270,6 +281,7 @@ async def verify() -> None:
                 current_subject = "other-synthetic-user"
                 assert (await client.get(comparison_record)).status_code == 404
                 assert (await client.get(aggregate_record)).status_code == 404
+                assert (await client.get(result_history)).status_code == 404
                 assert (await client.get(related_groups)).status_code == 404
                 current_subject = subject
 
@@ -331,6 +343,7 @@ async def verify() -> None:
                            "aggregate_stale_then_new_version": True,
                            "aggregate_auto_refreshed_and_current_lookup": True,
                            "related_group_list_and_repair": True,
+                           "aggregate_result_history_paginated": True,
                            "legacy_aggregate_index_backfilled": True,
                            "assessment_and_safety_auto_refresh": True,
                            "process_restatement_lineage_stale_then_new_version": True,

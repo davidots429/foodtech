@@ -233,6 +233,25 @@ async def get_aggregate(group_id: str, result_id: str, request: Request) -> dict
     return record
 
 
+@router.get("/{group_id}/results")
+async def list_group_results(group_id: str, request: Request,
+                             limit: int = Query(20, ge=1, le=50), cursor: str | None = None) -> dict:
+    if not _valid_hash(group_id):
+        raise HTTPException(400, "집계 그룹 ID가 올바르지 않습니다.")
+    if cursor and not _valid_hash(cursor):
+        raise HTTPException(400, "집계 결과 목록 커서가 올바르지 않습니다.")
+    session, store = await _context(request)
+    pk = f"SCOPE#USER#{session.subject}#AGGREGATE#{group_id}"
+    page = await _store_call(store, store.list_aggregate_results, pk, limit, cursor)
+    if cursor is None and not page["items"]:
+        raise HTTPException(404, "집계 그룹을 찾을 수 없습니다.")
+    pointer = await _store_call(store, store.current_aggregate, pk)
+    current_result_id = pointer.get("result_id") if pointer else None
+    if current_result_id is not None and not _valid_hash(current_result_id):
+        raise HTTPException(409, "집계 그룹의 현재 결과 포인터가 올바르지 않습니다.")
+    return {**page, "current_result_id": current_result_id}
+
+
 @router.get("/{group_id}/current")
 async def get_current_aggregate(group_id: str, request: Request) -> dict:
     if not _valid_hash(group_id):
