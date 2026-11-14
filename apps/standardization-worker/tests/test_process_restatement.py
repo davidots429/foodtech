@@ -113,28 +113,16 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(processor.process("JOB#1", "late"), "ALREADY_COMPLETED")
         processor._refresh_dependents.assert_called_once_with("JOB#1")
 
-    def test_refresh_dependents_reuses_business_aggregate_calculation(self):
+    def test_refresh_dependents_uses_business_aggregate_refresh(self):
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
         processor.cooking = Mock()
         processor.cooking.name = "cooking-dev"
-        subject = "customer-1"
-        job_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        group_id = "b" * 64
-        job_pk = f"SCOPE#USER#{subject}#JOB#{job_id}"
-        selection = {"job_ids": [job_id], "period_start": "2026-11-13T00:00:00Z",
-                     "period_end": "2026-11-15T00:00:00Z", "recipe_version": "recipe-v1",
-                     "load_band": "PARTIAL"}
-        processor._query = lambda pk, prefix: [{
-            "sk": f"AGGREGATE#DEP#{group_id}",
-            "aggregate_pk": f"SCOPE#USER#{subject}#AGGREGATE#{group_id}",
-            "selection": selection}] if pk == job_pk and prefix == "AGGREGATE#DEP#" else []
-        calculate = AsyncMock(return_value={"result_id": "synthetic"})
-        with patch("foodtech_business_api.assessment_aggregate._calculate", calculate), \
-             patch("foodtech_business_api.cooking_store.DynamoCookingStore"):
+        job_pk = "SCOPE#USER#customer-1#JOB#aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        refresh = AsyncMock(return_value=1)
+        with patch("foodtech_business_api.assessment_aggregate.refresh_dependents", refresh), \
+             patch("foodtech_business_api.cooking_store.DynamoCookingStore") as store:
             processor._refresh_dependents(job_pk)
-        calculate.assert_awaited_once()
-        self.assertEqual(calculate.await_args.args[0].subject, subject)
-        self.assertEqual(str(calculate.await_args.args[2].job_ids[0]), job_id)
+        refresh.assert_awaited_once_with(store.return_value, job_pk)
 
     def test_process_waits_for_unstandardized_raw_sample(self):
         job = self.job()

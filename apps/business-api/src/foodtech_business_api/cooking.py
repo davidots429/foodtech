@@ -1,6 +1,7 @@
 """First synthetic tonkatsu job, safety, and completed assessment flow."""
 
 import asyncio
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from .auth import _csrf, _session
 from .cooking_store import Conflict, MemoryCookingStore, get_cooking_store
 
 router = APIRouter(prefix="/api/customer/cooking-jobs", tags=["cooking-jobs"])
+logger = logging.getLogger(__name__)
 SYNTHETIC_FRYER_BATCH_KG = Decimal("0.8")
 SCORE_ITEMS = (
     "ingredient_condition", "preparation", "taste", "texture", "appearance",
@@ -78,6 +80,20 @@ async def _commit(store, pk: str, previous: dict, meta: dict,
         await _store_call(store, store.commit, pk, int(previous["version"]), meta, assessment, pointer, event)
     except Conflict as exc:
         raise _conflict() from exc
+    from .assessment_aggregate import refresh_dependents
+    try:
+        await refresh_dependents(store, pk)
+    except Exception as exc:
+        logger.exception("Dependent aggregate refresh failed after cooking job commit")
+        raise HTTPException(503, "작업 변경은 저장되었으나 관련 집계 갱신을 완료하지 못했습니다."
+                                 " 작업을 다시 조회하고 집계 갱신을 재시도해 주세요.") from exc
+
+
+@router.post("/{job_id}/refresh-aggregates")
+async def refresh_job_aggregates(job_id: str, request: Request) -> dict:
+    _, store, pk, _, _ = await _read(request, job_id, write=True)
+    from .assessment_aggregate import refresh_dependents
+    return {"refreshed_group_count": await refresh_dependents(store, pk)}
 
 
 class StrictModel(BaseModel):

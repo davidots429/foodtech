@@ -203,6 +203,9 @@ async def verify() -> None:
                 assert revised["version"] == 2
                 assert (await get(client, comparison_record + "/status"))["status"] == "STALE"
                 assert (await get(client, aggregate_record + "/status"))["status"] == "STALE"
+                auto_aggregate = await get(client, aggregate_current)
+                assert auto_aggregate["result_id"] != restated_aggregate["result_id"]
+                assert auto_aggregate["mean_quality_score_percent"] == "60.00"
                 new_comparison = await post(client, comparison_record + "/refresh")
                 new_aggregate = await post(client, aggregate_record + "/refresh")
                 assert new_comparison["comparison_id"] != comparison["comparison_id"]
@@ -256,10 +259,24 @@ async def verify() -> None:
                 assert recovered_aggregate["result_id"] != new_aggregate["result_id"]
                 assert (await get(client, aggregate_record))["result_id"] == aggregate["result_id"]
 
+                current_job = (await get(client, candidate_path))["job"]
+                suspected = await post(client, candidate_path + "/safety/events", {
+                    "event": "SUSPECTED", "expected_version": current_job["version"],
+                    "reason": "SYNTHETIC safety review",
+                }, expected=200)
+                assert suspected["safety_status"] == "SUSPECTED"
+                blocked_aggregate = await get(client, aggregate_current)
+                assert blocked_aggregate["sample_count"] == 0
+                assert blocked_aggregate["excluded_count"] == 2
+                assert (await post(client, candidate_path + "/refresh-aggregates", expected=200)) \
+                    ["refreshed_group_count"] == 1
+                assert (await get(client, aggregate_current))["result_id"] == blocked_aggregate["result_id"]
+
                 summary = {"account": ACCOUNT, "region": REGION, "table": TABLE,
                            "comparison_stale_then_new_version": True,
                            "aggregate_stale_then_new_version": True,
                            "aggregate_auto_refreshed_and_current_lookup": True,
+                           "assessment_and_safety_auto_refresh": True,
                            "process_restatement_lineage_stale_then_new_version": True,
                            "historical_results_preserved": True,
                            "cross_subject_read_status": 404,

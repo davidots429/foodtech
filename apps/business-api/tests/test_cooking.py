@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from boto3.dynamodb.types import TypeSerializer
@@ -156,6 +156,79 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         events = (await self.client.get(path + "/events")).json()
         self.assertEqual(len(events), 7)
         self.assertEqual([event["domain"] for event in events].count("SAFETY_STATUS"), 4)
+
+    async def test_assessment_and_safety_refresh_dependent_aggregate(self):
+        job = await self.completed_with_safety()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        first_assessment = await self.client.post(path + "/assessments", headers=CSRF,
+                                                  json=self.assessment_body(job))
+        self.assertEqual(first_assessment.status_code, 201, first_assessment.text)
+        period = datetime.now(timezone.utc)
+        created = await self.client.post("/api/customer/assessment-aggregates", headers=CSRF, json={
+            "job_ids": [job["job_id"]],
+            "period_start": (period - timedelta(days=1)).isoformat(),
+            "period_end": (period + timedelta(days=1)).isoformat(),
+            "recipe_version": "recipe-v1", "load_band": "PARTIAL",
+        })
+        self.assertEqual(created.status_code, 201, created.text)
+        original = created.json()
+        current_path = f"/api/customer/assessment-aggregates/{original['group_id']}/current"
+        self.assertEqual(original["mean_quality_score_percent"], "80.00")
+
+        job = (await self.client.get(path)).json()["job"]
+        revised_body = self.assessment_body(job, current=1, kind="REVISION", reason="합성 재평가")
+        revised_body["scores"] = {name: 3 for name in cooking.SCORE_ITEMS}
+        revised = await self.client.post(path + "/assessments", headers=CSRF, json=revised_body)
+        self.assertEqual(revised.status_code, 201, revised.text)
+        updated = (await self.client.get(current_path)).json()
+        self.assertNotEqual(updated["result_id"], original["result_id"])
+        self.assertEqual(updated["mean_quality_score_percent"], "60.00")
+
+        job = (await self.client.get(path)).json()["job"]
+        suspected = await self.client.post(path + "/safety/events", headers=CSRF, json={
+            "event": "SUSPECTED", "expected_version": job["version"], "reason": "합성 안전 의심",
+        })
+        self.assertEqual(suspected.status_code, 200, suspected.text)
+        blocked = (await self.client.get(current_path)).json()
+        self.assertEqual(blocked["sample_count"], 0)
+        self.assertEqual(blocked["excluded"][0]["reason"], "SAFETY_NOT_PASSED")
+        self.assertEqual((await self.client.get(
+            f"/api/customer/assessment-aggregates/{original['group_id']}/results/{original['result_id']}"
+        )).json()["mean_quality_score_percent"], "80.00")
+        retry = await self.client.post(path + "/refresh-aggregates", headers=CSRF)
+        self.assertEqual(retry.status_code, 200, retry.text)
+        self.assertEqual(retry.json()["refreshed_group_count"], 1)
+        self.assertEqual((await self.client.get(current_path)).json()["result_id"], blocked["result_id"])
+        self.assertEqual((await self.client.post(path + "/refresh-aggregates")).status_code, 403)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.post(path + "/refresh-aggregates", headers=CSRF)).status_code, 404)
+
+    async def test_failed_aggregate_refresh_can_be_retried_after_source_commit(self):
+        job = await self.completed_with_safety()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
+                          json=self.assessment_body(job))).status_code, 201)
+        period = datetime.now(timezone.utc)
+        created = (await self.client.post("/api/customer/assessment-aggregates", headers=CSRF, json={
+            "job_ids": [job["job_id"]],
+            "period_start": (period - timedelta(days=1)).isoformat(),
+            "period_end": (period + timedelta(days=1)).isoformat(),
+            "recipe_version": "recipe-v1", "load_band": "PARTIAL",
+        })).json()
+        current_path = f"/api/customer/assessment-aggregates/{created['group_id']}/current"
+        job = (await self.client.get(path)).json()["job"]
+        revised_body = self.assessment_body(job, current=1, kind="REVISION", reason="합성 재평가")
+        revised_body["scores"] = {name: 3 for name in cooking.SCORE_ITEMS}
+        with patch("foodtech_business_api.assessment_aggregate.refresh_dependents",
+                   new=AsyncMock(side_effect=RuntimeError("synthetic storage outage"))):
+            failed = await self.client.post(path + "/assessments", headers=CSRF, json=revised_body)
+        self.assertEqual(failed.status_code, 503)
+        self.assertIn("작업 변경은 저장되었으나", failed.json()["detail"])
+        self.assertEqual((await self.client.get(path)).json()["current_assessment"]["version"], 2)
+        self.assertEqual((await self.client.get(current_path)).json()["result_id"], created["result_id"])
+        self.assertEqual((await self.client.post(path + "/refresh-aggregates", headers=CSRF)).json()
+                         ["refreshed_group_count"], 1)
+        self.assertNotEqual((await self.client.get(current_path)).json()["result_id"], created["result_id"])
 
     async def test_safety_failure_and_separate_recook(self):
         job = await self.create()
