@@ -14,6 +14,19 @@ class Conflict(Exception):
     pass
 
 
+def _job_list_item(pk: str, meta: dict) -> dict:
+    owner = meta["owner_subject"]
+    job_id = meta["job_id"]
+    if pk != f"SCOPE#USER#{owner}#JOB#{job_id}":
+        raise ValueError("job scope and owner do not match")
+    return {"pk": f"SCOPE#USER#{owner}#JOBS",
+            "sk": f"CREATED#{meta['created_at']}#{job_id}",
+            "job_id": job_id, "created_at": meta["created_at"],
+            "recipe_version": meta["recipe_version"],
+            "planned_portions": meta["planned_portions"],
+            "source_job_id": meta.get("source_job_id")}
+
+
 def _only_result_already_exists(exc: Exception, operation_count: int) -> bool:
     reasons = exc.response.get("CancellationReasons", [])
     return (len(reasons) == operation_count and
@@ -37,6 +50,8 @@ class CookingStore(Protocol):
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
     def create(self, pk: str, meta: dict) -> None: ...
+    def list_jobs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
+    def ensure_listed(self, pk: str, meta: dict) -> None: ...
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None: ...
     def create_recook(self, parent_pk: str, expected_parent_version: int,
                       new_pk: str, meta: dict) -> None: ...
@@ -88,9 +103,31 @@ class MemoryCookingStore:
 
     def create(self, pk: str, meta: dict) -> None:
         with self.lock:
-            if (pk, "META") in self.items:
+            listing = _job_list_item(pk, meta)
+            list_key = (listing["pk"], listing["sk"])
+            if (pk, "META") in self.items or list_key in self.items:
                 raise Conflict
             self.items[(pk, "META")] = meta.copy()
+            self.items[list_key] = listing
+
+    def list_jobs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        with self.lock:
+            pk = f"SCOPE#USER#{subject}#JOBS"
+            entries = [item.copy() for (item_pk, sk), item in self.items.items()
+                       if item_pk == pk and sk.startswith("CREATED#") and
+                       (cursor is None or sk < cursor)]
+            entries.sort(key=lambda item: item["sk"], reverse=True)
+            page = entries[:limit]
+            return {"items": [{key: value for key, value in item.items() if key not in {"pk", "sk"}}
+                              for item in page],
+                    "next_cursor": page[-1]["sk"] if len(entries) > limit else None}
+
+    def ensure_listed(self, pk: str, meta: dict) -> None:
+        with self.lock:
+            listing = _job_list_item(pk, meta)
+            if (pk, "META") not in self.items:
+                raise Conflict
+            self.items.setdefault((listing["pk"], listing["sk"]), listing)
 
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
         with self.lock:
@@ -105,9 +142,13 @@ class MemoryCookingStore:
                       new_pk: str, meta: dict) -> None:
         with self.lock:
             parent = self.items.get((parent_pk, "META"))
-            if not parent or parent["version"] != expected_parent_version or (new_pk, "META") in self.items:
+            listing = _job_list_item(new_pk, meta)
+            list_key = (listing["pk"], listing["sk"])
+            if not parent or parent["version"] != expected_parent_version or \
+                    (new_pk, "META") in self.items or list_key in self.items:
                 raise Conflict
             self.items[(new_pk, "META")] = meta.copy()
+            self.items[list_key] = listing
 
     def commit(self, pk: str, expected_version: int, meta: dict,
                assessment: dict | None = None, pointer: dict | None = None,
@@ -277,11 +318,38 @@ class DynamoCookingStore:
         return _api_numbers(result)
 
     def create(self, pk: str, meta: dict) -> None:
+        listing = _job_list_item(pk, meta)
         try:
-            self.table.put_item(Item={"pk": pk, "sk": "META", **meta},
-                                ConditionExpression="attribute_not_exists(pk)")
-        except self.client.exceptions.ConditionalCheckFailedException as exc:
-            raise Conflict from exc
+            self.client.transact_write_items(TransactItems=[
+                {"Put": {"TableName": self.table.name,
+                         "Item": self._item({"pk": pk, "sk": "META", **meta}),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+                {"Put": {"TableName": self.table.name, "Item": self._item(listing),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
+                raise Conflict from exc
+            raise
+
+    def list_jobs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        pk = f"SCOPE#USER#{subject}#JOBS"
+        args = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with("CREATED#"),
+                "ScanIndexForward": False, "ConsistentRead": True, "Limit": limit}
+        if cursor:
+            args["ExclusiveStartKey"] = {"pk": pk, "sk": cursor}
+        page = self.table.query(**args)
+        return {"items": [_api_numbers({key: value for key, value in item.items()
+                                        if key not in {"pk", "sk"}}) for item in page.get("Items", [])],
+                "next_cursor": page.get("LastEvaluatedKey", {}).get("sk")}
+
+    def ensure_listed(self, pk: str, meta: dict) -> None:
+        listing = _job_list_item(pk, meta)
+        try:
+            self.table.put_item(Item=listing, ConditionExpression="attribute_not_exists(pk)")
+        except self.client.exceptions.ConditionalCheckFailedException:
+            return
 
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
         operations = [
@@ -305,6 +373,7 @@ class DynamoCookingStore:
 
     def create_recook(self, parent_pk: str, expected_parent_version: int,
                       new_pk: str, meta: dict) -> None:
+        listing = _job_list_item(new_pk, meta)
         operations = [
             {"ConditionCheck": {
                 "TableName": self.table.name, "Key": self._item({"pk": parent_pk, "sk": "META"}),
@@ -314,6 +383,8 @@ class DynamoCookingStore:
             }},
             {"Put": {"TableName": self.table.name,
                      "Item": self._item({"pk": new_pk, "sk": "META", **meta}),
+                     "ConditionExpression": "attribute_not_exists(pk)"}},
+            {"Put": {"TableName": self.table.name, "Item": self._item(listing),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
         ]
         try:
