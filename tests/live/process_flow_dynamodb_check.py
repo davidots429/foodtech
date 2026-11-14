@@ -187,6 +187,7 @@ async def main() -> None:
             remove_partition(data_table, stream_pk)
             if job_pk:
                 remove_partition(cooking_store.table, job_pk)
+                remove_partition(cooking_store.table, f"SCOPE#USER#{subject}#JOBS")
                 cooking_store.table.delete_item(Key={"pk": stream_pk, "sk": "BINDING"})
         except Exception as exc:
             cleanup_errors.append(f"table cleanup: {exc}")

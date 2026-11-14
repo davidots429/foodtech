@@ -62,6 +62,7 @@ class CookingStore(Protocol):
     def events(self, pk: str) -> list[dict]: ...
     def assessment(self, pk: str, version: int) -> dict | None: ...
     def comparison(self, pk: str, comparison_id: str) -> dict | None: ...
+    def list_current_comparisons(self, candidate_pk: str, limit: int, cursor: str | None) -> dict: ...
     def comparison_dependencies(self, job_pk: str) -> list[dict]: ...
     def current_comparison(self, candidate_pk: str, baseline_id: str) -> dict | None: ...
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
@@ -189,6 +190,19 @@ class MemoryCookingStore:
         with self.lock:
             item = self.items.get((pk, f"COMPARISON#{comparison_id}"))
             return item.copy() if item else None
+
+    def list_current_comparisons(self, candidate_pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = "COMPARISON#CURRENT#"
+        with self.lock:
+            pointers = [item.copy() for (pk, sk), item in self.items.items()
+                        if pk == candidate_pk and sk.startswith(prefix) and
+                        (cursor is None or sk > prefix + cursor)]
+            pointers.sort(key=lambda item: item["sk"])
+            page = pointers[:limit]
+            return {"items": [{"baseline_job_id": item["sk"].removeprefix(prefix),
+                               "comparison_id": item["comparison_id"],
+                               "updated_at": item["updated_at"]} for item in page],
+                    "next_cursor": page[-1]["sk"].removeprefix(prefix) if len(pointers) > limit else None}
 
     def comparison_dependencies(self, job_pk: str) -> list[dict]:
         with self.lock:
@@ -467,6 +481,18 @@ class DynamoCookingStore:
         item = self.table.get_item(Key={"pk": pk, "sk": f"COMPARISON#{comparison_id}"},
                                    ConsistentRead=True).get("Item")
         return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
+
+    def list_current_comparisons(self, candidate_pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = "COMPARISON#CURRENT#"
+        args = {"KeyConditionExpression": Key("pk").eq(candidate_pk) & Key("sk").begins_with(prefix),
+                "ConsistentRead": True, "Limit": limit}
+        if cursor:
+            args["ExclusiveStartKey"] = {"pk": candidate_pk, "sk": prefix + cursor}
+        page = self.table.query(**args)
+        return {"items": [{"baseline_job_id": item["sk"].removeprefix(prefix),
+                           "comparison_id": item["comparison_id"],
+                           "updated_at": item["updated_at"]} for item in page.get("Items", [])],
+                "next_cursor": page.get("LastEvaluatedKey", {}).get("sk", "").removeprefix(prefix) or None}
 
     def comparison_dependencies(self, job_pk: str) -> list[dict]:
         items = []

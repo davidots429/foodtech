@@ -77,7 +77,7 @@ async def main() -> None:
     store = DynamoCookingStore(TABLE)
     subject = "synthetic-validation-" + uuid.uuid4().hex
     current_subject = subject
-    created_pks: list[str] = []
+    created_pks: list[str] = [f"SCOPE#USER#{subject}#JOBS"]
 
     async def session(_request, surface):
         assert surface == "customer"

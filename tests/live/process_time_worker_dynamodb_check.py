@@ -107,7 +107,7 @@ async def verify() -> None:
     bridge = DynamoProcessBridge(TABLE)
     run_id = uuid.uuid4().hex[:12]
     subject = f"synthetic-time-worker-{run_id}"
-    pks: list[str] = []
+    pks: list[str] = [f"SCOPE#USER#{subject}#JOBS"]
     summary = None
 
     async def session(_request, surface):

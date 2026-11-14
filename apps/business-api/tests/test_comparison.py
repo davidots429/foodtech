@@ -95,6 +95,29 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.json()["score_total_delta"], 7)
         self.assertEqual((await self.client.get(self._path() + "/" + "x" * 64)).status_code, 400)
 
+    async def test_current_comparison_list_is_scoped_and_paginated(self):
+        other_baseline_id = str(uuid4())
+        self._job(other_baseline_id, 3, "recipe-v1")
+        for baseline_id in (self.baseline_id, other_baseline_id):
+            result = await self.client.post(self._path(), json={"baseline_job_id": baseline_id},
+                                            headers={"X-CSRF-Token": "test-csrf"})
+            self.assertEqual(result.status_code, 201, result.text)
+        first = await self.client.get(self._path(), params={"limit": 1})
+        self.assertEqual(first.status_code, 200, first.text)
+        first_page = first.json()
+        self.assertEqual(len(first_page["items"]), 1)
+        self.assertTrue(first_page["next_cursor"])
+        second = await self.client.get(self._path(), params={"limit": 1,
+                                                             "cursor": first_page["next_cursor"]})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(len(second.json()["items"]), 1)
+        self.assertIsNone(second.json()["next_cursor"])
+        self.assertEqual({item["baseline_job_id"] for item in first_page["items"] + second.json()["items"]},
+                         {self.baseline_id, other_baseline_id})
+        self.assertEqual((await self.client.get(self._path(), params={"cursor": "bad"})).status_code, 400)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(self._path())).status_code, 404)
+
     async def test_safety_and_tenant_boundaries(self):
         body = {"baseline_job_id": self.baseline_id}
         baseline_pk = cooking._pk(self.subject, self.baseline_id)
@@ -157,6 +180,9 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new["improvement_status"], "NOT_OBSERVED")
         self.assertEqual((await self.client.get(self._path() + f"/from/{self.baseline_id}/current"))
                          .json()["comparison_id"], new["comparison_id"])
+        listed = (await self.client.get(self._path())).json()["items"]
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["comparison_id"], new["comparison_id"])
         historical = (await self.client.get(self._path() + "/" + old["comparison_id"])).json()
         self.assertEqual(historical["score_total_delta"], 7)
 
@@ -230,6 +256,25 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ComparisonTransactionContractTests(unittest.TestCase):
+    def test_dynamo_current_comparison_query_uses_candidate_partition_and_cursor(self):
+        store = object.__new__(DynamoCookingStore)
+        store.table = MagicMock()
+        candidate_pk = "SCOPE#USER#owner#JOB#candidate"
+        baseline_id = str(uuid4())
+        store.table.query.return_value = {
+            "Items": [{"pk": candidate_pk, "sk": f"COMPARISON#CURRENT#{baseline_id}",
+                       "comparison_id": "a" * 64, "updated_at": "2026-11-15T00:00:00Z"}],
+            "LastEvaluatedKey": {"pk": candidate_pk, "sk": f"COMPARISON#CURRENT#{baseline_id}"},
+        }
+        page = store.list_current_comparisons(candidate_pk, 1, baseline_id)
+        self.assertEqual(page["items"][0]["baseline_job_id"], baseline_id)
+        self.assertEqual(page["next_cursor"], baseline_id)
+        args = store.table.query.call_args.kwargs
+        self.assertEqual(args["ExclusiveStartKey"],
+                         {"pk": candidate_pk, "sk": f"COMPARISON#CURRENT#{baseline_id}"})
+        self.assertEqual(args["Limit"], 1)
+        self.assertTrue(args["ConsistentRead"])
+
     def test_dynamo_write_checks_both_current_jobs_and_pointers(self):
         store = object.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-cooking")
