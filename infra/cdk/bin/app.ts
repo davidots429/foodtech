@@ -130,7 +130,7 @@ class MinimalDataFlowStack extends Stack {
       }),
       description: "ECS task access for Foodtech standardization and process assessment",
     });
-    table.grant(workerRole, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
+    table.grant(workerRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
     const cookingTable = dynamodb.Table.fromTableName(
       this, "CookingJobsForWorker", `foodtech-cooking-jobs-${stage}`,
     );

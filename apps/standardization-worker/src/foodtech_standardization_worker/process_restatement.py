@@ -1,4 +1,4 @@
-"""Create an immutable process derivation from applied and late synthetic samples."""
+"""Create an immutable process derivation from a standardized stream snapshot."""
 
 import argparse
 import hashlib
@@ -6,8 +6,10 @@ import os
 from datetime import datetime, timezone
 
 import boto3
+import rfc8785
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
+from foodtech_contracts import stream_binding_key
 from foodtech_contracts.tonkatsu_process import process_status
 
 from .process_rules import RULE_VERSION, advance
@@ -96,6 +98,42 @@ class DynamoProcessRestatement:
             if not last:
                 return items
 
+    def _stream_sources(self, stream_pk: str) -> list[dict]:
+        items = []
+        last = None
+        while True:
+            args = {"KeyConditionExpression": Key("pk").eq(stream_pk) & Key("sk").begins_with("RAW#"),
+                    "ConsistentRead": True}
+            if last:
+                args["ExclusiveStartKey"] = last
+            page = self.data.query(**args)
+            items.extend(page.get("Items", []))
+            if len(items) > MAX_RESTATEMENT_SAMPLES:
+                raise ValueError("restatement raw sample limit exceeded")
+            last = page.get("LastEvaluatedKey")
+            if not last:
+                return items
+
+    @staticmethod
+    def _eligible(item: dict, job: dict) -> str | None:
+        normalized = item.get("normalized")
+        if item.get("dedup_status") != "UNIQUE":
+            return "DUPLICATE_OR_CONFLICT"
+        if item.get("quality_status") not in {"VALID", "WARNING"} or not isinstance(normalized, dict):
+            return "QUALITY_NOT_ELIGIBLE"
+        if normalized.get("device_status") != "RUNNING":
+            return "DEVICE_NOT_RUNNING"
+        if any(normalized.get(key) != value for key, value in job["source_binding"].items()):
+            raise ValueError("restatement source binding mismatch")
+        at = datetime.fromisoformat(normalized["event_time"].replace("Z", "+00:00"))
+        placed = job.get("actual_placed_at")
+        lifted = job.get("actual_lifted_at")
+        if placed and at < datetime.fromisoformat(placed.replace("Z", "+00:00")):
+            return "OUTSIDE_COOKING_INTERVAL"
+        if lifted and at > datetime.fromisoformat(lifted.replace("Z", "+00:00")):
+            return "OUTSIDE_COOKING_INTERVAL"
+        return None
+
     def process(self, job_pk: str, ingestion_event_id: str) -> str:
         request_key = {"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{ingestion_event_id}"}
         request = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")
@@ -109,30 +147,53 @@ class DynamoProcessRestatement:
                                     ConsistentRead=True).get("Item")
         if not job or job.get("source_binding") is None:
             return "JOB_NOT_BOUND"
+        stream_pk = request.get("source_stream_pk")
+        if not stream_pk:
+            raise ValueError("restatement request has no source stream key")
+        if stream_pk != stream_binding_key(**job["source_binding"]):
+            raise ValueError("restatement request stream does not match job binding")
         requests = self._query(job_pk, "RESTATEMENT#REQUEST#")
         selected = [item for item in requests if item["status"] == "COMPLETED" or item["sk"] == request["sk"]]
         sources = {(item["source_assessment_pk"], item.get("source_assessment_sk", "ASSESSMENT#v1"))
                    for item in selected}
         events = self._query(job_pk, "EVENT#PROCESS#")
         sources.update((item["source_assessment_pk"], "ASSESSMENT#v1") for item in events)
+        raw = self._stream_sources(stream_pk)
+        raw_ids = {item["ingestion_event_id"] for item in raw}
+        if ingestion_event_id not in raw_ids:
+            raise RuntimeError("restatement trigger raw source is not ready")
+        sources.update((f"EVENT#{item['ingestion_event_id']}", "ASSESSMENT#v1") for item in raw)
         if len(sources) > MAX_RESTATEMENT_SAMPLES:
             raise ValueError("restatement sample limit exceeded")
         assessments = []
+        excluded = []
         for pk, sk in sorted(sources):
             item = self.data.get_item(Key={"pk": pk, "sk": sk}, ConsistentRead=True).get("Item")
             if not item:
-                raise ValueError(f"restatement source missing: {pk}/{sk}")
-            assessments.append(item)
+                raise RuntimeError(f"restatement source assessment is not ready: {pk}/{sk}")
+            if item.get("source_pk") != stream_pk:
+                raise ValueError(f"restatement source stream mismatch: {pk}/{sk}")
+            reason = self._eligible(item, job)
+            if reason:
+                excluded.append({"ingestion_event_id": item["ingestion_event_id"], "reason": reason})
+            else:
+                assessments.append(item)
         derived = replay_process(assessments, job)
-        source_ids = derived["included_ingestion_event_ids"]
-        digest = hashlib.sha256("\n".join(source_ids).encode("utf-8")).hexdigest()
+        if {item["ingestion_event_id"] for item in self._stream_sources(stream_pk)} != raw_ids:
+            return "SOURCE_CHANGED_RETRY"
+        manifest = {"request_sk": request["sk"], "job_version": int(job["version"]),
+                    "source_assessment_keys": [f"{pk}/{sk}" for pk, sk in sorted(sources)],
+                    "excluded": excluded}
+        digest = hashlib.sha256(rfc8785.dumps(manifest)).hexdigest()
         result_sk = f"RESTATEMENT#RESULT#{digest}"
         completed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         result = {"pk": job_pk, "sk": result_sk, "status": "DERIVED_ONLY",
-                  "scope": "APPLIED_PROCESS_EVENTS_AND_COMPLETED_LATE_REQUESTS",
+                  "scope": "STANDARDIZED_STREAM_SNAPSHOT",
                   "trigger_request_sk": request["sk"], "job_id": job["job_id"],
                   "job_version_at_derivation": int(job["version"]),
-                  "source_assessment_keys": [f"{pk}/{sk}" for pk, sk in sorted(sources)],
+                  "source_stream_pk": stream_pk, "source_raw_count": len(raw),
+                  "source_assessment_keys": manifest["source_assessment_keys"],
+                  "excluded_sources": excluded, "input_hash": digest,
                   "created_at": completed_at, **derived}
         completed = {**request, "status": "COMPLETED", "result_sk": result_sk,
                      "completed_at": completed_at}

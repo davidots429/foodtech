@@ -551,12 +551,14 @@ source = { editable = "apps/standardization-worker" }
 dependencies = [
     { name = "boto3" },
     { name = "foodtech-contracts" },
+    { name = "rfc8785" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.40,<2" },
     { name = "foodtech-contracts", editable = "packages/contracts" },
+    { name = "rfc8785", specifier = ">=0.1,<1" },
 ]
 
 [[package]]
