@@ -134,7 +134,7 @@ class MinimalDataFlowStack extends Stack {
     const cookingTable = dynamodb.Table.fromTableName(
       this, "CookingJobsForWorker", `foodtech-cooking-jobs-${stage}`,
     );
-    cookingTable.grant(workerRole, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
+    cookingTable.grant(workerRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
     ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
     quarantine.grant(workerRole, "sqs:SendMessage");
     new CfnOutput(this, "DataTableName", { value: table.tableName });
