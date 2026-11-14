@@ -158,6 +158,18 @@ async def verify() -> None:
                 assert (await get(client, aggregate_current))["result_id"] == aggregate["result_id"]
                 assert (await get(client, aggregate_record + "/status"))["status"] == "CURRENT"
 
+                # Reproduce a result saved before dependency and current-pointer indexing.
+                for selected in (baseline, candidate):
+                    store.table.delete_item(Key={"pk": cooking._pk(subject, selected["job_id"]),
+                                                 "sk": f"AGGREGATE#DEP#{aggregate['group_id']}"})
+                store.table.delete_item(Key={"pk": aggregate_pk, "sk": "CURRENT"})
+                assert (await client.get(aggregate_current)).status_code == 404
+                repaired = await post(client, aggregate_record + "/refresh")
+                assert repaired["result_id"] == aggregate["result_id"]
+                assert (await get(client, aggregate_current))["result_id"] == aggregate["result_id"]
+                for selected in (baseline, candidate):
+                    assert store.aggregate_dependencies(cooking._pk(subject, selected["job_id"]))
+
                 candidate_pk = cooking._pk(subject, candidate["job_id"])
                 restatement_sk = f"RESTATEMENT#RESULT#{uuid.uuid4().hex}"
                 store.table.put_item(Item={"pk": candidate_pk, "sk": restatement_sk,
@@ -276,6 +288,7 @@ async def verify() -> None:
                            "comparison_stale_then_new_version": True,
                            "aggregate_stale_then_new_version": True,
                            "aggregate_auto_refreshed_and_current_lookup": True,
+                           "legacy_aggregate_index_backfilled": True,
                            "assessment_and_safety_auto_refresh": True,
                            "process_restatement_lineage_stale_then_new_version": True,
                            "historical_results_preserved": True,

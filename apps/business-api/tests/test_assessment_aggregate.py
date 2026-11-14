@@ -121,6 +121,26 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["quality_pass_rate_percent"])
         self.assertIsNone(result["item_score_means"])
 
+    async def test_refresh_backfills_legacy_dependency_and_current_pointer(self):
+        original = (await self.client.post("/api/customer/assessment-aggregates", json=self._body(),
+                    headers={"X-CSRF-Token": "test-csrf"})).json()
+        aggregate_pk = f"SCOPE#USER#{self.subject}#AGGREGATE#{original['group_id']}"
+        self.store.items.pop((aggregate_pk, "CURRENT"))
+        for job_id in (self.first_id, self.second_id):
+            self.store.items.pop((cooking._pk(self.subject, job_id),
+                                  f"AGGREGATE#DEP#{original['group_id']}"))
+        current_path = f"/api/customer/assessment-aggregates/{original['group_id']}/current"
+        self.assertEqual((await self.client.get(current_path)).status_code, 404)
+        old_path = (f"/api/customer/assessment-aggregates/{original['group_id']}"
+                    f"/results/{original['result_id']}")
+        repaired = await self.client.post(old_path + "/refresh", headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(repaired.status_code, 201, repaired.text)
+        self.assertEqual(repaired.json()["result_id"], original["result_id"])
+        self.assertEqual((await self.client.get(current_path)).json()["result_id"], original["result_id"])
+        for job_id in (self.first_id, self.second_id):
+            self.assertIn((cooking._pk(self.subject, job_id),
+                           f"AGGREGATE#DEP#{original['group_id']}"), self.store.items)
+
     async def test_period_and_duplicate_inputs_are_rejected(self):
         body = self._body()
         duplicate = await self.client.post("/api/customer/assessment-aggregates",
@@ -292,10 +312,20 @@ class AggregateTransactionContractTests(unittest.TestCase):
                   "created_at": "2026-11-14T00:00:00Z"}
         snapshots = [("job-1", meta, pointer, None)]
         with patch.object(store, "aggregate", return_value=record):
-            store.client.transact_write_items.side_effect = Canceled(
+            initial_cancellation = Canceled(
                 ["None", "None", "None", "None", "None", "ConditionalCheckFailed"])
+            store.client.transact_write_items.side_effect = [initial_cancellation, None]
             self.assertEqual(store.save_aggregate("aggregate", snapshots, record), record)
+            self.assertEqual(store.client.transact_write_items.call_count, 2)
+            repair = store.client.transact_write_items.call_args.kwargs["TransactItems"]
+            self.assertEqual(len(repair), 6)
+            self.assertEqual(repair[-2]["ConditionCheck"]["Key"]["sk"]["S"], "RESULT#" + "a" * 64)
+            self.assertIn("if_not_exists", repair[-1]["Update"]["UpdateExpression"])
             store.client.transact_write_items.side_effect = Canceled(
                 ["ConditionalCheckFailed", "None", "None", "None", "None", "ConditionalCheckFailed"])
+            with self.assertRaises(Conflict):
+                store.save_aggregate("aggregate", snapshots, record)
+            store.client.transact_write_items.side_effect = [initial_cancellation,
+                Canceled(["ConditionalCheckFailed", "None", "None", "None", "None", "None"])]
             with self.assertRaises(Conflict):
                 store.save_aggregate("aggregate", snapshots, record)
