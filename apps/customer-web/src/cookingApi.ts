@@ -90,7 +90,20 @@ export type JobEvent = {
   partial_observations?: Partial<Record<ScoreKey, string>>;
 };
 
-export type JobSnapshot = { job: CookingJob; current_assessment: CurrentAssessment | null };
+export type ProcessAssessmentView = {
+  view: "AS_PROCESSED" | "LATEST_RESTATED";
+  status: CookingJob["process_assessment_status"];
+  assessment: Record<string, unknown> | null;
+  result_sk: string | null;
+  created_at: string | null;
+  job_version_at_derivation: number | null;
+  job_version_changed: boolean;
+};
+export type JobSnapshot = {
+  job: CookingJob;
+  current_assessment: CurrentAssessment | null;
+  process_assessment_view: ProcessAssessmentView;
+};
 export type CoreSample = { at_second: number; celsius: string };
 export type Probe = { item_id: string; calibration_status: "OK" | "EXPIRED"; samples: CoreSample[] };
 

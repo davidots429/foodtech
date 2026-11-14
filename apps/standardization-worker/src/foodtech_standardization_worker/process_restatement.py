@@ -181,6 +181,9 @@ class DynamoProcessRestatement:
         derived = replay_process(assessments, job)
         if {item["ingestion_event_id"] for item in self._stream_sources(stream_pk)} != raw_ids:
             return "SOURCE_CHANGED_RETRY"
+        pointer_key = {"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"}
+        previous_pointer = self.cooking.get_item(Key=pointer_key, ConsistentRead=True).get("Item")
+        pointer_version = int(previous_pointer["version"]) + 1 if previous_pointer else 1
         manifest = {"request_sk": request["sk"], "job_version": int(job["version"]),
                     "source_assessment_keys": [f"{pk}/{sk}" for pk, sk in sorted(sources)],
                     "excluded": excluded}
@@ -197,6 +200,13 @@ class DynamoProcessRestatement:
                   "created_at": completed_at, **derived}
         completed = {**request, "status": "COMPLETED", "result_sk": result_sk,
                      "completed_at": completed_at}
+        pointer = {**pointer_key, "version": pointer_version, "result_sk": result_sk,
+                   "updated_at": completed_at, "job_version_at_derivation": int(job["version"]),
+                   "source_raw_count": len(raw)}
+        pointer_condition = ({"ConditionExpression": "#v = :previous",
+                              "ExpressionAttributeNames": {"#v": "version"},
+                              "ExpressionAttributeValues": {":previous": {"N": str(previous_pointer["version"])}}}
+                             if previous_pointer else {"ConditionExpression": "attribute_not_exists(pk)"})
         try:
             self.client.transact_write_items(TransactItems=[
                 {"ConditionCheck": {"TableName": self.cooking.name,
@@ -210,6 +220,8 @@ class DynamoProcessRestatement:
                          "ConditionExpression": "#status = :pending",
                          "ExpressionAttributeNames": {"#status": "status"},
                          "ExpressionAttributeValues": {":pending": {"S": "PENDING"}}}},
+                {"Put": {"TableName": self.cooking.name, "Item": self._item(pointer),
+                         **pointer_condition}},
             ])
         except self.client.exceptions.TransactionCanceledException:
             current = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")

@@ -207,9 +207,22 @@ async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dic
 
 
 @router.get("/{job_id}")
-async def get_job(job_id: str, request: Request) -> dict:
-    _, _, _, meta, pointer = await _read(request, job_id)
-    return {"job": meta, "current_assessment": pointer}
+async def get_job(job_id: str, request: Request,
+                  process_view: Literal["LATEST_RESTATED", "AS_PROCESSED"] = "LATEST_RESTATED") -> dict:
+    _, store, pk, meta, pointer = await _read(request, job_id)
+    derived = (await _store_call(store, store.latest_process_result, pk)
+               if process_view == "LATEST_RESTATED" else None)
+    process = ({"view": "LATEST_RESTATED", "status": derived["process_assessment_status"],
+                "assessment": derived["process_assessment"], "result_sk": derived["sk"],
+                "created_at": derived["created_at"],
+                "job_version_at_derivation": derived["job_version_at_derivation"],
+                "job_version_changed": int(meta["version"]) != int(derived["job_version_at_derivation"])}
+               if derived else
+               {"view": "AS_PROCESSED", "status": meta["process_assessment_status"],
+                "assessment": meta.get("process_assessment"), "result_sk": None,
+                "created_at": None, "job_version_at_derivation": None,
+                "job_version_changed": False})
+    return {"job": meta, "current_assessment": pointer, "process_assessment_view": process}
 
 
 @router.get("/{job_id}/events")

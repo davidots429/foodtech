@@ -68,6 +68,8 @@
 
 표준화 Worker가 같은 `FOODTECH_COOKING_TABLE`을 사용하면 중복이 아닌 유효한 정규화 표본을 바인딩된 `RUNNING` 또는 `PAUSED` 작업에 반영한다. 저온·고온 지속 및 저온 복원시간의 첫 합성 온도 규칙을 적용한다. 실패가 확정되면 공정판정과 작업 상태 `FAILED`, 평가 차단, 원본 수신 ID·규칙 버전이 있는 사건을 원자적으로 기록한다. 이미 격리된 값과 늦은 이벤트는 현재 판정에 사용하지 않고, 결손은 연속시간을 끊는다. 장비 제어·안전판정·품질평가는 별개다.
 
+늦은 이벤트의 재계산 결과는 작업 메타와 별도인 불변 기록으로 저장하고 `PROCESS#LATEST_RESTATED`가 최신 완료 결과를 가리킨다. `GET /api/customer/cooking-jobs/{job_id}`는 소유자 범위에서 `process_assessment_view`를 반환하며 기본값은 `LATEST_RESTATED`다. 파생 결과가 없으면 최초 처리 판정으로 돌아가고 `?process_view=AS_PROCESSED`로 최초 판정을 명시적으로 조회할 수 있다. 응답의 `job`은 원래 작업 기록이며 파생 결과로 덮어쓰지 않는다. 파생 당시 작업 버전과 현재 버전이 다르면 `job_version_changed`를 표시한다. 임의 시점 감사 조회와 늦은 이벤트 후 집계 자동 재계산은 아직 제공하지 않는다.
+
 새 합성 작업은 최대 두께(cm)를 입력받아 Thin `0.5~1.0` 미만, Standard `1.0~1.5` 미만, Thick `1.5~2.0` 이하로 분류한다. `0.5cm` 미만은 `BELOW_RANGE` 경고이며 시간 기준을 적용하지 않는다. `2.0cm` 초과는 `PROFILE_REJECTED`로 작업 생성이 거부된다. 조리 시작에는 운영자가 기록한 투입시각, 완료에는 인양시각이 필요하다. 실제 조리시간은 `인양시각 - 투입시각`으로 계산하며 서버의 완료 기록시각과 인양시각 차이도 저장한다. 두께별 승인 시간 경계에서 조기 인양·최대시간 초과는 공정 실패와 작업 `FAILED`, 그 밖의 단축·지연·권장시간 초과는 경고로 처리한다. 수집 온도 판정과 두께·시간 판정은 같은 공정 종합 상태에 합친다. 시간 기준은 조리 완료 시 판정하며 진행 중 시간 초과 알림은 아직 제공하지 않는다. 실제 장비 호환성과 현장 성능은 검증 범위에 없다.
 
 개발용 AWS 테이블·FIFO 큐에서 [합성 고온 fixture](../../fixtures/tonkatsu-process-high-v1.json)를 수집 어댑터에 직접 넣어 5건 처리, 마지막 `HIGH_PROCESS_FAILURE`, 재처리 `REPLAYED` 및 시험 항목 정리를 확인했다. 재실행 명령은 `AWS_PROFILE=foodtech uv run --no-sync python tests/live/process_flow_dynamodb_check.py`다. C# Mock HTTPS/OAuth·실제 Cognito 경로와 배포 실행 역할은 포함하지 않는다.

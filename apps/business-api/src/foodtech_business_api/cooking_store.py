@@ -34,6 +34,7 @@ def _api_numbers(value):
 
 class CookingStore(Protocol):
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
+    def latest_process_result(self, pk: str) -> dict | None: ...
     def create(self, pk: str, meta: dict) -> None: ...
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None: ...
     def create_recook(self, parent_pk: str, expected_parent_version: int,
@@ -66,6 +67,14 @@ class MemoryCookingStore:
             meta = self.items.get((pk, "META"))
             pointer = self.items.get((pk, "ASSESSMENT#CURRENT"))
             return (meta.copy() if meta else None, pointer.copy() if pointer else None)
+
+    def latest_process_result(self, pk: str) -> dict | None:
+        with self.lock:
+            pointer = self.items.get((pk, "PROCESS#LATEST_RESTATED"))
+            if not pointer:
+                return None
+            result = self.items.get((pk, pointer["result_sk"]))
+            return result.copy() if result else None
 
     def create(self, pk: str, meta: dict) -> None:
         with self.lock:
@@ -191,6 +200,20 @@ class DynamoCookingStore:
             Key={"pk": pk, "sk": "ASSESSMENT#CURRENT"}, ConsistentRead=True,
         ).get("Item")
         return _api_numbers(meta), _api_numbers(pointer)
+
+    def latest_process_result(self, pk: str) -> dict | None:
+        pointer = self.table.get_item(Key={"pk": pk, "sk": "PROCESS#LATEST_RESTATED"},
+                                      ConsistentRead=True).get("Item")
+        if not pointer:
+            return None
+        result_sk = pointer.get("result_sk", "")
+        if not result_sk.startswith("RESTATEMENT#RESULT#"):
+            raise ValueError("invalid latest process result pointer")
+        result = self.table.get_item(Key={"pk": pk, "sk": result_sk},
+                                     ConsistentRead=True).get("Item")
+        if not result or result.get("status") != "DERIVED_ONLY":
+            raise ValueError("latest process result is missing")
+        return _api_numbers(result)
 
     def create(self, pk: str, meta: dict) -> None:
         try:

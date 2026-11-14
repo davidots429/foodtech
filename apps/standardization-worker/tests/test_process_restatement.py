@@ -68,8 +68,9 @@ class ProcessRestatementTests(unittest.TestCase):
                    "source_stream_pk": stream_binding_key(**self.binding)}
         cooking = Mock(name="cooking")
         cooking.name = "cooking-dev"
-        cooking.get_item.side_effect = lambda **kwargs: {"Item": {
-            request["sk"]: request, "META": job}[kwargs["Key"]["sk"]]}
+        cooking.get_item.side_effect = lambda **kwargs: (
+            {"Item": {request["sk"]: request, "META": job}[kwargs["Key"]["sk"]]}
+            if kwargs["Key"]["sk"] != "PROCESS#LATEST_RESTATED" else {})
         data = Mock(name="data")
         data.get_item.side_effect = lambda **kwargs: {"Item": {
             "EVENT#first": first, "EVENT#late": late,
@@ -83,13 +84,24 @@ class ProcessRestatementTests(unittest.TestCase):
             {"ingestion_event_id": event_id} for event_id in ("first", "late", "after-terminal")]
         self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
         operations = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(operations), 3)
+        self.assertEqual(len(operations), 4)
         self.assertEqual(operations[0]["ConditionCheck"]["Key"]["sk"]["S"], "META")
         self.assertEqual(operations[1]["Put"]["Item"]["status"]["S"], "DERIVED_ONLY")
         self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "3")
         self.assertEqual(len(operations[1]["Put"]["Item"]["included_ingestion_event_ids"]["L"]), 3)
         self.assertEqual(operations[2]["Put"]["Item"]["status"]["S"], "COMPLETED")
+        self.assertEqual(operations[3]["Put"]["Item"]["sk"]["S"], "PROCESS#LATEST_RESTATED")
+        self.assertEqual(operations[3]["Put"]["Item"]["version"]["N"], "1")
+        self.assertEqual(operations[3]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
         self.assertEqual(job["status"], "COMPLETED")
+        pointer = {"pk": "JOB#1", "sk": "PROCESS#LATEST_RESTATED", "version": 1}
+        cooking.get_item.side_effect = lambda **kwargs: {"Item": {
+            request["sk"]: request, "META": job,
+            "PROCESS#LATEST_RESTATED": pointer}[kwargs["Key"]["sk"]]}
+        self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+        next_pointer = processor.client.transact_write_items.call_args.kwargs["TransactItems"][3]["Put"]
+        self.assertEqual(next_pointer["Item"]["version"]["N"], "2")
+        self.assertEqual(next_pointer["ExpressionAttributeValues"][":previous"]["N"], "1")
 
     def test_process_waits_for_unstandardized_raw_sample(self):
         job = self.job()
