@@ -18,3 +18,5 @@ SQS FIFO의 원본 참조를 받아 DynamoDB 원본을 강하게 읽고, 원천 
 
 파생 결과 실저장은 `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev FOODTECH_DATA_TABLE=foodtech-data-flow-dev .venv/bin/python tests/live/late_restatement_dynamodb_check.py`로 확인한다. 2026-11-14 Worker의 자동 처리 경계에서 합성 표본 3건 중 늦은 표본이 간격을 채운 `NORMAL` 파생 결과, 현재 작업 불변, 재전달 중복 방지 및 합성 파티션 5개 정리를 확인했다. 실제 SQS 전달·재시도와 배포된 Worker 실행 역할은 이 시험 범위에 포함되지 않는다. 실제 AWS 요청 비용이 발생할 수 있다.
 
+실제 FIFO 전달·재시도는 `AWS_PROFILE=foodtech FOODTECH_DATA_TABLE=foodtech-data-flow-dev FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev .venv/bin/python tests/live/late_restatement_sqs_retry_check.py`로 확인한다. 2026-11-14 개발용 큐가 비어 있음을 확인한 뒤 합성 늦은 이벤트 한 건을 전송하고, 첫 파생 계산에 일시 충돌을 주입했다. Worker가 메시지를 삭제하지 않아 SQS가 재전달했고, 저장된 표준화 평가를 재사용하여 요청을 `COMPLETED`로 바꾸고 `NORMAL` 파생 결과를 기록했다. 현재 조리작업 판정은 유지됐으며 시험 메시지와 합성 DynamoDB 항목을 정리했다. 배포된 Worker 실행 역할과 실제 서비스 부하 조건은 별도 검증 대상이다. 실제 AWS 요청 비용이 발생할 수 있다.
+
