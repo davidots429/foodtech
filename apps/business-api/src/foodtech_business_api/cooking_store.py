@@ -52,6 +52,7 @@ class CookingStore(Protocol):
                         baseline_pointer: dict, candidate_pointer: dict,
                         record: dict) -> dict: ...
     def aggregate(self, pk: str, result_id: str) -> dict | None: ...
+    def aggregate_dependencies(self, job_pk: str) -> list[dict]: ...
     def current_aggregate(self, pk: str) -> dict | None: ...
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
                        record: dict) -> dict: ...
@@ -173,6 +174,11 @@ class MemoryCookingStore:
         with self.lock:
             item = self.items.get((pk, f"RESULT#{result_id}"))
             return item.copy() if item else None
+
+    def aggregate_dependencies(self, job_pk: str) -> list[dict]:
+        with self.lock:
+            return [item.copy() for (pk, sk), item in sorted(self.items.items())
+                    if pk == job_pk and sk.startswith("AGGREGATE#DEP#")]
 
     def current_aggregate(self, pk: str) -> dict | None:
         with self.lock:
@@ -408,6 +414,20 @@ class DynamoCookingStore:
         item = self.table.get_item(Key={"pk": pk, "sk": f"RESULT#{result_id}"},
                                    ConsistentRead=True).get("Item")
         return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
+
+    def aggregate_dependencies(self, job_pk: str) -> list[dict]:
+        items = []
+        last_key = None
+        while True:
+            args = {"KeyConditionExpression": Key("pk").eq(job_pk) &
+                    Key("sk").begins_with("AGGREGATE#DEP#"), "ConsistentRead": True}
+            if last_key:
+                args["ExclusiveStartKey"] = last_key
+            page = self.table.query(**args)
+            items.extend(_api_numbers(item) for item in page.get("Items", []))
+            last_key = page.get("LastEvaluatedKey")
+            if not last_key:
+                return items
 
     def current_aggregate(self, pk: str) -> dict | None:
         item = self.table.get_item(Key={"pk": pk, "sk": "CURRENT"},

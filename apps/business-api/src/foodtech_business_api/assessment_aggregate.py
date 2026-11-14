@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from types import SimpleNamespace
 from typing import Literal
 from uuid import UUID
 
@@ -143,6 +144,31 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
         return await _store_call(store, store.save_aggregate, analysis_pk, snapshots, record)
     except Conflict as exc:
         raise HTTPException(409, "집계 중 평가 또는 안전 상태가 변경되었습니다. 다시 계산해 주세요.") from exc
+
+
+async def refresh_dependents(store, job_pk: str) -> int:
+    """Recalculate saved groups that explicitly selected this job."""
+    prefix = "SCOPE#USER#"
+    if not job_pk.startswith(prefix) or "#JOB#" not in job_pk:
+        raise ValueError("invalid aggregate dependency job scope")
+    subject, job_id = job_pk[len(prefix):].rsplit("#JOB#", 1)
+    if not subject or not job_id:
+        raise ValueError("invalid aggregate dependency job scope")
+    dependencies = await _store_call(store, store.aggregate_dependencies, job_pk)
+    for dependency in dependencies:
+        group_id = dependency["sk"].removeprefix("AGGREGATE#DEP#")
+        selection = dependency["selection"]
+        if not _valid_hash(group_id) or _hash(selection) != group_id or \
+                dependency["aggregate_pk"] != f"SCOPE#USER#{subject}#AGGREGATE#{group_id}" or \
+                job_id not in selection["job_ids"]:
+            raise ValueError("invalid aggregate dependency")
+        body = AggregateRequest.model_validate({key: selection[key] for key in
+                                                ("job_ids", "period_start", "period_end",
+                                                 "recipe_version", "load_band")})
+        result = await _calculate(SimpleNamespace(subject=subject), store, body)
+        if result["group_id"] != group_id:
+            raise ValueError("aggregate dependency selection changed")
+    return len(dependencies)
 
 
 @router.post("", status_code=201)
