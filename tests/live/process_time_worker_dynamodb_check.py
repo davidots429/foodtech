@@ -43,10 +43,11 @@ async def job_snapshot(client: httpx.AsyncClient, path: str) -> dict:
     return response.json()["job"]
 
 
-def process_sample(binding: dict, event_id: str, event_at: datetime) -> dict:
+def process_sample(binding: dict, event_id: str, event_at: datetime, sequence_number: int = 1) -> dict:
     return {"pk": f"EVENT#{event_id}", "ingestion_event_id": event_id,
             "dedup_status": "UNIQUE", "quality_status": "VALID", "finding_codes": [],
             "normalized": {**binding, "device_status": "RUNNING", "event_time": event_at.isoformat(),
+                           "sequence_number": sequence_number,
                            "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}}
 
 
@@ -162,6 +163,19 @@ async def verify() -> None:
                 late_sample = process_sample(failed_binding, f"{run_id}-early-2",
                                              failed_placed_at + timedelta(seconds=10))
                 assert bridge.apply(late_sample) == "JOB_NOT_ACTIVE"
+                late_after_gap = process_sample(failed_binding, f"{run_id}-gap-2",
+                                                failed_placed_at + timedelta(seconds=5), 2)
+                late_after_gap["finding_codes"] = ["LATE_AFTER_GAP"]
+                failed_meta_before = await job_snapshot(client, failed_path)
+                assert bridge.apply(late_after_gap) == "RESTATEMENT_PENDING"
+                assert bridge.apply(late_after_gap) == "RESTATEMENT_ALREADY_PENDING"
+                assert await job_snapshot(client, failed_path) == failed_meta_before
+                failed_pk = cooking._pk(subject, failed["job_id"])
+                request = store.table.get_item(
+                    Key={"pk": failed_pk, "sk": f"RESTATEMENT#REQUEST#{run_id}-gap-2"},
+                    ConsistentRead=True)["Item"]
+                assert request["status"] == "PENDING" and request["job_version_at_detection"] == \
+                    failed_meta_before["version"]
                 events = await client.get(failed_path + "/events")
                 assert events.status_code == 200
                 assert any(event["trigger"] == "COOKING_COMPLETED" and
@@ -172,6 +186,7 @@ async def verify() -> None:
                            "retry_cooking_seconds": completed["actual_cooking_seconds"],
                            "time_failure_status": failed["process_time_status"],
                            "post_completion_worker_status": "JOB_NOT_ACTIVE",
+                           "late_event_restatement_status": request["status"],
                            "cleanup_partitions": len(pks)}
     finally:
         remove_partitions(store, pks)

@@ -14,11 +14,24 @@ class FakeTable:
 
     def __init__(self, items):
         self.items = items
+        self.meta = SimpleNamespace(client=SimpleNamespace(exceptions=SimpleNamespace(
+            ConditionalCheckFailedException=ConditionalWriteFailed)))
 
     def get_item(self, *, Key, ConsistentRead):
         assert ConsistentRead
         item = self.items.get((Key["pk"], Key["sk"]))
         return {"Item": item.copy()} if item else {}
+
+    def put_item(self, *, Item, ConditionExpression):
+        assert ConditionExpression is not None
+        key = (Item["pk"], Item["sk"])
+        if key in self.items:
+            raise ConditionalWriteFailed
+        self.items[key] = Item.copy()
+
+
+class ConditionalWriteFailed(Exception):
+    pass
 
 
 class FakeClient:
@@ -129,6 +142,32 @@ class ProcessBridgeTests(unittest.TestCase):
         })
         self.assertEqual(result, "WARNING")
         self.assertEqual(table.items[(job_pk, "META")]["process_assessment_status"], "WARNING")
+
+    def test_late_event_creates_one_pending_restatement_without_changing_current_job(self):
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
+                   "batch_id": "batch-a-late"}
+        stream_pk = stream_binding_key(**binding)
+        job_pk = "SCOPE#USER#customer-1#JOB#job-late"
+        meta = {"pk": job_pk, "sk": "META", "job_id": "job-late", "source_binding": binding,
+                "status": "COMPLETED", "version": 8,
+                "process_assessment_status": "WARNING", "process_temperature_status": "NORMAL"}
+        table = FakeTable({(stream_pk, "BINDING"): {"job_pk": job_pk}, (job_pk, "META"): meta})
+        bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
+        late = {"pk": "EVENT#late-1", "sk": "ASSESSMENT#v1", "source_pk": stream_pk,
+                "ingestion_event_id": "late-1", "dedup_status": "UNIQUE",
+                "quality_status": "WARNING", "finding_codes": ["LATE_AFTER_GAP"],
+                "normalized": {**binding, "device_status": "RUNNING", "sequence_number": 2,
+                               "event_time": "2026-11-02T00:00:05Z",
+                               "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}}
+        self.assertEqual(bridge.apply(late), "RESTATEMENT_PENDING")
+        self.assertEqual(bridge.apply(late), "RESTATEMENT_ALREADY_PENDING")
+        request = table.items[(job_pk, "RESTATEMENT#REQUEST#late-1")]
+        self.assertEqual(request["status"], "PENDING")
+        self.assertEqual(request["source_assessment_pk"], "EVENT#late-1")
+        self.assertEqual(request["job_version_at_detection"], 8)
+        self.assertEqual(table.items[(job_pk, "META")], meta)
+        self.assertEqual(bridge.client.calls, 0)
 
 
 if __name__ == "__main__":
