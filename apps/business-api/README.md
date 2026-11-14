@@ -8,6 +8,8 @@
 
 `GET /api/customer/cooking-jobs/{candidate_job_id}/comparisons`는 해당 고객 작업의 이전 작업별 현재 비교 포인터를 최대 50개씩 조회하며 `next_cursor`로 페이지를 넘긴다. 포인터에 연결된 결과는 화면에서 선택해 상세·최신성 API로 확인한다. 이 목록은 과거 결과 전체가 아니라 이전 작업별 마지막 저장 결과만 보여주며, 안전 상태가 바뀐 경우 마지막 결과가 `STALE`일 수 있다. 과거 비교 결과는 기존 비교 기록 ID로 조회한다.
 
+2026-11-15 개발용 DynamoDB 합성 검증에서 비교 목록 조회, 평가 변경에 따른 현재 비교 포인터 갱신, 과거 결과 보존, 다른 고객의 404와 경쟁 쓰기의 409를 확인했다. 생성한 작업·고객별 목록·집계의 합성 파티션 4개는 종료 시 모두 삭제하고 잔존 0건을 확인했다.
+
 시연용 유료 티어 신청은 `POST /api/customer/tier-requests`와 `GET /api/customer/tier-requests/current`로 제공한다. 고객 ID는 세션에서만 가져오고, 신청에는 사업자명과 시험용 사업자등록번호를 받는다. 번호 전체는 저장하지 않고 끝 네 자리만 신청·검토 기록에 남긴다. 관리자는 별도 관리자 세션에서 `GET /api/admin/tier-requests/pending`으로 대기 목록을 보고 `POST /api/admin/tier-requests/{subject}/{application_id}/decision`으로 승인 또는 거절한다. 승인 상태만 고객 `/me`의 `DEMO_PAID` 티어로 반영한다. 쓰기는 CSRF와 조건부 트랜잭션을 사용하며, 실제 과금·결제 수단 수집·사업자 진위 조회는 없다. 유료 표시에는 `00원`과 시연 고지를 함께 둔다. 로컬은 메모리 저장소를 쓰고, 공유 저장소는 `FOODTECH_TIER_TABLE`로 지정한다. 현재 이 기능은 코드·CDK 합성까지만 검증했으며 AWS 테이블은 아직 배포하지 않았다.
 
 고객의 `POST /api/customer/ai/chat`은 세션·CSRF를 검사하고 최대 최근 5개 메시지의 `user/assistant` 순서를 검증한다. 서버는 고객 ID를 세션에서 가져와 mTLS Gateway의 기존 로컬 `GENERAL_GUIDE` 실행을 호출한다. 대화 내용은 브라우저가 다음 질문의 맥락으로 보낼 때만 사용하고 업무 API는 대화 저장소를 만들지 않는다. Gateway는 실행 상태·결과와 월별 한도만 관리하며 프롬프트 원문을 레지스트리에 기록하지 않는다. Ollama와 모델·한도 레코드가 준비되지 않으면 답변을 생성할 수 없다.
