@@ -550,6 +550,7 @@ version = "0.0.0"
 source = { editable = "apps/standardization-worker" }
 dependencies = [
     { name = "boto3" },
+    { name = "foodtech-business-api" },
     { name = "foodtech-contracts" },
     { name = "rfc8785" },
 ]
@@ -557,6 +558,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.40,<2" },
+    { name = "foodtech-business-api", editable = "apps/business-api" },
     { name = "foodtech-contracts", editable = "packages/contracts" },
     { name = "rfc8785", specifier = ">=0.1,<1" },
 ]

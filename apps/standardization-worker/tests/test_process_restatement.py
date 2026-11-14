@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
@@ -78,6 +78,7 @@ class ProcessRestatementTests(unittest.TestCase):
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
         processor.cooking, processor.data, processor.client = cooking, data, Mock()
         processor.serializer = TypeSerializer()
+        processor._refresh_dependents = Mock()
         processor._query = lambda _pk, prefix: ([request] if prefix.startswith("RESTATEMENT") else
                                                    [{"source_assessment_pk": "EVENT#first"}])
         processor._stream_sources = lambda _pk: [
@@ -94,6 +95,7 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(operations[3]["Put"]["Item"]["version"]["N"], "1")
         self.assertEqual(operations[3]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
         self.assertEqual(job["status"], "COMPLETED")
+        processor._refresh_dependents.assert_called_once_with("JOB#1")
         pointer = {"pk": "JOB#1", "sk": "PROCESS#LATEST_RESTATED", "version": 1}
         cooking.get_item.side_effect = lambda **kwargs: {"Item": {
             request["sk"]: request, "META": job,
@@ -102,6 +104,37 @@ class ProcessRestatementTests(unittest.TestCase):
         next_pointer = processor.client.transact_write_items.call_args.kwargs["TransactItems"][3]["Put"]
         self.assertEqual(next_pointer["Item"]["version"]["N"], "2")
         self.assertEqual(next_pointer["ExpressionAttributeValues"][":previous"]["N"], "1")
+
+    def test_completed_request_retries_aggregate_refresh(self):
+        processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.cooking = Mock()
+        processor.cooking.get_item.return_value = {"Item": {"status": "COMPLETED"}}
+        processor._refresh_dependents = Mock()
+        self.assertEqual(processor.process("JOB#1", "late"), "ALREADY_COMPLETED")
+        processor._refresh_dependents.assert_called_once_with("JOB#1")
+
+    def test_refresh_dependents_reuses_business_aggregate_calculation(self):
+        processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.cooking = Mock()
+        processor.cooking.name = "cooking-dev"
+        subject = "customer-1"
+        job_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        group_id = "b" * 64
+        job_pk = f"SCOPE#USER#{subject}#JOB#{job_id}"
+        selection = {"job_ids": [job_id], "period_start": "2026-11-13T00:00:00Z",
+                     "period_end": "2026-11-15T00:00:00Z", "recipe_version": "recipe-v1",
+                     "load_band": "PARTIAL"}
+        processor._query = lambda pk, prefix: [{
+            "sk": f"AGGREGATE#DEP#{group_id}",
+            "aggregate_pk": f"SCOPE#USER#{subject}#AGGREGATE#{group_id}",
+            "selection": selection}] if pk == job_pk and prefix == "AGGREGATE#DEP#" else []
+        calculate = AsyncMock(return_value={"result_id": "synthetic"})
+        with patch("foodtech_business_api.assessment_aggregate._calculate", calculate), \
+             patch("foodtech_business_api.cooking_store.DynamoCookingStore"):
+            processor._refresh_dependents(job_pk)
+        calculate.assert_awaited_once()
+        self.assertEqual(calculate.await_args.args[0].subject, subject)
+        self.assertEqual(str(calculate.await_args.args[2].job_ids[0]), job_id)
 
     def test_process_waits_for_unstandardized_raw_sample(self):
         job = self.job()
