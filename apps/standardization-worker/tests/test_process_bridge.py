@@ -174,6 +174,36 @@ class ProcessBridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "must be retried"):
             bridge.apply(late)
 
+    def test_normal_sample_after_terminal_refreshes_existing_derivation_once(self):
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
+                   "batch_id": "batch-a-followup"}
+        stream_pk = stream_binding_key(**binding)
+        job_pk = "SCOPE#USER#customer-1#JOB#followup"
+        meta = {"pk": job_pk, "sk": "META", "job_id": "followup", "source_binding": binding,
+                "status": "COMPLETED", "version": 8, "process_assessment_status": "WARNING"}
+        table = FakeTable({(stream_pk, "BINDING"): {"job_pk": job_pk}, (job_pk, "META"): meta})
+        bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
+        calls = []
+        def derive(pk, event):
+            calls.append((pk, event))
+            return "STALE_RETRY" if len(calls) == 1 else "DERIVED"
+        bridge.restatement = SimpleNamespace(
+            has_new_source=lambda pk, item: len(calls) == 0,
+            process=derive)
+        sample = {"pk": "EVENT#followup-1", "sk": "ASSESSMENT#v1", "source_pk": stream_pk,
+                  "ingestion_event_id": "followup-1", "dedup_status": "UNIQUE",
+                  "quality_status": "VALID", "finding_codes": [],
+                  "normalized": {**binding, "device_status": "RUNNING", "sequence_number": 3,
+                                 "event_time": "2026-11-02T00:00:10Z"}}
+        with self.assertRaisesRegex(RuntimeError, "must be retried"):
+            bridge.apply(sample)
+        self.assertEqual(bridge.apply(sample), "RESTATEMENT_DERIVED")
+        request = table.items[(job_pk, "RESTATEMENT#REQUEST#followup-1")]
+        self.assertEqual(request["reason"], "FOLLOWUP_SAMPLE")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(table.items[(job_pk, "META")], meta)
+
 
 if __name__ == "__main__":
     unittest.main()

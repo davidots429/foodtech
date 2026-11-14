@@ -122,6 +122,18 @@ class ProcessRestatementTests(unittest.TestCase):
             processor.process("JOB#1", "late")
         client.transact_write_items.assert_not_called()
 
+    def test_followup_detection_compares_immutable_result_sources(self):
+        processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.cooking = Mock()
+        pointer = {"result_sk": "RESTATEMENT#RESULT#prior"}
+        result = {"status": "DERIVED_ONLY",
+                  "source_assessment_keys": ["EVENT#first/ASSESSMENT#v1"]}
+        processor.cooking.get_item.side_effect = lambda **kwargs: (
+            {"Item": pointer} if kwargs["Key"]["sk"] == "PROCESS#LATEST_RESTATED"
+            else {"Item": result})
+        self.assertFalse(processor.has_new_source("JOB#1", self.sample("first", 1, 0)))
+        self.assertTrue(processor.has_new_source("JOB#1", self.sample("followup", 3, 10)))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -51,7 +51,7 @@ class DynamoProcessBridge:
             raise RuntimeError(f"late-event derivation must be retried: {derived}")
         event_key = {"pk": job_pk, "sk": f"EVENT#PROCESS#{event_id}"}
         if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
-            return "REPLAYED"
+            return self._refresh_restatement_if_needed(job_pk, assessment) or "REPLAYED"
         for _ in range(4):
             old = self.table.get_item(Key={"pk": job_pk, "sk": "META"},
                                       ConsistentRead=True).get("Item")
@@ -61,7 +61,7 @@ class DynamoProcessBridge:
             }:
                 return "BINDING_MISMATCH"
             if old["status"] not in {"RUNNING", "PAUSED"}:
-                return "JOB_NOT_ACTIVE"
+                return self._refresh_restatement_if_needed(job_pk, assessment) or "JOB_NOT_ACTIVE"
             state = advance(old.get("process_assessment"), normalized,
                             ingestion_event_id=event_id,
                             quality_status=assessment["quality_status"],
@@ -106,17 +106,38 @@ class DynamoProcessBridge:
             ]
             try:
                 self.client.transact_write_items(TransactItems=operations)
-                return overall_status
+                return self._refresh_restatement_if_needed(job_pk, assessment) or overall_status
             except self.client.exceptions.TransactionCanceledException as exc:
                 if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
-                    return "REPLAYED"
+                    return self._refresh_restatement_if_needed(job_pk, assessment) or "REPLAYED"
                 reasons = exc.response.get("CancellationReasons", [])
                 if not reasons or reasons[0].get("Code") != "ConditionalCheckFailed":
                     raise
                 # Another writer changed the job version; recalculate from the new state.
         raise RuntimeError("process assessment could not commit after concurrent job updates")
 
-    def _request_restatement(self, job_pk: str, assessment: dict) -> str:
+    def _refresh_restatement_if_needed(self, job_pk: str, assessment: dict) -> str | None:
+        restatement = getattr(self, "restatement", None)
+        if not restatement:
+            return None
+        event_id = assessment["ingestion_event_id"]
+        request_key = {"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{event_id}"}
+        existing = self.table.get_item(Key=request_key, ConsistentRead=True).get("Item")
+        if existing and existing["status"] == "COMPLETED":
+            return "RESTATEMENT_DERIVED"
+        if not existing and not restatement.has_new_source(job_pk, assessment):
+            return None
+        requested = ("RESTATEMENT_ALREADY_PENDING" if existing else
+                     self._request_restatement(job_pk, assessment, reason="FOLLOWUP_SAMPLE"))
+        if requested not in {"RESTATEMENT_PENDING", "RESTATEMENT_ALREADY_PENDING"}:
+            return requested
+        derived = restatement.process(job_pk, event_id)
+        if derived in {"DERIVED", "ALREADY_COMPLETED"}:
+            return "RESTATEMENT_DERIVED"
+        raise RuntimeError(f"follow-up derivation must be retried: {derived}")
+
+    def _request_restatement(self, job_pk: str, assessment: dict,
+                             reason: str = "LATE_AFTER_GAP") -> str:
         normalized = assessment["normalized"]
         old = self.table.get_item(Key={"pk": job_pk, "sk": "META"},
                                   ConsistentRead=True).get("Item")
@@ -127,7 +148,7 @@ class DynamoProcessBridge:
         event_id = assessment["ingestion_event_id"]
         key = {"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{event_id}"}
         requested_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        request = {**key, "status": "PENDING", "reason": "LATE_AFTER_GAP",
+        request = {**key, "status": "PENDING", "reason": reason,
                    "ingestion_event_id": event_id,
                    "source_assessment_pk": assessment["pk"],
                    "source_assessment_sk": assessment.get("sk", "ASSESSMENT#v1"),
