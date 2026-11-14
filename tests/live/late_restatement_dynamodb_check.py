@@ -63,17 +63,19 @@ def main() -> None:
                                              ("third", 3, 10, False)):
             event_id = f"synthetic-restatement-{run_id}-{name}"
             assessment = {"pk": f"EVENT#{event_id}", "sk": "ASSESSMENT#v1",
-                          "ingestion_event_id": event_id, "dedup_status": "UNIQUE",
+                          "source_pk": stream_pk, "ingestion_event_id": event_id, "dedup_status": "UNIQUE",
                           "quality_status": "WARNING" if late else "VALID",
                           "finding_codes": ["LATE_AFTER_GAP"] if late else [],
                           "normalized": {**binding, "sequence_number": sequence,
                                          "event_time": f"2026-11-14T00:00:{second:02d}Z",
                                          "device_status": "RUNNING",
                                          "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}}
+            data.put_item(Item={"pk": stream_pk, "sk": f"RAW#{event_id}",
+                                "ingestion_event_id": event_id})
             data.put_item(Item=assessment)
             if late:
                 late_assessment = assessment
-            if not late:
+            if name == "first":
                 cooking.put_item(Item={"pk": job_pk, "sk": f"EVENT#PROCESS#{event_id}",
                                        "source_assessment_pk": f"EVENT#{event_id}"})
         assert late_assessment is not None
@@ -88,6 +90,8 @@ def main() -> None:
         assert result["process_assessment_status"] == "NORMAL"
         assert result["process_assessment"]["data_gap"] is False
         assert len(result["included_ingestion_event_ids"]) == 3
+        assert result["source_raw_count"] == 3
+        assert result["scope"] == "STANDARDIZED_STREAM_SNAPSHOT"
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"}, ConsistentRead=True)["Item"] == job
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
         assert processor.process(job_pk, f"synthetic-restatement-{run_id}-late") == "ALREADY_COMPLETED"
@@ -101,6 +105,7 @@ def main() -> None:
         clean_partition(cooking, stream_pk)
         for pk in event_pks:
             clean_partition(data, pk)
+        clean_partition(data, stream_pk)
 
 
 if __name__ == "__main__":

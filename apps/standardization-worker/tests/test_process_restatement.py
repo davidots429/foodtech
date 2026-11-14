@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import Mock
 
 from boto3.dynamodb.types import TypeSerializer
+from foodtech_contracts import stream_binding_key
 
 from foodtech_standardization_worker.process_restatement import (
     DynamoProcessRestatement, replay_process,
@@ -14,6 +15,7 @@ class ProcessRestatementTests(unittest.TestCase):
 
     def sample(self, event_id, sequence, seconds, temperature=170, late=False):
         return {"pk": f"EVENT#{event_id}", "sk": "ASSESSMENT#v1",
+                "source_pk": stream_binding_key(**self.binding),
                 "ingestion_event_id": event_id, "dedup_status": "UNIQUE",
                 "quality_status": "WARNING" if late else "VALID",
                 "finding_codes": ["LATE_AFTER_GAP"] if late else [],
@@ -60,27 +62,53 @@ class ProcessRestatementTests(unittest.TestCase):
         job = self.job()
         first = self.sample("first", 1, 0)
         late = self.sample("late", 2, 5, late=True)
+        after_terminal = self.sample("after-terminal", 3, 10)
         request = {"pk": "JOB#1", "sk": "RESTATEMENT#REQUEST#late", "status": "PENDING",
-                   "source_assessment_pk": "EVENT#late", "source_assessment_sk": "ASSESSMENT#v1"}
+                   "source_assessment_pk": "EVENT#late", "source_assessment_sk": "ASSESSMENT#v1",
+                   "source_stream_pk": stream_binding_key(**self.binding)}
         cooking = Mock(name="cooking")
         cooking.name = "cooking-dev"
         cooking.get_item.side_effect = lambda **kwargs: {"Item": {
             request["sk"]: request, "META": job}[kwargs["Key"]["sk"]]}
         data = Mock(name="data")
         data.get_item.side_effect = lambda **kwargs: {"Item": {
-            "EVENT#first": first, "EVENT#late": late}[kwargs["Key"]["pk"]]}
+            "EVENT#first": first, "EVENT#late": late,
+            "EVENT#after-terminal": after_terminal}[kwargs["Key"]["pk"]]}
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
         processor.cooking, processor.data, processor.client = cooking, data, Mock()
         processor.serializer = TypeSerializer()
         processor._query = lambda _pk, prefix: ([request] if prefix.startswith("RESTATEMENT") else
                                                    [{"source_assessment_pk": "EVENT#first"}])
+        processor._stream_sources = lambda _pk: [
+            {"ingestion_event_id": event_id} for event_id in ("first", "late", "after-terminal")]
         self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
         operations = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
         self.assertEqual(len(operations), 3)
         self.assertEqual(operations[0]["ConditionCheck"]["Key"]["sk"]["S"], "META")
         self.assertEqual(operations[1]["Put"]["Item"]["status"]["S"], "DERIVED_ONLY")
+        self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "3")
+        self.assertEqual(len(operations[1]["Put"]["Item"]["included_ingestion_event_ids"]["L"]), 3)
         self.assertEqual(operations[2]["Put"]["Item"]["status"]["S"], "COMPLETED")
         self.assertEqual(job["status"], "COMPLETED")
+
+    def test_process_waits_for_unstandardized_raw_sample(self):
+        job = self.job()
+        late = self.sample("late", 2, 5, late=True)
+        request = {"pk": "JOB#1", "sk": "RESTATEMENT#REQUEST#late", "status": "PENDING",
+                   "source_assessment_pk": "EVENT#late", "source_stream_pk": late["source_pk"]}
+        cooking, data, client = Mock(), Mock(), Mock()
+        cooking.get_item.side_effect = lambda **kwargs: {"Item": {
+            request["sk"]: request, "META": job}[kwargs["Key"]["sk"]]}
+        data.get_item.side_effect = lambda **kwargs: (
+            {"Item": late} if kwargs["Key"]["pk"] == late["pk"] else {})
+        processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.cooking, processor.data, processor.client = cooking, data, client
+        processor._query = lambda _pk, prefix: [request] if prefix.startswith("RESTATEMENT") else []
+        processor._stream_sources = lambda _pk: [
+            {"ingestion_event_id": "late"}, {"ingestion_event_id": "unstandardized"}]
+        with self.assertRaisesRegex(RuntimeError, "not ready"):
+            processor.process("JOB#1", "late")
+        client.transact_write_items.assert_not_called()
 
 
 if __name__ == "__main__":

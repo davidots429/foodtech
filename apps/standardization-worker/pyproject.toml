@@ -2,7 +2,7 @@
 name = "foodtech-standardization-worker"
 version = "0.0.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["boto3>=1.40,<2", "foodtech-contracts"]
+dependencies = ["boto3>=1.40,<2", "foodtech-contracts", "rfc8785>=0.1,<1"]
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

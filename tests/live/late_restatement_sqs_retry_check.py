@@ -121,15 +121,19 @@ def main() -> None:
         cooking.put_item(Item={"pk": stream_pk, "sk": "BINDING", "job_pk": job_pk})
         for name, sequence, second in (("first", 1, 0), ("third", 3, 10)):
             source_id = f"synthetic-sqs-{run_id}-{name}"
+            data.put_item(Item={"pk": stream_pk, "sk": f"RAW#{source_id}",
+                                "ingestion_event_id": source_id})
             data.put_item(Item={"pk": f"EVENT#{source_id}", "sk": "ASSESSMENT#v1",
+                                "source_pk": stream_pk,
                                 "ingestion_event_id": source_id, "dedup_status": "UNIQUE",
                                 "quality_status": "VALID", "finding_codes": [],
                                 "normalized": {**binding, "sequence_number": sequence,
                                                "event_time": f"2026-11-14T00:00:{second:02d}Z",
                                                "device_status": "RUNNING",
                                                "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}})
-            cooking.put_item(Item={"pk": job_pk, "sk": f"EVENT#PROCESS#{source_id}",
-                                   "source_assessment_pk": f"EVENT#{source_id}"})
+            if name == "first":
+                cooking.put_item(Item={"pk": job_pk, "sk": f"EVENT#PROCESS#{source_id}",
+                                       "source_assessment_pk": f"EVENT#{source_id}"})
         data.put_item(Item={"pk": stream_pk, "sk": reference["raw_sk"], "raw": raw,
                             "ingestion_event_id": event_id})
         with patch.dict(os.environ, {"FOODTECH_COOKING_TABLE": COOKING_TABLE}):
@@ -174,6 +178,7 @@ def main() -> None:
         assert request["status"] == "COMPLETED"
         assert result["process_assessment_status"] == "NORMAL"
         assert len(result["included_ingestion_event_ids"]) == 3
+        assert result["source_raw_count"] == 3
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"},
                                 ConsistentRead=True)["Item"]["process_assessment_status"] == "WARNING"
         completed = True
