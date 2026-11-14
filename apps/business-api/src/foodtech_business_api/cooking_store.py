@@ -202,11 +202,13 @@ class MemoryCookingStore:
                                                              for field in ("version", "result_sk"))):
                     raise Conflict
             key = (pk, f"RESULT#{record['result_id']}")
-            if key not in self.items:
+            created = key not in self.items
+            if created:
                 self.items[key] = {"sk": key[1], **record}
+            if created or (pk, "CURRENT") not in self.items:
                 self.items[(pk, "CURRENT")] = {"pk": pk, "sk": "CURRENT",
-                                                "result_id": record["result_id"],
-                                                "updated_at": record["created_at"]}
+                                                "result_id": self.items[key]["result_id"],
+                                                "updated_at": self.items[key]["created_at"]}
             for job_pk, _, _, _ in snapshots:
                 dependency_sk = f"AGGREGATE#DEP#{record['group_id']}"
                 self.items[(job_pk, dependency_sk)] = {
@@ -494,13 +496,43 @@ class DynamoCookingStore:
         except self.client.exceptions.TransactionCanceledException as exc:
             if _only_result_already_exists(exc, len(operations)):
                 existing = self.aggregate(pk, record["result_id"])
-                if existing:
+                if existing and existing.get("group_id") == record["group_id"] and \
+                        existing.get("selection") == record["selection"]:
+                    self._repair_aggregate_index(pk, operations[:-2], existing)
                     return existing
             if any(reason.get("Code") == "ConditionalCheckFailed"
                    for reason in exc.response.get("CancellationReasons", [])):
                 raise Conflict from exc
             raise
         return {"sk": f"RESULT#{record['result_id']}", **record}
+
+    def _repair_aggregate_index(self, pk: str, job_operations: list[dict], existing: dict) -> None:
+        """Backfill a pre-index result without replacing a newer current pointer."""
+        operations = [*job_operations,
+                      {"ConditionCheck": {
+                          "TableName": self.table.name,
+                          "Key": self._item({"pk": pk, "sk": f"RESULT#{existing['result_id']}"}),
+                          "ConditionExpression": "#g = :group AND #r = :result",
+                          "ExpressionAttributeNames": {"#g": "group_id", "#r": "result_id"},
+                          "ExpressionAttributeValues": self._item({":group": existing["group_id"],
+                                                                     ":result": existing["result_id"]}),
+                      }},
+                      {"Update": {
+                          "TableName": self.table.name,
+                          "Key": self._item({"pk": pk, "sk": "CURRENT"}),
+                          "UpdateExpression": "SET #r = if_not_exists(#r, :result), "
+                                              "#updated = if_not_exists(#updated, :updated)",
+                          "ExpressionAttributeNames": {"#r": "result_id", "#updated": "updated_at"},
+                          "ExpressionAttributeValues": self._item({":result": existing["result_id"],
+                                                                     ":updated": existing["created_at"]}),
+                      }}]
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
+                raise Conflict from exc
+            raise
 
     def _item(self, item: dict) -> dict:
         return {key: self.serializer.serialize(value) for key, value in item.items()}
