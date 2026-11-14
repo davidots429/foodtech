@@ -92,7 +92,7 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
                  "recipe_version": recipe, "scale_version": "tonkatsu-common-v1",
                  "load_band": body.load_band}
     group_id = _hash(selection)
-    snapshots: list[tuple[str, dict, dict | None]] = []
+    snapshots: list[tuple[str, dict, dict | None, dict | None]] = []
     references = []
     included = []
     for job_id in ids:
@@ -100,11 +100,12 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
         meta, pointer = await _store_call(store, store.read, pk)
         if not meta:
             raise HTTPException(404, "선택한 조리작업을 찾을 수 없습니다.")
+        process_pointer = await _store_call(store, store.process_pointer, pk)
         assessment = (await _store_call(store, store.assessment, pk, int(pointer["version"]))
                       if pointer else None)
         reason = _reason(meta, pointer, assessment, recipe=recipe, load_band=body.load_band,
                          start=start, end=end)
-        snapshots.append((pk, meta, pointer))
+        snapshots.append((pk, meta, pointer, process_pointer))
         reference = {"job_id": job_id, "job_version": int(meta["version"]),
                      "safety_version": int(meta["safety_version"]),
                      "job_status": meta["status"], "safety_status": meta["safety_status"],
@@ -112,6 +113,8 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
                      "assessment_version": int(pointer["version"]) if pointer else None,
                      "assessment_usable": pointer["usable"] if pointer else None,
                      "assessment_safety_version": int(pointer["safety_version"]) if pointer else None,
+                     "process_restatement_version": int(process_pointer["version"]) if process_pointer else None,
+                     "process_result_sk": process_pointer["result_sk"] if process_pointer else None,
                      "included": reason is None, "exclusion_reason": reason}
         references.append(reference)
         if reason is None:
@@ -175,7 +178,9 @@ async def aggregate_status(group_id: str, result_id: str, request: Request) -> d
     changed = []
     for reference in record["references"]:
         job_id = reference["job_id"]
-        meta, pointer = await _store_call(store, store.read, _pk(session.subject, job_id))
+        job_pk = _pk(session.subject, job_id)
+        meta, pointer = await _store_call(store, store.read, job_pk)
+        process_pointer = await _store_call(store, store.process_pointer, job_pk)
         if not meta or int(meta["version"]) != int(reference["job_version"]) or \
                 int(meta["safety_version"]) != int(reference["safety_version"]) or \
                 (int(pointer["version"]) if pointer else None) != reference["assessment_version"] or \
@@ -185,7 +190,10 @@ async def aggregate_status(group_id: str, result_id: str, request: Request) -> d
                 ("assessment_usable" in reference and
                  (pointer["usable"] if pointer else None) != reference["assessment_usable"]) or \
                 ("assessment_safety_version" in reference and
-                 (int(pointer["safety_version"]) if pointer else None) != reference["assessment_safety_version"]):
+                 (int(pointer["safety_version"]) if pointer else None) != reference["assessment_safety_version"]) or \
+                (int(process_pointer["version"]) if process_pointer else None) != \
+                reference.get("process_restatement_version") or \
+                (process_pointer["result_sk"] if process_pointer else None) != reference.get("process_result_sk"):
             changed.append(job_id)
     return {"group_id": group_id, "result_id": result_id,
             "status": "STALE" if changed else "CURRENT", "changed_job_ids": changed,

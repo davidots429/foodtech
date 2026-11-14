@@ -34,6 +34,7 @@ def _api_numbers(value):
 
 class CookingStore(Protocol):
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
+    def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
     def create(self, pk: str, meta: dict) -> None: ...
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None: ...
@@ -51,7 +52,7 @@ class CookingStore(Protocol):
                         baseline_pointer: dict, candidate_pointer: dict,
                         record: dict) -> dict: ...
     def aggregate(self, pk: str, result_id: str) -> dict | None: ...
-    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None]],
+    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
                        record: dict) -> dict: ...
 
 
@@ -67,6 +68,11 @@ class MemoryCookingStore:
             meta = self.items.get((pk, "META"))
             pointer = self.items.get((pk, "ASSESSMENT#CURRENT"))
             return (meta.copy() if meta else None, pointer.copy() if pointer else None)
+
+    def process_pointer(self, pk: str) -> dict | None:
+        with self.lock:
+            item = self.items.get((pk, "PROCESS#LATEST_RESTATED"))
+            return item.copy() if item else None
 
     def latest_process_result(self, pk: str) -> dict | None:
         with self.lock:
@@ -167,17 +173,21 @@ class MemoryCookingStore:
             item = self.items.get((pk, f"RESULT#{result_id}"))
             return item.copy() if item else None
 
-    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None]],
+    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
                        record: dict) -> dict:
         with self.lock:
-            for job_pk, meta, pointer in snapshots:
+            for job_pk, meta, pointer, process_pointer in snapshots:
                 current_meta = self.items.get((job_pk, "META"))
                 current_pointer = self.items.get((job_pk, "ASSESSMENT#CURRENT"))
+                current_process = self.items.get((job_pk, "PROCESS#LATEST_RESTATED"))
                 if not current_meta or any(current_meta.get(field) != meta.get(field) for field in
                                            ("version", "status", "safety_status", "evaluation_blocked")) or \
                         (current_pointer is None) != (pointer is None) or \
                         (pointer is not None and any(current_pointer.get(field) != pointer.get(field) for field in
-                                                     ("version", "usable", "safety_version"))):
+                                                     ("version", "usable", "safety_version"))) or \
+                        (current_process is None) != (process_pointer is None) or \
+                        (process_pointer is not None and any(current_process.get(field) != process_pointer.get(field)
+                                                             for field in ("version", "result_sk"))):
                     raise Conflict
             key = (pk, f"RESULT#{record['result_id']}")
             if key not in self.items:
@@ -200,6 +210,11 @@ class DynamoCookingStore:
             Key={"pk": pk, "sk": "ASSESSMENT#CURRENT"}, ConsistentRead=True,
         ).get("Item")
         return _api_numbers(meta), _api_numbers(pointer)
+
+    def process_pointer(self, pk: str) -> dict | None:
+        item = self.table.get_item(Key={"pk": pk, "sk": "PROCESS#LATEST_RESTATED"},
+                                   ConsistentRead=True).get("Item")
+        return _api_numbers(item)
 
     def latest_process_result(self, pk: str) -> dict | None:
         pointer = self.table.get_item(Key={"pk": pk, "sk": "PROCESS#LATEST_RESTATED"},
@@ -380,10 +395,10 @@ class DynamoCookingStore:
                                    ConsistentRead=True).get("Item")
         return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
 
-    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None]],
+    def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
                        record: dict) -> dict:
         operations = []
-        for job_pk, meta, pointer in snapshots:
+        for job_pk, meta, pointer, process_pointer in snapshots:
             operations.append({"ConditionCheck": {
                 "TableName": self.table.name, "Key": self._item({"pk": job_pk, "sk": "META"}),
                 "ConditionExpression": "#v = :v AND #s = :s AND safety_status = :safety AND evaluation_blocked = :blocked",
@@ -407,6 +422,21 @@ class DynamoCookingStore:
                     "ExpressionAttributeValues": self._item({":v": int(pointer["version"]),
                                                               ":usable": pointer["usable"],
                                                               ":safety": int(pointer["safety_version"])}),
+                }})
+            if process_pointer is None:
+                operations.append({"ConditionCheck": {
+                    "TableName": self.table.name,
+                    "Key": self._item({"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"}),
+                    "ConditionExpression": "attribute_not_exists(pk)",
+                }})
+            else:
+                operations.append({"ConditionCheck": {
+                    "TableName": self.table.name,
+                    "Key": self._item({"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"}),
+                    "ConditionExpression": "#v = :v AND result_sk = :result",
+                    "ExpressionAttributeNames": {"#v": "version"},
+                    "ExpressionAttributeValues": self._item({":v": int(process_pointer["version"]),
+                                                              ":result": process_pointer["result_sk"]}),
                 }})
         operations.append({"Put": {"TableName": self.table.name,
                                    "Item": self._item({"pk": pk, "sk": f"RESULT#{record['result_id']}", **record}),

@@ -155,6 +155,25 @@ async def verify() -> None:
                 assert aggregate["sample_count"] == 1
                 assert (await get(client, aggregate_record + "/status"))["status"] == "CURRENT"
 
+                candidate_pk = cooking._pk(subject, candidate["job_id"])
+                restatement_sk = f"RESTATEMENT#RESULT#{uuid.uuid4().hex}"
+                store.table.put_item(Item={"pk": candidate_pk, "sk": restatement_sk,
+                                           "status": "DERIVED_ONLY", "provenance": "SYNTHETIC",
+                                           "process_assessment_status": "NORMAL",
+                                           "process_assessment": {"data_gap": False},
+                                           "created_at": datetime.now(timezone.utc).isoformat(),
+                                           "job_version_at_derivation": candidate["version"]})
+                store.table.put_item(Item={"pk": candidate_pk, "sk": "PROCESS#LATEST_RESTATED",
+                                           "version": 1, "result_sk": restatement_sk})
+                assert (await get(client, aggregate_record + "/status"))["status"] == "STALE"
+                restated_aggregate = await post(client, aggregate_record + "/refresh")
+                assert restated_aggregate["result_id"] != aggregate["result_id"]
+                assert restated_aggregate["mean_quality_score_percent"] == aggregate["mean_quality_score_percent"]
+                candidate_ref = next(item for item in restated_aggregate["references"]
+                                     if item["job_id"] == candidate["job_id"])
+                assert candidate_ref["process_result_sk"] == restatement_sk
+                assert (await get(client, aggregate_record))["result_id"] == aggregate["result_id"]
+
                 candidate = (await get(client, candidate_path))["job"]
                 revised = await post(client, candidate_path + "/assessments", {
                     "expected_version": candidate["version"], "expected_current_version": 1,
@@ -223,6 +242,7 @@ async def verify() -> None:
                 summary = {"account": ACCOUNT, "region": REGION, "table": TABLE,
                            "comparison_stale_then_new_version": True,
                            "aggregate_stale_then_new_version": True,
+                           "process_restatement_lineage_stale_then_new_version": True,
                            "historical_results_preserved": True,
                            "cross_subject_read_status": 404,
                            "concurrent_comparison_status": 409,
