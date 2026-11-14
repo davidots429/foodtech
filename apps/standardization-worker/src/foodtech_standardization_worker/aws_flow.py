@@ -24,7 +24,8 @@ class DynamoStandardizationWorker:
         self.dlq_url = dlq_url
         self.serializer = TypeSerializer()
         cooking_table = os.getenv("FOODTECH_COOKING_TABLE")
-        self.process_bridge = DynamoProcessBridge(cooking_table, region) if cooking_table else None
+        self.process_bridge = (DynamoProcessBridge(cooking_table, region, table_name)
+                               if cooking_table else None)
 
     def run_once(self) -> list[dict]:
         page = self.sqs.receive_message(

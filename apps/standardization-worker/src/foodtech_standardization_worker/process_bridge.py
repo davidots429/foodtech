@@ -9,14 +9,18 @@ from foodtech_contracts import stream_binding_key
 from foodtech_contracts.tonkatsu_process import process_status
 
 from .process_rules import advance
+from .process_restatement import DynamoProcessRestatement
 
 
 class DynamoProcessBridge:
-    def __init__(self, table_name: str, region: str = "ap-southeast-2"):
+    def __init__(self, table_name: str, region: str = "ap-southeast-2",
+                 data_table_name: str | None = None):
         session = boto3.Session(region_name=region)
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
+        self.restatement = (DynamoProcessRestatement(table_name, data_table_name, region)
+                            if data_table_name else None)
 
     def _item(self, value: dict) -> dict:
         return {key: self.serializer.serialize(item) for key, item in value.items()}
@@ -37,7 +41,14 @@ class DynamoProcessBridge:
         job_pk = binding["job_pk"]
         event_id = assessment["ingestion_event_id"]
         if "LATE_AFTER_GAP" in assessment.get("finding_codes", []):
-            return self._request_restatement(job_pk, assessment)
+            request_status = self._request_restatement(job_pk, assessment)
+            if request_status not in {"RESTATEMENT_PENDING", "RESTATEMENT_ALREADY_PENDING"} or \
+                    not getattr(self, "restatement", None):
+                return request_status
+            derived = self.restatement.process(job_pk, event_id)
+            if derived in {"DERIVED", "ALREADY_COMPLETED"}:
+                return "RESTATEMENT_DERIVED"
+            raise RuntimeError(f"late-event derivation must be retried: {derived}")
         event_key = {"pk": job_pk, "sk": f"EVENT#PROCESS#{event_id}"}
         if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
             return "REPLAYED"
