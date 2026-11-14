@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, scoreItems, type ScoreKey } from "./cookingApi";
 
 type AggregateResult = {
@@ -12,6 +12,12 @@ type AggregateResult = {
   recipe_improvement_status: "NOT_EVALUATED";
   selection: { recipe_version: string; load_band: "PARTIAL" | "REFERENCE"; period_start: string; period_end: string };
 };
+type AggregateGroup = {
+  group_id: string; result_id: string | null; updated_at: string | null;
+  recipe_version: string; load_band: "PARTIAL" | "REFERENCE";
+  period_start: string; period_end: string; job_count: number;
+};
+type AggregateGroupPage = { items: AggregateGroup[]; next_cursor: string | null };
 
 const reasonLabels: Record<string, string> = {
   DIMENSION_MISMATCH: "메뉴·장비·레시피 버전 불일치",
@@ -54,7 +60,29 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
   const [resultId, setResultId] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [groups, setGroups] = useState<AggregateGroup[]>([]);
+  const [nextGroupCursor, setNextGroupCursor] = useState<string | null>(null);
+  const [loadingGroups, setLoadingGroups] = useState(false);
+  const groupListRequest = useRef(0);
   const selectedIds = idsText.split(/[\s,]+/).map(value => value.trim()).filter(Boolean);
+
+  const loadGroups = useCallback(async (cursor?: string) => {
+    const requestNumber = ++groupListRequest.current;
+    setLoadingGroups(true);
+    try {
+      const page = await api<AggregateGroupPage>(
+        `/api/customer/assessment-aggregates/jobs/${currentJobId}/groups?limit=20` +
+        (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""));
+      if (groupListRequest.current !== requestNumber) return;
+      setGroups(previous => cursor ? [...previous, ...page.items] : page.items);
+      setNextGroupCursor(page.next_cursor);
+    } catch (error) {
+      if (groupListRequest.current === requestNumber)
+        setMessage(error instanceof Error ? error.message : "관련 집계 그룹을 불러오지 못했습니다.");
+    } finally {
+      if (groupListRequest.current === requestNumber) setLoadingGroups(false);
+    }
+  }, [currentJobId]);
 
   function toggleJob(id: string) {
     const selected = new Set(selectedIds);
@@ -66,10 +94,13 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
   }
 
   useEffect(() => {
+    groupListRequest.current += 1;
+    setGroups([]); setNextGroupCursor(null); setLoadingGroups(false);
     setIdsText(currentJobId); setRecipe(recipeVersion); setLoadBand(defaultLoadBand ?? "PARTIAL");
     setResult(null); setGroupId(""); setResultId("");
     setFreshness(null); setChangedJobIds([]);
-  }, [currentJobId]);
+    void loadGroups();
+  }, [currentJobId, loadGroups]);
 
   async function checkFreshness(group: string, resultKey: string) {
     try {
@@ -99,6 +130,7 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
       setFreshness(null); setChangedJobIds([]);
       const checked = await checkFreshness(next.group_id, next.result_id);
       setMessage("선택 표본의 기술 통계를 기록했습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
+      await loadGroups();
     } catch (error) { setMessage(error instanceof Error ? error.message : "집계를 계산하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -118,14 +150,14 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     finally { setBusy(false); }
   }
 
-  async function loadCurrent() {
-    if (!/^[0-9a-f]{64}$/.test(groupId)) {
+  async function loadCurrentFor(selectedGroupId: string) {
+    if (!/^[0-9a-f]{64}$/.test(selectedGroupId)) {
       setMessage("그룹 ID를 64자리 해시로 입력해 주세요."); return;
     }
     setBusy(true); setMessage("");
     try {
-      const saved = await api<AggregateResult>(`/api/customer/assessment-aggregates/${groupId}/current`);
-      setResult(saved); setResultId(saved.result_id);
+      const saved = await api<AggregateResult>(`/api/customer/assessment-aggregates/${selectedGroupId}/current`);
+      setResult(saved); setGroupId(saved.group_id); setResultId(saved.result_id);
       setFreshness(null); setChangedJobIds([]);
       const checked = await checkFreshness(saved.group_id, saved.result_id);
       setMessage("최신 집계 결과를 불러왔습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
@@ -145,6 +177,7 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
       setMessage((next.result_id === result.result_id ? "입력 버전이 같아 기존 결과를 유지했습니다." :
         "현재 평가를 반영한 새 결과 버전을 기록했습니다. 이전 결과는 보존됩니다.") +
         (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
+      await loadGroups();
     } catch (error) { setMessage(error instanceof Error ? error.message : "재계산을 완료하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -173,9 +206,22 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     <div className="field-row">
       <label>저장된 그룹 ID <input value={groupId} onChange={event => setGroupId(event.target.value)} /></label>
       <label>저장된 결과 ID <input value={resultId} onChange={event => setResultId(event.target.value)} /></label>
-      <button type="button" className="secondary" onClick={loadCurrent} disabled={busy}>최신 결과 불러오기</button>
+      <button type="button" className="secondary" onClick={() => void loadCurrentFor(groupId)} disabled={busy}>최신 결과 불러오기</button>
       <button type="button" className="secondary" onClick={load} disabled={busy}>과거 결과 불러오기</button>
     </div>
+    <div className="actions"><strong>현재 작업이 포함된 집계 그룹</strong>
+      <button type="button" className="secondary" onClick={() => void loadGroups()}
+        disabled={loadingGroups}>목록 새로고침</button></div>
+    {groups.length === 0 && !loadingGroups && <p className="small">이 작업이 포함된 저장 집계 그룹이 없습니다.</p>}
+    {groups.length > 0 && <ul>{groups.map(item => <li key={item.group_id}>
+      <button type="button" className="text-button" onClick={() => void loadCurrentFor(item.group_id)}
+        disabled={busy || !item.result_id}>
+        {item.recipe_version} · {item.load_band === "PARTIAL" ? "부분 적재" : "기준 적재"} · {item.job_count}개 작업
+        {" · "}{item.period_start.slice(0, 10)}부터 {item.period_end.slice(0, 10)} 전까지 · {item.group_id.slice(0, 8)}
+      </button>{!item.result_id && <span className="small"> 현재 결과 포인터 없음</span>}
+    </li>)}</ul>}
+    {nextGroupCursor && <button type="button" className="secondary"
+      onClick={() => void loadGroups(nextGroupCursor)} disabled={loadingGroups}>집계 그룹 더 보기</button>}
     {result && <div className="actions">
       <button type="button" className="secondary" onClick={() => void checkFreshness(result.group_id, result.result_id)
         .then(checked => setMessage(checked ? "조회 시점의 입력 버전을 확인했습니다." : "최신성을 확인하지 못했습니다."))} disabled={busy}>결과 최신성 확인</button>

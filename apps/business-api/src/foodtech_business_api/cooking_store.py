@@ -71,6 +71,7 @@ class CookingStore(Protocol):
                         record: dict) -> dict: ...
     def aggregate(self, pk: str, result_id: str) -> dict | None: ...
     def aggregate_dependencies(self, job_pk: str) -> list[dict]: ...
+    def list_aggregate_dependencies(self, job_pk: str, limit: int, cursor: str | None) -> dict: ...
     def current_aggregate(self, pk: str) -> dict | None: ...
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
                        record: dict) -> dict: ...
@@ -258,6 +259,17 @@ class MemoryCookingStore:
         with self.lock:
             return [item.copy() for (pk, sk), item in sorted(self.items.items())
                     if pk == job_pk and sk.startswith("AGGREGATE#DEP#")]
+
+    def list_aggregate_dependencies(self, job_pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = "AGGREGATE#DEP#"
+        with self.lock:
+            entries = [item.copy() for (pk, sk), item in self.items.items()
+                       if pk == job_pk and sk.startswith(prefix) and
+                       (cursor is None or sk > prefix + cursor)]
+            entries.sort(key=lambda item: item["sk"])
+            page = entries[:limit]
+            return {"items": page,
+                    "next_cursor": page[-1]["sk"].removeprefix(prefix) if len(entries) > limit else None}
 
     def current_aggregate(self, pk: str) -> dict | None:
         with self.lock:
@@ -613,6 +625,16 @@ class DynamoCookingStore:
             last_key = page.get("LastEvaluatedKey")
             if not last_key:
                 return items
+
+    def list_aggregate_dependencies(self, job_pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = "AGGREGATE#DEP#"
+        args = {"KeyConditionExpression": Key("pk").eq(job_pk) & Key("sk").begins_with(prefix),
+                "ConsistentRead": True, "Limit": limit}
+        if cursor:
+            args["ExclusiveStartKey"] = {"pk": job_pk, "sk": prefix + cursor}
+        page = self.table.query(**args)
+        return {"items": [_api_numbers(item) for item in page.get("Items", [])],
+                "next_cursor": page.get("LastEvaluatedKey", {}).get("sk", "").removeprefix(prefix) or None}
 
     def current_aggregate(self, pk: str) -> dict | None:
         item = self.table.get_item(Key={"pk": pk, "sk": "CURRENT"},

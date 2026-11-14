@@ -173,19 +173,27 @@ async def verify() -> None:
                 aggregate_record = (f"/api/customer/assessment-aggregates/{aggregate['group_id']}"
                                     f"/results/{aggregate['result_id']}")
                 aggregate_current = f"/api/customer/assessment-aggregates/{aggregate['group_id']}/current"
+                related_groups = f"/api/customer/assessment-aggregates/jobs/{candidate['job_id']}/groups"
                 assert aggregate["sample_count"] == 1
                 assert (await get(client, aggregate_current))["result_id"] == aggregate["result_id"]
+                group_list = await get(client, related_groups + "?limit=1")
+                assert len(group_list["items"]) == 1 and group_list["next_cursor"] is None
+                assert group_list["items"][0]["group_id"] == aggregate["group_id"]
+                assert group_list["items"][0]["result_id"] == aggregate["result_id"]
                 assert (await get(client, aggregate_record + "/status"))["status"] == "CURRENT"
 
                 # Reproduce a result saved before dependency and current-pointer indexing.
+                store.table.delete_item(Key={"pk": aggregate_pk, "sk": "CURRENT"})
+                assert (await client.get(aggregate_current)).status_code == 404
+                assert (await get(client, related_groups))["items"][0]["result_id"] is None
                 for selected in (baseline, candidate):
                     store.table.delete_item(Key={"pk": cooking._pk(subject, selected["job_id"]),
                                                  "sk": f"AGGREGATE#DEP#{aggregate['group_id']}"})
-                store.table.delete_item(Key={"pk": aggregate_pk, "sk": "CURRENT"})
-                assert (await client.get(aggregate_current)).status_code == 404
+                assert (await get(client, related_groups))["items"] == []
                 repaired = await post(client, aggregate_record + "/refresh")
                 assert repaired["result_id"] == aggregate["result_id"]
                 assert (await get(client, aggregate_current))["result_id"] == aggregate["result_id"]
+                assert (await get(client, related_groups))["items"][0]["result_id"] == aggregate["result_id"]
                 for selected in (baseline, candidate):
                     assert store.aggregate_dependencies(cooking._pk(subject, selected["job_id"]))
 
@@ -216,6 +224,8 @@ async def verify() -> None:
                 assert candidate_ref["process_result_sk"] == restatement_sk
                 assert (await get(client, aggregate_record))["result_id"] == aggregate["result_id"]
                 assert (await get(client, aggregate_current))["result_id"] == restated_aggregate["result_id"]
+                assert (await get(client, related_groups))["items"][0]["result_id"] == \
+                    restated_aggregate["result_id"]
                 await asyncio.to_thread(refresher._refresh_dependents, candidate_pk)
                 assert store.table.query(KeyConditionExpression=Key("pk").eq(aggregate_pk) &
                                          Key("sk").begins_with("RESULT#"), ConsistentRead=True,
@@ -260,6 +270,7 @@ async def verify() -> None:
                 current_subject = "other-synthetic-user"
                 assert (await client.get(comparison_record)).status_code == 404
                 assert (await client.get(aggregate_record)).status_code == 404
+                assert (await client.get(related_groups)).status_code == 404
                 current_subject = subject
 
                 baseline_pk = cooking._pk(subject, baseline["job_id"])
@@ -319,6 +330,7 @@ async def verify() -> None:
                            "comparison_auto_refreshed_and_legacy_index_backfilled": True,
                            "aggregate_stale_then_new_version": True,
                            "aggregate_auto_refreshed_and_current_lookup": True,
+                           "related_group_list_and_repair": True,
                            "legacy_aggregate_index_backfilled": True,
                            "assessment_and_safety_auto_refresh": True,
                            "process_restatement_lineage_stale_then_new_version": True,
