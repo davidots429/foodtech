@@ -8,10 +8,10 @@ from types import SimpleNamespace
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .cooking import SCORE_ITEMS, _context, _pk, _store_call
+from .cooking import SCORE_ITEMS, _context, _pk, _read, _store_call
 from .cooking_store import Conflict
 
 router = APIRouter(prefix="/api/customer/assessment-aggregates", tags=["assessment-aggregate"])
@@ -178,7 +178,42 @@ async def create_aggregate(request: Request, body: AggregateRequest) -> dict:
 
 
 def _valid_hash(value: str) -> bool:
-    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+@router.get("/jobs/{job_id}/groups")
+async def list_groups_for_job(job_id: UUID, request: Request,
+                              limit: int = Query(20, ge=1, le=50), cursor: str | None = None) -> dict:
+    if cursor and not _valid_hash(cursor):
+        raise HTTPException(400, "집계 그룹 목록 커서가 올바르지 않습니다.")
+    session, store, job_pk, _, _ = await _read(request, str(job_id))
+    page = await _store_call(store, store.list_aggregate_dependencies, job_pk, limit, cursor)
+    groups = []
+    for dependency in page["items"]:
+        group_id = dependency["sk"].removeprefix("AGGREGATE#DEP#")
+        selection = dependency.get("selection")
+        try:
+            if not isinstance(selection, dict) or not _valid_hash(group_id) or \
+                    _hash(selection) != group_id or str(job_id) not in selection["job_ids"] or \
+                    dependency["aggregate_pk"] != \
+                    f"SCOPE#USER#{session.subject}#AGGREGATE#{group_id}":
+                raise ValueError
+            body = AggregateRequest.model_validate({key: selection[key] for key in
+                                                    ("job_ids", "period_start", "period_end",
+                                                     "recipe_version", "load_band")})
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            raise HTTPException(409, "집계 그룹 연결 기록이 올바르지 않습니다.") from exc
+        pointer = await _store_call(store, store.current_aggregate, dependency["aggregate_pk"])
+        result_id = pointer.get("result_id") if pointer else None
+        if result_id is not None and not _valid_hash(result_id):
+            raise HTTPException(409, "집계 그룹의 현재 결과 포인터가 올바르지 않습니다.")
+        groups.append({"group_id": group_id, "result_id": result_id,
+                       "updated_at": pointer.get("updated_at") if pointer else None,
+                       "recipe_version": body.recipe_version, "load_band": body.load_band,
+                       "period_start": selection["period_start"],
+                       "period_end": selection["period_end"],
+                       "job_count": len(body.job_ids)})
+    return {"items": groups, "next_cursor": page["next_cursor"]}
 
 
 async def _record(request: Request, group_id: str, result_id: str, *, write: bool = False):
