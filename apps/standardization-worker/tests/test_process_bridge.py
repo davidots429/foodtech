@@ -168,6 +168,11 @@ class ProcessBridgeTests(unittest.TestCase):
         self.assertEqual(request["job_version_at_detection"], 8)
         self.assertEqual(table.items[(job_pk, "META")], meta)
         self.assertEqual(bridge.client.calls, 0)
+        bridge.restatement = SimpleNamespace(process=lambda pk, event: "DERIVED")
+        self.assertEqual(bridge.apply(late), "RESTATEMENT_DERIVED")
+        bridge.restatement = SimpleNamespace(process=lambda pk, event: "STALE_RETRY")
+        with self.assertRaisesRegex(RuntimeError, "must be retried"):
+            bridge.apply(late)
 
 
 if __name__ == "__main__":
