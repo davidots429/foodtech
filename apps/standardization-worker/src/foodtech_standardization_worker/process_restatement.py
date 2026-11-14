@@ -1,9 +1,11 @@
 """Create an immutable process derivation from a standardized stream snapshot."""
 
 import argparse
+import asyncio
 import hashlib
 import os
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import boto3
 import rfc8785
@@ -115,6 +117,31 @@ class DynamoProcessRestatement:
             if not last:
                 return items
 
+    def _refresh_dependents(self, job_pk: str) -> None:
+        dependencies = self._query(job_pk, "AGGREGATE#DEP#")
+        if not dependencies:
+            return
+        from foodtech_business_api.assessment_aggregate import AggregateRequest, _calculate
+        from foodtech_business_api.cooking_store import DynamoCookingStore
+
+        store = DynamoCookingStore(self.cooking.name)
+        for dependency in dependencies:
+            group_id = dependency["sk"].removeprefix("AGGREGATE#DEP#")
+            aggregate_pk = dependency["aggregate_pk"]
+            marker = f"#AGGREGATE#{group_id}"
+            if not aggregate_pk.startswith("SCOPE#USER#") or not aggregate_pk.endswith(marker):
+                raise ValueError("invalid aggregate dependency scope")
+            subject = aggregate_pk[len("SCOPE#USER#"):-len(marker)]
+            if not subject or not job_pk.startswith(f"SCOPE#USER#{subject}#JOB#"):
+                raise ValueError("aggregate dependency owner mismatch")
+            selection = dependency["selection"]
+            if job_pk.removeprefix(f"SCOPE#USER#{subject}#JOB#") not in selection["job_ids"]:
+                raise ValueError("aggregate dependency job mismatch")
+            body = AggregateRequest.model_validate({key: selection[key] for key in
+                                                   ("job_ids", "period_start", "period_end",
+                                                    "recipe_version", "load_band")})
+            asyncio.run(_calculate(SimpleNamespace(subject=subject), store, body))
+
     def _stream_sources(self, stream_pk: str) -> list[dict]:
         items = []
         last = None
@@ -157,6 +184,7 @@ class DynamoProcessRestatement:
         if not request:
             return "REQUEST_NOT_FOUND"
         if request["status"] == "COMPLETED":
+            self._refresh_dependents(job_pk)
             return "ALREADY_COMPLETED"
         if request["status"] != "PENDING":
             return "REQUEST_NOT_PENDING"
@@ -243,8 +271,10 @@ class DynamoProcessRestatement:
         except self.client.exceptions.TransactionCanceledException:
             current = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")
             if current and current["status"] == "COMPLETED":
+                self._refresh_dependents(job_pk)
                 return "ALREADY_COMPLETED"
             return "STALE_RETRY"
+        self._refresh_dependents(job_pk)
         return "DERIVED"
 
 

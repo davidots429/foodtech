@@ -52,6 +52,7 @@ class CookingStore(Protocol):
                         baseline_pointer: dict, candidate_pointer: dict,
                         record: dict) -> dict: ...
     def aggregate(self, pk: str, result_id: str) -> dict | None: ...
+    def current_aggregate(self, pk: str) -> dict | None: ...
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
                        record: dict) -> dict: ...
 
@@ -173,6 +174,11 @@ class MemoryCookingStore:
             item = self.items.get((pk, f"RESULT#{result_id}"))
             return item.copy() if item else None
 
+    def current_aggregate(self, pk: str) -> dict | None:
+        with self.lock:
+            pointer = self.items.get((pk, "CURRENT"))
+            return pointer.copy() if pointer else None
+
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
                        record: dict) -> dict:
         with self.lock:
@@ -192,6 +198,14 @@ class MemoryCookingStore:
             key = (pk, f"RESULT#{record['result_id']}")
             if key not in self.items:
                 self.items[key] = {"sk": key[1], **record}
+                self.items[(pk, "CURRENT")] = {"pk": pk, "sk": "CURRENT",
+                                                "result_id": record["result_id"],
+                                                "updated_at": record["created_at"]}
+            for job_pk, _, _, _ in snapshots:
+                dependency_sk = f"AGGREGATE#DEP#{record['group_id']}"
+                self.items[(job_pk, dependency_sk)] = {
+                    "pk": job_pk, "sk": dependency_sk, "aggregate_pk": pk,
+                    "selection": record["selection"]}
             return self.items[key].copy()
 
 
@@ -395,6 +409,11 @@ class DynamoCookingStore:
                                    ConsistentRead=True).get("Item")
         return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
 
+    def current_aggregate(self, pk: str) -> dict | None:
+        item = self.table.get_item(Key={"pk": pk, "sk": "CURRENT"},
+                                   ConsistentRead=True).get("Item")
+        return _api_numbers(item)
+
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
                        record: dict) -> dict:
         operations = []
@@ -438,6 +457,15 @@ class DynamoCookingStore:
                     "ExpressionAttributeValues": self._item({":v": int(process_pointer["version"]),
                                                               ":result": process_pointer["result_sk"]}),
                 }})
+            dependency_sk = f"AGGREGATE#DEP#{record['group_id']}"
+            operations.append({"Put": {"TableName": self.table.name,
+                                       "Item": self._item({"pk": job_pk, "sk": dependency_sk,
+                                                           "aggregate_pk": pk,
+                                                           "selection": record["selection"]})}})
+        operations.append({"Put": {"TableName": self.table.name,
+                                   "Item": self._item({"pk": pk, "sk": "CURRENT",
+                                                       "result_id": record["result_id"],
+                                                       "updated_at": record["created_at"]})}})
         operations.append({"Put": {"TableName": self.table.name,
                                    "Item": self._item({"pk": pk, "sk": f"RESULT#{record['result_id']}", **record}),
                                    "ConditionExpression": "attribute_not_exists(pk)"}})

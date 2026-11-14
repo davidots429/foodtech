@@ -20,6 +20,7 @@ from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.main import app
+from foodtech_standardization_worker.process_restatement import DynamoProcessRestatement
 
 
 ACCOUNT = "573693340100"
@@ -152,7 +153,9 @@ async def verify() -> None:
                 pks.append(aggregate_pk)
                 aggregate_record = (f"/api/customer/assessment-aggregates/{aggregate['group_id']}"
                                     f"/results/{aggregate['result_id']}")
+                aggregate_current = f"/api/customer/assessment-aggregates/{aggregate['group_id']}/current"
                 assert aggregate["sample_count"] == 1
+                assert (await get(client, aggregate_current))["result_id"] == aggregate["result_id"]
                 assert (await get(client, aggregate_record + "/status"))["status"] == "CURRENT"
 
                 candidate_pk = cooking._pk(subject, candidate["job_id"])
@@ -166,13 +169,26 @@ async def verify() -> None:
                 store.table.put_item(Item={"pk": candidate_pk, "sk": "PROCESS#LATEST_RESTATED",
                                            "version": 1, "result_sk": restatement_sk})
                 assert (await get(client, aggregate_record + "/status"))["status"] == "STALE"
-                restated_aggregate = await post(client, aggregate_record + "/refresh")
+                refresher = DynamoProcessRestatement(TABLE, "unused")
+                await asyncio.to_thread(refresher._refresh_dependents, candidate_pk)
+                result_page = store.table.query(
+                    KeyConditionExpression=Key("pk").eq(aggregate_pk) & Key("sk").begins_with("RESULT#"),
+                    ConsistentRead=True)
+                restated = [item for item in result_page["Items"]
+                            if item["result_id"] != aggregate["result_id"]]
+                assert len(restated) == 1
+                restated_aggregate = restated[0]
                 assert restated_aggregate["result_id"] != aggregate["result_id"]
                 assert restated_aggregate["mean_quality_score_percent"] == aggregate["mean_quality_score_percent"]
                 candidate_ref = next(item for item in restated_aggregate["references"]
                                      if item["job_id"] == candidate["job_id"])
                 assert candidate_ref["process_result_sk"] == restatement_sk
                 assert (await get(client, aggregate_record))["result_id"] == aggregate["result_id"]
+                assert (await get(client, aggregate_current))["result_id"] == restated_aggregate["result_id"]
+                await asyncio.to_thread(refresher._refresh_dependents, candidate_pk)
+                assert store.table.query(KeyConditionExpression=Key("pk").eq(aggregate_pk) &
+                                         Key("sk").begins_with("RESULT#"), ConsistentRead=True,
+                                         Select="COUNT")["Count"] == 2
 
                 candidate = (await get(client, candidate_path))["job"]
                 revised = await post(client, candidate_path + "/assessments", {
@@ -199,6 +215,7 @@ async def verify() -> None:
                 new_aggregate_record = (f"/api/customer/assessment-aggregates/{new_aggregate['group_id']}"
                                         f"/results/{new_aggregate['result_id']}")
                 assert (await get(client, new_aggregate_record + "/status"))["status"] == "CURRENT"
+                assert (await get(client, aggregate_current))["result_id"] == new_aggregate["result_id"]
 
                 current_subject = "other-synthetic-user"
                 assert (await client.get(comparison_record)).status_code == 404
@@ -242,6 +259,7 @@ async def verify() -> None:
                 summary = {"account": ACCOUNT, "region": REGION, "table": TABLE,
                            "comparison_stale_then_new_version": True,
                            "aggregate_stale_then_new_version": True,
+                           "aggregate_auto_refreshed_and_current_lookup": True,
                            "process_restatement_lineage_stale_then_new_version": True,
                            "historical_results_preserved": True,
                            "cross_subject_read_status": 404,
