@@ -58,6 +58,27 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
+    async def test_job_process_view_keeps_original_and_latest_derivation_separate(self):
+        job = await self.create()
+        pk = cooking._pk(self.subject, job["job_id"])
+        result_sk = "RESTATEMENT#RESULT#synthetic"
+        self.store.items[(pk, result_sk)] = {
+            "pk": pk, "sk": result_sk, "status": "DERIVED_ONLY",
+            "process_assessment_status": "NORMAL", "process_assessment": {"data_gap": False},
+            "job_version_at_derivation": job["version"], "created_at": "2026-11-14T00:00:00Z"}
+        self.store.items[(pk, "PROCESS#LATEST_RESTATED")] = {
+            "pk": pk, "sk": "PROCESS#LATEST_RESTATED", "version": 1, "result_sk": result_sk}
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        latest = await self.client.get(path)
+        self.assertEqual(latest.status_code, 200, latest.text)
+        self.assertEqual(latest.json()["process_assessment_view"]["status"], "NORMAL")
+        self.assertEqual(latest.json()["process_assessment_view"]["view"], "LATEST_RESTATED")
+        self.assertEqual(latest.json()["job"]["process_assessment_status"], job["process_assessment_status"])
+        original = await self.client.get(path, params={"process_view": "AS_PROCESSED"})
+        self.assertEqual(original.json()["process_assessment_view"]["view"], "AS_PROCESSED")
+        self.assertEqual(original.json()["process_assessment_view"]["status"], job["process_assessment_status"])
+        self.assertEqual((await self.client.get(path, params={"process_view": "bad"})).status_code, 422)
+
     async def transition(self, job, event, reason=None):
         body = {"event": event, "expected_version": job["version"], "reason": reason}
         if event == "COOKING_STARTED":

@@ -9,6 +9,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from foodtech_contracts import stream_binding_key
+from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 from foodtech_standardization_worker.process_restatement import DynamoProcessRestatement
 
@@ -92,6 +93,10 @@ def main() -> None:
         assert len(result["included_ingestion_event_ids"]) == 3
         assert result["source_raw_count"] == 3
         assert result["scope"] == "STANDARDIZED_STREAM_SNAPSHOT"
+        latest = cooking.get_item(Key={"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"},
+                                  ConsistentRead=True)["Item"]
+        assert latest["result_sk"] == result["sk"] and latest["version"] == 1
+        assert DynamoCookingStore(COOKING_TABLE).latest_process_result(job_pk)["sk"] == result["sk"]
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"}, ConsistentRead=True)["Item"] == job
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
         assert processor.process(job_pk, f"synthetic-restatement-{run_id}-late") == "ALREADY_COMPLETED"

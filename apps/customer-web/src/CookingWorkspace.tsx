@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError, api, jobPath, loadForMass, scoreItems,
   type Assessment, type AssessmentKind, type CookingJob, type CurrentAssessment,
-  type JobEvent, type JobSnapshot, type Probe, type ScoreKey, type TransitionEvent,
+  type JobEvent, type JobSnapshot, type Probe, type ProcessAssessmentView, type ScoreKey, type TransitionEvent,
 } from "./cookingApi";
 import { AssessmentAggregate } from "./AssessmentAggregate";
 
@@ -111,6 +111,7 @@ function scoreLabel(value: number): string {
 export function CookingWorkspace({ csrf }: Props) {
   const [job, setJob] = useState<CookingJob | null>(null);
   const [current, setCurrent] = useState<CurrentAssessment | null>(null);
+  const [processView, setProcessView] = useState<ProcessAssessmentView | null>(null);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [lookupId, setLookupId] = useState("");
@@ -157,6 +158,7 @@ export function CookingWorkspace({ csrf }: Props) {
       ]);
       setJob(snapshot.job);
       setCurrent(snapshot.current_assessment);
+      setProcessView(snapshot.process_assessment_view);
       setAssessments(history);
       setEvents(audit);
       setLookupId(id);
@@ -449,8 +451,10 @@ export function CookingWorkspace({ csrf }: Props) {
             <div className="status-grid">
               <div><span className="datum-label">작업 상태</span><strong>{jobLabels[job.status]}</strong></div>
               <div><span className="datum-label">안전 상태</span><strong>{safetyLabels[job.safety_status]}</strong></div>
-              <div><span className="datum-label">자동 공정판정</span><strong>{processLabels[job.process_assessment_status] ?? "수집값 대기"}</strong></div>
+              <div><span className="datum-label">자동 공정판정</span><strong>{processLabels[processView?.status ?? job.process_assessment_status] ?? "수집값 대기"}</strong></div>
             </div>
+            {processView?.view === "LATEST_RESTATED" && <p className="small">늦은 수집값을 반영한 파생 판정입니다. 최초 처리 판정: {processLabels[job.process_assessment_status]}. 원 기록은 유지됩니다.
+              {processView.job_version_changed && " 파생 이후 작업 기록이 변경되어 재검토가 필요합니다."}</p>}
             <p className="small">레시피 {job.recipe_version} · 계획 {job.planned_portions}인분 · 마지막 변경 {timeLabel(job.updated_at)}</p>
             <p className="small">두께 {job.thickness_cm ?? "미기록"}cm · {job.thickness_profile ?? "프로파일 없음"}
               {" "}({thicknessLabels[job.process_thickness_status ?? ""] ?? "미판정"})</p>

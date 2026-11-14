@@ -179,6 +179,9 @@ def main() -> None:
         assert result["process_assessment_status"] == "NORMAL"
         assert len(result["included_ingestion_event_ids"]) == 3
         assert result["source_raw_count"] == 3
+        latest = cooking.get_item(Key={"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"},
+                                  ConsistentRead=True)["Item"]
+        assert latest["result_sk"] == result["sk"] and latest["version"] == 1
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"},
                                 ConsistentRead=True)["Item"]["process_assessment_status"] == "WARNING"
         completed = True
