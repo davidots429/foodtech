@@ -37,8 +37,9 @@ function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, defaultLoadBand }: {
+export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, defaultLoadBand, availableJobs }: {
   csrf: string; currentJobId: string; recipeVersion: string; defaultLoadBand?: "PARTIAL" | "REFERENCE";
+  availableJobs: { job_id: string; created_at: string; recipe_version: string; planned_portions: number }[];
 }) {
   const today = new Date();
   const [idsText, setIdsText] = useState(currentJobId);
@@ -53,6 +54,16 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
   const [resultId, setResultId] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const selectedIds = idsText.split(/[\s,]+/).map(value => value.trim()).filter(Boolean);
+
+  function toggleJob(id: string) {
+    const selected = new Set(selectedIds);
+    if (selected.has(id)) selected.delete(id);
+    else if (selected.size >= 20) { setMessage("집계 표본은 최대 20개까지 선택할 수 있습니다."); return; }
+    else selected.add(id);
+    setIdsText([...selected].join("\n"));
+    setMessage("");
+  }
 
   useEffect(() => {
     setIdsText(currentJobId); setRecipe(recipeVersion); setLoadBand(defaultLoadBand ?? "PARTIAL");
@@ -143,6 +154,14 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     <p className="small">고객이 지정한 작업만 계산하는 기술 통계입니다. 대표 표본 여부와 레시피 개선 확정은 판정하지 않습니다. 안전상 중단되거나 사용 불가한 평가는 평균에서 제외하고 사유를 남깁니다.</p>
     <label>작업 ID 목록 (쉼표 또는 줄바꿈, 최대 20개)
       <textarea value={idsText} onChange={event => setIdsText(event.target.value)} rows={3} /></label>
+    {availableJobs.length > 0 && <fieldset className="job-picker"><legend>내 작업 목록에서 표본 선택</legend>
+      {availableJobs.map(item => <label className="check-line" key={item.job_id}>
+        <input type="checkbox" checked={selectedIds.includes(item.job_id)}
+          onChange={() => toggleJob(item.job_id)} disabled={busy} />
+        {new Date(item.created_at).toLocaleString("ko-KR")} · {item.recipe_version} · {item.planned_portions}인분 · {item.job_id.slice(0, 8)}
+      </label>)}
+      <p className="small">더 오래된 작업은 화면 상단에서 ‘이전 작업 더 보기’를 누르세요. 목록에 없는 이전 형식의 작업은 ID로 한 번 열거나 위에 직접 입력할 수 있습니다.</p>
+    </fieldset>}
     <div className="field-row">
       <label>레시피 버전 <input value={recipe} maxLength={80} onChange={event => setRecipe(event.target.value)} /></label>
       <label>조리량 구간 <select value={loadBand} onChange={event => setLoadBand(event.target.value as "PARTIAL" | "REFERENCE")}>

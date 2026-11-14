@@ -643,6 +643,14 @@ export function CookingWorkspace({ csrf }: Props) {
               <input value={baselineJobId} onChange={(event) => setBaselineJobId(event.target.value)} placeholder="비교할 작업 UUID" />
             </label><button type="button" onClick={compareJobs} disabled={busy || loadingJob || !current?.usable}>현재 평가 비교</button>
               <button type="button" className="secondary" onClick={loadCurrentComparison} disabled={busy || loadingJob}>최신 비교 불러오기</button></div>
+            {listedJobs.some(item => item.job_id !== job.job_id) && <label>내 작업 목록에서 이전 작업 선택
+              <select value={listedJobs.some(item => item.job_id === baselineJobId) ? baselineJobId : ""}
+                onChange={(event) => setBaselineJobId(event.target.value)}>
+                <option value="">직접 입력하거나 작업 선택</option>
+                {listedJobs.filter(item => item.job_id !== job.job_id).map(item =>
+                  <option key={item.job_id} value={item.job_id}>
+                    {timeLabel(item.created_at)} · {item.recipe_version} · {item.job_id.slice(0, 8)}
+                  </option>)}</select></label>}
             <div className="field-row"><label className="grow">저장된 비교 기록 ID
               <input value={comparisonId} onChange={(event) => setComparisonId(event.target.value)} placeholder="64자리 비교 해시" />
             </label><button type="button" className="secondary" onClick={loadComparison} disabled={busy || loadingJob}>기록 불러오기</button></div>
@@ -668,7 +676,8 @@ export function CookingWorkspace({ csrf }: Props) {
           </section>
 
           <AssessmentAggregate csrf={csrf} currentJobId={job.job_id} recipeVersion={job.recipe_version}
-            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band} />
+            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band}
+            availableJobs={listedJobs} />
 
           <section className="subcard" aria-labelledby="recook-title">
             <h3 id="recook-title">7. 재조리 연결</h3>

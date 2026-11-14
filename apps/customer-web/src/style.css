@@ -71,6 +71,8 @@ label input:not([type="checkbox"]), label select { display: block; width: 100%; 
 .divider { border-top: 1px solid #e3ece9; margin: 20px 0; }
 .check-line { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-weight: 500; }
 .check-line input { width: 18px; height: 18px; accent-color: #176858; }
+.job-picker { max-height: 300px; overflow-y: auto; margin: 14px 0; border: 1px solid #dce8e4; border-radius: 9px; }
+.job-picker .check-line { font-weight: 500; }
 .probe-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0; }
 .probe-card { background: #f4f8f7; border-radius: 9px; padding: 12px; }
 .probe-card .check-line { font-size: .8rem; }
