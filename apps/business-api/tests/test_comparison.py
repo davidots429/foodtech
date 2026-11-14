@@ -10,6 +10,7 @@ import httpx
 from boto3.dynamodb.types import TypeSerializer
 
 from foodtech_business_api import cooking
+from foodtech_business_api.comparison import refresh_dependents
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore, MemoryCookingStore
 from foodtech_business_api.main import app
@@ -80,10 +81,16 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["recipe_improvement_status"], "NOT_EVALUATED")
         self.assertEqual(result["baseline_assessment_version"], 1)
         self.assertEqual(result["candidate_assessment_version"], 1)
-        self.assertEqual(len([key for key in self.store.items if key[1].startswith("COMPARISON#")]), 1)
+        self.assertEqual(len([key for key in self.store.items
+                              if key[1] == f"COMPARISON#{result['comparison_id']}"]), 1)
+        current_path = self._path() + f"/from/{self.baseline_id}/current"
+        self.assertEqual((await self.client.get(current_path)).json()["comparison_id"], result["comparison_id"])
+        for job_id in (self.baseline_id, self.candidate_id):
+            self.assertEqual(len(self.store.comparison_dependencies(cooking._pk(self.subject, job_id))), 1)
         second = await self.client.post(self._path(), json=body, headers={"X-CSRF-Token": "test-csrf"})
         self.assertEqual(second.json()["comparison_id"], result["comparison_id"])
-        self.assertEqual(len([key for key in self.store.items if key[1].startswith("COMPARISON#")]), 1)
+        self.assertEqual(len([key for key in self.store.items
+                              if key[1] == f"COMPARISON#{result['comparison_id']}"]), 1)
         stored = await self.client.get(self._path() + "/" + result["comparison_id"])
         self.assertEqual(stored.json()["score_total_delta"], 7)
         self.assertEqual((await self.client.get(self._path() + "/" + "x" * 64)).status_code, 400)
@@ -98,6 +105,25 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "another-customer"
         self.assertEqual((await self.client.post(self._path(), json=body,
                                                 headers={"X-CSRF-Token": "test-csrf"})).status_code, 404)
+
+    async def test_refresh_backfills_legacy_comparison_index(self):
+        original = (await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                    headers={"X-CSRF-Token": "test-csrf"})).json()
+        candidate_pk = cooking._pk(self.subject, self.candidate_id)
+        dependency_sk = f"COMPARISON#DEP#{self.candidate_id}#{self.baseline_id}"
+        for job_id in (self.baseline_id, self.candidate_id):
+            self.store.items.pop((cooking._pk(self.subject, job_id), dependency_sk))
+        self.store.items.pop((candidate_pk, f"COMPARISON#CURRENT#{self.baseline_id}"))
+        current_path = self._path() + f"/from/{self.baseline_id}/current"
+        self.assertEqual((await self.client.get(current_path)).status_code, 404)
+        repaired = await self.client.post(self._path() + "/" + original["comparison_id"] + "/refresh",
+                                          headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(repaired.status_code, 201, repaired.text)
+        self.assertEqual(repaired.json()["comparison_id"], original["comparison_id"])
+        self.assertEqual((await self.client.get(current_path)).json()["comparison_id"],
+                         original["comparison_id"])
+        for job_id in (self.baseline_id, self.candidate_id):
+            self.assertEqual(len(self.store.comparison_dependencies(cooking._pk(self.subject, job_id))), 1)
 
     async def test_incompatible_equipment_is_not_compared(self):
         candidate_pk = cooking._pk(self.subject, self.candidate_id)
@@ -129,6 +155,8 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(new["comparison_id"], old["comparison_id"])
         self.assertEqual(new["score_total_delta"], 1)
         self.assertEqual(new["improvement_status"], "NOT_OBSERVED")
+        self.assertEqual((await self.client.get(self._path() + f"/from/{self.baseline_id}/current"))
+                         .json()["comparison_id"], new["comparison_id"])
         historical = (await self.client.get(self._path() + "/" + old["comparison_id"])).json()
         self.assertEqual(historical["score_total_delta"], 7)
 
@@ -197,6 +225,7 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stale["changed_job_ids"], [self.baseline_id])
         blocked = await self.client.post(path + "/refresh", headers={"X-CSRF-Token": "test-csrf"})
         self.assertEqual(blocked.status_code, 409)
+        self.assertEqual((await refresh_dependents(self.store, baseline_pk))["blocked_group_count"], 1)
         self.assertEqual((await self.client.get(path)).json()["score_total_delta"], 7)
 
 
@@ -208,12 +237,14 @@ class ComparisonTransactionContractTests(unittest.TestCase):
         store.serializer = TypeSerializer()
         meta = {"version": 3, "safety_version": 1}
         pointer = {"version": 1}
-        record = {"comparison_id": "a" * 64, "score_total_delta": 2}
+        record = {"comparison_id": "a" * 64, "score_total_delta": 2,
+                  "baseline_job_id": "baseline-id", "candidate_job_id": "candidate-id",
+                  "compared_at": "2026-11-15T00:00:00Z"}
         store.save_comparison("baseline", "candidate", meta, meta, pointer, pointer, record)
         items = store.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(items), 5)
+        self.assertEqual(len(items), 8)
         self.assertEqual(sum("ConditionCheck" in item for item in items), 4)
-        self.assertEqual(sum("Put" in item for item in items), 1)
+        self.assertEqual(sum("Put" in item for item in items), 4)
         self.assertIn("usable = :true", items[1]["ConditionCheck"]["ConditionExpression"])
         self.assertIn("evaluation_blocked = :false", items[0]["ConditionCheck"]["ConditionExpression"])
 
@@ -229,14 +260,19 @@ class ComparisonTransactionContractTests(unittest.TestCase):
         store.serializer = TypeSerializer()
         meta = {"version": 3, "safety_version": 1}
         pointer = {"version": 1}
-        record = {"comparison_id": "a" * 64}
+        record = {"comparison_id": "a" * 64, "baseline_job_id": "baseline-id",
+                  "candidate_job_id": "candidate-id", "compared_at": "2026-11-15T00:00:00Z"}
         with patch.object(store, "comparison", return_value=record):
-            store.client.transact_write_items.side_effect = Canceled(
-                ["None", "None", "None", "None", "ConditionalCheckFailed"])
+            first_canceled = Canceled(["None"] * 7 + ["ConditionalCheckFailed"])
+            store.client.transact_write_items.side_effect = [first_canceled, None]
             self.assertEqual(store.save_comparison("baseline", "candidate", meta, meta,
                                                    pointer, pointer, record), record)
+            self.assertEqual(store.client.transact_write_items.call_count, 2)
+            repair = store.client.transact_write_items.call_args.kwargs["TransactItems"]
+            self.assertEqual(len(repair), 8)
+            self.assertIn("if_not_exists", repair[-1]["Update"]["UpdateExpression"])
             store.client.transact_write_items.side_effect = Canceled(
-                ["ConditionalCheckFailed", "None", "None", "None", "ConditionalCheckFailed"])
+                ["ConditionalCheckFailed"] + ["None"] * 6 + ["ConditionalCheckFailed"])
             with self.assertRaises(Conflict):
                 store.save_comparison("baseline", "candidate", meta, meta,
                                       pointer, pointer, record)

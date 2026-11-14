@@ -398,6 +398,21 @@ export function CookingWorkspace({ csrf }: Props) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "비교 기록을 읽지 못했습니다."); }
   }
 
+  async function loadCurrentComparison() {
+    if (!job || !/^[0-9a-f-]{36}$/i.test(baselineJobId.trim())) {
+      setError("비교할 이전 작업의 UUID를 입력해 주세요."); return;
+    }
+    setError("");
+    try {
+      const saved = await api<Comparison>(jobPath(job.job_id) + "/comparisons/from/" +
+        baselineJobId.trim() + "/current");
+      setComparison(saved); setComparisonId(saved.comparison_id);
+      setComparisonFreshness(null); setComparisonChangedJobs([]);
+      const checked = await checkComparison(job.job_id, saved.comparison_id);
+      setStatus("최신 비교 기록을 불러왔습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "최신 비교 기록을 읽지 못했습니다."); }
+  }
+
   async function refreshComparison() {
     if (!job || !comparison) return;
     const previousId = comparison.comparison_id;
@@ -587,7 +602,8 @@ export function CookingWorkspace({ csrf }: Props) {
             <p className="small">같은 메뉴·척도·장비의 두 작업에서 현재 유효한 완료 평가만 비교합니다. 항목 합계가 2점 이상 오르면 ‘개선 관찰’로 기록하지만 레시피 버전 전체의 개선 확정은 아닙니다.</p>
             <div className="field-row"><label className="grow">이전 작업 ID
               <input value={baselineJobId} onChange={(event) => setBaselineJobId(event.target.value)} placeholder="비교할 작업 UUID" />
-            </label><button type="button" onClick={compareJobs} disabled={busy || loadingJob || !current?.usable}>현재 평가 비교</button></div>
+            </label><button type="button" onClick={compareJobs} disabled={busy || loadingJob || !current?.usable}>현재 평가 비교</button>
+              <button type="button" className="secondary" onClick={loadCurrentComparison} disabled={busy || loadingJob}>최신 비교 불러오기</button></div>
             <div className="field-row"><label className="grow">저장된 비교 기록 ID
               <input value={comparisonId} onChange={(event) => setComparisonId(event.target.value)} placeholder="64자리 비교 해시" />
             </label><button type="button" className="secondary" onClick={loadComparison} disabled={busy || loadingJob}>기록 불러오기</button></div>

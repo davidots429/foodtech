@@ -80,13 +80,15 @@ async def _commit(store, pk: str, previous: dict, meta: dict,
         await _store_call(store, store.commit, pk, int(previous["version"]), meta, assessment, pointer, event)
     except Conflict as exc:
         raise _conflict() from exc
-    from .assessment_aggregate import refresh_dependents
+    from .assessment_aggregate import refresh_dependents as refresh_aggregates
+    from .comparison import refresh_dependents as refresh_comparisons
     try:
-        await refresh_dependents(store, pk)
+        await refresh_aggregates(store, pk)
+        await refresh_comparisons(store, pk)
     except Exception as exc:
-        logger.exception("Dependent aggregate refresh failed after cooking job commit")
-        raise HTTPException(503, "작업 변경은 저장되었으나 관련 집계 갱신을 완료하지 못했습니다."
-                                 " 작업을 다시 조회하고 집계 갱신을 재시도해 주세요.") from exc
+        logger.exception("Dependent derived-result refresh failed after cooking job commit")
+        raise HTTPException(503, "작업 변경은 저장되었으나 관련 파생 결과 갱신을 완료하지 못했습니다."
+                                 " 작업을 다시 조회하고 집계·비교 갱신을 재시도해 주세요.") from exc
 
 
 @router.post("/{job_id}/refresh-aggregates")
@@ -94,6 +96,13 @@ async def refresh_job_aggregates(job_id: str, request: Request) -> dict:
     _, store, pk, _, _ = await _read(request, job_id, write=True)
     from .assessment_aggregate import refresh_dependents
     return {"refreshed_group_count": await refresh_dependents(store, pk)}
+
+
+@router.post("/{job_id}/refresh-comparisons")
+async def refresh_job_comparisons(job_id: str, request: Request) -> dict:
+    _, store, pk, _, _ = await _read(request, job_id, write=True)
+    from .comparison import refresh_dependents
+    return await refresh_dependents(store, pk)
 
 
 class StrictModel(BaseModel):
