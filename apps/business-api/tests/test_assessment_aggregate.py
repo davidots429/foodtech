@@ -79,6 +79,12 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
                                        headers={"X-CSRF-Token": "test-csrf"})
         self.assertEqual(first.status_code, 201, first.text)
         original = first.json()
+        current_path = f"/api/customer/assessment-aggregates/{original['group_id']}/current"
+        self.assertEqual((await self.client.get(current_path)).json()["result_id"], original["result_id"])
+        first_pk = cooking._pk(self.subject, self.first_id)
+        dependency = self.store.items[(first_pk, f"AGGREGATE#DEP#{original['group_id']}")]
+        self.assertEqual(dependency["aggregate_pk"],
+                         f"SCOPE#USER#{self.subject}#AGGREGATE#{original['group_id']}")
         self.assertEqual(original["sample_count"], 1)
         self.assertEqual(original["excluded_count"], 1)
         self.assertEqual(original["excluded"][0]["reason"], "SAFETY_NOT_PASSED")
@@ -98,10 +104,12 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(revised["result_id"], original["result_id"])
         self.assertEqual(revised["sample_count"], 2)
         self.assertEqual(revised["mean_quality_score_percent"], "70.00")
+        self.assertEqual((await self.client.get(current_path)).json()["result_id"], revised["result_id"])
         path = f"/api/customer/assessment-aggregates/{original['group_id']}/results/{original['result_id']}"
         self.assertEqual((await self.client.get(path)).json()["sample_count"], 1)
         self.subject = "another-customer"
         self.assertEqual((await self.client.get(path)).status_code, 404)
+        self.assertEqual((await self.client.get(current_path)).status_code, 404)
 
     async def test_empty_denominator_is_not_zero(self):
         first_pk = cooking._pk(self.subject, self.first_id)
@@ -175,6 +183,9 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(revised["result_id"], original["result_id"])
         self.assertEqual(revised["sample_count"], 2)
         self.assertEqual((await self.client.get(path)).json()["sample_count"], 1)
+        self.assertEqual((await self.client.get(
+            f"/api/customer/assessment-aggregates/{revised['group_id']}/current"
+        )).json()["result_id"], revised["result_id"])
         revised_path = f"/api/customer/assessment-aggregates/{revised['group_id']}/results/{revised['result_id']}"
         self.assertEqual((await self.client.get(revised_path + "/status")).json()["status"], "CURRENT")
         self.assertEqual((await self.client.post(revised_path + "/refresh",
@@ -239,12 +250,14 @@ class AggregateTransactionContractTests(unittest.TestCase):
                 "safety_status": "PASSED", "evaluation_blocked": False}
         pointer = {"version": 1, "usable": True, "safety_version": 1}
         store.save_aggregate("aggregate", [("job-1", meta, pointer, None), ("job-2", meta, None, None)],
-                             {"result_id": "a" * 64, "sample_count": 1})
+                             {"group_id": "g" * 64, "selection": {},
+                              "result_id": "a" * 64, "sample_count": 1, "created_at": "2026-11-14T00:00:00Z"})
         operations = store.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(operations), 7)
+        self.assertEqual(len(operations), 10)
         self.assertEqual(sum("ConditionCheck" in operation for operation in operations), 6)
-        self.assertEqual(sum("Put" in operation for operation in operations), 1)
-        self.assertIn("attribute_not_exists(pk)", operations[4]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual(sum("Put" in operation for operation in operations), 4)
+        self.assertIn("attribute_not_exists(pk)", operations[5]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual(operations[3]["Put"]["Item"]["sk"]["S"], "AGGREGATE#DEP#" + "g" * 64)
 
     def test_dynamo_write_checks_process_result_pointer_version_and_key(self):
         store = object.__new__(DynamoCookingStore)
@@ -255,7 +268,8 @@ class AggregateTransactionContractTests(unittest.TestCase):
                 "safety_status": "PASSED", "evaluation_blocked": False}
         process = {"version": 2, "result_sk": "RESTATEMENT#RESULT#synthetic"}
         store.save_aggregate("aggregate", [("job-1", meta, None, process)],
-                             {"result_id": "a" * 64, "sample_count": 0})
+                             {"group_id": "g" * 64, "selection": {},
+                              "result_id": "a" * 64, "sample_count": 0, "created_at": "2026-11-14T00:00:00Z"})
         check = store.client.transact_write_items.call_args.kwargs["TransactItems"][2]["ConditionCheck"]
         self.assertEqual(check["ConditionExpression"], "#v = :v AND result_sk = :result")
         self.assertEqual(check["ExpressionAttributeValues"][":v"]["N"], "2")
@@ -274,13 +288,14 @@ class AggregateTransactionContractTests(unittest.TestCase):
         meta = {"version": 3, "safety_version": 1, "status": "COMPLETED",
                 "safety_status": "PASSED", "evaluation_blocked": False}
         pointer = {"version": 1, "usable": True, "safety_version": 1}
-        record = {"result_id": "a" * 64}
+        record = {"group_id": "g" * 64, "selection": {}, "result_id": "a" * 64,
+                  "created_at": "2026-11-14T00:00:00Z"}
         snapshots = [("job-1", meta, pointer, None)]
         with patch.object(store, "aggregate", return_value=record):
             store.client.transact_write_items.side_effect = Canceled(
-                ["None", "None", "None", "ConditionalCheckFailed"])
+                ["None", "None", "None", "None", "None", "ConditionalCheckFailed"])
             self.assertEqual(store.save_aggregate("aggregate", snapshots, record), record)
             store.client.transact_write_items.side_effect = Canceled(
-                ["ConditionalCheckFailed", "None", "None", "ConditionalCheckFailed"])
+                ["ConditionalCheckFailed", "None", "None", "None", "None", "ConditionalCheckFailed"])
             with self.assertRaises(Conflict):
                 store.save_aggregate("aggregate", snapshots, record)

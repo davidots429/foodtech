@@ -172,6 +172,21 @@ async def get_aggregate(group_id: str, result_id: str, request: Request) -> dict
     return record
 
 
+@router.get("/{group_id}/current")
+async def get_current_aggregate(group_id: str, request: Request) -> dict:
+    if not _valid_hash(group_id):
+        raise HTTPException(400, "집계 그룹 ID가 올바르지 않습니다.")
+    session, store = await _context(request)
+    pk = f"SCOPE#USER#{session.subject}#AGGREGATE#{group_id}"
+    pointer = await _store_call(store, store.current_aggregate, pk)
+    if not pointer or not _valid_hash(pointer.get("result_id", "")):
+        raise HTTPException(404, "현재 집계 결과를 찾을 수 없습니다.")
+    record = await _store_call(store, store.aggregate, pk, pointer["result_id"])
+    if not record or record.get("group_id") != group_id or record.get("result_id") != pointer["result_id"]:
+        raise HTTPException(404, "현재 집계 결과를 찾을 수 없습니다.")
+    return record
+
+
 @router.get("/{group_id}/results/{result_id}/status")
 async def aggregate_status(group_id: str, result_id: str, request: Request) -> dict:
     session, store, record = await _record(request, group_id, result_id)

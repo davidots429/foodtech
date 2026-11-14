@@ -107,6 +107,21 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     finally { setBusy(false); }
   }
 
+  async function loadCurrent() {
+    if (!/^[0-9a-f]{64}$/.test(groupId)) {
+      setMessage("그룹 ID를 64자리 해시로 입력해 주세요."); return;
+    }
+    setBusy(true); setMessage("");
+    try {
+      const saved = await api<AggregateResult>(`/api/customer/assessment-aggregates/${groupId}/current`);
+      setResult(saved); setResultId(saved.result_id);
+      setFreshness(null); setChangedJobIds([]);
+      const checked = await checkFreshness(saved.group_id, saved.result_id);
+      setMessage("최신 집계 결과를 불러왔습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
+    } catch (error) { setMessage(error instanceof Error ? error.message : "최신 집계 결과를 읽지 못했습니다."); }
+    finally { setBusy(false); }
+  }
+
   async function refresh() {
     if (!result || busy) return;
     setBusy(true); setMessage("");
@@ -139,6 +154,7 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     <div className="field-row">
       <label>저장된 그룹 ID <input value={groupId} onChange={event => setGroupId(event.target.value)} /></label>
       <label>저장된 결과 ID <input value={resultId} onChange={event => setResultId(event.target.value)} /></label>
+      <button type="button" className="secondary" onClick={loadCurrent} disabled={busy}>최신 결과 불러오기</button>
       <button type="button" className="secondary" onClick={load} disabled={busy}>과거 결과 불러오기</button>
     </div>
     {result && <div className="actions">
