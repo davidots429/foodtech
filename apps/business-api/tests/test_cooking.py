@@ -58,6 +58,40 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
+    async def test_owned_job_list_is_paginated_and_isolated(self):
+        jobs = [await self.create() for _ in range(3)]
+        first = await self.client.get("/api/customer/cooking-jobs", params={"limit": 2})
+        self.assertEqual(first.status_code, 200, first.text)
+        page = first.json()
+        self.assertEqual([item["job_id"] for item in page["items"]],
+                         [jobs[2]["job_id"], jobs[1]["job_id"]])
+        self.assertTrue(page["next_cursor"])
+        second = (await self.client.get("/api/customer/cooking-jobs",
+                                        params={"limit": 2, "cursor": page["next_cursor"]})).json()
+        self.assertEqual([item["job_id"] for item in second["items"]], [jobs[0]["job_id"]])
+        self.assertIsNone(second["next_cursor"])
+        self.assertEqual((await self.client.get("/api/customer/cooking-jobs",
+                                                params={"cursor": "bad"})).status_code, 400)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get("/api/customer/cooking-jobs")).json()["items"], [])
+
+    async def test_known_legacy_job_can_be_registered_in_list(self):
+        job = await self.create()
+        listing_pk = f"SCOPE#USER#{self.subject}#JOBS"
+        for key in list(self.store.items):
+            if key[0] == listing_pk:
+                self.store.items.pop(key)
+        self.assertEqual((await self.client.get("/api/customer/cooking-jobs")).json()["items"], [])
+        path = f"/api/customer/cooking-jobs/{job['job_id']}/list-entry"
+        self.assertEqual((await self.client.post(path)).status_code, 403)
+        self.assertEqual((await self.client.post(path, headers=CSRF)).status_code, 200)
+        self.assertEqual((await self.client.post(path, headers=CSRF)).status_code, 200)
+        self.assertEqual([item["job_id"] for item in
+                          (await self.client.get("/api/customer/cooking-jobs")).json()["items"]],
+                         [job["job_id"]])
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.post(path, headers=CSRF)).status_code, 404)
+
     async def test_job_process_view_keeps_original_and_latest_derivation_separate(self):
         job = await self.create()
         pk = cooking._pk(self.subject, job["job_id"])
@@ -295,6 +329,8 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recook.status_code, 201, recook.text)
         self.assertEqual(recook.json()["source_job_id"], job["job_id"])
         self.assertNotEqual(recook.json()["job_id"], job["job_id"])
+        listed = (await self.client.get("/api/customer/cooking-jobs")).json()["items"]
+        self.assertEqual({item["job_id"] for item in listed}, {job["job_id"], recook.json()["job_id"]})
         self.assertEqual((await self.client.get(path)).json()["job"]["safety_status"], "FAILED")
 
     async def test_cooking_safety_hold_requires_manual_stop_and_explicit_resume(self):
@@ -605,6 +641,26 @@ class TonkatsuProcessRuleTests(unittest.TestCase):
 
 
 class DynamoTransactionContractTests(unittest.TestCase):
+    def test_job_and_listing_are_created_in_one_transaction(self):
+        calls = []
+        store = DynamoCookingStore.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name="test-table")
+        store.serializer = TypeSerializer()
+        store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
+        meta = {"owner_subject": "one", "job_id": "job", "created_at": "2026-11-15T00:00:00Z",
+                "recipe_version": "recipe-v1", "planned_portions": 2, "source_job_id": None}
+        job_pk = "SCOPE#USER#one#JOB#job"
+        store.create(job_pk, meta)
+        writes = calls[0]["TransactItems"]
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(writes[1]["Put"]["Item"]["pk"]["S"], "SCOPE#USER#one#JOBS")
+        self.assertEqual(writes[1]["Put"]["Item"]["sk"]["S"],
+                         "CREATED#2026-11-15T00:00:00Z#job")
+        store.create_recook(job_pk, 3, "SCOPE#USER#one#JOB#recook",
+                            {**meta, "job_id": "recook", "source_job_id": "job"})
+        self.assertEqual(len(calls[1]["TransactItems"]), 3)
+        self.assertEqual(calls[1]["TransactItems"][2]["Put"]["Item"]["source_job_id"]["S"], "job")
+
     def test_source_binding_and_job_version_share_transaction(self):
         calls = []
         store = DynamoCookingStore.__new__(DynamoCookingStore)

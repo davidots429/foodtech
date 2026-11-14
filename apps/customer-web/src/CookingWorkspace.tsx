@@ -22,6 +22,11 @@ type Comparison = {
   improvement_status: "OBSERVED" | "NOT_OBSERVED";
   recipe_improvement_status: "NOT_EVALUATED"; compared_at: string;
 };
+type JobListItem = {
+  job_id: string; created_at: string; recipe_version: string;
+  planned_portions: number; source_job_id: string | null;
+};
+type JobListPage = { items: JobListItem[]; next_cursor: string | null };
 
 const jobLabels: Record<CookingJob["status"], string> = {
   PENDING: "대기", READY: "준비 완료", RUNNING: "조리 중", PAUSED: "일시 정지",
@@ -115,6 +120,9 @@ export function CookingWorkspace({ csrf }: Props) {
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [events, setEvents] = useState<JobEvent[]>([]);
   const [lookupId, setLookupId] = useState("");
+  const [listedJobs, setListedJobs] = useState<JobListItem[]>([]);
+  const [nextJobCursor, setNextJobCursor] = useState<string | null>(null);
+  const [loadingList, setLoadingList] = useState(false);
   const [plannedPortions, setPlannedPortions] = useState(2);
   const [recipeVersion, setRecipeVersion] = useState("synthetic-v1");
   const [thicknessCm, setThicknessCm] = useState("1.20");
@@ -203,6 +211,20 @@ export function CookingWorkspace({ csrf }: Props) {
     });
   }, [refresh]);
 
+  const loadJobList = useCallback(async (cursor?: string) => {
+    setLoadingList(true);
+    try {
+      const page = await api<JobListPage>("/api/customer/cooking-jobs?limit=20" +
+        (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""));
+      setListedJobs(previous => cursor ? [...previous, ...page.items] : page.items);
+      setNextJobCursor(page.next_cursor);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "작업 목록을 불러오지 못했습니다.");
+    } finally { setLoadingList(false); }
+  }, []);
+
+  useEffect(() => { void loadJobList(); }, [loadJobList]);
+
   async function action<T>(operation: () => Promise<T>, message: string, nextId?: (value: T) => string) {
     if (activeRequest.current) return;
     activeRequest.current = true;
@@ -230,7 +252,12 @@ export function CookingWorkspace({ csrf }: Props) {
     if (!/^[0-9a-f-]{36}$/i.test(id)) { setError("작업 ID 형식을 확인해 주세요."); return; }
     setError("");
     setStatus("");
-    try { await refresh(id); setStatus("작업을 불러왔습니다."); }
+    try {
+      await refresh(id);
+      await api<{ job_id: string }>(jobPath(id) + "/list-entry", csrf, {});
+      await loadJobList();
+      setStatus("작업을 불러왔습니다.");
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "작업을 불러오지 못했습니다."); }
   }
 
@@ -248,6 +275,7 @@ export function CookingWorkspace({ csrf }: Props) {
       }),
       "합성 조리작업을 생성했습니다.", (created) => created.job_id,
     );
+    await loadJobList();
   }
 
   async function recordTransition(event: TransitionEvent) {
@@ -355,6 +383,7 @@ export function CookingWorkspace({ csrf }: Props) {
     await action(() => api<CookingJob>(jobPath(job.job_id) + "/recook", csrf, {
       expected_version: job.version, reason: recookReason.trim(),
     }), "원 작업과 연결된 별도 재조리 작업을 만들었습니다.", (created) => created.job_id);
+    await loadJobList();
   }
 
   async function checkComparison(candidateId: string, id: string): Promise<boolean> {
@@ -457,6 +486,16 @@ export function CookingWorkspace({ csrf }: Props) {
           <div className="lookup-row"><label>기존 작업 ID
             <input value={lookupId} onChange={(event) => setLookupId(event.target.value)} placeholder="작업 UUID" />
           </label><button type="button" className="secondary" onClick={() => void loadJob()} disabled={busy || loadingJob}>불러오기</button></div>
+          <div className="actions"><strong>내 조리작업</strong>
+            <button type="button" className="secondary" onClick={() => void loadJobList()} disabled={loadingList}>목록 새로고침</button></div>
+          {listedJobs.length === 0 && <p className="small">목록에 등록된 작업이 없습니다. 이전 작업은 ID로 열면 목록에 추가됩니다.</p>}
+          {listedJobs.length > 0 && <ul>{listedJobs.map(item => <li key={item.job_id}>
+            <button type="button" className="text-button" onClick={() => void loadJob(item.job_id)} disabled={busy || loadingJob}>
+              {timeLabel(item.created_at)} · {item.recipe_version} · {item.planned_portions}인분
+              {item.source_job_id ? " · 재조리" : ""}
+            </button></li>)}</ul>}
+          {nextJobCursor && <button type="button" className="secondary" onClick={() => void loadJobList(nextJobCursor)}
+            disabled={loadingList}>이전 작업 더 보기</button>}
         </section>
 
         {loadingJob && <p role="status">작업을 불러오는 중입니다.</p>}

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.tonkatsu_process import RULE_VERSION, cooking_time_status, process_status, thickness_profile
@@ -209,6 +209,29 @@ async def create_job(request: Request, body: NewJob) -> dict:
     }
     await _store_call(store, store.create, _pk(session.subject, job_id), meta)
     return meta
+
+
+@router.get("")
+async def list_jobs(request: Request, limit: int = Query(20, ge=1, le=50),
+                    cursor: str | None = None) -> dict:
+    if cursor:
+        parts = cursor.split("#")
+        try:
+            if len(parts) != 3 or parts[0] != "CREATED" or \
+                    datetime.fromisoformat(parts[1].replace("Z", "+00:00")).tzinfo is None or \
+                    str(uuid.UUID(parts[2])) != parts[2]:
+                raise ValueError
+        except ValueError as exc:
+            raise HTTPException(400, "작업 목록 커서가 올바르지 않습니다.") from exc
+    session, store = await _context(request)
+    return await _store_call(store, store.list_jobs, session.subject, limit, cursor)
+
+
+@router.post("/{job_id}/list-entry")
+async def register_job_in_list(job_id: str, request: Request) -> dict:
+    _, store, pk, meta, _ = await _read(request, job_id, write=True)
+    await _store_call(store, store.ensure_listed, pk, meta)
+    return {"job_id": meta["job_id"]}
 
 
 @router.post("/{job_id}/source-binding")

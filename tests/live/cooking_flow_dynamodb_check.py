@@ -239,12 +239,29 @@ async def main() -> None:
                 maximum = await check_time_failure(client, subject, created, 361, "MAX_TIME_EXCEEDED")
                 race = await check_competing_update(client, subject, store, created, bindings)
                 safety = await check_safety_interruption(client, subject, store, created)
+                listing_pk = f"SCOPE#USER#{subject}#JOBS"
+                first_page = (await client.get("/api/customer/cooking-jobs", params={"limit": 2})).json()
+                assert len(first_page["items"]) == 2 and first_page["next_cursor"]
+                second_page = (await client.get("/api/customer/cooking-jobs", params={
+                    "limit": 2, "cursor": first_page["next_cursor"]})).json()
+                assert len(second_page["items"]) == 2 and second_page["next_cursor"] is None
+                assert {item["job_id"] for item in first_page["items"] + second_page["items"]} == {
+                    pk.rsplit("#JOB#", 1)[1] for pk in created}
+                first_job_id = created[0].rsplit("#JOB#", 1)[1]
+                listing = store.table.query(KeyConditionExpression=Key("pk").eq(listing_pk),
+                                            ConsistentRead=True)["Items"]
+                old_entry = next(item for item in listing if item["job_id"] == first_job_id)
+                store.table.delete_item(Key={"pk": listing_pk, "sk": old_entry["sk"]})
+                assert len((await client.get("/api/customer/cooking-jobs")).json()["items"]) == 3
+                restored = await post(client, f"/api/customer/cooking-jobs/{first_job_id}/list-entry", {})
+                assert restored["job_id"] == first_job_id
+                assert len((await client.get("/api/customer/cooking-jobs")).json()["items"]) == 4
                 print(json.dumps({"account": ACCOUNT, "region": REGION, "table": TABLE,
                                   "early": early, "maximum": maximum, "race": race,
-                                  "safety": safety}), flush=True)
+                                  "safety": safety, "job_list_paginated_and_restored": True}), flush=True)
     finally:
         cleanup_errors = []
-        for pk in created + bindings:
+        for pk in created + bindings + [f"SCOPE#USER#{subject}#JOBS"]:
             try:
                 remove_partition(store.table, pk)
             except Exception as exc:
