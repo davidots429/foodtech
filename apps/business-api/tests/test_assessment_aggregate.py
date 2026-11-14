@@ -194,6 +194,40 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status.json()["status"], "STALE")
         self.assertEqual(status.json()["changed_job_ids"], [self.first_id])
 
+    async def test_process_restatement_changes_lineage_and_refreshes_immutable_result(self):
+        original = (await self.client.post("/api/customer/assessment-aggregates", json=self._body(),
+                    headers={"X-CSRF-Token": "test-csrf"})).json()
+        first_pk = cooking._pk(self.subject, self.first_id)
+        path = f"/api/customer/assessment-aggregates/{original['group_id']}/results/{original['result_id']}"
+        self.store.items[(first_pk, "PROCESS#LATEST_RESTATED")] = {
+            "pk": first_pk, "sk": "PROCESS#LATEST_RESTATED", "version": 1,
+            "result_sk": "RESTATEMENT#RESULT#synthetic"}
+        stale = await self.client.get(path + "/status")
+        self.assertEqual(stale.json()["status"], "STALE")
+        self.assertEqual(stale.json()["changed_job_ids"], [self.first_id])
+        refreshed = await self.client.post(path + "/refresh", headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(refreshed.status_code, 201, refreshed.text)
+        updated = refreshed.json()
+        self.assertNotEqual(updated["result_id"], original["result_id"])
+        self.assertEqual(updated["mean_quality_score_percent"], original["mean_quality_score_percent"])
+        first_reference = next(ref for ref in updated["references"] if ref["job_id"] == self.first_id)
+        self.assertEqual(first_reference["process_restatement_version"], 1)
+        self.assertEqual((await self.client.get(path)).json()["result_id"], original["result_id"])
+
+    async def test_process_restatement_race_rejects_aggregate_write(self):
+        first_pk = cooking._pk(self.subject, self.first_id)
+        original_save = self.store.save_aggregate
+
+        def process_changes(*args):
+            self.store.items[(first_pk, "PROCESS#LATEST_RESTATED")] = {
+                "version": 1, "result_sk": "RESTATEMENT#RESULT#synthetic"}
+            return original_save(*args)
+
+        with patch.object(self.store, "save_aggregate", side_effect=process_changes):
+            response = await self.client.post("/api/customer/assessment-aggregates",
+                                              json=self._body(), headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(response.status_code, 409)
+
 
 class AggregateTransactionContractTests(unittest.TestCase):
     def test_dynamo_write_checks_all_selected_job_snapshots(self):
@@ -204,13 +238,28 @@ class AggregateTransactionContractTests(unittest.TestCase):
         meta = {"version": 3, "safety_version": 1, "status": "COMPLETED",
                 "safety_status": "PASSED", "evaluation_blocked": False}
         pointer = {"version": 1, "usable": True, "safety_version": 1}
-        store.save_aggregate("aggregate", [("job-1", meta, pointer), ("job-2", meta, None)],
+        store.save_aggregate("aggregate", [("job-1", meta, pointer, None), ("job-2", meta, None, None)],
                              {"result_id": "a" * 64, "sample_count": 1})
         operations = store.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(operations), 5)
-        self.assertEqual(sum("ConditionCheck" in operation for operation in operations), 4)
+        self.assertEqual(len(operations), 7)
+        self.assertEqual(sum("ConditionCheck" in operation for operation in operations), 6)
         self.assertEqual(sum("Put" in operation for operation in operations), 1)
-        self.assertIn("attribute_not_exists(pk)", operations[3]["ConditionCheck"]["ConditionExpression"])
+        self.assertIn("attribute_not_exists(pk)", operations[4]["ConditionCheck"]["ConditionExpression"])
+
+    def test_dynamo_write_checks_process_result_pointer_version_and_key(self):
+        store = object.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name="test-cooking")
+        store.client = MagicMock()
+        store.serializer = TypeSerializer()
+        meta = {"version": 3, "safety_version": 1, "status": "COMPLETED",
+                "safety_status": "PASSED", "evaluation_blocked": False}
+        process = {"version": 2, "result_sk": "RESTATEMENT#RESULT#synthetic"}
+        store.save_aggregate("aggregate", [("job-1", meta, None, process)],
+                             {"result_id": "a" * 64, "sample_count": 0})
+        check = store.client.transact_write_items.call_args.kwargs["TransactItems"][2]["ConditionCheck"]
+        self.assertEqual(check["ConditionExpression"], "#v = :v AND result_sk = :result")
+        self.assertEqual(check["ExpressionAttributeValues"][":v"]["N"], "2")
+        self.assertEqual(check["ExpressionAttributeValues"][":result"]["S"], process["result_sk"])
 
     def test_existing_result_does_not_hide_stale_input(self):
         class Canceled(Exception):
@@ -226,12 +275,12 @@ class AggregateTransactionContractTests(unittest.TestCase):
                 "safety_status": "PASSED", "evaluation_blocked": False}
         pointer = {"version": 1, "usable": True, "safety_version": 1}
         record = {"result_id": "a" * 64}
-        snapshots = [("job-1", meta, pointer)]
+        snapshots = [("job-1", meta, pointer, None)]
         with patch.object(store, "aggregate", return_value=record):
             store.client.transact_write_items.side_effect = Canceled(
-                ["None", "None", "ConditionalCheckFailed"])
+                ["None", "None", "None", "ConditionalCheckFailed"])
             self.assertEqual(store.save_aggregate("aggregate", snapshots, record), record)
             store.client.transact_write_items.side_effect = Canceled(
-                ["ConditionalCheckFailed", "None", "ConditionalCheckFailed"])
+                ["ConditionalCheckFailed", "None", "None", "ConditionalCheckFailed"])
             with self.assertRaises(Conflict):
                 store.save_aggregate("aggregate", snapshots, record)
