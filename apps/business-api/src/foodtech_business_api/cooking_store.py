@@ -47,6 +47,8 @@ class CookingStore(Protocol):
     def events(self, pk: str) -> list[dict]: ...
     def assessment(self, pk: str, version: int) -> dict | None: ...
     def comparison(self, pk: str, comparison_id: str) -> dict | None: ...
+    def comparison_dependencies(self, job_pk: str) -> list[dict]: ...
+    def current_comparison(self, candidate_pk: str, baseline_id: str) -> dict | None: ...
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
@@ -147,6 +149,16 @@ class MemoryCookingStore:
             item = self.items.get((pk, f"COMPARISON#{comparison_id}"))
             return item.copy() if item else None
 
+    def comparison_dependencies(self, job_pk: str) -> list[dict]:
+        with self.lock:
+            return [item.copy() for (pk, sk), item in sorted(self.items.items())
+                    if pk == job_pk and sk.startswith("COMPARISON#DEP#")]
+
+    def current_comparison(self, candidate_pk: str, baseline_id: str) -> dict | None:
+        with self.lock:
+            item = self.items.get((candidate_pk, f"COMPARISON#CURRENT#{baseline_id}"))
+            return item.copy() if item else None
+
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
@@ -168,6 +180,18 @@ class MemoryCookingStore:
                     raise Conflict
             if key not in self.items:
                 self.items[key] = {"sk": key[1], **record}
+                self.items[(candidate_pk, f"COMPARISON#CURRENT#{record['baseline_job_id']}")] = {
+                    "pk": candidate_pk, "sk": f"COMPARISON#CURRENT#{record['baseline_job_id']}",
+                    "comparison_id": record["comparison_id"], "updated_at": record["compared_at"]}
+            elif (candidate_pk, f"COMPARISON#CURRENT#{record['baseline_job_id']}") not in self.items:
+                self.items[(candidate_pk, f"COMPARISON#CURRENT#{record['baseline_job_id']}")] = {
+                    "pk": candidate_pk, "sk": f"COMPARISON#CURRENT#{record['baseline_job_id']}",
+                    "comparison_id": record["comparison_id"], "updated_at": self.items[key]["compared_at"]}
+            dependency_sk = f"COMPARISON#DEP#{record['candidate_job_id']}#{record['baseline_job_id']}"
+            for job_pk in (baseline_pk, candidate_pk):
+                self.items[(job_pk, dependency_sk)] = {
+                    "pk": job_pk, "sk": dependency_sk, "baseline_pk": baseline_pk,
+                    "candidate_pk": candidate_pk}
             return self.items[key].copy()
 
     def aggregate(self, pk: str, result_id: str) -> dict | None:
@@ -373,6 +397,26 @@ class DynamoCookingStore:
                                    ConsistentRead=True).get("Item")
         return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
 
+    def comparison_dependencies(self, job_pk: str) -> list[dict]:
+        items = []
+        last_key = None
+        while True:
+            args = {"KeyConditionExpression": Key("pk").eq(job_pk) &
+                    Key("sk").begins_with("COMPARISON#DEP#"), "ConsistentRead": True}
+            if last_key:
+                args["ExclusiveStartKey"] = last_key
+            page = self.table.query(**args)
+            items.extend(_api_numbers(item) for item in page.get("Items", []))
+            last_key = page.get("LastEvaluatedKey")
+            if not last_key:
+                return items
+
+    def current_comparison(self, candidate_pk: str, baseline_id: str) -> dict | None:
+        item = self.table.get_item(Key={"pk": candidate_pk,
+                                        "sk": f"COMPARISON#CURRENT#{baseline_id}"},
+                                   ConsistentRead=True).get("Item")
+        return _api_numbers(item)
+
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
@@ -395,6 +439,17 @@ class DynamoCookingStore:
                                     "ExpressionAttributeValues": self._item({":v": int(pointer["version"]),
                                                                               ":true": True, ":safety": int(meta["safety_version"])})}},
             ])
+        dependency_sk = f"COMPARISON#DEP#{record['candidate_job_id']}#{record['baseline_job_id']}"
+        for job_pk in (baseline_pk, candidate_pk):
+            operations.append({"Put": {"TableName": self.table.name,
+                                       "Item": self._item({"pk": job_pk, "sk": dependency_sk,
+                                                           "baseline_pk": baseline_pk,
+                                                           "candidate_pk": candidate_pk})}})
+        operations.append({"Put": {"TableName": self.table.name,
+                                   "Item": self._item({"pk": candidate_pk,
+                                                       "sk": f"COMPARISON#CURRENT#{record['baseline_job_id']}",
+                                                       "comparison_id": record["comparison_id"],
+                                                       "updated_at": record["compared_at"]})}})
         operations.append({"Put": {"TableName": self.table.name,
                                    "Item": self._item({"pk": candidate_pk,
                                                        "sk": f"COMPARISON#{record['comparison_id']}", **record}),
@@ -404,13 +459,44 @@ class DynamoCookingStore:
         except self.client.exceptions.TransactionCanceledException as exc:
             if _only_result_already_exists(exc, len(operations)):
                 existing = self.comparison(candidate_pk, record["comparison_id"])
-                if existing:
+                if existing and existing.get("baseline_job_id") == record["baseline_job_id"] and \
+                        existing.get("candidate_job_id") == record["candidate_job_id"]:
+                    self._repair_comparison_index(candidate_pk, operations[:-2], existing)
                     return existing
             if any(reason.get("Code") == "ConditionalCheckFailed"
                    for reason in exc.response.get("CancellationReasons", [])):
                 raise Conflict from exc
             raise
         return {"sk": f"COMPARISON#{record['comparison_id']}", **record}
+
+    def _repair_comparison_index(self, candidate_pk: str, job_operations: list[dict],
+                                 existing: dict) -> None:
+        operations = [*job_operations,
+                      {"ConditionCheck": {
+                          "TableName": self.table.name,
+                          "Key": self._item({"pk": candidate_pk,
+                                              "sk": f"COMPARISON#{existing['comparison_id']}"}),
+                          "ConditionExpression": "#id = :id",
+                          "ExpressionAttributeNames": {"#id": "comparison_id"},
+                          "ExpressionAttributeValues": self._item({":id": existing["comparison_id"]}),
+                      }},
+                      {"Update": {
+                          "TableName": self.table.name,
+                          "Key": self._item({"pk": candidate_pk,
+                                              "sk": f"COMPARISON#CURRENT#{existing['baseline_job_id']}"}),
+                          "UpdateExpression": "SET #id = if_not_exists(#id, :id), "
+                                              "#updated = if_not_exists(#updated, :updated)",
+                          "ExpressionAttributeNames": {"#id": "comparison_id", "#updated": "updated_at"},
+                          "ExpressionAttributeValues": self._item({":id": existing["comparison_id"],
+                                                                     ":updated": existing["compared_at"]}),
+                      }}]
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
+                raise Conflict from exc
+            raise
 
     def aggregate(self, pk: str, result_id: str) -> dict | None:
         item = self.table.get_item(Key={"pk": pk, "sk": f"RESULT#{result_id}"},

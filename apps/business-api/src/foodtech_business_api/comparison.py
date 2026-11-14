@@ -3,12 +3,13 @@
 import hashlib
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
-from .cooking import SCORE_ITEMS, _pk, _read, _store_call
+from .cooking import SCORE_ITEMS, _context, _pk, _read, _store_call
 from .cooking_store import Conflict
 
 router = APIRouter(prefix="/api/customer/cooking-jobs", tags=["assessment-comparison"])
@@ -27,13 +28,18 @@ def _usable(meta: dict, pointer: dict | None) -> bool:
 
 @router.post("/{candidate_job_id}/comparisons", status_code=201)
 async def compare(candidate_job_id: UUID, request: Request, body: ComparisonRequest) -> dict:
-    candidate_id = str(candidate_job_id)
-    baseline_id = str(body.baseline_job_id)
+    session, store = await _context(request, write=True)
+    return await _calculate(session, store, str(candidate_job_id), str(body.baseline_job_id))
+
+
+async def _calculate(session, store, candidate_id: str, baseline_id: str) -> dict:
     if baseline_id == candidate_id:
         raise HTTPException(422, "서로 다른 두 조리작업을 선택해야 합니다.")
-    _, store, candidate_pk, candidate_meta, candidate_pointer = await _read(
-        request, candidate_id, write=True)
-    _, _, baseline_pk, baseline_meta, baseline_pointer = await _read(request, baseline_id)
+    candidate_pk, baseline_pk = _pk(session.subject, candidate_id), _pk(session.subject, baseline_id)
+    candidate_meta, candidate_pointer = await _store_call(store, store.read, candidate_pk)
+    baseline_meta, baseline_pointer = await _store_call(store, store.read, baseline_pk)
+    if not candidate_meta or not baseline_meta:
+        raise HTTPException(404, "조리작업을 찾을 수 없습니다.")
     if not _usable(candidate_meta, candidate_pointer) or not _usable(baseline_meta, baseline_pointer):
         raise HTTPException(409, "두 작업 모두 현재 사용 가능한 완료 평가와 안전 통과 상태가 필요합니다.")
     assert candidate_pointer is not None and baseline_pointer is not None
@@ -91,9 +97,62 @@ async def compare(candidate_job_id: UUID, request: Request, body: ComparisonRequ
         raise HTTPException(409, "평가 또는 안전 상태가 변경되었습니다. 다시 비교해 주세요.") from exc
 
 
+async def refresh_dependents(store, job_pk: str) -> dict[str, int]:
+    prefix = "SCOPE#USER#"
+    if not job_pk.startswith(prefix) or "#JOB#" not in job_pk:
+        raise ValueError("invalid comparison dependency job scope")
+    subject, job_id = job_pk[len(prefix):].rsplit("#JOB#", 1)
+    if not subject or not job_id:
+        raise ValueError("invalid comparison dependency job scope")
+    refreshed = blocked = 0
+    for dependency in await _store_call(store, store.comparison_dependencies, job_pk):
+        baseline_pk, candidate_pk = dependency["baseline_pk"], dependency["candidate_pk"]
+        if job_pk not in (baseline_pk, candidate_pk) or \
+                not baseline_pk.startswith(f"SCOPE#USER#{subject}#JOB#") or \
+                not candidate_pk.startswith(f"SCOPE#USER#{subject}#JOB#"):
+            raise ValueError("invalid comparison dependency scope")
+        baseline_id = baseline_pk.rsplit("#JOB#", 1)[1]
+        candidate_id = candidate_pk.rsplit("#JOB#", 1)[1]
+        try:
+            if str(UUID(baseline_id)) != baseline_id or str(UUID(candidate_id)) != candidate_id:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("invalid comparison dependency job ID") from exc
+        if dependency["sk"] != f"COMPARISON#DEP#{candidate_id}#{baseline_id}":
+            raise ValueError("invalid comparison dependency key")
+        baseline_meta, baseline_pointer = await _store_call(store, store.read, baseline_pk)
+        candidate_meta, candidate_pointer = await _store_call(store, store.read, candidate_pk)
+        if not baseline_meta or not candidate_meta or \
+                not _usable(baseline_meta, baseline_pointer) or \
+                not _usable(candidate_meta, candidate_pointer):
+            blocked += 1
+            continue
+        await _calculate(SimpleNamespace(subject=subject), store, candidate_id, baseline_id)
+        refreshed += 1
+    return {"refreshed_group_count": refreshed, "blocked_group_count": blocked}
+
+
 @router.get("/{candidate_job_id}/comparisons/{comparison_id}")
 async def get_comparison(candidate_job_id: UUID, comparison_id: str, request: Request) -> dict:
     _, _, record = await _record(candidate_job_id, comparison_id, request)
+    return record
+
+
+@router.get("/{candidate_job_id}/comparisons/from/{baseline_job_id}/current")
+async def get_current_comparison(candidate_job_id: UUID, baseline_job_id: UUID,
+                                 request: Request) -> dict:
+    _, store, candidate_pk, _, _ = await _read(request, str(candidate_job_id))
+    pointer = await _store_call(store, store.current_comparison, candidate_pk, str(baseline_job_id))
+    if not pointer:
+        raise HTTPException(404, "현재 비교 결과를 찾을 수 없습니다.")
+    comparison_id = pointer.get("comparison_id", "")
+    if len(comparison_id) != 64 or any(char not in "0123456789abcdef" for char in comparison_id):
+        raise HTTPException(404, "현재 비교 결과를 찾을 수 없습니다.")
+    record = await _store_call(store, store.comparison, candidate_pk, comparison_id)
+    if not record or record.get("baseline_job_id") != str(baseline_job_id) or \
+            record.get("candidate_job_id") != str(candidate_job_id) or \
+            record.get("comparison_id") != comparison_id:
+        raise HTTPException(404, "현재 비교 결과를 찾을 수 없습니다.")
     return record
 
 
@@ -126,9 +185,9 @@ async def comparison_status(candidate_job_id: UUID, comparison_id: str, request:
 
 @router.post("/{candidate_job_id}/comparisons/{comparison_id}/refresh", status_code=201)
 async def refresh_comparison(candidate_job_id: UUID, comparison_id: str, request: Request) -> dict:
-    _, _, record = await _record(candidate_job_id, comparison_id, request, write=True)
+    session, store, record = await _record(candidate_job_id, comparison_id, request, write=True)
     try:
         baseline_id = UUID(record["baseline_job_id"])
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(409, "저장된 비교 조건을 다시 사용할 수 없습니다.") from exc
-    return await compare(candidate_job_id, request, ComparisonRequest(baseline_job_id=baseline_id))
+    return await _calculate(session, store, str(candidate_job_id), str(baseline_id))

@@ -140,7 +140,21 @@ async def verify() -> None:
                 comparison = await post(client, comparison_path,
                                         {"baseline_job_id": baseline["job_id"]})
                 comparison_record = comparison_path + "/" + comparison["comparison_id"]
+                comparison_current = (comparison_path + f"/from/{baseline['job_id']}/current")
                 assert (await get(client, comparison_record + "/status"))["status"] == "CURRENT"
+                assert (await get(client, comparison_current))["comparison_id"] == comparison["comparison_id"]
+                comparison_dependency = f"COMPARISON#DEP#{candidate['job_id']}#{baseline['job_id']}"
+                for selected in (baseline, candidate):
+                    store.table.delete_item(Key={"pk": cooking._pk(subject, selected["job_id"]),
+                                                 "sk": comparison_dependency})
+                store.table.delete_item(Key={"pk": cooking._pk(subject, candidate["job_id"]),
+                                             "sk": f"COMPARISON#CURRENT#{baseline['job_id']}"})
+                assert (await client.get(comparison_current)).status_code == 404
+                repaired_comparison = await post(client, comparison_record + "/refresh")
+                assert repaired_comparison["comparison_id"] == comparison["comparison_id"]
+                assert (await get(client, comparison_current))["comparison_id"] == comparison["comparison_id"]
+                for selected in (baseline, candidate):
+                    assert store.comparison_dependencies(cooking._pk(subject, selected["job_id"]))
 
                 period = datetime.now(timezone.utc)
                 aggregate = await post(client, "/api/customer/assessment-aggregates", {
@@ -218,9 +232,13 @@ async def verify() -> None:
                 auto_aggregate = await get(client, aggregate_current)
                 assert auto_aggregate["result_id"] != restated_aggregate["result_id"]
                 assert auto_aggregate["mean_quality_score_percent"] == "60.00"
+                auto_comparison = await get(client, comparison_current)
+                assert auto_comparison["comparison_id"] != comparison["comparison_id"]
+                assert auto_comparison["candidate_assessment_version"] == 2
                 new_comparison = await post(client, comparison_record + "/refresh")
                 new_aggregate = await post(client, aggregate_record + "/refresh")
                 assert new_comparison["comparison_id"] != comparison["comparison_id"]
+                assert new_comparison["comparison_id"] == auto_comparison["comparison_id"]
                 assert new_aggregate["result_id"] != aggregate["result_id"]
                 assert (await get(client, comparison_record))["score_total_delta"] == comparison["score_total_delta"]
                 assert (await get(client, aggregate_record))["mean_quality_score_percent"] == \
@@ -277,6 +295,11 @@ async def verify() -> None:
                     "reason": "SYNTHETIC safety review",
                 }, expected=200)
                 assert suspected["safety_status"] == "SUSPECTED"
+                latest_comparison = await get(client, comparison_current)
+                assert (await get(client, comparison_path + "/" + latest_comparison["comparison_id"] +
+                                  "/status"))["status"] == "STALE"
+                assert (await post(client, candidate_path + "/refresh-comparisons", expected=200)) \
+                    ["blocked_group_count"] == 1
                 blocked_aggregate = await get(client, aggregate_current)
                 assert blocked_aggregate["sample_count"] == 0
                 assert blocked_aggregate["excluded_count"] == 2
@@ -286,6 +309,7 @@ async def verify() -> None:
 
                 summary = {"account": ACCOUNT, "region": REGION, "table": TABLE,
                            "comparison_stale_then_new_version": True,
+                           "comparison_auto_refreshed_and_legacy_index_backfilled": True,
                            "aggregate_stale_then_new_version": True,
                            "aggregate_auto_refreshed_and_current_lookup": True,
                            "legacy_aggregate_index_backfilled": True,

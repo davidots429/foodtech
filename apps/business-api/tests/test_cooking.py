@@ -230,6 +230,52 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
                          ["refreshed_group_count"], 1)
         self.assertNotEqual((await self.client.get(current_path)).json()["result_id"], created["result_id"])
 
+    async def test_assessment_change_refreshes_comparison_and_safety_blocks_new_comparison(self):
+        baseline = await self.completed_with_safety()
+        baseline_path = f"/api/customer/cooking-jobs/{baseline['job_id']}"
+        baseline_body = self.assessment_body(baseline)
+        baseline_body["scores"] = {name: 3 for name in cooking.SCORE_ITEMS}
+        self.assertEqual((await self.client.post(baseline_path + "/assessments", headers=CSRF,
+                          json=baseline_body)).status_code, 201)
+        candidate = await self.completed_with_safety()
+        candidate_path = f"/api/customer/cooking-jobs/{candidate['job_id']}"
+        self.assertEqual((await self.client.post(candidate_path + "/assessments", headers=CSRF,
+                          json=self.assessment_body(candidate))).status_code, 201)
+        compare_path = candidate_path + "/comparisons"
+        created = await self.client.post(compare_path, headers=CSRF,
+                                         json={"baseline_job_id": baseline["job_id"]})
+        self.assertEqual(created.status_code, 201, created.text)
+        original = created.json()
+        self.assertEqual(original["score_total_delta"], 7)
+        current_path = compare_path + f"/from/{baseline['job_id']}/current"
+
+        baseline = (await self.client.get(baseline_path)).json()["job"]
+        revised_body = self.assessment_body(baseline, current=1, kind="REVISION", reason="합성 재평가")
+        revised = await self.client.post(baseline_path + "/assessments", headers=CSRF,
+                                         json=revised_body)
+        self.assertEqual(revised.status_code, 201, revised.text)
+        current = (await self.client.get(current_path)).json()
+        self.assertNotEqual(current["comparison_id"], original["comparison_id"])
+        self.assertEqual(current["score_total_delta"], 0)
+        self.assertEqual((await self.client.get(compare_path + "/" + original["comparison_id"]))
+                         .json()["score_total_delta"], 7)
+
+        candidate = (await self.client.get(candidate_path)).json()["job"]
+        suspected = await self.client.post(candidate_path + "/safety/events", headers=CSRF,
+                                           json={"event": "SUSPECTED", "expected_version": candidate["version"],
+                                                 "reason": "합성 안전 의심"})
+        self.assertEqual(suspected.status_code, 200, suspected.text)
+        self.assertEqual((await self.client.get(current_path)).json()["comparison_id"],
+                         current["comparison_id"])
+        self.assertEqual((await self.client.get(compare_path + "/" + current["comparison_id"] + "/status"))
+                         .json()["status"], "STALE")
+        retry = await self.client.post(candidate_path + "/refresh-comparisons", headers=CSRF)
+        self.assertEqual(retry.json(), {"refreshed_group_count": 0, "blocked_group_count": 1})
+        self.assertEqual((await self.client.post(candidate_path + "/refresh-comparisons")).status_code, 403)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.post(candidate_path + "/refresh-comparisons",
+                                                 headers=CSRF)).status_code, 404)
+
     async def test_safety_failure_and_separate_recook(self):
         job = await self.create()
         path = f"/api/customer/cooking-jobs/{job['job_id']}"
