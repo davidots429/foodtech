@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from .cooking import SCORE_ITEMS, _context, _pk, _read, _store_call
@@ -136,6 +136,20 @@ async def refresh_dependents(store, job_pk: str) -> dict[str, int]:
 async def get_comparison(candidate_job_id: UUID, comparison_id: str, request: Request) -> dict:
     _, _, record = await _record(candidate_job_id, comparison_id, request)
     return record
+
+
+@router.get("/{candidate_job_id}/comparisons")
+async def list_current_comparisons(candidate_job_id: UUID, request: Request,
+                                   limit: int = Query(20, ge=1, le=50),
+                                   cursor: str | None = None) -> dict:
+    if cursor:
+        try:
+            if str(UUID(cursor)) != cursor:
+                raise ValueError
+        except ValueError as exc:
+            raise HTTPException(400, "비교 목록 커서가 올바르지 않습니다.") from exc
+    _, store, candidate_pk, _, _ = await _read(request, str(candidate_job_id))
+    return await _store_call(store, store.list_current_comparisons, candidate_pk, limit, cursor)
 
 
 @router.get("/{candidate_job_id}/comparisons/from/{baseline_job_id}/current")

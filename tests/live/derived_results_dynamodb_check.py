@@ -121,7 +121,7 @@ async def verify() -> None:
     store = DynamoCookingStore(TABLE)
     subject = "synthetic-derived-" + uuid.uuid4().hex
     current_subject = subject
-    pks: list[str] = []
+    pks: list[str] = [f"SCOPE#USER#{subject}#JOBS"]
     summary = None
 
     async def session(_request, surface):
@@ -143,6 +143,11 @@ async def verify() -> None:
                 comparison_current = (comparison_path + f"/from/{baseline['job_id']}/current")
                 assert (await get(client, comparison_record + "/status"))["status"] == "CURRENT"
                 assert (await get(client, comparison_current))["comparison_id"] == comparison["comparison_id"]
+                comparison_list = await get(client, comparison_path + "?limit=1")
+                assert comparison_list["items"] == [{"baseline_job_id": baseline["job_id"],
+                                                     "comparison_id": comparison["comparison_id"],
+                                                     "updated_at": comparison["compared_at"]}]
+                assert comparison_list["next_cursor"] is None
                 comparison_dependency = f"COMPARISON#DEP#{candidate['job_id']}#{baseline['job_id']}"
                 for selected in (baseline, candidate):
                     store.table.delete_item(Key={"pk": cooking._pk(subject, selected["job_id"]),
@@ -235,6 +240,8 @@ async def verify() -> None:
                 auto_comparison = await get(client, comparison_current)
                 assert auto_comparison["comparison_id"] != comparison["comparison_id"]
                 assert auto_comparison["candidate_assessment_version"] == 2
+                assert (await get(client, comparison_path))["items"][0]["comparison_id"] == \
+                    auto_comparison["comparison_id"]
                 new_comparison = await post(client, comparison_record + "/refresh")
                 new_aggregate = await post(client, aggregate_record + "/refresh")
                 assert new_comparison["comparison_id"] != comparison["comparison_id"]
