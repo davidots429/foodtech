@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 
 import boto3
+from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.tonkatsu_process import process_status
@@ -35,6 +36,8 @@ class DynamoProcessBridge:
             return "UNBOUND"
         job_pk = binding["job_pk"]
         event_id = assessment["ingestion_event_id"]
+        if "LATE_AFTER_GAP" in assessment.get("finding_codes", []):
+            return self._request_restatement(job_pk, assessment)
         event_key = {"pk": job_pk, "sk": f"EVENT#PROCESS#{event_id}"}
         if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
             return "REPLAYED"
@@ -101,3 +104,30 @@ class DynamoProcessBridge:
                     raise
                 # Another writer changed the job version; recalculate from the new state.
         raise RuntimeError("process assessment could not commit after concurrent job updates")
+
+    def _request_restatement(self, job_pk: str, assessment: dict) -> str:
+        normalized = assessment["normalized"]
+        old = self.table.get_item(Key={"pk": job_pk, "sk": "META"},
+                                  ConsistentRead=True).get("Item")
+        if not old or old.get("source_binding") != {
+                "source_id": normalized["source_id"], "device_id": normalized["device_id"],
+                "batch_id": normalized["batch_id"]}:
+            return "BINDING_MISMATCH"
+        event_id = assessment["ingestion_event_id"]
+        key = {"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{event_id}"}
+        requested_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        request = {**key, "status": "PENDING", "reason": "LATE_AFTER_GAP",
+                   "ingestion_event_id": event_id,
+                   "source_assessment_pk": assessment["pk"],
+                   "source_assessment_sk": assessment.get("sk", "ASSESSMENT#v1"),
+                   "source_stream_pk": assessment.get("source_pk"),
+                   "job_id": old["job_id"], "job_version_at_detection": int(old["version"]),
+                   "process_status_at_detection": old.get("process_assessment_status"),
+                   "sequence_number": int(normalized["sequence_number"]),
+                   "event_time": normalized["event_time"], "requested_at": requested_at,
+                   "provenance": "SYNTHETIC"}
+        try:
+            self.table.put_item(Item=request, ConditionExpression=Attr("pk").not_exists())
+            return "RESTATEMENT_PENDING"
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            return "RESTATEMENT_ALREADY_PENDING"
