@@ -84,6 +84,23 @@ class DynamoProcessRestatement:
     def _item(self, value: dict) -> dict:
         return {key: self.serializer.serialize(item) for key, item in value.items()}
 
+    def has_new_source(self, job_pk: str, assessment: dict) -> bool:
+        pointer = self.cooking.get_item(
+            Key={"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"}, ConsistentRead=True,
+        ).get("Item")
+        if not pointer:
+            return False
+        result_sk = pointer.get("result_sk", "")
+        if not result_sk.startswith("RESTATEMENT#RESULT#"):
+            raise ValueError("invalid latest restatement pointer")
+        result = self.cooking.get_item(
+            Key={"pk": job_pk, "sk": result_sk}, ConsistentRead=True,
+        ).get("Item")
+        if not result or result.get("status") != "DERIVED_ONLY":
+            raise RuntimeError("latest restatement result is not ready")
+        source_key = f"{assessment['pk']}/{assessment.get('sk', 'ASSESSMENT#v1')}"
+        return source_key not in result["source_assessment_keys"]
+
     def _query(self, job_pk: str, prefix: str) -> list[dict]:
         items = []
         last = None

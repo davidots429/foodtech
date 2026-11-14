@@ -47,7 +47,8 @@ def main() -> None:
     cooking, data = resource.Table(COOKING_TABLE), resource.Table(DATA_TABLE)
     run_id = uuid.uuid4().hex[:12]
     job_pk = f"SCOPE#USER#synthetic-restatement-{run_id}#JOB#test"
-    event_pks = [f"EVENT#synthetic-restatement-{run_id}-{name}" for name in ("first", "late", "third")]
+    event_pks = [f"EVENT#synthetic-restatement-{run_id}-{name}"
+                 for name in ("first", "late", "third", "followup")]
     binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
                "batch_id": f"batch-restatement-{run_id}"}
     stream_pk = stream_binding_key(**binding)
@@ -97,14 +98,39 @@ def main() -> None:
                                   ConsistentRead=True)["Item"]
         assert latest["result_sk"] == result["sk"] and latest["version"] == 1
         assert DynamoCookingStore(COOKING_TABLE).latest_process_result(job_pk)["sk"] == result["sk"]
+        followup_id = f"synthetic-restatement-{run_id}-followup"
+        followup = {"pk": f"EVENT#{followup_id}", "sk": "ASSESSMENT#v1",
+                    "source_pk": stream_pk, "ingestion_event_id": followup_id,
+                    "dedup_status": "UNIQUE", "quality_status": "VALID", "finding_codes": [],
+                    "normalized": {**binding, "sequence_number": 4,
+                                   "event_time": "2026-11-14T00:00:15Z",
+                                   "device_status": "RUNNING",
+                                   "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}}
+        data.put_item(Item={"pk": stream_pk, "sk": f"RAW#{followup_id}",
+                            "ingestion_event_id": followup_id})
+        data.put_item(Item=followup)
+        assert worker._publish_process(followup) == "RESTATEMENT_DERIVED"
+        followup_request = cooking.get_item(
+            Key={"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{followup_id}"},
+            ConsistentRead=True)["Item"]
+        assert followup_request["reason"] == "FOLLOWUP_SAMPLE"
+        next_result = cooking.get_item(Key={"pk": job_pk, "sk": followup_request["result_sk"]},
+                                       ConsistentRead=True)["Item"]
+        latest = cooking.get_item(Key={"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"},
+                                  ConsistentRead=True)["Item"]
+        assert latest["version"] == 2 and latest["result_sk"] == next_result["sk"]
+        assert len(next_result["included_ingestion_event_ids"]) == 4
+        assert cooking.get_item(Key={"pk": job_pk, "sk": result["sk"]},
+                                ConsistentRead=True)["Item"] == result
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"}, ConsistentRead=True)["Item"] == job
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
         assert processor.process(job_pk, f"synthetic-restatement-{run_id}-late") == "ALREADY_COMPLETED"
         print(json.dumps({"account": ACCOUNT, "region": REGION, "result": "DERIVED_ONLY",
                           "derived_status": result["process_assessment_status"],
-                          "included_samples": len(result["included_ingestion_event_ids"]),
+                          "included_samples": len(next_result["included_ingestion_event_ids"]),
+                          "latest_version": int(latest["version"]),
                           "job_unchanged": True, "replay": "ALREADY_COMPLETED",
-                          "cleanup_partitions": 5}))
+                          "cleanup_partitions": 7}))
     finally:
         clean_partition(cooking, job_pk)
         clean_partition(cooking, stream_pk)
