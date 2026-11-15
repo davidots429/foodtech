@@ -55,6 +55,11 @@ def _pk(subject: str, job_id: str) -> str:
     return f"SCOPE#USER#{subject}#JOB#{job_id}"
 
 
+def _validation_digest(context: dict) -> str:
+    return hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def _conflict() -> HTTPException:
     return HTTPException(409, "작업 상태가 변경되었습니다. 다시 조회한 뒤 제출해 주세요.")
 
@@ -353,8 +358,7 @@ async def record_jeyuk_validation_context(job_id: str, request: Request,
         "process_condition_version": body.process_condition_version,
     }
     # Batch and job IDs identify observations, not the reusable validation combination.
-    digest = hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False,
-                                       separators=(",", ":")).encode("utf-8")).hexdigest()
+    digest = _validation_digest(context)
     version = int(old.get("validation_context_version", 0)) + 1
     now = _now()
     meta = {**old, "validation_context": context, "validation_context_digest": digest,
@@ -368,6 +372,62 @@ async def record_jeyuk_validation_context(job_id: str, request: Request,
              "actor_subject": session.subject, "occurred_at": now}
     await _commit(store, pk, old, meta, event=event)
     return meta
+
+
+@router.get("/{job_id}/validation-evidence")
+async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
+    _, _, _, job, _ = await _read(request, job_id)
+    if job["menu"] != "JEYUK":
+        raise HTTPException(422, "제육볶음 작업에만 재검증 증거를 조회할 수 있습니다.")
+    binding = job.get("source_binding")
+    process = job.get("process_assessment") or {}
+    context = job.get("validation_context") or {}
+    expected_pk = f"JEYUK#{binding['batch_id']}" if binding else None
+    second = process.get("second")
+    process_linked = (type(second) is int and second > 0 and
+                      process.get("source_assessment_pk") == expected_pk and
+                      process.get("source_assessment_sk") == f"ASSESSMENT#{second:06d}" and
+                      process.get("rule_version") == JEYUK_RULE_VERSION)
+    context_matches_job = (bool(binding) and context.get("recipe_version") == job["recipe_version"] and
+                           context.get("equipment_profile") == job["equipment_profile"] and
+                           context.get("equipment_device_id") == binding["device_id"] and
+                           context.get("source_id") == binding["source_id"] and
+                           context.get("actual_load_kg") ==
+                           str(Decimal(job["actual_load_kg"]).quantize(Decimal("0.01"))) and
+                           job.get("validation_context_digest") == _validation_digest(context))
+    checks = {
+        "context_recorded": (job.get("validation_context_status") == "DECLARED_UNVERIFIED" and
+                             bool(job.get("validation_context_digest"))),
+        "context_matches_job": context_matches_job,
+        "job_completed": job["status"] == "COMPLETED",
+        "source_bound": bool(binding),
+        "process_reference_linked": process_linked,
+        "automatic_safety_passed": (job.get("auto_safety_status") == "PASSED" and
+                                     int(job.get("mixture_hold_seconds", 0)) >= 60 and
+                                     job.get("safety_passed_at_second") is not None),
+        "manual_discharge_passed": (job.get("discharge_check_status") == "PASSED" and
+                                    int(job.get("discharge_check_version", 0)) > 0 and
+                                    len(job.get("discharge_check") or []) == 3),
+        "current_safety_passed": job.get("safety_status") == "PASSED" and not job.get("evaluation_blocked"),
+    }
+    return {
+        "job_id": job_id,
+        "status": "LINKED_UNVERIFIED" if all(checks.values()) else "INCOMPLETE",
+        "checks": checks,
+        "missing_checks": [name for name, passed in checks.items() if not passed],
+        "context_digest": job.get("validation_context_digest"),
+        "context_version": int(job.get("validation_context_version", 0)),
+        "job_version": int(job["version"]), "safety_version": int(job["safety_version"]),
+        "discharge_check_version": int(job.get("discharge_check_version", 0)),
+        "process_reference": ({"pk": process["source_assessment_pk"],
+                               "sk": process["source_assessment_sk"], "second": second}
+                              if process_linked else None),
+        "activation_allowed": False,
+        "remaining_verification": ["SOURCE_RECORD_CONTENT_AND_COMPLETENESS",
+                                   "SENSOR_AND_CALIBRATION_IDENTITY",
+                                   "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",
+                                   "FULL_PROCESS_CONDITION_MATCH_AND_GAP_CHECK"],
+    }
 
 
 @router.get("/{job_id}")

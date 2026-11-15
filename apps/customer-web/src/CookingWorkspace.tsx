@@ -37,6 +37,26 @@ type ComparisonHistoryItem = {
   score_total_delta: number; improvement_status: "OBSERVED" | "NOT_OBSERVED";
 };
 type ComparisonHistoryPage = { items: ComparisonHistoryItem[]; next_cursor: string | null };
+type ValidationEvidence = {
+  status: "INCOMPLETE" | "LINKED_UNVERIFIED";
+  checks: Record<string, boolean>;
+  missing_checks: string[];
+  context_digest: string | null;
+  context_version: number;
+  job_version: number;
+  safety_version: number;
+  discharge_check_version: number;
+  process_reference: { pk: string; sk: string; second: number } | null;
+  activation_allowed: false;
+  remaining_verification: string[];
+};
+const validationCheckLabels: Record<string, string> = {
+  context_recorded: "재검증 조합 기록", context_matches_job: "조합과 현재 작업 정보 일치",
+  job_completed: "조리 완료", source_bound: "수집 배치 연결",
+  process_reference_linked: "현재 자동 공정판정의 수집 근거 연결",
+  automatic_safety_passed: "혼합물 75°C·60초 자동 판정",
+  manual_discharge_passed: "배출 표본 수동 판정", current_safety_passed: "현재 안전 상태",
+};
 
 const jobLabels: Record<CookingJob["status"], string> = {
   PENDING: "대기", READY: "준비 완료", RUNNING: "조리 중", PAUSED: "일시 정지",
@@ -173,6 +193,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const [liftedAt, setLiftedAt] = useState(() => localDateTime(new Date()));
   const [batchId, setBatchId] = useState("batch-a-001");
   const [validationForm, setValidationForm] = useState(emptyValidationFields);
+  const [validationEvidence, setValidationEvidence] = useState<ValidationEvidence | null>(null);
   const [loadingJob, setLoadingJob] = useState(false);
   const [busy, setBusy] = useState(false);
   const activeRequest = useRef(false);
@@ -225,6 +246,7 @@ export function CookingWorkspace({ csrf }: Props) {
         api<JobSnapshot>(path), api<Assessment[]>(path + "/assessments"), api<JobEvent[]>(path + "/events"),
       ]);
       setJob(snapshot.job);
+      setValidationEvidence(null);
       setValidationForm(Object.fromEntries(validationFields.map(([key]) =>
         [key, snapshot.job.validation_context?.[key] ?? ""])) as Record<ValidationField, string>);
       setCurrent(snapshot.current_assessment);
@@ -448,6 +470,16 @@ export function CookingWorkspace({ csrf }: Props) {
     await action(() => api<CookingJob>(jobPath(job.job_id) + "/validation-context", csrf, {
       schema_version: "jeyuk-validation-context-v1", expected_version: job.version, ...validationForm,
     }), "재검증 조합을 기록했습니다. 실제 유효성 검증은 아직 수행되지 않았습니다.");
+  }
+
+  async function inspectValidationEvidence() {
+    if (!job || job.menu !== "JEYUK") return;
+    setError("");
+    try {
+      setValidationEvidence(await api<ValidationEvidence>(jobPath(job.job_id) + "/validation-evidence"));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "재검증 증거를 조회하지 못했습니다.");
+    }
   }
 
   async function recordSafety(event: "SUSPECTED" | "UNDER_REVIEW" | "CLEARED" | "FAILED") {
@@ -719,6 +751,16 @@ export function CookingWorkspace({ csrf }: Props) {
               </label>)}</div>
               <button type="button" onClick={recordValidationContext}
                 disabled={busy || loadingJob || !job.source_binding || !["PENDING", "READY"].includes(job.status)}>조합 기록{job.validation_context_version ? " 수정" : ""}</button>
+              <button type="button" className="secondary" onClick={inspectValidationEvidence}
+                disabled={busy || loadingJob}>현재 증거 연결 확인</button>
+              {validationEvidence && <div className="small" aria-live="polite">
+                <p>연결 상태: {validationEvidence.status === "LINKED_UNVERIFIED" ? "작업 기록끼리 연결됨 · 원천 검증 전" : "필요한 작업 기록이 부족함"} · 작업 버전 {validationEvidence.job_version}</p>
+                <ul>{Object.entries(validationEvidence.checks).map(([key, passed]) => <li key={key}>
+                  {validationCheckLabels[key] ?? key}: {passed ? "확인" : "미확인"}
+                </li>)}</ul>
+                {validationEvidence.process_reference && <p>자동 판정 참조: <code>{validationEvidence.process_reference.pk} / {validationEvidence.process_reference.sk}</code></p>}
+                <p>원천 기록 내용·센서와 교정 ID·원재료 추적·전체 공정조건은 아직 대조되지 않았습니다. 이 조회로 72시간 유효성이 시작되지 않습니다.</p>
+              </div>}
             </div>}
             {job.source_job_id && <p className="small">원 작업 ID: <code>{job.source_job_id}</code> · 재조리 사유: {job.recook_reason}{" "}
               <button type="button" className="text-button" onClick={() => void loadJob(job.source_job_id!)} disabled={busy || loadingJob}>원 작업 열기</button></p>}
