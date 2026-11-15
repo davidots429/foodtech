@@ -18,6 +18,13 @@ type AggregateGroup = {
   period_start: string; period_end: string; job_count: number;
 };
 type AggregateGroupPage = { items: AggregateGroup[]; next_cursor: string | null };
+type AggregateVersion = {
+  result_id: string; created_at: string; sample_count: number; excluded_count: number;
+  mean_quality_score_percent: string | null;
+};
+type AggregateVersionPage = {
+  items: AggregateVersion[]; next_cursor: string | null; current_result_id: string | null;
+};
 
 const reasonLabels: Record<string, string> = {
   DIMENSION_MISMATCH: "메뉴·장비·레시피 버전 불일치",
@@ -64,6 +71,12 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
   const [nextGroupCursor, setNextGroupCursor] = useState<string | null>(null);
   const [loadingGroups, setLoadingGroups] = useState(false);
   const groupListRequest = useRef(0);
+  const [versions, setVersions] = useState<AggregateVersion[]>([]);
+  const [versionsGroupId, setVersionsGroupId] = useState("");
+  const [nextVersionCursor, setNextVersionCursor] = useState<string | null>(null);
+  const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const versionListRequest = useRef(0);
   const selectedIds = idsText.split(/[\s,]+/).map(value => value.trim()).filter(Boolean);
 
   const loadGroups = useCallback(async (cursor?: string) => {
@@ -84,6 +97,29 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     }
   }, [currentJobId]);
 
+  async function loadVersions(selectedGroupId: string, cursor?: string) {
+    if (!/^[0-9a-f]{64}$/.test(selectedGroupId)) {
+      setMessage("그룹 ID를 64자리 해시로 입력해 주세요."); return;
+    }
+    const requestNumber = ++versionListRequest.current;
+    setLoadingVersions(true);
+    try {
+      const page = await api<AggregateVersionPage>(
+        `/api/customer/assessment-aggregates/${selectedGroupId}/results?limit=20` +
+        (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""));
+      if (versionListRequest.current !== requestNumber) return;
+      setVersions(previous => cursor && versionsGroupId === selectedGroupId ? [...previous, ...page.items] : page.items);
+      setVersionsGroupId(selectedGroupId);
+      setNextVersionCursor(page.next_cursor);
+      setCurrentVersionId(page.current_result_id);
+    } catch (error) {
+      if (versionListRequest.current === requestNumber)
+        setMessage(error instanceof Error ? error.message : "집계 결과 버전을 불러오지 못했습니다.");
+    } finally {
+      if (versionListRequest.current === requestNumber) setLoadingVersions(false);
+    }
+  }
+
   function toggleJob(id: string) {
     const selected = new Set(selectedIds);
     if (selected.has(id)) selected.delete(id);
@@ -95,7 +131,10 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
 
   useEffect(() => {
     groupListRequest.current += 1;
+    versionListRequest.current += 1;
     setGroups([]); setNextGroupCursor(null); setLoadingGroups(false);
+    setVersions([]); setVersionsGroupId(""); setNextVersionCursor(null);
+    setCurrentVersionId(null); setLoadingVersions(false);
     setIdsText(currentJobId); setRecipe(recipeVersion); setLoadBand(defaultLoadBand ?? "PARTIAL");
     setResult(null); setGroupId(""); setResultId("");
     setFreshness(null); setChangedJobIds([]);
@@ -131,21 +170,24 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
       const checked = await checkFreshness(next.group_id, next.result_id);
       setMessage("선택 표본의 기술 통계를 기록했습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
       await loadGroups();
+      await loadVersions(next.group_id);
     } catch (error) { setMessage(error instanceof Error ? error.message : "집계를 계산하지 못했습니다."); }
     finally { setBusy(false); }
   }
 
-  async function load() {
-    if (!/^[0-9a-f]{64}$/.test(groupId) || !/^[0-9a-f]{64}$/.test(resultId)) {
+  async function loadVersion(selectedGroupId: string, selectedResultId: string) {
+    if (!/^[0-9a-f]{64}$/.test(selectedGroupId) || !/^[0-9a-f]{64}$/.test(selectedResultId)) {
       setMessage("그룹 ID와 결과 ID를 각각 64자리 해시로 입력해 주세요."); return;
     }
     setBusy(true); setMessage("");
     try {
-      const saved = await api<AggregateResult>(`/api/customer/assessment-aggregates/${groupId}/results/${resultId}`);
-      setResult(saved);
+      const saved = await api<AggregateResult>(
+        `/api/customer/assessment-aggregates/${selectedGroupId}/results/${selectedResultId}`);
+      setResult(saved); setGroupId(saved.group_id); setResultId(saved.result_id);
       setFreshness(null); setChangedJobIds([]);
       const checked = await checkFreshness(saved.group_id, saved.result_id);
       setMessage("저장된 집계 결과를 불러왔습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
+      if (versionsGroupId !== selectedGroupId) await loadVersions(selectedGroupId);
     } catch (error) { setMessage(error instanceof Error ? error.message : "집계 결과를 읽지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -161,6 +203,7 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
       setFreshness(null); setChangedJobIds([]);
       const checked = await checkFreshness(saved.group_id, saved.result_id);
       setMessage("최신 집계 결과를 불러왔습니다." + (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
+      await loadVersions(saved.group_id);
     } catch (error) { setMessage(error instanceof Error ? error.message : "최신 집계 결과를 읽지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -178,6 +221,7 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
         "현재 평가를 반영한 새 결과 버전을 기록했습니다. 이전 결과는 보존됩니다.") +
         (checked ? "" : " 최신성 확인은 다시 시도해 주세요."));
       await loadGroups();
+      await loadVersions(next.group_id);
     } catch (error) { setMessage(error instanceof Error ? error.message : "재계산을 완료하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -207,7 +251,8 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
       <label>저장된 그룹 ID <input value={groupId} onChange={event => setGroupId(event.target.value)} /></label>
       <label>저장된 결과 ID <input value={resultId} onChange={event => setResultId(event.target.value)} /></label>
       <button type="button" className="secondary" onClick={() => void loadCurrentFor(groupId)} disabled={busy}>최신 결과 불러오기</button>
-      <button type="button" className="secondary" onClick={load} disabled={busy}>과거 결과 불러오기</button>
+      <button type="button" className="secondary" onClick={() => void loadVersion(groupId, resultId)}
+        disabled={busy}>과거 결과 불러오기</button>
     </div>
     <div className="actions"><strong>현재 작업이 포함된 집계 그룹</strong>
       <button type="button" className="secondary" onClick={() => void loadGroups()}
@@ -222,6 +267,18 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     </li>)}</ul>}
     {nextGroupCursor && <button type="button" className="secondary"
       onClick={() => void loadGroups(nextGroupCursor)} disabled={loadingGroups}>집계 그룹 더 보기</button>}
+    <div className="actions"><strong>선택한 그룹의 결과 버전</strong>
+      <button type="button" className="secondary" onClick={() => void loadVersions(groupId)}
+        disabled={loadingVersions || busy}>버전 목록 불러오기</button></div>
+    {versionsGroupId === groupId && versions.length > 0 && <ul>{versions.map(item => <li key={item.result_id}>
+      <button type="button" className="text-button" onClick={() => void loadVersion(groupId, item.result_id)}
+        disabled={busy}>
+        {new Date(item.created_at).toLocaleString("ko-KR")} · {item.sample_count}건 사용 · {item.excluded_count}건 제외
+        {" · "}평균 {item.mean_quality_score_percent ?? "미산출"} · {item.result_id.slice(0, 8)}
+      </button> {item.result_id === currentVersionId ? "현재 포인터" : "과거 결과"}
+    </li>)}</ul>}
+    {versionsGroupId === groupId && nextVersionCursor && <button type="button" className="secondary"
+      onClick={() => void loadVersions(groupId, nextVersionCursor)} disabled={loadingVersions}>결과 버전 더 보기</button>}
     {result && <div className="actions">
       <button type="button" className="secondary" onClick={() => void checkFreshness(result.group_id, result.result_id)
         .then(checked => setMessage(checked ? "조회 시점의 입력 버전을 확인했습니다." : "최신성을 확인하지 못했습니다."))} disabled={busy}>결과 최신성 확인</button>

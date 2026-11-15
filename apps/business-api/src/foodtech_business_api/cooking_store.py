@@ -70,6 +70,7 @@ class CookingStore(Protocol):
                         baseline_pointer: dict, candidate_pointer: dict,
                         record: dict) -> dict: ...
     def aggregate(self, pk: str, result_id: str) -> dict | None: ...
+    def list_aggregate_results(self, pk: str, limit: int, cursor: str | None) -> dict: ...
     def aggregate_dependencies(self, job_pk: str) -> list[dict]: ...
     def list_aggregate_dependencies(self, job_pk: str, limit: int, cursor: str | None) -> dict: ...
     def current_aggregate(self, pk: str) -> dict | None: ...
@@ -254,6 +255,19 @@ class MemoryCookingStore:
         with self.lock:
             item = self.items.get((pk, f"RESULT#{result_id}"))
             return item.copy() if item else None
+
+    def list_aggregate_results(self, pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = "RESULT#"
+        with self.lock:
+            entries = [item.copy() for (item_pk, sk), item in self.items.items()
+                       if item_pk == pk and sk.startswith(prefix) and
+                       (cursor is None or sk > prefix + cursor)]
+            entries.sort(key=lambda item: item["sk"])
+            page = entries[:limit]
+            fields = ("result_id", "created_at", "sample_count", "excluded_count",
+                      "mean_quality_score_percent")
+            return {"items": [{key: item[key] for key in fields} for item in page],
+                    "next_cursor": page[-1]["sk"].removeprefix(prefix) if len(entries) > limit else None}
 
     def aggregate_dependencies(self, job_pk: str) -> list[dict]:
         with self.lock:
@@ -611,6 +625,21 @@ class DynamoCookingStore:
         item = self.table.get_item(Key={"pk": pk, "sk": f"RESULT#{result_id}"},
                                    ConsistentRead=True).get("Item")
         return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
+
+    def list_aggregate_results(self, pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = "RESULT#"
+        args = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with(prefix),
+                "ConsistentRead": True, "Limit": limit + 1}
+        if cursor:
+            args["ExclusiveStartKey"] = {"pk": pk, "sk": prefix + cursor}
+        page = self.table.query(**args)
+        fields = ("result_id", "created_at", "sample_count", "excluded_count",
+                  "mean_quality_score_percent")
+        entries = page.get("Items", [])
+        shown = entries[:limit]
+        has_more = len(entries) > limit or bool(page.get("LastEvaluatedKey"))
+        return {"items": [_api_numbers({key: item[key] for key in fields}) for item in shown],
+                "next_cursor": shown[-1]["result_id"] if shown and has_more else None}
 
     def aggregate_dependencies(self, job_pk: str) -> list[dict]:
         items = []
