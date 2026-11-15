@@ -156,6 +156,44 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 422)
         self.assertFalse(any(key[1].startswith("COMPARISON#") for key in self.store.items))
 
+    async def test_jeyuk_adjacent_load_bands_are_comparable(self):
+        for job_id, band in ((self.baseline_id, "REFERENCE"),
+                             (self.candidate_id, "OVER_RECOMMENDED")):
+            pk = cooking._pk(self.subject, job_id)
+            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile="jeyuk-small")
+            self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
+                menu="JEYUK", equipment_profile="jeyuk-small",
+                scale_version="jeyuk-common-v1", load_band=band,
+                actual_mass_kg="1.8" if band == "REFERENCE" else "2.5",
+                load_percent="100" if band == "REFERENCE" else "138.89")
+        result = await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                                        headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(result.status_code, 201, result.text)
+        self.assertEqual(result.json()["load_band_relation"], "ADJACENT")
+        self.assertEqual(result.json()["improvement_status"], "OBSERVED")
+
+        baseline_pk = cooking._pk(self.subject, self.baseline_id)
+        self.store.items[(baseline_pk, "ASSESSMENT#REV#000000000001")]["load_band"] = "PARTIAL"
+        rejected = await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                                          headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(rejected.status_code, 422)
+
+    async def test_jeyuk_comparison_requires_matching_scale_and_current_safety(self):
+        for job_id in (self.baseline_id, self.candidate_id):
+            pk = cooking._pk(self.subject, job_id)
+            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile="jeyuk-small")
+            self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
+                menu="JEYUK", equipment_profile="jeyuk-small", scale_version="jeyuk-common-v1")
+        candidate_pk = cooking._pk(self.subject, self.candidate_id)
+        self.store.items[(candidate_pk, "ASSESSMENT#REV#000000000001")]["scale_version"] = "jeyuk-common-v2"
+        body = {"baseline_job_id": self.baseline_id}
+        self.assertEqual((await self.client.post(self._path(), json=body, headers={
+            "X-CSRF-Token": "test-csrf"})).status_code, 422)
+        self.store.items[(candidate_pk, "ASSESSMENT#REV#000000000001")]["scale_version"] = "jeyuk-common-v1"
+        self.store.items[(candidate_pk, "ASSESSMENT#CURRENT")]["safety_version"] = 0
+        self.assertEqual((await self.client.post(self._path(), json=body, headers={
+            "X-CSRF-Token": "test-csrf"})).status_code, 409)
+
     async def test_reassessment_creates_new_record_and_preserves_old_one(self):
         body = {"baseline_job_id": self.baseline_id}
         old = (await self.client.post(self._path(), json=body,
