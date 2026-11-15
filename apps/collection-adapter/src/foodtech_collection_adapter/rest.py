@@ -14,12 +14,15 @@ class PollResult:
 
 class RestMockClient:
     def __init__(self, base_url: str, client_id: str, client_secret: str, ca_file: str,
-                 client: httpx.Client | None = None):
+                 client: httpx.Client | None = None, profile_id: str = "mockprofile-100"):
         if not base_url.startswith("https://") or not ca_file:
             raise ValueError("HTTPS and a trusted CA file are required")
+        if profile_id not in ("mockprofile-100", "mockprofile-110"):
+            raise ValueError("unsupported Mock profile")
         self.client = client or httpx.Client(base_url=base_url, verify=ca_file, timeout=5.0)
         self.authorization = "Basic " + base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         self.token: str | None = None
+        self.profile_id = profile_id
 
     def close(self) -> None:
         self.client.close()
@@ -51,7 +54,7 @@ class RestMockClient:
                     continue
                 response.raise_for_status()
                 if (response.headers.get("X-Contract-Version") != "1.0"
-                        or response.headers.get("X-Profile-ID") != "mockprofile-100"
+                        or response.headers.get("X-Profile-ID") != self.profile_id
                         or response.headers.get("X-Provenance") != "SYNTHETIC"):
                     raise ValueError("unexpected Mock contract")
                 next_cursor = int(response.headers["X-Next-Cursor"])
