@@ -8,3 +8,5 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 
 첫 구현은 단일 합성 스트림의 최소 흐름이다. REST timeout 5초, 전송 오류 1회 재시도, 순번 결손 대기 5초, lease 30초를 초기 계약으로 둔다. 동시 다중 Task·장기 보류 상태·실패 복구·대규모 부하는 후속 적합성 검증 대상이다. 비정상 JSON과 식별자 누락의 S3 Ingestion DLQ는 이 슬라이스에 포함하지 않는다.
 
+기존 개발용 AWS 테이블·큐에서 실제 C# Mock의 HTTPS/OAuth 응답을 수집하려면 .NET 10 Mock을 Release로 빌드하고 `AWS_PROFILE=foodtech .venv/bin/python tests/live/process_flow_dynamodb_check.py --mock-wire`를 실행한다. 이 검증은 임시 인증서와 고유 합성 배치를 만들고 Mock의 첫 연결 단절 후 재시도, DynamoDB·SQS FIFO 저장, Worker 공정판정, 조리작업 실패 전이 및 재전달 멱등성을 확인한 뒤 합성 항목을 정리한다. 공유 개발용 FIFO 큐가 비어 있어야 시작한다. 2026-11-15 개발용 AWS에서 5건이 처리되어 `HIGH_PROCESS_FAILURE`와 작업 `FAILED`가 기록됐고 합성 항목 정리가 완료됐다. 배포된 Worker Task 역할·부하·장기 복구 검증은 별도다.
+

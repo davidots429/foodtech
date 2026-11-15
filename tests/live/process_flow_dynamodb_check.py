@@ -5,9 +5,16 @@ creates a unique synthetic batch and removes its records in finally.
 """
 
 import asyncio
+import argparse
 import hashlib
 import json
 import os
+import shutil
+import socket
+import ssl
+import subprocess
+import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +29,7 @@ from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.main import app
 from foodtech_collection_adapter.aws_flow import DynamoOrderedIngestor
+from foodtech_collection_adapter.rest import RestMockClient
 from foodtech_contracts import dedup_key, stream_binding_key
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 
@@ -33,6 +41,7 @@ COOKING_TABLE = "foodtech-cooking-jobs-dev"
 ORDERED_QUEUE = "foodtech-ordered-dev.fifo"
 QUARANTINE_QUEUE = "foodtech-standardizationdlq-dev.fifo"
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures/tonkatsu-process-high-v1.json"
+MOCK_DLL = Path(__file__).resolve().parents[2] / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 
 async def post(client: httpx.AsyncClient, path: str, body: dict, expected: int = 200) -> dict:
@@ -52,6 +61,10 @@ def remove_partition(table, pk: str) -> None:
                 break
             page = table.query(KeyConditionExpression=Key("pk").eq(pk), ConsistentRead=True,
                                ExclusiveStartKey=page["LastEvaluatedKey"])
+    remaining = table.query(KeyConditionExpression=Key("pk").eq(pk),
+                            ConsistentRead=True, Select="COUNT")
+    if remaining["Count"]:
+        raise AssertionError(f"synthetic partition still contains {remaining['Count']} items")
 
 
 def remove_test_messages(sqs, queue_url: str, stream_pk: str) -> None:
@@ -69,7 +82,63 @@ def remove_test_messages(sqs, queue_url: str, stream_pk: str) -> None:
             sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=message["ReceiptHandle"])
 
 
-async def main() -> None:
+def poll_csharp_mock(fixture: dict, records: list[dict]) -> tuple[str, ...]:
+    dotnet = shutil.which("dotnet")
+    if not dotnet or not MOCK_DLL.is_file():
+        raise RuntimeError("Build the .NET 10 Mock in Release mode and add dotnet to PATH.")
+    with tempfile.TemporaryDirectory(prefix="foodtech-mock-live-") as directory:
+        temp = Path(directory)
+        fixture_path = temp / "fixture.json"
+        fixture_path.write_text(json.dumps({**fixture, "records": records}), encoding="utf-8")
+        key, cert, pfx = (temp / name for name in ("key.pem", "cert.pem", "cert.pfx"))
+        password = uuid.uuid4().hex
+        client_id, client_secret = "synthetic-live-client", uuid.uuid4().hex
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                        "-keyout", str(key), "-out", str(cert), "-days", "1",
+                        "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx),
+                        "-inkey", str(key), "-in", str(cert), "-password", f"pass:{password}"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server = subprocess.Popen([dotnet, str(MOCK_DLL), "serve", "--fixture", str(fixture_path),
+                                   "--cert", str(pfx), "--port", str(port), "--disconnect-once"],
+                                  env={**os.environ, "FOODTECH_MOCK_CLIENT_ID": client_id,
+                                       "FOODTECH_MOCK_CLIENT_SECRET": client_secret,
+                                       "FOODTECH_MOCK_CERT_PASSWORD": password},
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            base = f"https://localhost:{port}"
+            context = ssl.create_default_context(cafile=str(cert))
+            for _ in range(50):
+                if server.poll() is not None:
+                    raise RuntimeError("C# Mock exited before its HTTPS endpoint became ready.")
+                try:
+                    if httpx.get(base + "/health", verify=context, timeout=0.3).status_code == 200:
+                        break
+                except httpx.TransportError:
+                    time.sleep(0.1)
+            else:
+                raise TimeoutError("C# Mock HTTPS endpoint did not become ready.")
+            client = RestMockClient(base, client_id, client_secret, str(cert))
+            try:
+                result = client.poll(0)
+                if result.next_cursor != len(records) or \
+                        [json.loads(raw)["recordId"] for raw in result.records] != \
+                        [record["recordId"] for record in records] or \
+                        client.poll(result.next_cursor).records:
+                    raise AssertionError("C# Mock wire records or cursor differ from the synthetic fixture.")
+                return result.records
+            finally:
+                client.close()
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
+
+
+async def main(*, mock_wire: bool = False) -> None:
     if os.getenv("AWS_PROFILE") != "foodtech":
         raise SystemExit("Use AWS_PROFILE=foodtech for the development account.")
     session = boto3.Session(profile_name="foodtech", region_name=REGION)
@@ -88,7 +157,8 @@ async def main() -> None:
     run_id = uuid.uuid4().hex[:12]
     batch_id = f"batch-a-live-{run_id}"
     subject = f"synthetic-process-validation-{run_id}"
-    records = json.loads(FIXTURE.read_text())["records"]
+    fixture = json.loads(FIXTURE.read_text())
+    records = fixture["records"]
     for record in records:
         record["batchId"] = batch_id
         record["recordId"] = f"rec-a-live-{run_id}-{record['sequenceNumber']:03d}"
@@ -125,8 +195,10 @@ async def main() -> None:
                                       **({"actual_placed_at": datetime.now(timezone.utc).isoformat()}
                                          if event == "COOKING_STARTED" else {})})
 
-                for record in records:
-                    released = ingestor.ingest(json.dumps(record, separators=(",", ":")))
+                raws = (poll_csharp_mock(fixture, records) if mock_wire else
+                        tuple(json.dumps(record, separators=(",", ":")) for record in records))
+                for raw, record in zip(raws, records, strict=True):
+                    released = ingestor.ingest(raw)
                     if len(released) != 1 or released[0].sequence_number != record["sequenceNumber"]:
                         raise AssertionError("ordered collector did not release the next sequence")
 
@@ -165,7 +237,7 @@ async def main() -> None:
                 process_events = [item for item in events if item["domain"] == "PROCESS_ASSESSMENT"]
                 assert len(process_events) == 5 and process_events[-1]["trigger"] == "PROCESS_FAILURE_DETECTED"
                 assert worker.process(references[-1])["process_result"] == "REPLAYED"
-                print(json.dumps({"processed": len(processed), "job_status": final["status"],
+                print(json.dumps({"mock_wire": mock_wire, "processed": len(processed), "job_status": final["status"],
                                   "process_status": final["process_assessment_status"],
                                   "temperature_status": final["process_temperature_status"],
                                   "process_events": len(process_events), "replay": "REPLAYED"}), flush=True)
@@ -180,6 +252,11 @@ async def main() -> None:
                 for record in records:
                     digest = hashlib.sha256(dedup_key(record).encode("utf-8")).hexdigest()
                     writer.delete_item(Key={"pk": f"DEDUP#{digest}", "sk": "CANONICAL"})
+            for record in records:
+                digest = hashlib.sha256(dedup_key(record).encode("utf-8")).hexdigest()
+                if data_table.get_item(Key={"pk": f"DEDUP#{digest}", "sk": "CANONICAL"},
+                                       ConsistentRead=True).get("Item"):
+                    raise AssertionError("synthetic deduplication item remains")
             for item in data_table.query(KeyConditionExpression=Key("pk").eq(stream_pk),
                                          ConsistentRead=True).get("Items", []):
                 if item["sk"].startswith("RAW#"):
@@ -189,6 +266,9 @@ async def main() -> None:
                 remove_partition(cooking_store.table, job_pk)
                 remove_partition(cooking_store.table, f"SCOPE#USER#{subject}#JOBS")
                 cooking_store.table.delete_item(Key={"pk": stream_pk, "sk": "BINDING"})
+                if cooking_store.table.get_item(Key={"pk": stream_pk, "sk": "BINDING"},
+                                                ConsistentRead=True).get("Item"):
+                    raise AssertionError("synthetic binding remains")
         except Exception as exc:
             cleanup_errors.append(f"table cleanup: {exc}")
         if cleanup_errors:
@@ -197,4 +277,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mock-wire", action="store_true",
+                        help="poll the real C# Mock over HTTPS/OAuth before AWS ingestion")
+    asyncio.run(main(mock_wire=parser.parse_args().mock_wire))
