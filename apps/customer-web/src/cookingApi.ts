@@ -42,6 +42,10 @@ export type CookingJob = {
   source_job_id: string | null;
   recook_reason: string | null;
   source_binding: { source_id: string; device_id: string; batch_id: string } | null;
+  validation_context?: JeyukValidationContext | null;
+  validation_context_digest?: string | null;
+  validation_context_version?: number;
+  validation_context_status?: "NOT_RECORDED" | "DECLARED_UNVERIFIED";
   process_assessment_status: "INSUFFICIENT_DATA" | "NORMAL" | "WARNING" | "FAILED";
   process_temperature_status: string;
   process_thickness_status?: string;
@@ -50,6 +54,22 @@ export type CookingJob = {
   actual_lifted_at?: string | null;
   actual_cooking_seconds?: number | null;
   updated_at: string;
+};
+
+export type JeyukValidationContext = {
+  schema_version: "jeyuk-validation-context-v1";
+  recipe_version: string;
+  equipment_profile: string;
+  equipment_device_id: string;
+  source_id: string;
+  actual_load_kg: string;
+  ingredient_spec_id: string;
+  ingredient_lot_id: string;
+  supplier_id: string;
+  sensor_id: string;
+  sensor_calibration_record_id: string;
+  process_condition_profile_id: string;
+  process_condition_version: string;
 };
 
 export type CurrentAssessment = {

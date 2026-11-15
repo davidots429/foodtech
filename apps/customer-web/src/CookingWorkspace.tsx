@@ -55,6 +55,7 @@ const eventLabels: Record<string, string> = {
   UNDER_REVIEW: "안전 확인 시작", CLEARED: "이상 의심 해제",
   FAILED: "안전 실패 확정", CORE_CHECK: "합성 심부온도 안전 판정",
   JEYUK_DISCHARGE_CHECK: "제육볶음 배출 표본 안전 판정",
+  VALIDATION_CONTEXT_RECORDED: "제육볶음 재검증 조합 기록",
   PROCESS_SAMPLE_ASSESSED: "수집 온도 공정판정", PROCESS_FAILURE_DETECTED: "공정 실패 자동판정",
 };
 const jeyukScoreHelp: Record<ScoreKey, string> = {
@@ -73,6 +74,18 @@ const jeyukQualityReasons = [
   ["UNEVEN_MIX", "불균일 혼합"], ["INGREDIENT_DAMAGE", "재료 손상"],
   ["SAUCE_NOT_COATED", "소스 코팅 부족"],
 ] as const;
+const validationFields = [
+  ["ingredient_spec_id", "원재료 규격 ID"], ["ingredient_lot_id", "원재료 로트 ID"],
+  ["supplier_id", "공급처 ID"], ["sensor_id", "센서 ID"],
+  ["sensor_calibration_record_id", "센서 교정 기록 ID"],
+  ["process_condition_profile_id", "공정조건 프로파일 ID"],
+  ["process_condition_version", "공정조건 버전"],
+] as const;
+type ValidationField = typeof validationFields[number][0];
+const emptyValidationFields = (): Record<ValidationField, string> => ({
+  ingredient_spec_id: "", ingredient_lot_id: "", supplier_id: "", sensor_id: "",
+  sensor_calibration_record_id: "", process_condition_profile_id: "", process_condition_version: "",
+});
 const processLabels: Record<CookingJob["process_assessment_status"], string> = {
   INSUFFICIENT_DATA: "판정 자료 대기", NORMAL: "정상", WARNING: "주의", FAILED: "공정 실패",
 };
@@ -97,6 +110,7 @@ const timeLabels: Record<string, string> = {
   EXTENDED_COOKING: "권장시간 초과 · 주의", MAX_TIME_EXCEEDED: "최대시간 초과 · 실패",
 };
 function eventStatusLabel(domain: string, status: string): string {
+  if (domain === "VALIDATION_CONTEXT") return status === "NOT_RECORDED" ? "미기록" : "기록됨 · 검증 전";
   if (domain === "COOKING_JOB_STATUS") return jobLabels[status as CookingJob["status"]] ?? status;
   if (domain === "PROCESS_ASSESSMENT") return processLabels[status as CookingJob["process_assessment_status"]] ?? status;
   return safetyLabels[status as CookingJob["safety_status"]] ?? status;
@@ -158,6 +172,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const [placedAt, setPlacedAt] = useState(() => localDateTime(new Date()));
   const [liftedAt, setLiftedAt] = useState(() => localDateTime(new Date()));
   const [batchId, setBatchId] = useState("batch-a-001");
+  const [validationForm, setValidationForm] = useState(emptyValidationFields);
   const [loadingJob, setLoadingJob] = useState(false);
   const [busy, setBusy] = useState(false);
   const activeRequest = useRef(false);
@@ -210,6 +225,8 @@ export function CookingWorkspace({ csrf }: Props) {
         api<JobSnapshot>(path), api<Assessment[]>(path + "/assessments"), api<JobEvent[]>(path + "/events"),
       ]);
       setJob(snapshot.job);
+      setValidationForm(Object.fromEntries(validationFields.map(([key]) =>
+        [key, snapshot.job.validation_context?.[key] ?? ""])) as Record<ValidationField, string>);
       setCurrent(snapshot.current_assessment);
       setProcessView(snapshot.process_assessment_view);
       setAssessments(history);
@@ -420,6 +437,17 @@ export function CookingWorkspace({ csrf }: Props) {
       expected_version: job.version, source_id: "synthetic-rest",
       device_id: job.menu === "JEYUK" ? "mockprofile-110-a-001" : "mockprofile-100-a-001", batch_id: batchId.trim(),
     }), "이 조리작업과 합성 수집 배치를 연결했습니다.");
+  }
+
+  async function recordValidationContext() {
+    if (!job || job.menu !== "JEYUK") return;
+    if (validationFields.some(([key]) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(validationForm[key]))) {
+      setError("재검증 조합의 모든 ID는 영숫자로 시작하고 영숫자·점·밑줄·콜론·하이픈만 사용해야 합니다(최대 80자).");
+      return;
+    }
+    await action(() => api<CookingJob>(jobPath(job.job_id) + "/validation-context", csrf, {
+      schema_version: "jeyuk-validation-context-v1", expected_version: job.version, ...validationForm,
+    }), "재검증 조합을 기록했습니다. 실제 유효성 검증은 아직 수행되지 않았습니다.");
   }
 
   async function recordSafety(event: "SUSPECTED" | "UNDER_REVIEW" | "CLEARED" | "FAILED") {
@@ -678,6 +706,20 @@ export function CookingWorkspace({ csrf }: Props) {
                   <input maxLength={80} value={batchId} onChange={(event) => setBatchId(event.target.value)} />
                 </label><button type="button" onClick={bindSource} disabled={busy || loadingJob || !["PENDING", "READY"].includes(job.status)}>수집 배치 연결</button></div>
               </div>}
+            {job.menu === "JEYUK" && <div className="binding-box">
+              <h4>재검증 조합 식별</h4>
+              <p className="small">레시피 {job.recipe_version} · 장비 {job.source_binding?.device_id ?? "배치 연결 전"} · 실제 적재량 {job.actual_load_kg}kg을 함께 기록합니다. 배치 ID는 조합 식별값에서 제외합니다.</p>
+              <p className="small">상태: {job.validation_context_status === "DECLARED_UNVERIFIED" ? "기록됨 · 검증 전" : "미기록"}
+                {job.validation_context_digest && <> · 버전 {job.validation_context_version} · 식별 해시 <code>{job.validation_context_digest}</code></>}</p>
+              <p className="small">이 정보만으로 72시간 조건부 유효성을 인정하지 않습니다. 실제 공정·안전 증거를 연결하고 확인해야 합니다.</p>
+              <div className="field-grid">{validationFields.map(([key, label]) => <label key={key}>{label}
+                <input value={validationForm[key]} maxLength={80}
+                  onChange={(event) => setValidationForm(previous => ({ ...previous, [key]: event.target.value }))}
+                  disabled={busy || loadingJob || !job.source_binding || !["PENDING", "READY"].includes(job.status)} />
+              </label>)}</div>
+              <button type="button" onClick={recordValidationContext}
+                disabled={busy || loadingJob || !job.source_binding || !["PENDING", "READY"].includes(job.status)}>조합 기록{job.validation_context_version ? " 수정" : ""}</button>
+            </div>}
             {job.source_job_id && <p className="small">원 작업 ID: <code>{job.source_job_id}</code> · 재조리 사유: {job.recook_reason}{" "}
               <button type="button" className="text-button" onClick={() => void loadJob(job.source_job_id!)} disabled={busy || loadingJob}>원 작업 열기</button></p>}
             {job.status === "READY" && <div className="field-row"><label>합성 재료 투입 시각

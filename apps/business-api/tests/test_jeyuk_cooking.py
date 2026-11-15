@@ -44,6 +44,88 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
+    async def bind(self, job, batch_id):
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        response = await self.client.post(path + "/source-binding", headers=CSRF,
+                                          json={"expected_version": job["version"],
+                                                "source_id": "synthetic-rest",
+                                                "device_id": "mockprofile-110-a-001",
+                                                "batch_id": batch_id})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    @staticmethod
+    def validation_body(version):
+        return {"schema_version": "jeyuk-validation-context-v1", "expected_version": version,
+                "ingredient_spec_id": "pork-spec-v1", "ingredient_lot_id": "lot-a-001",
+                "supplier_id": "supplier-a", "sensor_id": "probe-a",
+                "sensor_calibration_record_id": "cal-001",
+                "process_condition_profile_id": "jeyuk-process-small",
+                "process_condition_version": "v1"}
+
+    async def test_validation_context_is_declared_not_approved_and_audited(self):
+        job = await self.create()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        self.assertEqual(job["validation_context_status"], "NOT_RECORDED")
+        body = self.validation_body(job["version"])
+        self.assertEqual((await self.client.post(path + "/validation-context", headers=CSRF,
+                                                 json=body)).status_code, 409)
+        job = await self.bind(job, "jeyuk-context-a")
+        body["expected_version"] = job["version"]
+        recorded = await self.client.post(path + "/validation-context", headers=CSRF, json=body)
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+        job = recorded.json()
+        self.assertEqual((job["validation_context_status"], job["validation_context_version"]),
+                         ("DECLARED_UNVERIFIED", 1))
+        self.assertEqual(job["validation_context"]["equipment_device_id"], "mockprofile-110-a-001")
+        self.assertNotIn("batch_id", job["validation_context"])
+        self.assertNotIn("validated_at", job)
+        self.assertEqual((job["safety_status"], job["evaluation_blocked"]), ("NOT_MEASURED", True))
+        self.assertEqual((await self.client.post(path + "/validation-context", headers=CSRF,
+                                                 json=body)).status_code, 409)
+        body["expected_version"] = job["version"]
+        body["ingredient_lot_id"] = "lot-a-002"
+        changed = await self.client.post(path + "/validation-context", headers=CSRF, json=body)
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertNotEqual(changed.json()["validation_context_digest"], job["validation_context_digest"])
+        events = (await self.client.get(path + "/events")).json()
+        context_events = [item for item in events if item["domain"] == "VALIDATION_CONTEXT"]
+        self.assertEqual(len(context_events), 2)
+        self.assertEqual(context_events[1]["previous_digest"], job["validation_context_digest"])
+        bad = {**body, "expected_version": changed.json()["version"], "sensor_id": "probe a"}
+        self.assertEqual((await self.client.post(path + "/validation-context", headers=CSRF,
+                                                 json=bad)).status_code, 422)
+        ready = await self.client.post(path + "/transitions", headers=CSRF,
+                                       json={"expected_version": changed.json()["version"],
+                                             "event": "PREHEAT_COMPLETED"})
+        started = await self.client.post(path + "/transitions", headers=CSRF,
+                                         json={"expected_version": ready.json()["version"],
+                                               "event": "COOKING_STARTED",
+                                               "actual_placed_at": datetime.now(timezone.utc).isoformat()})
+        self.assertEqual(started.status_code, 200, started.text)
+        body["expected_version"] = started.json()["version"]
+        self.assertEqual((await self.client.post(path + "/validation-context", headers=CSRF,
+                                                 json=body)).status_code, 409)
+
+    async def test_combination_digest_excludes_batch_and_rejects_other_menu(self):
+        first = await self.bind(await self.create(), "jeyuk-context-b")
+        second = await self.bind(await self.create("1.80"), "jeyuk-context-c")
+        digests = []
+        for job in (first, second):
+            result = await self.client.post(
+                f"/api/customer/cooking-jobs/{job['job_id']}/validation-context",
+                headers=CSRF, json=self.validation_body(job["version"]))
+            self.assertEqual(result.status_code, 200, result.text)
+            digests.append(result.json()["validation_context_digest"])
+        self.assertEqual(digests[0], digests[1])
+        tonkatsu = await self.client.post("/api/customer/cooking-jobs", headers=CSRF,
+                                          json={"planned_portions": 1, "recipe_version": "v1",
+                                                "thickness_cm": "1.2"})
+        self.assertEqual(tonkatsu.status_code, 201, tonkatsu.text)
+        self.assertEqual((await self.client.post(
+            f"/api/customer/cooking-jobs/{tonkatsu.json()['job_id']}/validation-context",
+            headers=CSRF, json=self.validation_body(tonkatsu.json()["version"]))).status_code, 422)
+
     async def test_profile_load_and_menu_are_separate_from_fryer(self):
         job = await self.create()
         self.assertEqual((job["menu"], job["jeyuk_size_profile"], job["process_load_status"]),
