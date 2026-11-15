@@ -18,6 +18,41 @@ FIXTURE = json.loads((Path(__file__).resolve().parents[3] / "fixtures/mockprofil
 
 
 class MinimalFlowTests(unittest.TestCase):
+    def test_jeyuk_cli_uses_separate_profile_and_cursor(self):
+        calls = {}
+
+        class Client:
+            def __init__(self, *_args, **kwargs):
+                calls["profile"] = kwargs["profile_id"]
+            def poll(self, cursor):
+                calls["starting_cursor"] = cursor
+                return PollResult(("synthetic-sample",), 30)
+            def close(self):
+                calls["closed"] = True
+
+        class Ingestor:
+            def __init__(self, *_args): pass
+            def cursor(self, key):
+                calls["cursor_key"] = key
+                return 29
+            def ingest(self, raw):
+                calls["raw"] = raw
+            def save_cursor(self, cursor, key):
+                calls["saved"] = (cursor, key)
+
+        config = {name: "test" for name in (
+            "FOODTECH_MOCK_BASE_URL", "FOODTECH_MOCK_CLIENT_ID", "FOODTECH_MOCK_CLIENT_SECRET",
+            "FOODTECH_MOCK_CA_FILE", "FOODTECH_DATA_TABLE", "FOODTECH_ORDERED_QUEUE_URL")}
+        with patch.dict("os.environ", config), \
+             patch.object(collector_cli, "RestMockClient", Client), \
+             patch.object(collector_cli, "DynamoJeyukIngestor", Ingestor), \
+             patch("sys.argv", ["collector", "--profile", "mockprofile-110",
+                                "--cursor-key", "jeyuk-fixture"]):
+            self.assertEqual(collector_cli.main(), 0)
+        self.assertEqual(calls, {"profile": "mockprofile-110", "starting_cursor": 29,
+                                 "cursor_key": "jeyuk-fixture", "raw": "synthetic-sample",
+                                 "saved": (30, "jeyuk-fixture"), "closed": True})
+
     def test_cursor_is_scoped_to_fixture_and_remembers_streams(self):
         class Table:
             def __init__(self):

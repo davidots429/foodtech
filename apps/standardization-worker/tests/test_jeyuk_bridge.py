@@ -35,6 +35,8 @@ class JeyukBridgeTests(unittest.TestCase):
             JeyukProcessStream().accept(sample(1)[:-1] + ',"second":1}')
         with self.assertRaisesRegex(ValueError, "unexpected Jeyuk Mock source"):
             JeyukProcessStream().accept(sample(1, instanceId="mockprofile-100-a-001"))
+        with self.assertRaisesRegex(ValueError, "unexpected Jeyuk Mock source"):
+            JeyukProcessStream().accept(sample(1, fixtureId="invalid#fixture"))
 
 
 if __name__ == "__main__":

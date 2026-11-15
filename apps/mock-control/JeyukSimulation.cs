@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 internal static class JeyukSimulation
 {
@@ -27,6 +28,8 @@ internal static class JeyukSimulation
     public static IReadOnlyList<string> Expand(JsonElement root)
     {
         var fixtureId = RequiredString(root, "fixtureId");
+        if (!Regex.IsMatch(fixtureId, @"\A[A-Za-z0-9-]{1,80}\z", RegexOptions.CultureInvariant))
+            throw new InvalidDataException("fixtureId must contain only letters, digits, or hyphens (max 80).");
         var profile = RequiredString(root, "profile");
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
             profile is not ("SMALL" or "MEDIUM" or "LARGE"))
