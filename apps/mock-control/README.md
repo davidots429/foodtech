@@ -22,3 +22,14 @@ dotnet run --project apps/mock-control/MockControl.csproj -- serve \
 
 CI의 `tests/integration/test_mock_protocol.py`는 빌드한 C# Mock을 임시 HTTPS 인증서로 실행하고, 잘못된 OAuth 자격증명·인증 없는 조회·쓰기 요청의 거부를 확인한다. 이어 실제 HTTPS 응답을 Python 수집 클라이언트로 읽어 연결 단절 후 재시도, 순번 `1, 3, 2`의 `1, 2, 3` 복원, Worker의 정상·격리 판정과 기대 오류 코드를 대조한다. 이 검사는 로컬 프로세스 간 계약 검증이며 DynamoDB·SQS를 거치는 실저장 검증은 별도다.
 
+## 제육볶음 합성 시뮬레이션
+
+C# Mock의 `simulate-jeyuk` 명령은 승인된 소형 볶음·교반 합성 fixture의 구간을 1초 원표본 JSONL로 전개한다. 출력에는 `mockprofile-110-a-001`, 조리량, 표면온도, 실제·목표 RPM, 모터 부하율과 연속 초 번호가 들어간다. 공정판정은 Mock이 수행하지 않고 플랫폼의 규칙이 수행한다.
+
+```bash
+dotnet run --project apps/mock-control/MockControl.csproj -- simulate-jeyuk \
+  --fixture fixtures/jeyuk-small-process-v1.json --output /tmp/foodtech-jeyuk.jsonl
+```
+
+`tests/integration/test_jeyuk_mock.py`는 C# 출력을 플랫폼 공정 규칙에 넣어 5초 걸림 경고와 30초 실패를 확인한다. 현재 명령은 로컬 파일 생성 계약이다. 제육볶음 원표본의 HTTPS 수집·표준화·실저장 연계는 후속 작업이다.
+
