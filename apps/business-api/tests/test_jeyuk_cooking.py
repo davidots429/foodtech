@@ -126,6 +126,41 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             f"/api/customer/cooking-jobs/{tonkatsu.json()['job_id']}/validation-context",
             headers=CSRF, json=self.validation_body(tonkatsu.json()["version"]))).status_code, 422)
 
+    async def test_evidence_report_links_current_process_without_activating_validation(self):
+        job = await self.bind(await self.create(), "jeyuk-evidence-a")
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        initial = (await self.client.get(path + "/validation-evidence")).json()
+        self.assertEqual(initial["status"], "INCOMPLETE")
+        self.assertFalse(initial["activation_allowed"])
+        recorded = await self.client.post(path + "/validation-context", headers=CSRF,
+                                          json=self.validation_body(job["version"]))
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+        pk = cooking._pk("jeyuk-customer", job["job_id"])
+        meta = self.store.items[(pk, "META")]
+        meta.update(status="COMPLETED", auto_safety_status="PASSED", mixture_hold_seconds=60,
+                    safety_passed_at_second=61, discharge_check_status="PASSED",
+                    discharge_check_version=1, discharge_check=[{"phase": phase} for phase in
+                                                                  ("EARLY", "MIDDLE", "LATE")],
+                    safety_status="PASSED", evaluation_blocked=False,
+                    process_assessment={"second": 61, "source_assessment_pk": "JEYUK#jeyuk-evidence-a",
+                                        "source_assessment_sk": "ASSESSMENT#000061",
+                                        "rule_version": cooking.JEYUK_RULE_VERSION})
+        linked = (await self.client.get(path + "/validation-evidence")).json()
+        self.assertEqual(linked["status"], "LINKED_UNVERIFIED")
+        self.assertEqual(linked["process_reference"],
+                         {"pk": "JEYUK#jeyuk-evidence-a", "sk": "ASSESSMENT#000061", "second": 61})
+        self.assertEqual(linked["context_digest"], recorded.json()["validation_context_digest"])
+        self.assertFalse(linked["activation_allowed"])
+        meta["process_assessment"]["source_assessment_pk"] = "JEYUK#other-batch"
+        mismatch = (await self.client.get(path + "/validation-evidence")).json()
+        self.assertEqual(mismatch["status"], "INCOMPLETE")
+        self.assertIn("process_reference_linked", mismatch["missing_checks"])
+        meta["process_assessment"]["source_assessment_pk"] = "JEYUK#jeyuk-evidence-a"
+        meta["safety_status"] = "SUSPECTED"
+        revoked = (await self.client.get(path + "/validation-evidence")).json()
+        self.assertEqual(revoked["status"], "INCOMPLETE")
+        self.assertIn("current_safety_passed", revoked["missing_checks"])
+
     async def test_profile_load_and_menu_are_separate_from_fryer(self):
         job = await self.create()
         self.assertEqual((job["menu"], job["jeyuk_size_profile"], job["process_load_status"]),
