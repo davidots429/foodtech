@@ -22,6 +22,11 @@ from .cooking_store import Conflict, MemoryCookingStore, get_cooking_store
 router = APIRouter(prefix="/api/customer/cooking-jobs", tags=["cooking-jobs"])
 logger = logging.getLogger(__name__)
 SYNTHETIC_FRYER_BATCH_KG = Decimal("0.8")
+SYNTHETIC_JEYUK_RECOMMENDED_KG = Decimal("1.8")
+JEYUK_QUALITY_REASONS = frozenset({
+    "UNDERCOOKED", "EXCESS_MOISTURE", "OVERCOOKED", "UNEVEN_COOK", "BAD_SMELL",
+    "BURNT_BOTTOM", "UNEVEN_MIX", "INGREDIENT_DAMAGE", "SAUCE_NOT_COATED",
+})
 SCORE_ITEMS = (
     "ingredient_condition", "preparation", "taste", "texture", "appearance",
     "aroma", "temperature_suitability",
@@ -188,11 +193,14 @@ class CompletedAssessment(StrictModel):
     observations: dict[str, str]
     overall_satisfaction: int | None = Field(default=None, ge=1, le=5)
     scale_version: str = "tonkatsu-common-v1"
+    quality_decision: Literal["QUALITY_PASSED", "QUALITY_FAILED"] | None = None
+    quality_reason_codes: list[str] = Field(default_factory=list, max_length=9)
+    quality_note: str | None = Field(default=None, max_length=500)
     planned_portions: int = Field(gt=0, le=1000)
     actual_portions: int = Field(gt=0, le=4)
-    actual_mass_kg: Decimal = Field(gt=0, le=SYNTHETIC_FRYER_BATCH_KG)
-    load_percent: Decimal = Field(gt=0, le=100)
-    load_band: Literal["PARTIAL", "REFERENCE"]
+    actual_mass_kg: Decimal = Field(gt=0, le=3)
+    load_percent: Decimal = Field(gt=0, le=167)
+    load_band: Literal["PARTIAL", "REFERENCE", "OVER_RECOMMENDED"]
 
 
 class Recook(StrictModel):
@@ -583,8 +591,6 @@ async def jeyuk_discharge_check(job_id: str, request: Request, body: JeyukDischa
 @router.post("/{job_id}/assessments", status_code=201)
 async def complete_assessment(job_id: str, request: Request, body: CompletedAssessment) -> dict:
     session, store, pk, old, pointer = await _read(request, job_id, write=True)
-    if old["menu"] != "TONKATSU":
-        raise HTTPException(422, "제육볶음 완료 평가는 메뉴별 척도 계약에서 수행해야 합니다.")
     if int(old["version"]) != body.expected_version:
         raise _conflict()
     current_version = int(pointer["version"]) if pointer else 0
@@ -598,32 +604,55 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
     if set(body.observations) != set(SCORE_ITEMS) or any(not text.strip() or len(text) > 500
                                                         for text in body.observations.values()):
         raise HTTPException(422, "7개 항목의 관찰 근거가 필요합니다.")
-    if body.planned_portions != old["planned_portions"] or body.scale_version != "tonkatsu-common-v1":
+    expected_scale = "jeyuk-common-v1" if old["menu"] == "JEYUK" else "tonkatsu-common-v1"
+    if body.planned_portions != old["planned_portions"] or body.scale_version != expected_scale:
         raise HTTPException(422, "작업의 인분 수와 승인된 첫 척도 버전을 사용해야 합니다.")
-    calculated_load = (body.actual_mass_kg / SYNTHETIC_FRYER_BATCH_KG * 100).quantize(Decimal("0.01"))
-    expected_band = "PARTIAL" if calculated_load <= 50 else "REFERENCE"
+    if old["menu"] == "JEYUK":
+        if body.actual_mass_kg != Decimal(str(old["actual_load_kg"])) or body.actual_portions > old["planned_portions"]:
+            raise HTTPException(422, "제육볶음 실제 적재량과 인분은 작업 기록에 맞아야 합니다.")
+        if body.quality_decision is None or len(body.quality_reason_codes) != len(set(body.quality_reason_codes)) or \
+                set(body.quality_reason_codes) - JEYUK_QUALITY_REASONS:
+            raise HTTPException(422, "제육볶음 품질 판정과 승인된 사유코드가 필요합니다.")
+        if (body.quality_decision == "QUALITY_FAILED") != bool(body.quality_reason_codes):
+            raise HTTPException(422, "품질 실패에는 하나 이상의 사유가, 통과에는 실패 사유가 없어야 합니다.")
+    elif body.actual_mass_kg > SYNTHETIC_FRYER_BATCH_KG or body.quality_decision is not None or \
+            body.quality_reason_codes or body.quality_note:
+        raise HTTPException(422, "돈까스 첫 척도에는 합성 튀김기 적재량만 적용합니다.")
+    reference_kg = SYNTHETIC_JEYUK_RECOMMENDED_KG if old["menu"] == "JEYUK" else SYNTHETIC_FRYER_BATCH_KG
+    calculated_load = (body.actual_mass_kg / reference_kg * 100).quantize(Decimal("0.01"))
+    expected_band = ("PARTIAL" if calculated_load <= 50 else "REFERENCE" if calculated_load <= 100
+                     else "OVER_RECOMMENDED")
     if body.load_percent != calculated_load or body.load_band != expected_band:
-        raise HTTPException(422, "합성 튀김기 적재량과 구간이 일치하지 않습니다.")
+        raise HTTPException(422, "합성 장비 적재율과 구간이 일치하지 않습니다.")
     if (current_version == 0 and body.kind != "INITIAL") or (current_version > 0 and body.kind == "INITIAL"):
         raise HTTPException(422, "최초 평가와 수정·재평가 유형이 일치하지 않습니다.")
     if current_version > 0 and not body.reason:
         raise HTTPException(422, "수정·재평가 사유가 필요합니다.")
     total = sum(body.scores.values())
     score = (Decimal(total) / Decimal(35) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    score_passed = min(body.scores.values()) >= 3 and score >= 60
+    if old["menu"] == "JEYUK" and body.quality_decision == "QUALITY_PASSED" and not score_passed:
+        raise HTTPException(422, "품질 합격 점수 기준에 미달한 평가는 통과시킬 수 없습니다.")
+    quality_passed = score_passed and body.quality_decision != "QUALITY_FAILED"
     version = current_version + 1
     assessment = {
         "sk": f"ASSESSMENT#REV#{version:012d}", "version": version,
         "previous_version": current_version or None, "kind": body.kind, "reason": body.reason,
         "status": "COMPLETED", "scores": body.scores, "observations": body.observations,
         "score_total": total, "score_percent": str(score),
-        "quality_passed": min(body.scores.values()) >= 3 and score >= 60,
-        "quality_target": min(body.scores.values()) >= 4 and score >= 80,
+        "quality_passed": quality_passed,
+        "quality_target": quality_passed and min(body.scores.values()) >= 4 and score >= 80,
+        "quality_status": "QUALITY_PASSED" if quality_passed else "QUALITY_FAILED",
+        "quality_decision": body.quality_decision,
+        "quality_reason_codes": body.quality_reason_codes,
+        "quality_note": body.quality_note,
         "overall_satisfaction": body.overall_satisfaction,
         "scale_version": body.scale_version, "formula_version": "quality-v1",
         "safety_version": old["safety_version"], "job_state_version": old["job_state_version"],
         "menu": old["menu"], "equipment_profile": old["equipment_profile"],
         "planned_portions": body.planned_portions, "actual_portions": body.actual_portions,
         "actual_mass_kg": str(body.actual_mass_kg), "load_percent": str(body.load_percent),
+        "mass_per_portion_kg": str((body.actual_mass_kg / body.actual_portions).quantize(Decimal("0.001"))),
         "load_band": body.load_band, "assessed_by": session.subject, "completed_at": _now(),
     }
     new_pointer = {"version": version, "usable": True, "blocked_reason": None,

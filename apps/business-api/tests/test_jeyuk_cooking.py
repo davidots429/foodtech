@@ -160,6 +160,83 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(incomplete.json()["discharge_check_status"], "ASSESSMENT_INCOMPLETE")
         self.assertTrue(incomplete.json()["evaluation_blocked"])
 
+    async def test_completed_quality_assessment_keeps_versions_and_safety_gate(self):
+        job = await self.create("1.8")
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        pk = cooking._pk("jeyuk-customer", job["job_id"])
+        self.store.items[(pk, "META")].update(status="COMPLETED", actual_lifted_at="2026-01-01T00:00:00Z",
+                                                auto_safety_status="PASSED")
+        scores = {item: 4 for item in cooking.SCORE_ITEMS}
+        observations = {item: f"제육볶음 합성 {item} 관찰" for item in cooking.SCORE_ITEMS}
+
+        def assessment(version, current=0, kind="INITIAL", reason=None, decision="QUALITY_PASSED",
+                       reasons=None, mass="1.8", percent="100", band="REFERENCE"):
+            return {"expected_version": version, "expected_current_version": current,
+                    "kind": kind, "reason": reason, "scores": scores, "observations": observations,
+                    "scale_version": "jeyuk-common-v1", "planned_portions": 2, "actual_portions": 2,
+                    "actual_mass_kg": mass, "load_percent": percent, "load_band": band,
+                    "quality_decision": decision, "quality_reason_codes": reasons or []}
+
+        blocked = await self.client.post(path + "/assessments", headers=CSRF,
+                                         json=assessment(job["version"]))
+        self.assertEqual(blocked.status_code, 409)
+        samples = [{"phase": phase, "probe_id": f"probe-{index}",
+                    "meat_sample_id": f"meat-{index}", "thickest_or_clumped_part": True,
+                    "sampled_at": f"2026-01-01T00:00:0{index}Z",
+                    "calibration_status": "OK", "celsius": 75}
+                   for index, phase in enumerate(("EARLY", "MIDDLE", "LATE"), 1)]
+        safe = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
+                                      json={"expected_version": job["version"], "kind": "INITIAL",
+                                            "samples": samples})
+        self.assertEqual(safe.json()["safety_status"], "PASSED")
+        wrong_scale = assessment(safe.json()["version"])
+        wrong_scale["scale_version"] = "tonkatsu-common-v1"
+        self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
+                         json=wrong_scale)).status_code, 422)
+        wrong_pass = assessment(safe.json()["version"])
+        wrong_pass["scores"] = {**scores, "texture": 2}
+        self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
+                         json=wrong_pass)).status_code, 422)
+        initial = await self.client.post(path + "/assessments", headers=CSRF,
+                                         json=assessment(safe.json()["version"]))
+        self.assertEqual(initial.status_code, 201, initial.text)
+        self.assertEqual((initial.json()["quality_passed"], initial.json()["load_band"]), (True, "REFERENCE"))
+        current = (await self.client.get(path)).json()["current_assessment"]
+        self.assertEqual(current["version"], 1)
+        fresh = (await self.client.get(path)).json()["job"]
+        self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
+                         json=assessment(fresh["version"], current=0))).status_code, 409)
+        revision = await self.client.post(path + "/assessments", headers=CSRF,
+                                          json=assessment(fresh["version"], current=1,
+                                                          kind="REASSESSMENT", reason="소스 코팅 재검토",
+                                                          decision="QUALITY_FAILED", reasons=["SAUCE_NOT_COATED"]))
+        self.assertEqual(revision.status_code, 201, revision.text)
+        self.assertFalse(revision.json()["quality_passed"])
+        self.assertEqual(len((await self.client.get(path + "/assessments")).json()), 2)
+        self.assertEqual((await self.client.get(path)).json()["current_assessment"]["version"], 2)
+        fresh = (await self.client.get(path)).json()["job"]
+        self.assertEqual((await self.client.post(path + "/assessments", headers=CSRF,
+                         json=assessment(fresh["version"], current=2, kind="REVISION", reason="잘못된 코드",
+                                         decision="QUALITY_FAILED", reasons=["EQUIPMENT_ERROR"]))).status_code, 422)
+
+    async def test_over_recommended_load_uses_jeyuk_band(self):
+        job = await self.create("2.5")
+        pk = cooking._pk("jeyuk-customer", job["job_id"])
+        self.store.items[(pk, "META")].update(status="COMPLETED", safety_status="PASSED",
+                                                evaluation_blocked=False, safety_version=1)
+        path = f"/api/customer/cooking-jobs/{job['job_id']}/assessments"
+        body = {"expected_version": job["version"], "expected_current_version": 0,
+                "kind": "INITIAL", "scores": {item: 4 for item in cooking.SCORE_ITEMS},
+                "observations": {item: "합성 관찰" for item in cooking.SCORE_ITEMS},
+                "scale_version": "jeyuk-common-v1", "planned_portions": 2, "actual_portions": 2,
+                "actual_mass_kg": "2.5", "load_percent": "138.89",
+                "load_band": "OVER_RECOMMENDED", "quality_decision": "QUALITY_PASSED"}
+        wrong = {**body, "load_band": "REFERENCE"}
+        self.assertEqual((await self.client.post(path, headers=CSRF, json=wrong)).status_code, 422)
+        accepted = await self.client.post(path, headers=CSRF, json=body)
+        self.assertEqual(accepted.status_code, 201, accepted.text)
+        self.assertEqual(accepted.json()["mass_per_portion_kg"], "1.250")
+
 
 if __name__ == "__main__":
     unittest.main()

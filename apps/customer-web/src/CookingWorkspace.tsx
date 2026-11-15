@@ -54,6 +54,22 @@ const eventLabels: Record<string, string> = {
   JEYUK_DISCHARGE_CHECK: "제육볶음 배출 표본 안전 판정",
   PROCESS_SAMPLE_ASSESSED: "수집 온도 공정판정", PROCESS_FAILURE_DETECTED: "공정 실패 자동판정",
 };
+const jeyukScoreHelp: Record<ScoreKey, string> = {
+  ingredient_condition: "투입 전 육류·채소·소스의 상태",
+  preparation: "육류 두께와 채소 손질·투입 준비",
+  taste: "육류·채소·소스의 조화와 간",
+  texture: "육류 질김·부드러움·건조함, 채소 아삭함·무름",
+  appearance: "재료 분포와 소스 코팅 균일성, 바닥 눌음",
+  aroma: "완성 음식의 향과 이취",
+  temperature_suitability: "제공 시점의 온도 적합성",
+};
+const jeyukQualityReasons = [
+  ["UNDERCOOKED", "덜 익음"], ["EXCESS_MOISTURE", "수분 과다"],
+  ["OVERCOOKED", "과조리"], ["UNEVEN_COOK", "불균일 조리"],
+  ["BAD_SMELL", "이취"], ["BURNT_BOTTOM", "바닥 눌음"],
+  ["UNEVEN_MIX", "불균일 혼합"], ["INGREDIENT_DAMAGE", "재료 손상"],
+  ["SAUCE_NOT_COATED", "소스 코팅 부족"],
+] as const;
 const processLabels: Record<CookingJob["process_assessment_status"], string> = {
   INSUFFICIENT_DATA: "판정 자료 대기", NORMAL: "정상", WARNING: "주의", FAILED: "공정 실패",
 };
@@ -159,6 +175,9 @@ export function CookingWorkspace({ csrf }: Props) {
   const [actualPortions, setActualPortions] = useState(2);
   const [massKg, setMassKg] = useState("");
   const [overallSatisfaction, setOverallSatisfaction] = useState("");
+  const [jeyukQualityDecision, setJeyukQualityDecision] = useState<"QUALITY_PASSED" | "QUALITY_FAILED">("QUALITY_PASSED");
+  const [jeyukQualityReasonsSelected, setJeyukQualityReasonsSelected] = useState<string[]>([]);
+  const [jeyukQualityNote, setJeyukQualityNote] = useState("");
   const [assessmentKind, setAssessmentKind] = useState<"REVISION" | "REASSESSMENT">("REASSESSMENT");
   const [assessmentReason, setAssessmentReason] = useState("");
   const [recookReason, setRecookReason] = useState("");
@@ -216,6 +235,9 @@ export function CookingWorkspace({ csrf }: Props) {
         setActualPortions(snapshot.job.planned_portions);
         setMassKg("");
         setOverallSatisfaction("");
+        setJeyukQualityDecision("QUALITY_PASSED");
+        setJeyukQualityReasonsSelected([]);
+        setJeyukQualityNote("");
         setAssessmentReason("");
         setRecookReason("");
         setTransitionReason("");
@@ -466,21 +488,32 @@ export function CookingWorkspace({ csrf }: Props) {
     if (values.some((value) => value === "") || scoreItems.some(({ key }) => !observations[key].trim())) {
       setError("7개 항목의 점수와 관찰 근거를 모두 입력해 주세요."); return;
     }
-    if (!load) { setError("실제 투입량은 0.01~0.80 kg이며 소수 둘째 자리까지 입력해 주세요."); return; }
+    if (job.menu === "TONKATSU" && !load) { setError("실제 투입량은 0.01~0.80 kg이며 소수 둘째 자리까지 입력해 주세요."); return; }
     if (!Number.isInteger(actualPortions) || actualPortions < 1 || actualPortions > 4) {
       setError("실제 인분은 1~4입니다."); return;
     }
     if (currentVersion > 0 && !assessmentReason.trim()) {
       setError("수정·재평가 사유를 입력해 주세요."); return;
     }
+    if (job.menu === "JEYUK" && jeyukQualityDecision === "QUALITY_FAILED" && jeyukQualityReasonsSelected.length === 0) {
+      setError("제육볶음 품질 실패 사유를 하나 이상 선택해 주세요."); return;
+    }
+    const jeyukMass = Number(job.actual_load_kg);
+    const jeyukPercent = Math.round(jeyukMass / 1.8 * 10000) / 100;
+    const jeyukBand = jeyukPercent <= 50 ? "PARTIAL" : jeyukPercent <= 100 ? "REFERENCE" : "OVER_RECOMMENDED";
     const kind: AssessmentKind = currentVersion === 0 ? "INITIAL" : assessmentKind;
     await action(() => api<Assessment>(jobPath(job.job_id) + "/assessments", csrf, {
       expected_version: job.version, expected_current_version: currentVersion, kind,
       reason: currentVersion === 0 ? null : assessmentReason.trim(), scores, observations,
       overall_satisfaction: overallSatisfaction ? Number(overallSatisfaction) : null,
-      scale_version: "tonkatsu-common-v1", planned_portions: job.planned_portions,
-      actual_portions: actualPortions, actual_mass_kg: massKg, load_percent: load.percent,
-      load_band: load.band,
+      scale_version: job.menu === "JEYUK" ? "jeyuk-common-v1" : "tonkatsu-common-v1",
+      planned_portions: job.planned_portions, actual_portions: actualPortions,
+      actual_mass_kg: job.menu === "JEYUK" ? job.actual_load_kg : massKg,
+      load_percent: job.menu === "JEYUK" ? jeyukPercent : load!.percent,
+      load_band: job.menu === "JEYUK" ? jeyukBand : load!.band,
+      ...(job.menu === "JEYUK" ? { quality_decision: jeyukQualityDecision,
+        quality_reason_codes: jeyukQualityDecision === "QUALITY_FAILED" ? jeyukQualityReasonsSelected : [],
+        quality_note: jeyukQualityNote.trim() || null } : {}),
     }), "완료 평가를 새 버전으로 기록했습니다.");
   }
 
@@ -568,7 +601,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const scoreValues = Object.values(scores).filter((value): value is number => value !== "");
   const previewScore = scoreValues.length === 7 ? (scoreValues.reduce((sum, value) => sum + value, 0) / 35 * 100).toFixed(2) : null;
   const load = loadForMass(Number(massKg));
-  const canAssess = !!job && job.menu === "TONKATSU" && job.status === "COMPLETED" && job.safety_status === "PASSED" && !job.evaluation_blocked;
+  const canAssess = !!job && job.status === "COMPLETED" && job.safety_status === "PASSED" && !job.evaluation_blocked;
   const safetyLocked = !!job && ["SUSPECTED", "UNDER_REVIEW", "FAILED"].includes(job.safety_status);
   const availableTransitions = job ? transitions[job.status].filter(({ event }) => !safetyLocked || event === "COOKING_CANCELED") : [];
 
@@ -843,11 +876,51 @@ export function CookingWorkspace({ csrf }: Props) {
           </section>
 
           <AssessmentAggregate csrf={csrf} currentJobId={job.job_id} recipeVersion={job.recipe_version}
-            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band}
+            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band === "OVER_RECOMMENDED"
+              ? undefined : assessments.find(item => item.version === current?.version)?.load_band as "PARTIAL" | "REFERENCE" | undefined}
             availableJobs={listedJobs} />
           </> : <section className="subcard">
             <h3>4. 제육볶음 품질평가</h3>
-            <p className="small">안전 확인 결과와 품질평가는 별개입니다. 메뉴별 완료 평가 척도 연결 전까지 평가 제출은 보류합니다.</p>
+            <p className="small">제육볶음 공통 척도 v1 · 7항목 동일 가중 · 항목별 1~5점과 관찰 근거를 기록합니다. 안전 확인과 품질 판정은 별개입니다.</p>
+            {!canAssess && <p className="warning">작업 완료와 자동·배출 표본 안전 통과 후에만 완료 평가를 기록할 수 있습니다.</p>}
+            {current && <p className={current.usable ? "small" : "warning"}>현재 평가 포인터 v{current.version}: {current.usable ? "사용 가능" : "사용 차단"}</p>}
+            <div className="score-grid">
+              {scoreItems.map(({ key, label }) => <div className="score-row" key={key}>
+                <div><strong>{label}</strong><small>{jeyukScoreHelp[key]}</small></div>
+                <label>점수 <select value={scores[key]} onChange={(event) => setScores((old) => ({ ...old, [key]: event.target.value ? Number(event.target.value) : "" }))}>
+                  <option value="">선택</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} · {scoreLabel(value)}</option>)}
+                </select></label>
+                <label>관찰 근거 <input maxLength={500} value={observations[key]}
+                  onChange={(event) => setObservations((old) => ({ ...old, [key]: event.target.value }))} placeholder="제육볶음 관찰 내용" /></label>
+              </div>)}
+            </div>
+            <p className="preview">{previewScore ? `입력 점수 미리보기 ${previewScore}점 / 100점` : "7개 점수를 모두 선택하면 종합점수 미리보기가 표시됩니다."}</p>
+            <div className="field-row">
+              <label>실제 인분 <input type="number" min="1" max={job.planned_portions} step="1" value={actualPortions}
+                onChange={(event) => setActualPortions(Number(event.target.value))} /></label>
+              <label>품질 판정 <select value={jeyukQualityDecision} onChange={(event) => setJeyukQualityDecision(event.target.value as "QUALITY_PASSED" | "QUALITY_FAILED")}>
+                <option value="QUALITY_PASSED">품질 통과</option><option value="QUALITY_FAILED">품질 실패</option>
+              </select></label>
+              <label>전반적 만족도 <select value={overallSatisfaction} onChange={(event) => setOverallSatisfaction(event.target.value)}>
+                <option value="">선택 안 함</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}
+              </select></label>
+            </div>
+            <p className="small">합성 소형 볶음기 권장량 1.8kg 대비 실제 {job.actual_load_kg}kg · 적재율 {Math.round(Number(job.actual_load_kg) / 1.8 * 10000) / 100}%</p>
+            {jeyukQualityDecision === "QUALITY_FAILED" && <fieldset><legend>품질 실패 사유</legend>
+              <div className="probe-grid">{jeyukQualityReasons.map(([code, label]) => <label className="check-line" key={code}>
+                <input type="checkbox" checked={jeyukQualityReasonsSelected.includes(code)}
+                  onChange={(event) => setJeyukQualityReasonsSelected((old) => event.target.checked ? [...old, code] : old.filter((value) => value !== code))} /> {label}
+              </label>)}</div>
+            </fieldset>}
+            <label>품질 의견 <input maxLength={500} value={jeyukQualityNote} onChange={(event) => setJeyukQualityNote(event.target.value)} /></label>
+            {current && <div className="field-row">
+              <label>평가 유형 <select value={assessmentKind} onChange={(event) => setAssessmentKind(event.target.value as "REVISION" | "REASSESSMENT")}>
+                <option value="REASSESSMENT">재평가</option><option value="REVISION">수정</option>
+              </select></label>
+              <label className="grow">수정·재평가 사유 <input maxLength={500} value={assessmentReason}
+                onChange={(event) => setAssessmentReason(event.target.value)} /></label>
+            </div>}
+            <button type="button" onClick={submitAssessment} disabled={busy || !canAssess}>제육볶음 완료 평가 기록</button>
           </section>}
 
           <section className="subcard" aria-labelledby="recook-title">
@@ -879,6 +952,10 @@ export function CookingWorkspace({ csrf }: Props) {
               <strong>v{item.version} · {item.score_percent}점</strong>
               <small>{item.kind === "INITIAL" ? "최초" : item.kind === "REVISION" ? "수정" : "재평가"} · {timeLabel(item.completed_at)}</small>
               <small>{current?.version === item.version && current.usable ? "현재 평가 기록" : "과거 기록 또는 사용 차단"}</small>
+              {item.quality_status && <small>품질 판정: {item.quality_status === "QUALITY_PASSED" ? "통과" : "실패"}</small>}
+              {item.quality_reason_codes && item.quality_reason_codes.length > 0 &&
+                <small>실패 사유: {item.quality_reason_codes.map(code => jeyukQualityReasons.find(([known]) => known === code)?.[1] ?? code).join(", ")}</small>}
+              {item.quality_note && <small>품질 의견: {item.quality_note}</small>}
               {item.reason && <small>사유: {item.reason}</small>}
             </li>)}
           </ol>}
