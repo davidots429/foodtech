@@ -11,6 +11,21 @@ internal static class JeyukSimulation
     {
         using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
         var root = fixture.RootElement;
+        var lines = Expand(root);
+        using (var writer = new StreamWriter(outputPath, false, new UTF8Encoding(false)))
+            foreach (var line in lines)
+                writer.WriteLine(line);
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            fixtureId = RequiredString(root, "fixtureId"), provenance = "SYNTHETIC",
+            profileId = "mockprofile-110", instanceId = "mockprofile-110-a-001",
+            profile = RequiredString(root, "profile"), sampleIntervalSeconds = 1,
+            count = lines.Count, output = outputPath,
+        }));
+    }
+
+    public static IReadOnlyList<string> Expand(JsonElement root)
+    {
         var fixtureId = RequiredString(root, "fixtureId");
         var profile = RequiredString(root, "profile");
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
@@ -39,15 +54,7 @@ internal static class JeyukSimulation
                     surface, actualRpm, targetRpm, motorLoad));
         }
 
-        using (var writer = new StreamWriter(outputPath, false, new UTF8Encoding(false)))
-            foreach (var sample in samples)
-                writer.WriteLine(JsonSerializer.Serialize(sample, JsonOptions));
-        Console.WriteLine(JsonSerializer.Serialize(new
-        {
-            fixtureId, provenance = "SYNTHETIC", profileId = "mockprofile-110",
-            instanceId = "mockprofile-110-a-001", profile, sampleIntervalSeconds = 1,
-            count = samples.Count, output = outputPath,
-        }));
+        return samples.Select(sample => JsonSerializer.Serialize(sample, JsonOptions)).ToArray();
     }
 
     private static string RequiredString(JsonElement root, string name)

@@ -14,10 +14,17 @@ if (args.Length > 0 && args[0] == "simulate-jeyuk")
 var fixturePath = Required(options, "fixture");
 using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
 var root = fixture.RootElement;
-if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-    root.GetProperty("instanceId").GetString() != "mockprofile-100-a-001")
-    throw new InvalidDataException("Only the approved synthetic profile is supported by this slice.");
-var records = root.GetProperty("records").EnumerateArray().Select(item => item.Clone()).ToArray();
+var jeyuk = root.TryGetProperty("fixtureId", out _);
+if (!jeyuk && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
+    root.GetProperty("instanceId").GetString() != "mockprofile-100-a-001"))
+    throw new InvalidDataException("Only approved synthetic profiles are supported.");
+if (jeyuk && (args.Length == 0 || args[0] != "serve"))
+    throw new ArgumentException("Use simulate-jeyuk or serve for the jeyuk fixture.");
+var records = jeyuk ? Array.Empty<JsonElement>() :
+    root.GetProperty("records").EnumerateArray().Select(item => item.Clone()).ToArray();
+var recordLines = jeyuk ? JeyukSimulation.Expand(root).ToArray() :
+    records.Select(item => JsonSerializer.Serialize(item)).ToArray();
+var profileId = jeyuk ? "mockprofile-110" : "mockprofile-100";
 
 if (args.Length > 0 && args[0] == "hash")
 {
@@ -80,7 +87,7 @@ app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
     var bearer = context.Request.Headers.Authorization.ToString();
     if (tokenExpires <= DateTimeOffset.UtcNow || !FixedEquals(bearer, "Bearer " + accessToken))
         return Results.Unauthorized();
-    if (cursor is < 0 || cursor > records.Length) return Results.BadRequest(new { error = "invalid_cursor" });
+    if (cursor is < 0 || cursor > recordLines.Length) return Results.BadRequest(new { error = "invalid_cursor" });
     if (disconnectOnce && !disconnected)
     {
         disconnected = true;
@@ -89,10 +96,10 @@ app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
     }
     var start = cursor ?? 0;
     context.Response.Headers["X-Contract-Version"] = "1.0";
-    context.Response.Headers["X-Profile-ID"] = "mockprofile-100";
+    context.Response.Headers["X-Profile-ID"] = profileId;
     context.Response.Headers["X-Provenance"] = "SYNTHETIC";
-    context.Response.Headers["X-Next-Cursor"] = records.Length.ToString();
-    var lines = string.Join("\n", records.Skip(start).Select(record => JsonSerializer.Serialize(record)));
+    context.Response.Headers["X-Next-Cursor"] = recordLines.Length.ToString();
+    var lines = string.Join("\n", recordLines.Skip(start));
     return Results.Text(lines.Length == 0 ? "" : lines + "\n", "application/x-ndjson", Encoding.UTF8);
 });
 

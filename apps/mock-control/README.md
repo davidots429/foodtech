@@ -31,5 +31,5 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-jeyuk \
   --fixture fixtures/jeyuk-small-process-v1.json --output /tmp/foodtech-jeyuk.jsonl
 ```
 
-`tests/integration/test_jeyuk_mock.py`는 C# 출력을 플랫폼 공정 규칙에 넣어 5초 걸림 경고와 30초 실패를 확인한다. 현재 명령은 로컬 파일 생성 계약이다. 제육볶음 원표본의 HTTPS 수집·표준화·실저장 연계는 후속 작업이다.
+`tests/integration/test_jeyuk_mock.py`는 C# 파일 출력을 플랫폼 공정 규칙에 넣어 5초 걸림 경고와 30초 실패를 확인한다. 같은 fixture를 `serve --fixture fixtures/jeyuk-small-process-v1.json`에 주면 기존 HTTPS/OAuth 읽기 전용 `/v1/records`에서 `X-Profile-ID: mockprofile-110`과 함께 30개 원표본을 조회할 수 있다. 초 번호는 논리 시각이며 현재 조회는 실시간 1Hz 송신이 아니라 fixture 전체의 일괄 반환이다. `tests/integration/test_jeyuk_https.py`가 실제 TLS·인증·프로파일 검증·수집·공정판정을 확인한다. 제육볶음 원표본의 DynamoDB·SQS 실저장과 고객 조리작업 연결은 후속 작업이다.
 
