@@ -106,6 +106,60 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(core.status_code, 422)
         self.assertTrue(completed.json()["evaluation_blocked"])
 
+    async def test_discharge_probe_requires_auto_hold_and_preserves_revalidation(self):
+        job = await self.create()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        pk = cooking._pk("jeyuk-customer", job["job_id"])
+        self.store.items[(pk, "META")].update(status="COMPLETED",
+                                                actual_lifted_at="2026-01-01T00:00:00Z")
+
+        def body(version, kind="INITIAL", temperatures=(75, 75, 75), expired=None):
+            return {"expected_version": version, "kind": kind, "samples": [
+                {"phase": phase, "probe_id": f"probe-{index}",
+                 "meat_sample_id": f"meat-{index}", "thickest_or_clumped_part": True,
+                 "sampled_at": f"2026-01-01T00:00:0{index}Z",
+                 "calibration_status": "EXPIRED" if index == expired else "OK",
+                 "celsius": value}
+                for index, (phase, value) in enumerate(zip(("EARLY", "MIDDLE", "LATE"), temperatures), 1)]}
+
+        first = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
+                                       json=body(job["version"]))
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["discharge_check_status"], "PASSED")
+        self.assertEqual(first.json()["safety_status"], "INCOMPLETE")
+        self.assertTrue(first.json()["evaluation_blocked"])
+        self.store.items[(pk, "META")]["auto_safety_status"] = "PASSED"
+        second = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
+                                        json=body(first.json()["version"], "REVALIDATION"))
+        self.assertEqual(second.json()["safety_status"], "PASSED")
+        self.assertFalse(second.json()["evaluation_blocked"])
+        failed = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
+                                        json=body(second.json()["version"], "REVALIDATION", (75, 74.9, 75)))
+        self.assertEqual(failed.json()["safety_status"], "FAILED")
+        self.assertTrue(failed.json()["evaluation_blocked"])
+        events = (await self.client.get(path + "/events")).json()
+        self.assertEqual(len([event for event in events if event["trigger"] == "JEYUK_DISCHARGE_CHECK"]), 3)
+
+    async def test_discharge_missing_invalid_and_ordered_samples(self):
+        job = await self.create()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}/safety/discharge-check"
+        pk = cooking._pk("jeyuk-customer", job["job_id"])
+        self.store.items[(pk, "META")].update(status="COMPLETED", auto_safety_status="PASSED",
+                                                actual_lifted_at="2026-01-01T00:00:00Z")
+        samples = [{"phase": phase, "probe_id": f"probe-{index}",
+                    "meat_sample_id": f"meat-{index}", "thickest_or_clumped_part": True,
+                    "sampled_at": f"2026-01-01T00:00:0{index}Z",
+                    "calibration_status": "OK", "celsius": 75}
+                   for index, phase in enumerate(("EARLY", "MIDDLE", "LATE"), 1)]
+        bad = await self.client.post(path, headers=CSRF, json={"expected_version": 1,
+                                      "kind": "INITIAL", "samples": list(reversed(samples))})
+        self.assertEqual(bad.status_code, 422)
+        samples[1]["calibration_status"] = "EXPIRED"
+        incomplete = await self.client.post(path, headers=CSRF, json={"expected_version": 1,
+                                             "kind": "INITIAL", "samples": samples})
+        self.assertEqual(incomplete.json()["discharge_check_status"], "ASSESSMENT_INCOMPLETE")
+        self.assertTrue(incomplete.json()["evaluation_blocked"])
+
 
 if __name__ == "__main__":
     unittest.main()

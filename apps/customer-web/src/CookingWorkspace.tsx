@@ -51,6 +51,7 @@ const eventLabels: Record<string, string> = {
   COOKING_CANCELED: "조리 취소", SUSPECTED: "이상 의심 신고",
   UNDER_REVIEW: "안전 확인 시작", CLEARED: "이상 의심 해제",
   FAILED: "안전 실패 확정", CORE_CHECK: "합성 심부온도 안전 판정",
+  JEYUK_DISCHARGE_CHECK: "제육볶음 배출 표본 안전 판정",
   PROCESS_SAMPLE_ASSESSED: "수집 온도 공정판정", PROCESS_FAILURE_DETECTED: "공정 실패 자동판정",
 };
 const processLabels: Record<CookingJob["process_assessment_status"], string> = {
@@ -131,6 +132,8 @@ export function CookingWorkspace({ csrf }: Props) {
   const [nextJobCursor, setNextJobCursor] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(false);
   const [plannedPortions, setPlannedPortions] = useState(2);
+  const [createMenu, setCreateMenu] = useState<"TONKATSU" | "JEYUK">("TONKATSU");
+  const [jeyukLoadKg, setJeyukLoadKg] = useState("1.8");
   const [recipeVersion, setRecipeVersion] = useState("synthetic-v1");
   const [thicknessCm, setThicknessCm] = useState("1.20");
   const [placedAt, setPlacedAt] = useState(() => localDateTime(new Date()));
@@ -148,6 +151,9 @@ export function CookingWorkspace({ csrf }: Props) {
   const [probeTemps, setProbeTemps] = useState<string[]>([]);
   const [probeExpired, setProbeExpired] = useState<boolean[]>([]);
   const [simulateGap, setSimulateGap] = useState(false);
+  const [dischargeTemps, setDischargeTemps] = useState(["75", "75", "75"]);
+  const [dischargeExpired, setDischargeExpired] = useState([false, false, false]);
+  const [dischargeGap, setDischargeGap] = useState(false);
   const [scores, setScores] = useState<ScoreForm>(emptyScores);
   const [observations, setObservations] = useState<ObservationForm>(emptyObservations);
   const [actualPortions, setActualPortions] = useState(2);
@@ -200,6 +206,9 @@ export function CookingWorkspace({ csrf }: Props) {
         setProbeTemps(Array(snapshot.job.planned_portions).fill("75.0"));
         setProbeExpired(Array(snapshot.job.planned_portions).fill(false));
         setSimulateGap(false);
+        setDischargeTemps(["75", "75", "75"]);
+        setDischargeExpired([false, false, false]);
+        setDischargeGap(false);
         setSafetyReason("");
         setManualStopConfirmed(false);
         setScores(emptyScores());
@@ -338,13 +347,17 @@ export function CookingWorkspace({ csrf }: Props) {
     if (!Number.isInteger(plannedPortions) || plannedPortions < 1 || plannedPortions > 4 || !recipeVersion.trim()) {
       setError("계획 인분은 1~4, 레시피 버전은 필수입니다."); return;
     }
-    if (!thicknessCm || !Number.isFinite(Number(thicknessCm)) || Number(thicknessCm) <= 0 || Number(thicknessCm) > 2) {
+    if (createMenu === "TONKATSU" && (!thicknessCm || !Number.isFinite(Number(thicknessCm)) || Number(thicknessCm) <= 0 || Number(thicknessCm) > 2)) {
       setError("합성 제품의 최대 두께는 0 초과~2.00cm로 입력해 주세요. 2.00cm 초과는 프로파일에서 제외됩니다."); return;
+    }
+    if (createMenu === "JEYUK" && (!jeyukLoadKg || !Number.isFinite(Number(jeyukLoadKg)) || Number(jeyukLoadKg) <= 0 || Number(jeyukLoadKg) > 3)) {
+      setError("제육볶음 합성 적재량은 0 초과~3.0kg입니다."); return;
     }
     await action(
       () => api<CookingJob>("/api/customer/cooking-jobs", csrf, {
         planned_portions: plannedPortions, recipe_version: recipeVersion.trim(),
-        thickness_cm: thicknessCm, equipment_profile: "synthetic-fryer",
+        ...(createMenu === "TONKATSU" ? { thickness_cm: thicknessCm, equipment_profile: "synthetic-fryer" }
+          : { actual_load_kg: jeyukLoadKg, equipment_profile: "jeyuk-small" }),
       }),
       "합성 조리작업을 생성했습니다.", (created) => created.job_id,
     );
@@ -380,7 +393,7 @@ export function CookingWorkspace({ csrf }: Props) {
     if (!job || !batchId.trim()) { setError("합성 수집 배치 ID를 입력해 주세요."); return; }
     await action(() => api<CookingJob>(jobPath(job.job_id) + "/source-binding", csrf, {
       expected_version: job.version, source_id: "synthetic-rest",
-      device_id: "mockprofile-100-a-001", batch_id: batchId.trim(),
+      device_id: job.menu === "JEYUK" ? "mockprofile-110-a-001" : "mockprofile-100-a-001", batch_id: batchId.trim(),
     }), "이 조리작업과 합성 수집 배치를 연결했습니다.");
   }
 
@@ -422,6 +435,26 @@ export function CookingWorkspace({ csrf }: Props) {
     await action(() => api<CookingJob>(jobPath(job.job_id) + "/safety/core-check", csrf, {
       expected_version: job.version, probes,
     }), "합성 심부온도 표본의 안전 판정을 기록했습니다.");
+  }
+
+  async function checkJeyukDischarge() {
+    if (!job || job.menu !== "JEYUK") return;
+    if (dischargeTemps.some((value) => !value.trim() || !Number.isFinite(Number(value)) ||
+        Number(value) < -273.15 || Number(value) > 300)) {
+      setError("배출 초기·중간·말기 합성 표본 온도를 모두 입력해 주세요."); return;
+    }
+    const phases = ["EARLY", "MIDDLE", "LATE"] as const;
+    const baseTime = Math.max(Date.now(), new Date(job.actual_lifted_at ?? 0).getTime());
+    const samples = phases.map((phase, index) => ({
+      phase, probe_id: `synthetic-probe-${index + 1}`, meat_sample_id: `synthetic-meat-${index + 1}`,
+      thickest_or_clumped_part: true, sampled_at: new Date(baseTime + index * 1000).toISOString(),
+      calibration_status: dischargeExpired[index] ? "EXPIRED" : "OK",
+      celsius: dischargeTemps[index],
+    })).filter((sample) => !dischargeGap || sample.phase !== "MIDDLE");
+    await action(() => api<CookingJob>(jobPath(job.job_id) + "/safety/discharge-check", csrf, {
+      expected_version: job.version,
+      kind: (job.discharge_check_version ?? 0) === 0 ? "INITIAL" : "REVALIDATION", samples,
+    }), "배출 단계별 합성 탐침 판정을 기록했습니다.");
   }
 
   async function submitAssessment() {
@@ -535,7 +568,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const scoreValues = Object.values(scores).filter((value): value is number => value !== "");
   const previewScore = scoreValues.length === 7 ? (scoreValues.reduce((sum, value) => sum + value, 0) / 35 * 100).toFixed(2) : null;
   const load = loadForMass(Number(massKg));
-  const canAssess = !!job && job.status === "COMPLETED" && job.safety_status === "PASSED" && !job.evaluation_blocked;
+  const canAssess = !!job && job.menu === "TONKATSU" && job.status === "COMPLETED" && job.safety_status === "PASSED" && !job.evaluation_blocked;
   const safetyLocked = !!job && ["SUSPECTED", "UNDER_REVIEW", "FAILED"].includes(job.safety_status);
   const availableTransitions = job ? transitions[job.status].filter(({ event }) => !safetyLocked || event === "COOKING_CANCELED") : [];
 
@@ -553,12 +586,21 @@ export function CookingWorkspace({ csrf }: Props) {
         <section className="subcard" aria-labelledby="job-create-title">
           <h3 id="job-create-title">1. 작업 생성·불러오기</h3>
           <div className="field-row">
+            <label>메뉴 <select value={createMenu} onChange={(event) => {
+              const menu = event.target.value as "TONKATSU" | "JEYUK";
+              setCreateMenu(menu);
+              setBatchId(menu === "JEYUK" ? "jeyuk-small-safety-v1" : "batch-a-001");
+            }}>
+              <option value="TONKATSU">돈까스</option><option value="JEYUK">제육볶음</option>
+            </select></label>
             <label>계획 인분 <input type="number" min="1" max="4" step="1" value={plannedPortions}
               onChange={(event) => setPlannedPortions(Number(event.target.value))} /></label>
             <label>레시피 버전 <input maxLength={80} value={recipeVersion}
               onChange={(event) => setRecipeVersion(event.target.value)} /></label>
-            <label>제품 최대 두께(cm) <input type="number" min="0.01" max="2.00" step="0.01" value={thicknessCm}
+            {createMenu === "TONKATSU" ? <label>제품 최대 두께(cm) <input type="number" min="0.01" max="2.00" step="0.01" value={thicknessCm}
               onChange={(event) => setThicknessCm(event.target.value)} /></label>
+              : <label>합성 적재량(kg) <input type="number" min="0.01" max="3.0" step="0.01" value={jeyukLoadKg}
+                onChange={(event) => setJeyukLoadKg(event.target.value)} /></label>}
           </div>
           <button type="button" onClick={createJob} disabled={busy || loadingJob}>합성 조리작업 만들기</button>
           <div className="lookup-row"><label>기존 작업 ID
@@ -588,13 +630,14 @@ export function CookingWorkspace({ csrf }: Props) {
             {processView?.view === "LATEST_RESTATED" && <p className="small">늦은 수집값을 반영한 파생 판정입니다. 최초 처리 판정: {processLabels[job.process_assessment_status]}. 원 기록은 유지됩니다.
               {processView.job_version_changed && " 파생 이후 작업 기록이 변경되어 재검토가 필요합니다."}</p>}
             <p className="small">레시피 {job.recipe_version} · 계획 {job.planned_portions}인분 · 마지막 변경 {timeLabel(job.updated_at)}</p>
-            <p className="small">두께 {job.thickness_cm ?? "미기록"}cm · {job.thickness_profile ?? "프로파일 없음"}
+            {job.menu === "TONKATSU" ? <p className="small">두께 {job.thickness_cm ?? "미기록"}cm · {job.thickness_profile ?? "프로파일 없음"}
               {" "}({thicknessLabels[job.process_thickness_status ?? ""] ?? "미판정"})</p>
-            <p className="small">실제 조리시간 {job.actual_cooking_seconds == null ? "인양 전" : `${job.actual_cooking_seconds}초`}
+              : <p className="small">제육볶음 합성 적재량 {job.actual_load_kg ?? "미기록"}kg · 자동 혼합물 안전 {job.auto_safety_status ?? "NOT_MEASURED"} · 유지 {job.mixture_hold_seconds ?? 0}초</p>}
+            <p className="small">실제 조리시간 {job.actual_cooking_seconds == null ? "완료 전" : `${job.actual_cooking_seconds}초`}
               {" "}· 시간 판정 {timeLabels[job.process_time_status ?? "NOT_MEASURED"] ?? "미판정"}</p>
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
             {job.source_binding ? <p className="small">연결된 합성 수집 배치: <code>{job.source_binding.batch_id}</code> · 온도 판정 {temperatureLabels[job.process_temperature_status] ?? job.process_temperature_status}</p>
-              : <div className="binding-box"><p className="small">Mock의 <code>synthetic-rest / mockprofile-100-a-001</code> 배치를 조리 시작 전에 연결해야 수집 온도값으로 자동 공정판정이 실행됩니다.</p>
+              : <div className="binding-box"><p className="small">Mock의 <code>synthetic-rest / {job.menu === "JEYUK" ? "mockprofile-110-a-001" : "mockprofile-100-a-001"}</code> 배치를 조리 시작 전에 연결해야 자동 공정판정이 실행됩니다.</p>
                 <div className="field-row"><label className="grow">합성 배치 ID
                   <input maxLength={80} value={batchId} onChange={(event) => setBatchId(event.target.value)} />
                 </label><button type="button" onClick={bindSource} disabled={busy || loadingJob || !["PENDING", "READY"].includes(job.status)}>수집 배치 연결</button></div>
@@ -604,7 +647,7 @@ export function CookingWorkspace({ csrf }: Props) {
             {job.status === "READY" && <div className="field-row"><label>합성 재료 투입 시각
               <input type="datetime-local" value={placedAt} onChange={(event) => setPlacedAt(event.target.value)} />
             </label><button type="button" className="secondary" onClick={() => setPlacedAt(localDateTime(new Date()))}>현재 시각 입력</button></div>}
-            {job.status === "RUNNING" && <div className="field-row"><label>합성 바스켓 인양 시각
+            {job.status === "RUNNING" && <div className="field-row"><label>{job.menu === "JEYUK" ? "합성 배출 시작 시각" : "합성 바스켓 인양 시각"}
               <input type="datetime-local" value={liftedAt} onChange={(event) => setLiftedAt(event.target.value)} />
             </label><button type="button" className="secondary" onClick={() => setLiftedAt(localDateTime(new Date()))}>현재 시각 입력</button></div>}
             {(job.status === "READY" || job.status === "RUNNING") &&
@@ -654,6 +697,7 @@ export function CookingWorkspace({ csrf }: Props) {
               </>}
             </div>
             <div className="divider" />
+            {job.menu === "TONKATSU" ? <>
             <h4>합성 심부온도 표본</h4>
             <p className="small">제품마다 입력 온도로 0~60초의 1Hz 합성 표본 61개를 생성합니다. 실제 측정값으로 표시하지 않습니다. 전 제품의 유효 표본이 75°C 이상이어야 통과합니다.</p>
             <div className="probe-grid">
@@ -671,8 +715,28 @@ export function CookingWorkspace({ csrf }: Props) {
             <button type="button" onClick={checkCore} disabled={busy || job.status !== "COMPLETED" || safetyLocked}>
               합성 표본으로 안전 판정 기록</button>
             {job.status !== "COMPLETED" && <p className="small">조리 완료 후 제품별 안전 확인을 기록할 수 있습니다.</p>}
+            </> : <>
+              <h4>제육볶음 배출 표본 확인</h4>
+              <p className="small">자동 혼합물 75°C·60초 판정과 별도로, 최초 검증·재검증에서 육류가 포함된 혼합물의 배출 초기·중간·말기 표본을 확인합니다. 아래 값은 시연용 합성 입력이며 실제 측정 증거가 아닙니다.</p>
+              <p className="small">자동 판정: {job.auto_safety_status ?? "NOT_MEASURED"} · 수동 표본: {job.discharge_check_status ?? "NOT_MEASURED"}. 두 판정 모두 통과해야 안전 상태가 통과합니다.</p>
+              <div className="probe-grid">{(["초기", "중간", "말기"] as const).map((phase, index) =>
+                <div className="probe-card" key={phase}>
+                  <label>배출 {phase} 육류 표본 온도(°C)
+                    <input type="number" step="0.1" value={dischargeTemps[index]}
+                      onChange={(event) => setDischargeTemps((old) => old.map((value, at) => at === index ? event.target.value : value))} />
+                  </label>
+                  <label className="check-line"><input type="checkbox" checked={dischargeExpired[index]}
+                    onChange={(event) => setDischargeExpired((old) => old.map((value, at) => at === index ? event.target.checked : value))} /> 탐침 교정 만료 재현</label>
+                </div>)}</div>
+              <label className="check-line"><input type="checkbox" checked={dischargeGap}
+                onChange={(event) => setDischargeGap(event.target.checked)} /> 중간 표본 누락 재현</label>
+              <button type="button" onClick={checkJeyukDischarge} disabled={busy || job.status !== "COMPLETED" || safetyLocked}>
+                배출 표본 안전 판정 기록</button>
+              {job.status !== "COMPLETED" && <p className="small">조리 완료 후 배출 표본을 확인합니다.</p>}
+            </>}
           </section>
 
+          {job.menu === "TONKATSU" ? <>
           <section className="subcard" aria-labelledby="assessment-title">
             <h3 id="assessment-title">4. 품질평가</h3>
             <p className="small">공통 척도 v1 · 7항목 동일 가중 · 항목별 1~5점. 초기 척도에는 ‘해당 없음’이 없습니다.</p>
@@ -781,6 +845,10 @@ export function CookingWorkspace({ csrf }: Props) {
           <AssessmentAggregate csrf={csrf} currentJobId={job.job_id} recipeVersion={job.recipe_version}
             defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band}
             availableJobs={listedJobs} />
+          </> : <section className="subcard">
+            <h3>4. 제육볶음 품질평가</h3>
+            <p className="small">안전 확인 결과와 품질평가는 별개입니다. 메뉴별 완료 평가 척도 연결 전까지 평가 제출은 보류합니다.</p>
+          </section>}
 
           <section className="subcard" aria-labelledby="recook-title">
             <h3 id="recook-title">7. 재조리 연결</h3>

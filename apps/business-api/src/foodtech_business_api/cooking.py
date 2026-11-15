@@ -163,6 +163,22 @@ class CoreCheck(StrictModel):
     probes: list[Probe] = Field(min_length=1, max_length=4)
 
 
+class JeyukDischargeSample(StrictModel):
+    phase: Literal["EARLY", "MIDDLE", "LATE"]
+    probe_id: str = Field(min_length=1, max_length=80)
+    meat_sample_id: str = Field(min_length=1, max_length=80)
+    thickest_or_clumped_part: bool
+    sampled_at: datetime
+    calibration_status: Literal["OK", "EXPIRED"]
+    celsius: Decimal | None = Field(default=None, ge=Decimal("-273.15"), le=Decimal("300"))
+
+
+class JeyukDischargeCheck(StrictModel):
+    expected_version: int = Field(ge=1)
+    kind: Literal["INITIAL", "REVALIDATION"]
+    samples: list[JeyukDischargeSample] = Field(min_length=1, max_length=3)
+
+
 class CompletedAssessment(StrictModel):
     expected_version: int = Field(ge=1)
     expected_current_version: int = Field(ge=0)
@@ -231,6 +247,7 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "process_surface_status": "NOT_MEASURED", "process_rpm_status": "NOT_MEASURED",
         "auto_safety_status": "NOT_MEASURED", "mixture_hold_seconds": 0,
         "safety_passed_at_second": None,
+        "discharge_check_version": 0, "discharge_check_status": "NOT_MEASURED",
         "process_time_status": "NOT_MEASURED",
     }
     await _store_call(store, store.create, _pk(session.subject, job_id), meta)
@@ -513,6 +530,56 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
     return meta
 
 
+@router.post("/{job_id}/safety/discharge-check")
+async def jeyuk_discharge_check(job_id: str, request: Request, body: JeyukDischargeCheck) -> dict:
+    session, store, pk, old, pointer = await _read(request, job_id, write=True)
+    if old["menu"] != "JEYUK":
+        raise HTTPException(422, "제육볶음 작업에만 배출 표본 확인을 기록할 수 있습니다.")
+    if int(old["version"]) != body.expected_version:
+        raise _conflict()
+    if old["status"] != "COMPLETED" or old["safety_status"] in {"SUSPECTED", "UNDER_REVIEW", "FAILED"}:
+        raise HTTPException(409, "완료된 작업의 안전 확인 가능 상태에서만 검사합니다.")
+    if (body.kind == "INITIAL") != (int(old.get("discharge_check_version", 0)) == 0):
+        raise HTTPException(422, "최초 검증과 재검증 유형이 이전 기록과 일치해야 합니다.")
+    phases = [sample.phase for sample in body.samples]
+    if len(set(phases)) != len(phases):
+        raise HTTPException(422, "배출 단계별 표본은 한 번씩만 기록합니다.")
+    if any(sample.sampled_at.tzinfo is None for sample in body.samples):
+        raise HTTPException(422, "측정시각에는 시간대가 필요합니다.")
+    discharge_at = datetime.fromisoformat(old["actual_lifted_at"].replace("Z", "+00:00"))
+    if any(sample.sampled_at.astimezone(timezone.utc) < discharge_at for sample in body.samples):
+        raise HTTPException(422, "배출 시작 전 측정값은 사용할 수 없습니다.")
+    if any(body.samples[i].sampled_at > body.samples[i + 1].sampled_at for i in range(len(body.samples) - 1)) or \
+            phases != [phase for phase in ("EARLY", "MIDDLE", "LATE") if phase in phases]:
+        raise HTTPException(422, "배출 초기·중간·말기 순서대로 측정해야 합니다.")
+    valid_low = any(sample.calibration_status == "OK" and sample.thickest_or_clumped_part and
+                    sample.celsius is not None and sample.celsius < 75 for sample in body.samples)
+    complete = (phases == ["EARLY", "MIDDLE", "LATE"] and
+                len({sample.meat_sample_id for sample in body.samples}) == 3 and
+                all(sample.calibration_status == "OK" and sample.thickest_or_clumped_part and
+                    sample.celsius is not None for sample in body.samples))
+    manual_status = "FAILED" if valid_low else "PASSED" if complete else "ASSESSMENT_INCOMPLETE"
+    auto_status = old.get("auto_safety_status", "NOT_MEASURED")
+    status = ("FAILED" if manual_status == "FAILED" else
+              "PASSED" if manual_status == "PASSED" and auto_status == "PASSED" else
+              "INCOMPLETE")
+    now = _now()
+    version = int(old.get("discharge_check_version", 0)) + 1
+    evidence = [sample.model_dump(mode="json") for sample in body.samples]
+    meta = {**old, "safety_status": status, "safety_version": int(old["safety_version"]) + 1,
+            "discharge_check_version": version, "discharge_check_status": manual_status,
+            "discharge_check_kind": body.kind, "discharge_check": evidence,
+            "discharge_check_by": session.subject, "version": int(old["version"]) + 1,
+            "evaluation_blocked": status != "PASSED", "updated_at": now}
+    event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}",
+             "domain": "SAFETY_STATUS", "trigger": "JEYUK_DISCHARGE_CHECK",
+             "from_status": old["safety_status"], "to_status": status,
+             "manual_status": manual_status, "auto_safety_status": auto_status,
+             "kind": body.kind, "samples": evidence, "actor": session.subject, "occurred_at": now}
+    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
+    return meta
+
+
 @router.post("/{job_id}/assessments", status_code=201)
 async def complete_assessment(job_id: str, request: Request, body: CompletedAssessment) -> dict:
     session, store, pk, old, pointer = await _read(request, job_id, write=True)
@@ -608,6 +675,7 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
             "process_surface_status": "NOT_MEASURED", "process_rpm_status": "NOT_MEASURED",
             "auto_safety_status": "NOT_MEASURED", "mixture_hold_seconds": 0,
             "safety_passed_at_second": None,
+            "discharge_check_version": 0, "discharge_check_status": "NOT_MEASURED",
             "process_thickness_status": old.get("process_thickness_status", "NOT_MEASURED"),
             "process_time_status": "NOT_MEASURED"}
     try:

@@ -18,12 +18,17 @@ export type ScoreKey = typeof scoreItems[number]["key"];
 
 export type CookingJob = {
   job_id: string;
-  menu: "TONKATSU";
+  menu: "TONKATSU" | "JEYUK";
   provenance: "SYNTHETIC";
   equipment_profile: string;
   recipe_version: string;
   planned_portions: number;
   thickness_cm?: string;
+  actual_load_kg?: string | null;
+  auto_safety_status?: "NOT_MEASURED" | "PENDING" | "PASSED" | "ASSESSMENT_INCOMPLETE";
+  mixture_hold_seconds?: number;
+  discharge_check_version?: number;
+  discharge_check_status?: "NOT_MEASURED" | "PASSED" | "FAILED" | "ASSESSMENT_INCOMPLETE";
   thickness_profile?: "THIN" | "STANDARD" | "THICK" | null;
   status: JobStatus;
   version: number;
