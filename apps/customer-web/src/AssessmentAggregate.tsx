@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, scoreItems, type ScoreKey } from "./cookingApi";
 
+type Menu = "TONKATSU" | "JEYUK";
+type LoadBand = "PARTIAL" | "REFERENCE" | "OVER_RECOMMENDED";
+const loadBandLabels: Record<LoadBand, string> = {
+  PARTIAL: "부분 적재", REFERENCE: "기준 적재", OVER_RECOMMENDED: "권장량 초과",
+};
+
 type AggregateResult = {
   group_id: string; result_id: string; sample_count: number; excluded_count: number;
   excluded: { job_id: string; reason: string }[];
@@ -10,11 +16,11 @@ type AggregateResult = {
   quality_target_rate_percent: string | null;
   representativeness_status: "NOT_EVALUATED";
   recipe_improvement_status: "NOT_EVALUATED";
-  selection: { recipe_version: string; load_band: "PARTIAL" | "REFERENCE"; period_start: string; period_end: string };
+  selection: { menu: Menu; recipe_version: string; load_band: LoadBand; period_start: string; period_end: string };
 };
 type AggregateGroup = {
   group_id: string; result_id: string | null; updated_at: string | null;
-  recipe_version: string; load_band: "PARTIAL" | "REFERENCE";
+  menu?: Menu; recipe_version: string; load_band: LoadBand;
   period_start: string; period_end: string; job_count: number;
 };
 type AggregateGroupPage = { items: AggregateGroup[]; next_cursor: string | null };
@@ -50,14 +56,14 @@ function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, defaultLoadBand, availableJobs }: {
-  csrf: string; currentJobId: string; recipeVersion: string; defaultLoadBand?: "PARTIAL" | "REFERENCE";
-  availableJobs: { job_id: string; created_at: string; recipe_version: string; planned_portions: number }[];
+export function AssessmentAggregate({ csrf, currentJobId, menu, recipeVersion, defaultLoadBand, availableJobs }: {
+  csrf: string; currentJobId: string; menu: Menu; recipeVersion: string; defaultLoadBand?: LoadBand;
+  availableJobs: { job_id: string; menu?: Menu; created_at: string; recipe_version: string; planned_portions: number }[];
 }) {
   const today = new Date();
   const [idsText, setIdsText] = useState(currentJobId);
   const [recipe, setRecipe] = useState(recipeVersion);
-  const [loadBand, setLoadBand] = useState<"PARTIAL" | "REFERENCE">(defaultLoadBand ?? "PARTIAL");
+  const [loadBand, setLoadBand] = useState<LoadBand>(defaultLoadBand ?? "PARTIAL");
   const [startDate, setStartDate] = useState(localDate(new Date(today.getFullYear(), today.getMonth(), 1)));
   const [endDate, setEndDate] = useState(localDate(today));
   const [result, setResult] = useState<AggregateResult | null>(null);
@@ -163,7 +169,7 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     try {
       const next = await api<AggregateResult>("/api/customer/assessment-aggregates", csrf, {
         job_ids: ids, period_start: dayStart(startDate), period_end: dayStart(endDate, true),
-        recipe_version: recipe.trim(), load_band: loadBand,
+        menu, recipe_version: recipe.trim(), load_band: loadBand,
       });
       setResult(next); setGroupId(next.group_id); setResultId(next.result_id);
       setFreshness(null); setChangedJobIds([]);
@@ -231,8 +237,8 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     <p className="small">고객이 지정한 작업만 계산하는 기술 통계입니다. 대표 표본 여부와 레시피 개선 확정은 판정하지 않습니다. 안전상 중단되거나 사용 불가한 평가는 평균에서 제외하고 사유를 남깁니다.</p>
     <label>작업 ID 목록 (쉼표 또는 줄바꿈, 최대 20개)
       <textarea value={idsText} onChange={event => setIdsText(event.target.value)} rows={3} /></label>
-    {availableJobs.length > 0 && <fieldset className="job-picker"><legend>내 작업 목록에서 표본 선택</legend>
-      {availableJobs.map(item => <label className="check-line" key={item.job_id}>
+    {availableJobs.some(item => (item.menu ?? "TONKATSU") === menu) && <fieldset className="job-picker"><legend>내 작업 목록에서 표본 선택</legend>
+      {availableJobs.filter(item => (item.menu ?? "TONKATSU") === menu).map(item => <label className="check-line" key={item.job_id}>
         <input type="checkbox" checked={selectedIds.includes(item.job_id)}
           onChange={() => toggleJob(item.job_id)} disabled={busy} />
         {new Date(item.created_at).toLocaleString("ko-KR")} · {item.recipe_version} · {item.planned_portions}인분 · {item.job_id.slice(0, 8)}
@@ -241,8 +247,9 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     </fieldset>}
     <div className="field-row">
       <label>레시피 버전 <input value={recipe} maxLength={80} onChange={event => setRecipe(event.target.value)} /></label>
-      <label>조리량 구간 <select value={loadBand} onChange={event => setLoadBand(event.target.value as "PARTIAL" | "REFERENCE")}>
-        <option value="PARTIAL">부분 적재</option><option value="REFERENCE">기준 적재</option></select></label>
+      <label>조리량 구간 <select value={loadBand} onChange={event => setLoadBand(event.target.value as LoadBand)}>
+        <option value="PARTIAL">부분 적재</option><option value="REFERENCE">기준 적재</option>
+        {menu === "JEYUK" && <option value="OVER_RECOMMENDED">권장량 초과</option>}</select></label>
       <label>시작일 <input type="date" value={startDate} onChange={event => setStartDate(event.target.value)} /></label>
       <label>종료일 (포함) <input type="date" value={endDate} onChange={event => setEndDate(event.target.value)} /></label>
     </div>
@@ -261,7 +268,7 @@ export function AssessmentAggregate({ csrf, currentJobId, recipeVersion, default
     {groups.length > 0 && <ul>{groups.map(item => <li key={item.group_id}>
       <button type="button" className="text-button" onClick={() => void loadCurrentFor(item.group_id)}
         disabled={busy || !item.result_id}>
-        {item.recipe_version} · {item.load_band === "PARTIAL" ? "부분 적재" : "기준 적재"} · {item.job_count}개 작업
+        {item.recipe_version} · {loadBandLabels[item.load_band]} · {item.job_count}개 작업
         {" · "}{item.period_start.slice(0, 10)}부터 {item.period_end.slice(0, 10)} 전까지 · {item.group_id.slice(0, 8)}
       </button>{!item.result_id && <span className="small"> 현재 결과 포인터 없음</span>}
     </li>)}</ul>}

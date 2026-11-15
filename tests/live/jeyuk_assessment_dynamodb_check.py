@@ -152,14 +152,30 @@ async def run() -> None:
                 assert comparison["score_total_delta"] == 7
                 status_path = comparison_path + "/" + comparison["comparison_id"] + "/status"
                 assert (await client.get(status_path)).json()["status"] == "CURRENT"
+                now = datetime.now(timezone.utc)
+                aggregate = await post(client, "/api/customer/assessment-aggregates", {
+                    "job_ids": [candidate["job_id"]],
+                    "period_start": (now - timedelta(days=1)).isoformat(),
+                    "period_end": (now + timedelta(days=1)).isoformat(),
+                    "menu": "JEYUK", "recipe_version": "synthetic-jeyuk-v2",
+                    "load_band": "OVER_RECOMMENDED"}, 201)
+                assert aggregate["sample_count"] == 1
+                assert aggregate["formula_version"] == "jeyuk-selected-sample-v1"
+                aggregate_path = (f"/api/customer/assessment-aggregates/{aggregate['group_id']}"
+                                  f"/results/{aggregate['result_id']}")
                 candidate = (await client.get(candidate_path)).json()["job"]
                 await post(client, candidate_path + "/safety/events", {
                     "expected_version": candidate["version"], "event": "SUSPECTED",
                     "reason": "SYNTHETIC comparison safety block"})
                 assert (await client.get(status_path)).json()["status"] == "STALE"
+                assert (await client.get(aggregate_path + "/status")).json()["status"] == "STALE"
+                current_aggregate = (await client.get(
+                    f"/api/customer/assessment-aggregates/{aggregate['group_id']}/current")).json()
+                assert current_aggregate["sample_count"] == 0
                 print(json.dumps({"assessment_versions": [1, 2], "safety_blocked_old_pointer": True,
                                   "current_pointer": 2, "comparison_band_relation": "ADJACENT",
-                                  "comparison_stale_after_safety": True, "cleanup": "pending"}))
+                                  "comparison_stale_after_safety": True,
+                                  "aggregate_recalculated_after_safety": True, "cleanup": "pending"}))
     finally:
         cleanup(store, partitions)
         print("synthetic cleanup complete")
