@@ -6,6 +6,7 @@ from boto3.dynamodb.types import TypeSerializer
 
 from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
 from foodtech_contracts.jeyuk_process import ProcessMonitor
+from foodtech_contracts.jeyuk_safety import JeyukSafetyMonitor, RULE_VERSION as SAFETY_RULE_VERSION
 
 
 class DynamoJeyukProcessor:
@@ -40,28 +41,45 @@ class DynamoJeyukProcessor:
             values = {field.name: state[field.name] for field in fields(ProcessMonitor)}
             values["failures"] = set(values["failures"])
             monitor = ProcessMonitor(**values)
+            safety = (JeyukSafetyMonitor(**state["safety_state"])
+                      if state.get("safety_state") is not None else None)
             if monitor.profile_name != sample.profile or monitor.actual_load_kg != sample.actual_load_kg:
                 raise ValueError("Jeyuk process identity changed")
         else:
             prior = 0
             monitor = ProcessMonitor(sample.profile, sample.actual_load_kg)
+            safety = JeyukSafetyMonitor() if sample.mixture_celsius is not None else None
         if second != prior + 1:
             raise ValueError("Jeyuk process sample is out of order")
+        if (safety is None) != (sample.mixture_celsius is None):
+            raise ValueError("Jeyuk safety sample contract changed within a fixture")
         reading = monitor.observe(
             second, surface_celsius=sample.surface_celsius, actual_rpm=sample.actual_rpm,
             target_rpm=sample.target_rpm, motor_load_percent=sample.motor_load_percent,
         )
+        safety_reading = (safety.observe(
+            second, mixture_celsius=sample.mixture_celsius,
+            calibration_status=sample.calibration_status,
+            safety_sensor_position=sample.safety_sensor_position,
+            last_ingredient_addition_completed=sample.last_ingredient_addition_completed,
+        ) if safety is not None else None)
         assessment = {
             **assessment_key, "fixture_id": sample.fixture_id, "profile_id": "mockprofile-110",
             "raw_sk": raw_sk, "second": second, "process_status": reading.status,
             "reason_codes": list(reading.reason_codes), "surface_band": reading.surface_band,
             "rpm_band": reading.rpm_band, "load_status": reading.load_status,
             "profile": sample.profile, "actual_load_kg": str(sample.actual_load_kg),
+            "auto_safety_status": safety_reading.status if safety_reading else "NOT_MEASURED",
+            "mixture_hold_seconds": safety_reading.hold_seconds if safety_reading else 0,
+            "last_addition_second": safety_reading.last_addition_second if safety_reading else None,
+            "safety_passed_at_second": safety_reading.passed_at_second if safety_reading else None,
+            "safety_rule_version": SAFETY_RULE_VERSION if safety_reading else None,
             "provenance": "SYNTHETIC",
         }
         monitor_state = asdict(monitor)
         monitor_state["failures"] = sorted(monitor.failures)
-        next_state = {**state_key, **monitor_state}
+        next_state = {**state_key, **monitor_state,
+                      "safety_state": asdict(safety) if safety is not None else None}
         state_put = {"TableName": self.table.name, "Item": self._marshal(next_state),
                      "ConditionExpression": "attribute_not_exists(pk)" if prior == 0 else "last_second = :prior"}
         if prior:
@@ -86,6 +104,10 @@ class DynamoJeyukProcessor:
                 "surface_band": item["surface_band"], "rpm_band": item["rpm_band"],
                 "load_status": item["load_status"],
                 "profile": item["profile"], "actual_load_kg": item["actual_load_kg"],
+                "auto_safety_status": item.get("auto_safety_status", "NOT_MEASURED"),
+                "mixture_hold_seconds": int(item.get("mixture_hold_seconds", 0)),
+                "last_addition_second": item.get("last_addition_second"),
+                "safety_passed_at_second": item.get("safety_passed_at_second"),
                 "replayed": replayed}
 
     def _marshal(self, item: dict) -> dict:

@@ -102,6 +102,17 @@ class JeyukJobBridgeTests(unittest.TestCase):
         self.assertEqual(self.bridge.apply({**decision(1, "NORMAL"), "actual_load_kg": "2.0"}),
                          "BINDING_MISMATCH")
 
+    def test_auto_safety_proof_is_visible_but_does_not_complete_manual_validation(self):
+        for second in range(1, 62):
+            result = {**decision(second, "NORMAL"),
+                      "auto_safety_status": "PASSED" if second == 61 else "PENDING",
+                      "mixture_hold_seconds": second - 1,
+                      "safety_passed_at_second": 61 if second == 61 else None}
+            self.assertEqual(self.bridge.apply(result), "NORMAL")
+        job = self.table.items[(self.job_pk, "META")]
+        self.assertEqual((job["auto_safety_status"], job["mixture_hold_seconds"]), ("PASSED", 60))
+        self.assertTrue(job["evaluation_blocked"])
+
 
 if __name__ == "__main__":
     unittest.main()

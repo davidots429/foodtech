@@ -27,12 +27,12 @@ FIXTURE = ROOT / "fixtures/jeyuk-small-process-v1.json"
 MOCK_DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 
-def csharp_samples(fixture_id: str) -> list[str]:
+def csharp_samples(fixture_id: str, fixture_path: Path = FIXTURE) -> list[str]:
     dotnet = shutil.which("dotnet")
     if not dotnet or not MOCK_DLL.is_file():
         raise RuntimeError("Build the .NET 10 Mock in Release mode and add dotnet to PATH.")
     with tempfile.TemporaryDirectory(prefix="foodtech-jeyuk-live-") as directory:
-        fixture = json.loads(FIXTURE.read_text())
+        fixture = json.loads(fixture_path.read_text())
         fixture["fixtureId"] = fixture_id
         source, output = (Path(directory) / name for name in ("fixture.json", "samples.jsonl"))
         source.write_text(json.dumps(fixture), encoding="utf-8")
