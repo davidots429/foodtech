@@ -47,6 +47,7 @@ type ValidationEvidence = {
   safety_version: number;
   discharge_check_version: number;
   process_reference: { pk: string; sk: string; second: number } | null;
+  source_table_configured: boolean;
   activation_allowed: false;
   remaining_verification: string[];
 };
@@ -56,6 +57,12 @@ const validationCheckLabels: Record<string, string> = {
   process_reference_linked: "현재 자동 공정판정의 수집 근거 연결",
   automatic_safety_passed: "혼합물 75°C·60초 자동 판정",
   manual_discharge_passed: "배출 표본 수동 판정", current_safety_passed: "현재 안전 상태",
+  source_records_contiguous: "원천 초 단위 기록 연속성",
+  source_records_match_binding: "원천 기록과 배치·적재량 일치",
+  source_derived_results_match_raw: "저장 판정과 원표본 재계산 일치",
+  source_process_conditions_normal: "원천 공정판정 전 구간 정상",
+  source_safety_samples_valid: "원천 안전 표본의 교정·위치 확인",
+  source_process_span_covers_cooking: "원천 기록이 전체 조리시간을 포함",
 };
 
 const jobLabels: Record<CookingJob["status"], string> = {
@@ -754,12 +761,13 @@ export function CookingWorkspace({ csrf }: Props) {
               <button type="button" className="secondary" onClick={inspectValidationEvidence}
                 disabled={busy || loadingJob}>현재 증거 연결 확인</button>
               {validationEvidence && <div className="small" aria-live="polite">
-                <p>연결 상태: {validationEvidence.status === "LINKED_UNVERIFIED" ? "작업 기록끼리 연결됨 · 원천 검증 전" : "필요한 작업 기록이 부족함"} · 작업 버전 {validationEvidence.job_version}</p>
+                <p>연결 상태: {validationEvidence.status === "LINKED_UNVERIFIED" ? "원천 기록까지 대조됨 · 조합 검증 전" : "필요한 작업·원천 기록이 부족함"} · 작업 버전 {validationEvidence.job_version}</p>
+                {!validationEvidence.source_table_configured && <p>원천 데이터 저장소가 연결되지 않아 원천 레코드를 대조하지 못했습니다.</p>}
                 <ul>{Object.entries(validationEvidence.checks).map(([key, passed]) => <li key={key}>
                   {validationCheckLabels[key] ?? key}: {passed ? "확인" : "미확인"}
                 </li>)}</ul>
                 {validationEvidence.process_reference && <p>자동 판정 참조: <code>{validationEvidence.process_reference.pk} / {validationEvidence.process_reference.sk}</code></p>}
-                <p>원천 기록 내용·센서와 교정 ID·원재료 추적·전체 공정조건은 아직 대조되지 않았습니다. 이 조회로 72시간 유효성이 시작되지 않습니다.</p>
+                <p>센서·교정 ID, 원재료 추적, 공정조건 프로파일 ID는 원천 레코드에 없어 아직 대조되지 않았습니다. 이 조회로 72시간 유효성이 시작되지 않습니다.</p>
               </div>}
             </div>}
             {job.source_job_id && <p className="small">원 작업 ID: <code>{job.source_job_id}</code> · 재조리 사유: {job.recook_reason}{" "}
