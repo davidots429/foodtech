@@ -119,8 +119,47 @@ async def run() -> None:
                 assert second["version"] == 2 and snapshot["current_assessment"]["version"] == 2
                 assert snapshot["current_assessment"]["usable"]
                 assert [item["version"] for item in (await client.get(path + "/assessments")).json()] == [1, 2]
+
+                candidate = await post(client, "/api/customer/cooking-jobs", {
+                    "planned_portions": 2, "recipe_version": "synthetic-jeyuk-v2",
+                    "equipment_profile": "jeyuk-small", "actual_load_kg": "2.5"}, 201)
+                candidate_pk = cooking._pk(subject, candidate["job_id"])
+                partitions.append(candidate_pk)
+                candidate_path = f"/api/customer/cooking-jobs/{candidate['job_id']}"
+                for event, timing in (("PREHEAT_COMPLETED", {}),
+                                      ("COOKING_STARTED", {"actual_placed_at": placed.isoformat()}),
+                                      ("COOKING_COMPLETED", {"actual_lifted_at": lifted.isoformat()})):
+                    candidate = await post(client, candidate_path + "/transitions", {
+                        "expected_version": candidate["version"], "event": event, **timing})
+                prior, _ = store.read(candidate_pk)
+                store.commit(candidate_pk, int(prior["version"]), {
+                    **prior, "version": int(prior["version"]) + 1,
+                    "auto_safety_status": "PASSED", "mixture_hold_seconds": 60,
+                    "safety_passed_at_second": 61})
+                candidate = (await client.get(candidate_path)).json()["job"]
+                candidate = await post(client, candidate_path + "/safety/discharge-check", {
+                    "expected_version": candidate["version"], "kind": "INITIAL", "samples": samples})
+                candidate_body = assessment(candidate["version"], 0, "INITIAL")
+                candidate_body.update(actual_mass_kg="2.5", load_percent="138.89",
+                                      load_band="OVER_RECOMMENDED",
+                                      scores={item: 5 for item in cooking.SCORE_ITEMS})
+                assessed = await post(client, candidate_path + "/assessments", candidate_body, 201)
+                assert assessed["load_band"] == "OVER_RECOMMENDED"
+                comparison_path = candidate_path + "/comparisons"
+                comparison = await post(client, comparison_path, {
+                    "baseline_job_id": job["job_id"]}, 201)
+                assert comparison["load_band_relation"] == "ADJACENT"
+                assert comparison["score_total_delta"] == 7
+                status_path = comparison_path + "/" + comparison["comparison_id"] + "/status"
+                assert (await client.get(status_path)).json()["status"] == "CURRENT"
+                candidate = (await client.get(candidate_path)).json()["job"]
+                await post(client, candidate_path + "/safety/events", {
+                    "expected_version": candidate["version"], "event": "SUSPECTED",
+                    "reason": "SYNTHETIC comparison safety block"})
+                assert (await client.get(status_path)).json()["status"] == "STALE"
                 print(json.dumps({"assessment_versions": [1, 2], "safety_blocked_old_pointer": True,
-                                  "current_pointer": 2, "cleanup": "pending"}))
+                                  "current_pointer": 2, "comparison_band_relation": "ADJACENT",
+                                  "comparison_stale_after_safety": True, "cleanup": "pending"}))
     finally:
         cleanup(store, partitions)
         print("synthetic cleanup complete")

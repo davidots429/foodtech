@@ -13,6 +13,7 @@ from .cooking import SCORE_ITEMS, _context, _pk, _read, _store_call
 from .cooking_store import Conflict
 
 router = APIRouter(prefix="/api/customer/cooking-jobs", tags=["assessment-comparison"])
+LOAD_BAND_ORDER = {"PARTIAL": 0, "REFERENCE": 1, "OVER_RECOMMENDED": 2}
 
 
 class ComparisonRequest(BaseModel):
@@ -55,8 +56,12 @@ async def _calculate(session, store, candidate_id: str, baseline_id: str) -> dic
             (baseline_meta["menu"], baseline["scale_version"], baseline["equipment_profile"]) != \
             (candidate_meta["menu"], candidate["scale_version"], candidate["equipment_profile"]) or \
             set(baseline["scores"]) != set(SCORE_ITEMS) or set(candidate["scores"]) != set(SCORE_ITEMS) or \
-            baseline["load_band"] not in {"PARTIAL", "REFERENCE"} or \
-            candidate["load_band"] not in {"PARTIAL", "REFERENCE"}:
+            baseline["load_band"] not in LOAD_BAND_ORDER or \
+            candidate["load_band"] not in LOAD_BAND_ORDER or \
+            abs(LOAD_BAND_ORDER[baseline["load_band"]] -
+                LOAD_BAND_ORDER[candidate["load_band"]]) > 1 or \
+            (candidate_meta["menu"] != "JEYUK" and
+             "OVER_RECOMMENDED" in {baseline["load_band"], candidate["load_band"]}):
         raise HTTPException(422, "메뉴·평가척도·장비와 조리량 구간이 비교 기준에 맞지 않습니다.")
     deltas = {name: int(candidate["scores"][name]) - int(baseline["scores"][name]) for name in SCORE_ITEMS}
     total_delta = sum(deltas.values())
@@ -76,6 +81,8 @@ async def _calculate(session, store, candidate_id: str, baseline_id: str) -> dic
               "baseline_recipe_version": baseline_meta["recipe_version"],
               "candidate_recipe_version": candidate_meta["recipe_version"],
               "baseline_load_band": baseline["load_band"], "candidate_load_band": candidate["load_band"],
+              "load_band_relation": ("SAME" if baseline["load_band"] == candidate["load_band"]
+                                     else "ADJACENT"),
               "baseline_actual_portions": baseline["actual_portions"],
               "candidate_actual_portions": candidate["actual_portions"],
               "baseline_actual_mass_kg": baseline["actual_mass_kg"],

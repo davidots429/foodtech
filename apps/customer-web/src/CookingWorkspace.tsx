@@ -16,6 +16,8 @@ type Comparison = {
   baseline_actual_portions: number; candidate_actual_portions: number;
   baseline_actual_mass_kg: string; candidate_actual_mass_kg: string;
   baseline_load_percent: string; candidate_load_percent: string;
+  baseline_load_band: string; candidate_load_band: string;
+  load_band_relation?: "SAME" | "ADJACENT";
   baseline_score_percent: string; candidate_score_percent: string;
   baseline_quality_passed: boolean; candidate_quality_passed: boolean;
   score_deltas: Record<ScoreKey, number>; score_total_delta: number;
@@ -24,6 +26,7 @@ type Comparison = {
 };
 type JobListItem = {
   job_id: string; created_at: string; recipe_version: string;
+  menu?: CookingJob["menu"];
   planned_portions: number; source_job_id: string | null;
 };
 type JobListPage = { items: JobListItem[]; next_cursor: string | null };
@@ -644,7 +647,7 @@ export function CookingWorkspace({ csrf }: Props) {
           {listedJobs.length === 0 && <p className="small">목록에 등록된 작업이 없습니다. 이전 작업은 ID로 열면 목록에 추가됩니다.</p>}
           {listedJobs.length > 0 && <ul>{listedJobs.map(item => <li key={item.job_id}>
             <button type="button" className="text-button" onClick={() => void loadJob(item.job_id)} disabled={busy || loadingJob}>
-              {timeLabel(item.created_at)} · {item.recipe_version} · {item.planned_portions}인분
+              {timeLabel(item.created_at)} · {item.menu === "JEYUK" ? "제육볶음" : "돈까스"} · {item.recipe_version} · {item.planned_portions}인분
               {item.source_job_id ? " · 재조리" : ""}
             </button></li>)}</ul>}
           {nextJobCursor && <button type="button" className="secondary" onClick={() => void loadJobList(nextJobCursor)}
@@ -811,18 +814,62 @@ export function CookingWorkspace({ csrf }: Props) {
             <button type="button" onClick={submitAssessment} disabled={busy || !canAssess}>완료 평가 기록</button>
           </section>
 
+          </> : <section className="subcard">
+            <h3>4. 제육볶음 품질평가</h3>
+            <p className="small">제육볶음 공통 척도 v1 · 7항목 동일 가중 · 항목별 1~5점과 관찰 근거를 기록합니다. 안전 확인과 품질 판정은 별개입니다.</p>
+            {!canAssess && <p className="warning">작업 완료와 자동·배출 표본 안전 통과 후에만 완료 평가를 기록할 수 있습니다.</p>}
+            {current && <p className={current.usable ? "small" : "warning"}>현재 평가 포인터 v{current.version}: {current.usable ? "사용 가능" : "사용 차단"}</p>}
+            <div className="score-grid">
+              {scoreItems.map(({ key, label }) => <div className="score-row" key={key}>
+                <div><strong>{label}</strong><small>{jeyukScoreHelp[key]}</small></div>
+                <label>점수 <select value={scores[key]} onChange={(event) => setScores((old) => ({ ...old, [key]: event.target.value ? Number(event.target.value) : "" }))}>
+                  <option value="">선택</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} · {scoreLabel(value)}</option>)}
+                </select></label>
+                <label>관찰 근거 <input maxLength={500} value={observations[key]}
+                  onChange={(event) => setObservations((old) => ({ ...old, [key]: event.target.value }))} placeholder="제육볶음 관찰 내용" /></label>
+              </div>)}
+            </div>
+            <p className="preview">{previewScore ? `입력 점수 미리보기 ${previewScore}점 / 100점` : "7개 점수를 모두 선택하면 종합점수 미리보기가 표시됩니다."}</p>
+            <div className="field-row">
+              <label>실제 인분 <input type="number" min="1" max={job.planned_portions} step="1" value={actualPortions}
+                onChange={(event) => setActualPortions(Number(event.target.value))} /></label>
+              <label>품질 판정 <select value={jeyukQualityDecision} onChange={(event) => setJeyukQualityDecision(event.target.value as "QUALITY_PASSED" | "QUALITY_FAILED")}>
+                <option value="QUALITY_PASSED">품질 통과</option><option value="QUALITY_FAILED">품질 실패</option>
+              </select></label>
+              <label>전반적 만족도 <select value={overallSatisfaction} onChange={(event) => setOverallSatisfaction(event.target.value)}>
+                <option value="">선택 안 함</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}
+              </select></label>
+            </div>
+            <p className="small">합성 소형 볶음기 권장량 1.8kg 대비 실제 {job.actual_load_kg}kg · 적재율 {Math.round(Number(job.actual_load_kg) / 1.8 * 10000) / 100}%</p>
+            {jeyukQualityDecision === "QUALITY_FAILED" && <fieldset><legend>품질 실패 사유</legend>
+              <div className="probe-grid">{jeyukQualityReasons.map(([code, label]) => <label className="check-line" key={code}>
+                <input type="checkbox" checked={jeyukQualityReasonsSelected.includes(code)}
+                  onChange={(event) => setJeyukQualityReasonsSelected((old) => event.target.checked ? [...old, code] : old.filter((value) => value !== code))} /> {label}
+              </label>)}</div>
+            </fieldset>}
+            <label>품질 의견 <input maxLength={500} value={jeyukQualityNote} onChange={(event) => setJeyukQualityNote(event.target.value)} /></label>
+            {current && <div className="field-row">
+              <label>평가 유형 <select value={assessmentKind} onChange={(event) => setAssessmentKind(event.target.value as "REVISION" | "REASSESSMENT")}>
+                <option value="REASSESSMENT">재평가</option><option value="REVISION">수정</option>
+              </select></label>
+              <label className="grow">수정·재평가 사유 <input maxLength={500} value={assessmentReason}
+                onChange={(event) => setAssessmentReason(event.target.value)} /></label>
+            </div>}
+            <button type="button" onClick={submitAssessment} disabled={busy || !canAssess}>제육볶음 완료 평가 기록</button>
+          </section>}
+
           <section className="subcard" aria-labelledby="comparison-title">
             <h3 id="comparison-title">5. 조리 평가 비교</h3>
-            <p className="small">같은 메뉴·척도·장비의 두 작업에서 현재 유효한 완료 평가만 비교합니다. 항목 합계가 2점 이상 오르면 ‘개선 관찰’로 기록하지만 레시피 버전 전체의 개선 확정은 아닙니다.</p>
+            <p className="small">같은 메뉴·척도·장비와 같거나 인접한 조리량 구간의 현재 유효한 완료 평가만 비교합니다. 항목 합계가 2점 이상 오르면 ‘개선 관찰’로 기록하지만 레시피 버전 전체의 개선 확정은 아닙니다.</p>
             <div className="field-row"><label className="grow">이전 작업 ID
               <input value={baselineJobId} onChange={(event) => setBaselineJobId(event.target.value)} placeholder="비교할 작업 UUID" />
             </label><button type="button" onClick={compareJobs} disabled={busy || loadingJob || !current?.usable}>현재 평가 비교</button>
               <button type="button" className="secondary" onClick={loadCurrentComparison} disabled={busy || loadingJob}>최신 비교 불러오기</button></div>
-            {listedJobs.some(item => item.job_id !== job.job_id) && <label>내 작업 목록에서 이전 작업 선택
-              <select value={listedJobs.some(item => item.job_id === baselineJobId) ? baselineJobId : ""}
+            {listedJobs.some(item => item.job_id !== job.job_id && (item.menu ?? "TONKATSU") === job.menu) && <label>내 작업 목록에서 이전 작업 선택
+              <select value={listedJobs.some(item => item.job_id === baselineJobId && (item.menu ?? "TONKATSU") === job.menu) ? baselineJobId : ""}
                 onChange={(event) => setBaselineJobId(event.target.value)}>
                 <option value="">직접 입력하거나 작업 선택</option>
-                {listedJobs.filter(item => item.job_id !== job.job_id).map(item =>
+                {listedJobs.filter(item => item.job_id !== job.job_id && (item.menu ?? "TONKATSU") === job.menu).map(item =>
                   <option key={item.job_id} value={item.job_id}>
                     {timeLabel(item.created_at)} · {item.recipe_version} · {item.job_id.slice(0, 8)}
                   </option>)}</select></label>}
@@ -870,58 +917,16 @@ export function CookingWorkspace({ csrf }: Props) {
               <p>품질 합격: 이전 {comparison.baseline_quality_passed ? "합격" : "불합격"} · 이후 {comparison.candidate_quality_passed ? "합격" : "불합격"}</p>
               <p className="small">이전 {comparison.baseline_recipe_version} 평가 v{comparison.baseline_assessment_version} · 이후 {comparison.candidate_recipe_version} 평가 v{comparison.candidate_assessment_version} · {timeLabel(comparison.compared_at)}</p>
               <p className="small">조리량: 이전 {comparison.baseline_actual_portions}인분 · {comparison.baseline_actual_mass_kg}kg · 적재율 {comparison.baseline_load_percent}%, 이후 {comparison.candidate_actual_portions}인분 · {comparison.candidate_actual_mass_kg}kg · 적재율 {comparison.candidate_load_percent}%</p>
+              <p className="small">조리량 구간: {comparison.baseline_load_band} → {comparison.candidate_load_band} · {comparison.baseline_load_band === comparison.candidate_load_band ? "같은 구간" : "인접 구간"}</p>
               <ul>{scoreItems.map(({ key, label }) => <li key={key}>{label}: {comparison.score_deltas[key] >= 0 ? "+" : ""}{comparison.score_deltas[key]}점</li>)}</ul>
               <p className="small">레시피 전체 개선 확정: 미평가 · 저장된 파생 기록 <code>{comparison.comparison_id}</code></p>
             </div>}
           </section>
 
-          <AssessmentAggregate csrf={csrf} currentJobId={job.job_id} recipeVersion={job.recipe_version}
-            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band === "OVER_RECOMMENDED"
-              ? undefined : assessments.find(item => item.version === current?.version)?.load_band as "PARTIAL" | "REFERENCE" | undefined}
-            availableJobs={listedJobs} />
-          </> : <section className="subcard">
-            <h3>4. 제육볶음 품질평가</h3>
-            <p className="small">제육볶음 공통 척도 v1 · 7항목 동일 가중 · 항목별 1~5점과 관찰 근거를 기록합니다. 안전 확인과 품질 판정은 별개입니다.</p>
-            {!canAssess && <p className="warning">작업 완료와 자동·배출 표본 안전 통과 후에만 완료 평가를 기록할 수 있습니다.</p>}
-            {current && <p className={current.usable ? "small" : "warning"}>현재 평가 포인터 v{current.version}: {current.usable ? "사용 가능" : "사용 차단"}</p>}
-            <div className="score-grid">
-              {scoreItems.map(({ key, label }) => <div className="score-row" key={key}>
-                <div><strong>{label}</strong><small>{jeyukScoreHelp[key]}</small></div>
-                <label>점수 <select value={scores[key]} onChange={(event) => setScores((old) => ({ ...old, [key]: event.target.value ? Number(event.target.value) : "" }))}>
-                  <option value="">선택</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} · {scoreLabel(value)}</option>)}
-                </select></label>
-                <label>관찰 근거 <input maxLength={500} value={observations[key]}
-                  onChange={(event) => setObservations((old) => ({ ...old, [key]: event.target.value }))} placeholder="제육볶음 관찰 내용" /></label>
-              </div>)}
-            </div>
-            <p className="preview">{previewScore ? `입력 점수 미리보기 ${previewScore}점 / 100점` : "7개 점수를 모두 선택하면 종합점수 미리보기가 표시됩니다."}</p>
-            <div className="field-row">
-              <label>실제 인분 <input type="number" min="1" max={job.planned_portions} step="1" value={actualPortions}
-                onChange={(event) => setActualPortions(Number(event.target.value))} /></label>
-              <label>품질 판정 <select value={jeyukQualityDecision} onChange={(event) => setJeyukQualityDecision(event.target.value as "QUALITY_PASSED" | "QUALITY_FAILED")}>
-                <option value="QUALITY_PASSED">품질 통과</option><option value="QUALITY_FAILED">품질 실패</option>
-              </select></label>
-              <label>전반적 만족도 <select value={overallSatisfaction} onChange={(event) => setOverallSatisfaction(event.target.value)}>
-                <option value="">선택 안 함</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}
-              </select></label>
-            </div>
-            <p className="small">합성 소형 볶음기 권장량 1.8kg 대비 실제 {job.actual_load_kg}kg · 적재율 {Math.round(Number(job.actual_load_kg) / 1.8 * 10000) / 100}%</p>
-            {jeyukQualityDecision === "QUALITY_FAILED" && <fieldset><legend>품질 실패 사유</legend>
-              <div className="probe-grid">{jeyukQualityReasons.map(([code, label]) => <label className="check-line" key={code}>
-                <input type="checkbox" checked={jeyukQualityReasonsSelected.includes(code)}
-                  onChange={(event) => setJeyukQualityReasonsSelected((old) => event.target.checked ? [...old, code] : old.filter((value) => value !== code))} /> {label}
-              </label>)}</div>
-            </fieldset>}
-            <label>품질 의견 <input maxLength={500} value={jeyukQualityNote} onChange={(event) => setJeyukQualityNote(event.target.value)} /></label>
-            {current && <div className="field-row">
-              <label>평가 유형 <select value={assessmentKind} onChange={(event) => setAssessmentKind(event.target.value as "REVISION" | "REASSESSMENT")}>
-                <option value="REASSESSMENT">재평가</option><option value="REVISION">수정</option>
-              </select></label>
-              <label className="grow">수정·재평가 사유 <input maxLength={500} value={assessmentReason}
-                onChange={(event) => setAssessmentReason(event.target.value)} /></label>
-            </div>}
-            <button type="button" onClick={submitAssessment} disabled={busy || !canAssess}>제육볶음 완료 평가 기록</button>
-          </section>}
+          {job.menu === "TONKATSU" && <AssessmentAggregate csrf={csrf} currentJobId={job.job_id}
+            recipeVersion={job.recipe_version}
+            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band as "PARTIAL" | "REFERENCE" | undefined}
+            availableJobs={listedJobs} />}
 
           <section className="subcard" aria-labelledby="recook-title">
             <h3 id="recook-title">7. 재조리 연결</h3>
