@@ -73,11 +73,14 @@ export type Assessment = {
   score_percent: string;
   quality_passed: boolean;
   quality_target: boolean;
+  quality_status?: "QUALITY_PASSED" | "QUALITY_FAILED";
+  quality_reason_codes?: string[];
+  quality_note?: string | null;
   overall_satisfaction: number | null;
   actual_portions: number;
   actual_mass_kg: string;
   load_percent: string;
-  load_band: "PARTIAL" | "REFERENCE";
+  load_band: "PARTIAL" | "REFERENCE" | "OVER_RECOMMENDED";
   completed_at: string;
 };
 
