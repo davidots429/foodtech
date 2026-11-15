@@ -1,6 +1,7 @@
 """Read-only synthetic Jeyuk Mock sample contract for local collection checks."""
 
 import json
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -48,7 +49,8 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
     if (record["provenance"] != "SYNTHETIC" or record["profileId"] != "mockprofile-110"
             or record["instanceId"] != "mockprofile-110-a-001"
             or record["profile"] not in ("SMALL", "MEDIUM", "LARGE")
-            or not isinstance(record["fixtureId"], str) or not record["fixtureId"]):
+            or not isinstance(record["fixtureId"], str)
+            or re.fullmatch(r"[A-Za-z0-9-]{1,80}", record["fixtureId"]) is None):
         raise ValueError("unexpected Jeyuk Mock source")
     if (type(record["second"]) is not int or record["second"] < 1
             or type(record["sampleIntervalSeconds"]) is not int

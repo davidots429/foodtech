@@ -1,6 +1,6 @@
 # 첫 표준화 Worker
 
-`jeyuk_bridge.JeyukProcessStream`은 로컬 HTTPS 수집기로 받은 C# 합성 볶음·교반 원표본을 검증하고 승인된 제육볶음 공정판정기로 전달한다. 표본은 1초씩 연속되어야 하며 fixture·프로파일·조리량이 중간에 바뀌면 거부한다. 이 브리지는 아직 SQS Worker의 표준화·영속 저장이나 고객 조리작업 상태 전이에 연결되지 않았다.
+`jeyuk_bridge.JeyukProcessStream`은 로컬 HTTPS 수집기로 받은 C# 합성 볶음·교반 원표본을 검증하고 승인된 제육볶음 공정판정기로 전달한다. `mockprofile-110`의 AWS 경로에서는 같은 원본을 DynamoDB에서 강하게 읽어 1초씩 판정한다. Worker는 판정 결과와 다음 모니터 상태를 조건부 트랜잭션으로 함께 저장하며, FIFO 재전달은 기존 판정을 재사용한다. 기존 `mockprofile-100` Worker 경로와 키 공간을 분리했다. 실제 AWS 저장 적합성과 고객 조리작업 상태 전이 연결은 별도 검증·구현 대상이다.
 
 SQS FIFO의 원본 참조를 받아 DynamoDB 원본을 강하게 읽고, 원천 스키마 검증 → 값 정규화 → RFC 8785 직렬화 → SHA-256 → 결정적 매핑 → 품질 판정을 수행한다. `python -m foodtech_standardization_worker.aws_flow`은 한 번에 최대 10건을 처리한다.
 

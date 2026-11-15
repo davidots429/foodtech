@@ -12,6 +12,7 @@ from boto3.dynamodb.types import TypeSerializer
 
 from .process import Assessment, Finding, QUALITY_RULE_VERSION, assess
 from .process_bridge import DynamoProcessBridge
+from .jeyuk_aws import DynamoJeyukProcessor
 
 
 class DynamoStandardizationWorker:
@@ -23,6 +24,7 @@ class DynamoStandardizationWorker:
         self.queue_url = queue_url
         self.dlq_url = dlq_url
         self.serializer = TypeSerializer()
+        self.jeyuk_processor = DynamoJeyukProcessor(self.table, self.ddb)
         cooking_table = os.getenv("FOODTECH_COOKING_TABLE")
         self.process_bridge = (DynamoProcessBridge(cooking_table, region, table_name)
                                if cooking_table else None)
@@ -40,6 +42,8 @@ class DynamoStandardizationWorker:
         return results
 
     def process(self, reference: dict) -> dict:
+        if reference.get("profile_id") == "mockprofile-110":
+            return self.jeyuk_processor.process(reference)
         event_id = reference["ingestion_event_id"]
         event_pk = f"EVENT#{event_id}"
         assessment_key = {"pk": event_pk, "sk": "ASSESSMENT#v1"}
