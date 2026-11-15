@@ -1,4 +1,4 @@
-"""First synthetic tonkatsu job, safety, and completed assessment flow."""
+"""Synthetic cooking jobs; tonkatsu safety/evaluation and Jeyuk process linkage."""
 
 import asyncio
 import logging
@@ -12,6 +12,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.tonkatsu_process import RULE_VERSION, cooking_time_status, process_status, thickness_profile
+from foodtech_contracts.jeyuk_process import (RULE_VERSION as JEYUK_RULE_VERSION,
+                                              cooking_time_status as jeyuk_cooking_time_status,
+                                              load_status as jeyuk_load_status)
 
 from .auth import _csrf, _session
 from .cooking_store import Conflict, MemoryCookingStore, get_cooking_store
@@ -112,7 +115,8 @@ class StrictModel(BaseModel):
 class NewJob(StrictModel):
     planned_portions: int = Field(gt=0, le=4)
     recipe_version: str = Field(min_length=1, max_length=80)
-    thickness_cm: Decimal = Field(gt=0, max_digits=4, decimal_places=2)
+    thickness_cm: Decimal | None = Field(default=None, gt=0, max_digits=4, decimal_places=2)
+    actual_load_kg: Decimal | None = Field(default=None, gt=0, max_digits=5, decimal_places=2)
     equipment_profile: str = "synthetic-fryer"
 
 
@@ -120,7 +124,8 @@ class SourceBinding(StrictModel):
     expected_version: int = Field(ge=1)
     source_id: str = Field(min_length=1, max_length=80)
     device_id: str = Field(min_length=1, max_length=80)
-    batch_id: str = Field(min_length=1, max_length=80, pattern=r"^batch-a-[A-Za-z0-9-]+$")
+    batch_id: str = Field(min_length=1, max_length=80,
+                          pattern=r"^(?:batch-a-|jeyuk-)[A-Za-z0-9-]+$")
 
 
 class Transition(StrictModel):
@@ -182,18 +187,34 @@ class Recook(StrictModel):
 @router.post("", status_code=201)
 async def create_job(request: Request, body: NewJob) -> dict:
     session, store = await _context(request, write=True)
-    if body.equipment_profile != "synthetic-fryer":
-        raise HTTPException(422, "첫 흐름은 합성 튀김기 프로파일만 지원합니다.")
-    thickness_status, thickness_band = thickness_profile(body.thickness_cm)
-    if thickness_status == "ABOVE_RANGE":
-        raise HTTPException(422, "PROFILE_REJECTED: 두께가 합성 돈까스 프로파일 상한 2.0cm를 넘습니다.")
+    if body.equipment_profile == "synthetic-fryer":
+        if body.thickness_cm is None or body.actual_load_kg is not None:
+            raise HTTPException(422, "합성 돈까스 작업에는 두께만 입력해야 합니다.")
+        thickness_status, thickness_band = thickness_profile(body.thickness_cm)
+        if thickness_status == "ABOVE_RANGE":
+            raise HTTPException(422, "PROFILE_REJECTED: 두께가 합성 돈까스 프로파일 상한 2.0cm를 넘습니다.")
+        menu, load_status = "TONKATSU", None
+    elif body.equipment_profile == "jeyuk-small":
+        if body.actual_load_kg is None or body.thickness_cm is not None:
+            raise HTTPException(422, "합성 제육볶음 작업에는 실제 투입량만 입력해야 합니다.")
+        load_status = jeyuk_load_status("SMALL", body.actual_load_kg)
+        if load_status == "RATED_LOAD_EXCEEDED":
+            raise HTTPException(422, "PROFILE_REJECTED: 합성 소형 볶음·교반기의 정격 하중을 넘습니다.")
+        menu, thickness_status, thickness_band = "JEYUK", "NOT_APPLICABLE", None
+    else:
+        raise HTTPException(422, "지원되지 않는 합성 장비 프로파일입니다.")
     job_id = str(uuid.uuid4())
     meta = {
-        "job_id": job_id, "owner_subject": session.subject, "menu": "TONKATSU",
+        "job_id": job_id, "owner_subject": session.subject, "menu": menu,
         "provenance": "SYNTHETIC", "equipment_profile": body.equipment_profile,
         "recipe_version": body.recipe_version, "planned_portions": body.planned_portions,
-        "thickness_cm": str(body.thickness_cm), "thickness_profile": thickness_band,
-        "thickness_time_rule_version": RULE_VERSION,
+        "thickness_cm": str(body.thickness_cm) if body.thickness_cm is not None else None,
+        "thickness_profile": thickness_band,
+        "thickness_time_rule_version": RULE_VERSION if menu == "TONKATSU" else None,
+        "jeyuk_rule_version": JEYUK_RULE_VERSION if menu == "JEYUK" else None,
+        "jeyuk_size_profile": "SMALL" if menu == "JEYUK" else None,
+        "actual_load_kg": str(body.actual_load_kg) if body.actual_load_kg is not None else None,
+        "process_load_status": load_status,
         "status": "PENDING", "version": 1, "job_state_version": 1,
         "safety_status": "NOT_MEASURED", "safety_version": 0,
         "evaluation_blocked": True, "evaluation_status": "NOT_COMPLETED",
@@ -203,8 +224,11 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "source_job_id": None, "recook_reason": None, "source_binding": None,
         "actual_placed_at": None, "actual_lifted_at": None,
         "completion_recorded_at": None, "actual_cooking_seconds": None,
-        "process_assessment_status": process_status("NOT_MEASURED", thickness_status, "NOT_MEASURED"),
+        "process_assessment_status": ("WARNING" if load_status == "OVER_RECOMMENDED_LOAD" else
+                                      "INSUFFICIENT_DATA") if menu == "JEYUK" else
+                                     process_status("NOT_MEASURED", thickness_status, "NOT_MEASURED"),
         "process_temperature_status": "NOT_MEASURED", "process_thickness_status": thickness_status,
+        "process_surface_status": "NOT_MEASURED", "process_rpm_status": "NOT_MEASURED",
         "process_time_status": "NOT_MEASURED",
     }
     await _store_call(store, store.create, _pk(session.subject, job_id), meta)
@@ -241,9 +265,14 @@ async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dic
         raise _conflict()
     if old["status"] not in {"PENDING", "READY"} or old.get("source_binding"):
         raise HTTPException(409, "조리 시작 전, 아직 연결되지 않은 작업에만 수집 배치를 연결할 수 있습니다.")
-    if body.source_id != "synthetic-rest" or body.device_id != "mockprofile-100-a-001":
+    expected_device = ("mockprofile-110-a-001" if old["menu"] == "JEYUK" else
+                       "mockprofile-100-a-001")
+    expected_prefix = "jeyuk-" if old["menu"] == "JEYUK" else "batch-a-"
+    if (body.source_id != "synthetic-rest" or body.device_id != expected_device
+            or not body.batch_id.startswith(expected_prefix)):
         raise HTTPException(422, "첫 자동판정은 승인된 합성 REST 프로파일만 지원합니다.")
-    stream_pk = stream_binding_key(body.source_id, body.device_id, body.batch_id)
+    stream_pk = (f"JEYUK#{body.batch_id}" if old["menu"] == "JEYUK" else
+                 stream_binding_key(body.source_id, body.device_id, body.batch_id))
     meta = {**old, "source_binding": {"source_id": body.source_id, "device_id": body.device_id,
                                        "batch_id": body.batch_id},
             "version": old["version"] + 1, "updated_at": _now()}
@@ -319,7 +348,9 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
         if lifted_at < placed_at or lifted_at > now:
             raise HTTPException(422, "인양시각은 투입 이후이면서 현재 이전이어야 합니다.")
         cooking_seconds = int((lifted_at - placed_at).total_seconds())
-        time_status = cooking_time_status(old.get("thickness_profile"), cooking_seconds)
+        time_status = (jeyuk_cooking_time_status(old["jeyuk_size_profile"], cooking_seconds)
+                       if old["menu"] == "JEYUK" else
+                       cooking_time_status(old.get("thickness_profile"), cooking_seconds))
         if time_status in {"EARLY_REMOVAL", "MAX_TIME_EXCEEDED"}:
             next_status = "FAILED"
     meta = {**old, "status": next_status, "version": old["version"] + 1,
@@ -332,11 +363,19 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
                      "completion_recorded_at": now.isoformat().replace("+00:00", "Z"),
                      "completion_recording_delay_seconds": int((now - lifted_at).total_seconds()),
                      "actual_cooking_seconds": cooking_seconds, "process_time_status": time_status})
-        meta["process_assessment_status"] = process_status(
-            old.get("process_temperature_status", "NOT_MEASURED"),
-            old.get("process_thickness_status", "NOT_MEASURED"), time_status,
-            data_gap=bool(old.get("process_assessment", {}).get("data_gap")),
-        )
+        if old["menu"] == "JEYUK":
+            prior = old.get("process_assessment_status", "INSUFFICIENT_DATA")
+            meta["process_assessment_status"] = (
+                "FAILED" if prior == "FAILED" or time_status in {"EARLY_REMOVAL", "MAX_TIME_EXCEEDED"}
+                else "INSUFFICIENT_DATA" if prior == "INSUFFICIENT_DATA"
+                else "WARNING" if prior == "WARNING" or time_status != "NORMAL"
+                else "NORMAL")
+        else:
+            meta["process_assessment_status"] = process_status(
+                old.get("process_temperature_status", "NOT_MEASURED"),
+                old.get("process_thickness_status", "NOT_MEASURED"), time_status,
+                data_gap=bool(old.get("process_assessment", {}).get("data_gap")),
+            )
         if next_status == "FAILED":
             meta["last_transition_reason"] = time_status
     if next_status in {"FAILED", "CANCELED"}:
@@ -434,6 +473,8 @@ async def safety_event(job_id: str, request: Request, body: SafetyEvent) -> dict
 @router.post("/{job_id}/safety/core-check")
 async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
     session, store, pk, old, pointer = await _read(request, job_id, write=True)
+    if old["menu"] != "TONKATSU":
+        raise HTTPException(422, "제육볶음 안전 확인은 혼합물 온도 시계열 계약에서 수행해야 합니다.")
     if int(old["version"]) != body.expected_version:
         raise _conflict()
     if old["status"] != "COMPLETED" or old["safety_status"] in {"SUSPECTED", "UNDER_REVIEW", "FAILED"}:
@@ -473,6 +514,8 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
 @router.post("/{job_id}/assessments", status_code=201)
 async def complete_assessment(job_id: str, request: Request, body: CompletedAssessment) -> dict:
     session, store, pk, old, pointer = await _read(request, job_id, write=True)
+    if old["menu"] != "TONKATSU":
+        raise HTTPException(422, "제육볶음 완료 평가는 메뉴별 척도 계약에서 수행해야 합니다.")
     if int(old["version"]) != body.expected_version:
         raise _conflict()
     current_version = int(pointer["version"]) if pointer else 0
@@ -543,6 +586,10 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
             "recipe_version": old["recipe_version"], "planned_portions": old["planned_portions"],
             "thickness_cm": old.get("thickness_cm"), "thickness_profile": old.get("thickness_profile"),
             "thickness_time_rule_version": old.get("thickness_time_rule_version", RULE_VERSION),
+            "jeyuk_rule_version": old.get("jeyuk_rule_version"),
+            "jeyuk_size_profile": old.get("jeyuk_size_profile"),
+            "actual_load_kg": old.get("actual_load_kg"),
+            "process_load_status": old.get("process_load_status"),
             "status": "PENDING", "version": 1, "job_state_version": 1,
             "safety_status": "NOT_MEASURED", "safety_version": 0,
             "evaluation_blocked": True, "evaluation_status": "NOT_COMPLETED",
@@ -552,8 +599,11 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
             "source_job_id": job_id, "recook_reason": body.reason, "source_binding": None,
             "actual_placed_at": None, "actual_lifted_at": None,
             "completion_recorded_at": None, "actual_cooking_seconds": None,
-            "process_assessment_status": process_status("NOT_MEASURED", old.get("process_thickness_status", "NOT_MEASURED"), "NOT_MEASURED"),
+            "process_assessment_status": ("WARNING" if old.get("process_load_status") == "OVER_RECOMMENDED_LOAD"
+                                          else "INSUFFICIENT_DATA") if old["menu"] == "JEYUK" else
+                                         process_status("NOT_MEASURED", old.get("process_thickness_status", "NOT_MEASURED"), "NOT_MEASURED"),
             "process_temperature_status": "NOT_MEASURED",
+            "process_surface_status": "NOT_MEASURED", "process_rpm_status": "NOT_MEASURED",
             "process_thickness_status": old.get("process_thickness_status", "NOT_MEASURED"),
             "process_time_status": "NOT_MEASURED"}
     try:

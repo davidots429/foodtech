@@ -13,6 +13,7 @@ from boto3.dynamodb.types import TypeSerializer
 from .process import Assessment, Finding, QUALITY_RULE_VERSION, assess
 from .process_bridge import DynamoProcessBridge
 from .jeyuk_aws import DynamoJeyukProcessor
+from .jeyuk_job_bridge import DynamoJeyukJobBridge
 
 
 class DynamoStandardizationWorker:
@@ -28,11 +29,12 @@ class DynamoStandardizationWorker:
         cooking_table = os.getenv("FOODTECH_COOKING_TABLE")
         self.process_bridge = (DynamoProcessBridge(cooking_table, region, table_name)
                                if cooking_table else None)
+        self.jeyuk_job_bridge = DynamoJeyukJobBridge(cooking_table, region) if cooking_table else None
 
     def run_once(self) -> list[dict]:
         page = self.sqs.receive_message(
             QueueUrl=self.queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=1,
-            VisibilityTimeout=30,
+            VisibilityTimeout=180,
         )
         results = []
         for message in page.get("Messages", []):
@@ -43,7 +45,10 @@ class DynamoStandardizationWorker:
 
     def process(self, reference: dict) -> dict:
         if reference.get("profile_id") == "mockprofile-110":
-            return self.jeyuk_processor.process(reference)
+            result = self.jeyuk_processor.process(reference)
+            bridge = getattr(self, "jeyuk_job_bridge", None)
+            result["job_result"] = bridge.apply(result) if bridge else "NOT_CONFIGURED"
+            return result
         event_id = reference["ingestion_event_id"]
         event_pk = f"EVENT#{event_id}"
         assessment_key = {"pk": event_pk, "sk": "ASSESSMENT#v1"}

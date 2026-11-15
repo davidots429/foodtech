@@ -1,4 +1,4 @@
-"""Atomic job revisions and append-only assessments for the first synthetic menu."""
+"""Atomic cooking job revisions and append-only assessments."""
 
 import os
 import threading
@@ -22,6 +22,8 @@ def _job_list_item(pk: str, meta: dict) -> dict:
     return {"pk": f"SCOPE#USER#{owner}#JOBS",
             "sk": f"CREATED#{meta['created_at']}#{job_id}",
             "job_id": job_id, "created_at": meta["created_at"],
+            "menu": meta.get("menu", "TONKATSU"),
+            "equipment_profile": meta.get("equipment_profile", "synthetic-fryer"),
             "recipe_version": meta["recipe_version"],
             "planned_portions": meta["planned_portions"],
             "source_job_id": meta.get("source_job_id")}

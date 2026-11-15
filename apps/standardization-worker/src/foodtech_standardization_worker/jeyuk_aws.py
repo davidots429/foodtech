@@ -56,6 +56,7 @@ class DynamoJeyukProcessor:
             "raw_sk": raw_sk, "second": second, "process_status": reading.status,
             "reason_codes": list(reading.reason_codes), "surface_band": reading.surface_band,
             "rpm_band": reading.rpm_band, "load_status": reading.load_status,
+            "profile": sample.profile, "actual_load_kg": str(sample.actual_load_kg),
             "provenance": "SYNTHETIC",
         }
         monitor_state = asdict(monitor)
@@ -82,6 +83,9 @@ class DynamoJeyukProcessor:
     def _result(item: dict, *, replayed: bool) -> dict:
         return {"fixture_id": item["fixture_id"], "second": int(item["second"]),
                 "process_status": item["process_status"], "reason_codes": item["reason_codes"],
+                "surface_band": item["surface_band"], "rpm_band": item["rpm_band"],
+                "load_status": item["load_status"],
+                "profile": item["profile"], "actual_load_kg": item["actual_load_kg"],
                 "replayed": replayed}
 
     def _marshal(self, item: dict) -> dict:
