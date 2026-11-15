@@ -29,6 +29,11 @@ type JobListItem = {
 type JobListPage = { items: JobListItem[]; next_cursor: string | null };
 type SavedComparison = { baseline_job_id: string; comparison_id: string; updated_at: string };
 type SavedComparisonPage = { items: SavedComparison[]; next_cursor: string | null };
+type ComparisonHistoryItem = {
+  comparison_id: string; baseline_job_id: string; compared_at: string;
+  score_total_delta: number; improvement_status: "OBSERVED" | "NOT_OBSERVED";
+};
+type ComparisonHistoryPage = { items: ComparisonHistoryItem[]; next_cursor: string | null };
 
 const jobLabels: Record<CookingJob["status"], string> = {
   PENDING: "대기", READY: "준비 완료", RUNNING: "조리 중", PAUSED: "일시 정지",
@@ -162,6 +167,11 @@ export function CookingWorkspace({ csrf }: Props) {
   const [loadingComparisons, setLoadingComparisons] = useState(false);
   const comparisonListJobId = useRef<string | null>(null);
   const comparisonListRequest = useRef(0);
+  const [comparisonHistory, setComparisonHistory] = useState<ComparisonHistoryItem[]>([]);
+  const [nextHistoryCursor, setNextHistoryCursor] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const historyListJobId = useRef<string | null>(null);
+  const historyListRequest = useRef(0);
   const [manualStoppedAt, setManualStoppedAt] = useState(() => localDateTime(new Date()));
 
   const refresh = useCallback(async (id: string) => {
@@ -251,6 +261,25 @@ export function CookingWorkspace({ csrf }: Props) {
     }
   }, []);
 
+  const loadComparisonHistory = useCallback(async (id: string, cursor?: string) => {
+    historyListJobId.current = id;
+    const requestNumber = ++historyListRequest.current;
+    setLoadingHistory(true);
+    try {
+      const page = await api<ComparisonHistoryPage>(jobPath(id) + "/comparisons/history?limit=20" +
+        (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""));
+      if (historyListJobId.current !== id || historyListRequest.current !== requestNumber) return;
+      setComparisonHistory(previous => cursor ? [...previous, ...page.items] : page.items);
+      setNextHistoryCursor(page.next_cursor);
+    } catch (cause) {
+      if (historyListJobId.current === id && historyListRequest.current === requestNumber)
+        setError(cause instanceof Error ? cause.message : "비교 결과 이력을 불러오지 못했습니다.");
+    } finally {
+      if (historyListJobId.current === id && historyListRequest.current === requestNumber)
+        setLoadingHistory(false);
+    }
+  }, []);
+
   useEffect(() => {
     comparisonListJobId.current = job?.job_id ?? null;
     comparisonListRequest.current += 1;
@@ -259,6 +288,15 @@ export function CookingWorkspace({ csrf }: Props) {
     setLoadingComparisons(false);
     if (job?.job_id) void loadComparisonList(job.job_id);
   }, [job?.job_id, loadComparisonList]);
+
+  useEffect(() => {
+    historyListJobId.current = job?.job_id ?? null;
+    historyListRequest.current += 1;
+    setComparisonHistory([]);
+    setNextHistoryCursor(null);
+    setLoadingHistory(false);
+    if (job?.job_id) void loadComparisonHistory(job.job_id);
+  }, [job?.job_id, loadComparisonHistory]);
 
   async function action<T>(operation: () => Promise<T>, message: string, nextId?: (value: T) => string) {
     if (activeRequest.current) return;
@@ -447,6 +485,7 @@ export function CookingWorkspace({ csrf }: Props) {
         return result;
       }), "현재 유효한 두 평가를 비교하고 결과 버전을 보존했습니다.");
     await loadComparisonList(job.job_id);
+    await loadComparisonHistory(job.job_id);
   }
 
   async function loadComparisonById(id: string) {
@@ -490,6 +529,7 @@ export function CookingWorkspace({ csrf }: Props) {
         return result;
       }), "현재 평가로 다시 비교했습니다. 이전 결과는 보존됩니다.");
     await loadComparisonList(job.job_id);
+    await loadComparisonHistory(job.job_id);
   }
 
   const scoreValues = Object.values(scores).filter((value): value is number => value !== "");
@@ -705,6 +745,18 @@ export function CookingWorkspace({ csrf }: Props) {
             {nextComparisonCursor && <button type="button" className="secondary"
               onClick={() => void loadComparisonList(job.job_id, nextComparisonCursor)}
               disabled={loadingComparisons}>비교 목록 더 보기</button>}
+            <div className="actions"><strong>저장된 비교 결과 이력</strong>
+              <button type="button" className="secondary" onClick={() => void loadComparisonHistory(job.job_id)}
+                disabled={loadingHistory}>이력 새로고침</button></div>
+            {comparisonHistory.length === 0 && !loadingHistory && <p className="small">이 작업의 비교 결과 이력이 없습니다.</p>}
+            {comparisonHistory.length > 0 && <ul>{comparisonHistory.map(item => <li key={item.comparison_id}>
+              <button type="button" className="text-button" onClick={() => void loadComparisonById(item.comparison_id)}
+                disabled={busy || loadingJob}>
+                이전 작업 {item.baseline_job_id.slice(0, 8)} · {timeLabel(item.compared_at)} · 항목 합계 {item.score_total_delta >= 0 ? "+" : ""}{item.score_total_delta}점
+              </button></li>)}</ul>}
+            {nextHistoryCursor && <button type="button" className="secondary"
+              onClick={() => void loadComparisonHistory(job.job_id, nextHistoryCursor)}
+              disabled={loadingHistory}>결과 이력 더 보기</button>}
             {comparison && <div className="actions">
               <button type="button" className="secondary" onClick={() => void checkComparison(comparison.candidate_job_id, comparison.comparison_id)
                 .then(checked => setStatus(checked ? "조회 시점의 비교 입력을 확인했습니다." : "최신성을 확인하지 못했습니다."))}

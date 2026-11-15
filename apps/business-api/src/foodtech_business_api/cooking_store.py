@@ -62,6 +62,7 @@ class CookingStore(Protocol):
     def events(self, pk: str) -> list[dict]: ...
     def assessment(self, pk: str, version: int) -> dict | None: ...
     def comparison(self, pk: str, comparison_id: str) -> dict | None: ...
+    def list_comparison_results(self, candidate_pk: str, limit: int, cursor: str | None) -> dict: ...
     def list_current_comparisons(self, candidate_pk: str, limit: int, cursor: str | None) -> dict: ...
     def comparison_dependencies(self, job_pk: str) -> list[dict]: ...
     def current_comparison(self, candidate_pk: str, baseline_id: str) -> dict | None: ...
@@ -192,6 +193,19 @@ class MemoryCookingStore:
         with self.lock:
             item = self.items.get((pk, f"COMPARISON#{comparison_id}"))
             return item.copy() if item else None
+
+    def list_comparison_results(self, candidate_pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = "COMPARISON#"
+        with self.lock:
+            records = [item.copy() for (pk, sk), item in sorted(self.items.items())
+                       if pk == candidate_pk and len(sk) == len(prefix) + 64 and
+                       all(char in "0123456789abcdef" for char in sk[len(prefix):]) and
+                       (cursor is None or sk > prefix + cursor)]
+        fields = ("comparison_id", "baseline_job_id", "compared_at", "score_total_delta",
+                  "improvement_status")
+        shown = records[:limit]
+        return {"items": [{key: item[key] for key in fields} for item in shown],
+                "next_cursor": shown[-1]["comparison_id"] if len(records) > limit else None}
 
     def list_current_comparisons(self, candidate_pk: str, limit: int, cursor: str | None) -> dict:
         prefix = "COMPARISON#CURRENT#"
@@ -507,6 +521,28 @@ class DynamoCookingStore:
         item = self.table.get_item(Key={"pk": pk, "sk": f"COMPARISON#{comparison_id}"},
                                    ConsistentRead=True).get("Item")
         return _api_numbers({key: value for key, value in item.items() if key != "pk"}) if item else None
+
+    def list_comparison_results(self, candidate_pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = "COMPARISON#"
+        args = {"KeyConditionExpression": Key("pk").eq(candidate_pk) & Key("sk").begins_with(prefix),
+                "ConsistentRead": True, "Limit": limit + 1}
+        if cursor:
+            args["ExclusiveStartKey"] = {"pk": candidate_pk, "sk": prefix + cursor}
+        records = []
+        while len(records) <= limit:
+            page = self.table.query(**args)
+            records.extend(item for item in page.get("Items", [])
+                           if len(item["sk"]) == len(prefix) + 64 and
+                           all(char in "0123456789abcdef" for char in item["sk"][len(prefix):]))
+            last_key = page.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            args["ExclusiveStartKey"] = last_key
+        fields = ("comparison_id", "baseline_job_id", "compared_at", "score_total_delta",
+                  "improvement_status")
+        shown = records[:limit]
+        return {"items": [_api_numbers({key: item[key] for key in fields}) for item in shown],
+                "next_cursor": shown[-1]["comparison_id"] if len(records) > limit else None}
 
     def list_current_comparisons(self, candidate_pk: str, limit: int, cursor: str | None) -> dict:
         prefix = "COMPARISON#CURRENT#"
