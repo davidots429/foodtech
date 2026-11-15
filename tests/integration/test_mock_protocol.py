@@ -13,7 +13,9 @@ from pathlib import Path
 import httpx
 
 from foodtech_collection_adapter.rest import RestMockClient
+from foodtech_collection_adapter.resequence import Received, Resequencer
 from foodtech_contracts import decode_record, payload_hash
+from foodtech_standardization_worker import assess
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "fixtures/mockprofile-100-a-001.json"
@@ -67,12 +69,34 @@ class MockProtocolTests(unittest.TestCase):
                         time.sleep(0.1)
                 else:
                     self.fail("Mock server health did not become available")
+                self.assertEqual(httpx.get(base + "/v1/records", verify=str(cert)).status_code, 401)
+                self.assertEqual(httpx.post(base + "/oauth2/token", verify=str(cert),
+                                            data={"grant_type": "client_credentials"},
+                                            auth=("wrong-client", "wrong-secret")).status_code, 401)
+                self.assertEqual(httpx.post(base + "/v1/records", verify=str(cert)).status_code, 405)
                 client = RestMockClient(base, "test-client", "test-secret", str(cert))
                 try:
                     result = client.poll(0)
                     self.assertEqual(result.next_cursor, 3)
                     self.assertEqual([decode_record(raw)["sequenceNumber"] for raw in result.records], [1, 3, 2])
                     self.assertEqual(client.poll(result.next_cursor).records, ())
+                    resequencer = Resequencer()
+                    released = []
+                    for index, raw in enumerate(result.records):
+                        record = decode_record(raw)
+                        received = Received(str(index), raw, record["sourceId"], record["deviceId"],
+                                            record["batchId"], record["sequenceNumber"], float(index))
+                        released.extend(resequencer.accept(received, float(index)))
+                    expected = json.loads(FIXTURE.read_text())["expected"]
+                    self.assertEqual([item.sequence_number for item in released], expected["releaseSequence"])
+                    assessments = [assess(item.ingestion_event_id, item.raw,
+                                          sequence_status=item.sequence_status,
+                                          gap_before=item.gap_before) for item in released]
+                    self.assertEqual([item.quality_status for item in assessments], expected["qualityStatus"])
+                    self.assertEqual([finding.code for finding in assessments[-1].findings],
+                                     [expected["quarantineReason"]])
+                    self.assertTrue(all(item.normalized for item in assessments[:-1]))
+                    self.assertIsNone(assessments[-1].normalized)
                 finally:
                     client.close()
             finally:
