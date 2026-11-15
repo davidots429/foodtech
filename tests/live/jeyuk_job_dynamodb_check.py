@@ -1,12 +1,14 @@
 """Opt-in C# Jeyuk samples -> FIFO Worker -> bound customer job validation."""
 
 import asyncio
+import argparse
 import json
 import os
 import sys
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import patch
+from pathlib import Path
 
 import boto3
 import httpx
@@ -25,7 +27,10 @@ from process_flow_dynamodb_check import (ACCOUNT, COOKING_TABLE, DATA_TABLE, ORD
                                          remove_test_messages)
 
 
-async def main() -> int:
+SAFETY_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures/jeyuk-small-safety-v1.json"
+
+
+async def run_check(*, safety: bool = False) -> int:
     if os.getenv("AWS_PROFILE") != "foodtech":
         raise SystemExit("Use AWS_PROFILE=foodtech for the development account.")
     session = boto3.Session(profile_name="foodtech", region_name=REGION)
@@ -37,7 +42,7 @@ async def main() -> int:
     if not empty_queue(sqs, ordered_url) or not empty_queue(sqs, quarantine_url):
         raise SystemExit("Shared development queues must be empty.")
     run_id = uuid.uuid4().hex[:12]
-    fixture_id = f"jeyuk-job-{run_id}"
+    fixture_id = f"jeyuk-{'safety' if safety else 'job'}-{run_id}"
     stream_pk = f"JEYUK#{fixture_id}"
     subject = f"synthetic-jeyuk-{run_id}"
     data_table = session.resource("dynamodb").Table(DATA_TABLE)
@@ -74,12 +79,12 @@ async def main() -> int:
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "COOKING_STARTED",
                     "actual_placed_at": datetime.now(timezone.utc).isoformat()})
-                raws = csharp_samples(fixture_id)
+                raws = csharp_samples(fixture_id, SAFETY_FIXTURE) if safety else csharp_samples(fixture_id)
                 for raw in raws:
                     ingestor.ingest(raw)
                 processed = []
                 references = []
-                for _ in range(8):
+                for _ in range(16):
                     page = sqs.receive_message(QueueUrl=ordered_url, MaxNumberOfMessages=10,
                                                WaitTimeSeconds=1, VisibilityTimeout=180)
                     for message in page.get("Messages", []):
@@ -98,19 +103,29 @@ async def main() -> int:
                             raise
                         references.append(reference)
                         sqs.delete_message(QueueUrl=ordered_url, ReceiptHandle=message["ReceiptHandle"])
-                    if len(processed) == 30:
+                    if len(processed) == len(raws):
                         break
-                if len(processed) != 30 or processed[4]["job_result"] != "WARNING" or \
-                        processed[29]["job_result"] != "FAILED":
-                    raise AssertionError("Jeyuk warning or failure did not reach the bound job")
+                if len(processed) != len(raws):
+                    raise AssertionError("not all Jeyuk samples reached the bound job")
                 final = (await client.get(path)).json()["job"]
-                if (final["status"], final["process_assessment_status"],
-                        final["process_assessment"]["second"]) != ("FAILED", "FAILED", 30):
-                    raise AssertionError("bound job did not retain the final process failure")
+                if safety:
+                    if ((processed[59]["auto_safety_status"], processed[59]["mixture_hold_seconds"]) !=
+                            ("PENDING", 59) or
+                            (processed[60]["auto_safety_status"], processed[60]["mixture_hold_seconds"]) !=
+                            ("PASSED", 60) or
+                            (final["status"], final["auto_safety_status"], final["evaluation_blocked"]) !=
+                            ("RUNNING", "PASSED", True)):
+                        raise AssertionError("post-addition sixty-second safety hold was not recorded")
+                elif (processed[4]["job_result"] != "WARNING" or
+                      processed[29]["job_result"] != "FAILED" or
+                      (final["status"], final["process_assessment_status"],
+                       final["process_assessment"]["second"]) != ("FAILED", "FAILED", 30)):
+                    raise AssertionError("Jeyuk warning or failure did not reach the bound job")
                 if worker.process(references[-1])["job_result"] != "REPLAYED":
                     raise AssertionError("replayed assessment changed the bound job")
-                print(json.dumps({"processed": len(processed), "warning_at": 5,
-                                  "failure_at": 30, "job_status": final["status"],
+                print(json.dumps({"processed": len(processed), "scenario": "SAFETY" if safety else "PROCESS",
+                                  "job_status": final["status"],
+                                  "auto_safety_status": final["auto_safety_status"],
                                   "replay": "REPLAYED"}), flush=True)
                 return 0
     finally:
@@ -135,5 +150,11 @@ async def main() -> int:
         print("synthetic cleanup complete", flush=True)
 
 
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--safety", action="store_true")
+    return asyncio.run(run_check(safety=parser.parse_args().safety))
+
+
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    sys.exit(main())

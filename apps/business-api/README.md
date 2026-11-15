@@ -76,7 +76,9 @@
 
 ## 합성 수집 배치와 자동 온도 공정판정
 
-`equipment_profile="jeyuk-small"`로 생성하는 제육볶음 합성 작업은 실제 투입량(kg)을 받으며 1.8kg 권장량을 넘으면 경고, 3.0kg 정격량을 넘으면 생성을 거부한다. 조리 시작 전 `synthetic-rest / mockprofile-110-a-001 / jeyuk-...` fixture를 작업 하나에 연결한다. Worker가 연결된 원표본의 표면온도·교반 RPM·모터 부하 판정을 반영하고 실패가 확정되면 작업을 `FAILED`로 전이해 평가를 차단한다. 돈까스 두께·탐침·평가 입력 계약을 제육볶음에 적용하지 않는다. 제육볶음 안전 `75°C/60초`와 메뉴별 완료 평가는 후속 구현이다. 2026-11-15 개발용 AWS에서 합성 원표본 30건의 5초 걸림 경고, 30초 실패, 작업 실패 전이와 재전달 시 중복 변경 방지를 확인하고 시험 항목을 정리했다. 재실행 명령은 `AWS_PROFILE=foodtech .venv/bin/python tests/live/jeyuk_job_dynamodb_check.py`다.
+`equipment_profile="jeyuk-small"`로 생성하는 제육볶음 합성 작업은 실제 투입량(kg)을 받으며 1.8kg 권장량을 넘으면 경고, 3.0kg 정격량을 넘으면 생성을 거부한다. 조리 시작 전 `synthetic-rest / mockprofile-110-a-001 / jeyuk-...` fixture를 작업 하나에 연결한다. Worker가 연결된 원표본의 표면온도·교반 RPM·모터 부하 판정을 반영하고 실패가 확정되면 작업을 `FAILED`로 전이해 평가를 차단한다. 돈까스 두께·탐침·평가 입력 계약을 제육볶음에 적용하지 않는다. 제육볶음 수동 안전 검증과 메뉴별 완료 평가는 후속 구현이다. 2026-11-15 개발용 AWS에서 합성 원표본 30건의 5초 걸림 경고, 30초 실패, 작업 실패 전이와 재전달 시 중복 변경 방지를 확인하고 시험 항목을 정리했다. 재실행 명령은 `AWS_PROFILE=foodtech .venv/bin/python tests/live/jeyuk_job_dynamodb_check.py`다.
+
+자동 혼합물 안전 증거는 같은 제육볶음 작업의 `auto_safety_status`, `mixture_hold_seconds`, `safety_passed_at_second`에 별도로 기록한다. 최종 재료 투입 완료 다음 초부터 75°C 이상 60초를 채우면 자동 증거는 `PASSED`가 되지만 최초·재검증용 수동 탐침 기록은 아직 없으므로 `evaluation_blocked`를 해제하지 않는다. 개발용 AWS에서 61개 합성 표본의 이 경계를 확인했다. 재실행에는 위 명령에 `--safety`를 붙인다.
 
 조리작업의 `POST /api/customer/cooking-jobs/{job_id}/source-binding`은 고객 세션·CSRF·작업 버전을 확인한 뒤 조리 시작 전 `synthetic-rest / mockprofile-100-a-001 / batch-a-...` 배치를 한 작업에만 연결한다. 같은 배치를 다른 작업에 다시 연결하지 않는다. 연결 정보는 작업 메타와 역방향 바인딩을 같은 DynamoDB 트랜잭션으로 기록한다. 고객 화면에서는 배치 연결 뒤 조리를 시작하고 새로고침으로 자동판정을 확인한다.
 

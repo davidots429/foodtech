@@ -16,6 +16,10 @@ class JeyukMockSample:
     actual_rpm: Decimal
     target_rpm: Decimal
     motor_load_percent: Decimal
+    mixture_celsius: Decimal | None
+    calibration_status: str | None
+    safety_sensor_position: str | None
+    last_ingredient_addition_completed: bool | None
 
 
 def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
@@ -44,7 +48,9 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
         "actualLoadKg", "second", "sampleIntervalSeconds", "surfaceCelsius",
         "actualRpm", "targetRpm", "motorLoadPercent",
     }
-    if not isinstance(record, dict) or set(record) != required:
+    safety_fields = {"mixtureCelsius", "calibrationStatus", "safetySensorPosition",
+                     "lastIngredientAdditionCompleted"}
+    if not isinstance(record, dict) or set(record) not in (required, required | safety_fields):
         raise ValueError("unexpected Jeyuk Mock sample fields")
     if (record["provenance"] != "SYNTHETIC" or record["profileId"] != "mockprofile-110"
             or record["instanceId"] != "mockprofile-110-a-001"
@@ -56,9 +62,18 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
             or type(record["sampleIntervalSeconds"]) is not int
             or record["sampleIntervalSeconds"] != 1):
         raise ValueError("a consecutive one-second sample is required")
+    has_safety = safety_fields <= set(record)
+    if has_safety and (record["calibrationStatus"] not in ("OK", "EXPIRED")
+                       or record["safetySensorPosition"] != "LOWEST_MIXTURE_POINT"
+                       or type(record["lastIngredientAdditionCompleted"]) is not bool):
+        raise ValueError("unexpected Jeyuk safety sensor contract")
     return JeyukMockSample(
         record["fixtureId"], record["profile"], _decimal(record, "actualLoadKg", positive=True),
         record["second"], _decimal(record, "surfaceCelsius"),
         _decimal(record, "actualRpm"), _decimal(record, "targetRpm"),
         _decimal(record, "motorLoadPercent"),
+        _decimal(record, "mixtureCelsius") if has_safety else None,
+        record["calibrationStatus"] if has_safety else None,
+        record["safetySensorPosition"] if has_safety else None,
+        record["lastIngredientAdditionCompleted"] if has_safety else None,
     )

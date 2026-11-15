@@ -16,6 +16,7 @@ from foodtech_standardization_worker.jeyuk_aws import DynamoJeyukProcessor
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "fixtures/jeyuk-small-process-v1.json"
+SAFETY_FIXTURE = ROOT / "fixtures/jeyuk-small-safety-v1.json"
 DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 
@@ -84,6 +85,25 @@ class FakeDdb:
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class JeyukAwsTests(unittest.TestCase):
+    def test_safety_hold_is_persisted_with_process_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "safety.jsonl"
+            subprocess.run(["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(SAFETY_FIXTURE),
+                            "--output", str(output)], check=True, capture_output=True)
+            raws = output.read_text().splitlines()
+        table = FakeTable()
+        sqs = FakeSqs()
+        ingestor = DynamoJeyukIngestor.__new__(DynamoJeyukIngestor)
+        ingestor.table, ingestor.sqs, ingestor.queue_url = table, sqs, "test.fifo"
+        worker = DynamoJeyukProcessor(table, FakeDdb(table))
+        results = [worker.process(ingestor.ingest(raw)) for raw in raws]
+        self.assertEqual((results[59]["auto_safety_status"], results[59]["mixture_hold_seconds"]),
+                         ("PENDING", 59))
+        self.assertEqual((results[60]["auto_safety_status"], results[60]["mixture_hold_seconds"],
+                          results[60]["safety_passed_at_second"]), ("PASSED", 60, 61))
+        state = table.items[("JEYUK#jeyuk-small-safety-v1", "STATE")]
+        self.assertEqual(state["safety_state"]["passed_at_second"], 61)
+
     def test_raw_fifo_state_and_replay(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "samples.jsonl"

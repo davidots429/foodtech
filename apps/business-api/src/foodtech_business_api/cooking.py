@@ -229,6 +229,8 @@ async def create_job(request: Request, body: NewJob) -> dict:
                                      process_status("NOT_MEASURED", thickness_status, "NOT_MEASURED"),
         "process_temperature_status": "NOT_MEASURED", "process_thickness_status": thickness_status,
         "process_surface_status": "NOT_MEASURED", "process_rpm_status": "NOT_MEASURED",
+        "auto_safety_status": "NOT_MEASURED", "mixture_hold_seconds": 0,
+        "safety_passed_at_second": None,
         "process_time_status": "NOT_MEASURED",
     }
     await _store_call(store, store.create, _pk(session.subject, job_id), meta)
@@ -604,6 +606,8 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
                                          process_status("NOT_MEASURED", old.get("process_thickness_status", "NOT_MEASURED"), "NOT_MEASURED"),
             "process_temperature_status": "NOT_MEASURED",
             "process_surface_status": "NOT_MEASURED", "process_rpm_status": "NOT_MEASURED",
+            "auto_safety_status": "NOT_MEASURED", "mixture_hold_seconds": 0,
+            "safety_passed_at_second": None,
             "process_thickness_status": old.get("process_thickness_status", "NOT_MEASURED"),
             "process_time_status": "NOT_MEASURED"}
     try:

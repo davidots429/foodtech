@@ -50,6 +50,9 @@ class DynamoJeyukJobBridge:
             now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             new = {**old, "version": int(old["version"]) + 1, "updated_at": now,
                    "process_assessment_status": process_status,
+                   "auto_safety_status": result.get("auto_safety_status", "NOT_MEASURED"),
+                   "mixture_hold_seconds": result.get("mixture_hold_seconds", 0),
+                   "safety_passed_at_second": result.get("safety_passed_at_second"),
                    "process_surface_status": result["surface_band"],
                    "process_rpm_status": result["rpm_band"],
                    "process_load_status": result["load_status"],
@@ -68,6 +71,8 @@ class DynamoJeyukJobBridge:
                      "trigger": "PROCESS_FAILURE_DETECTED" if failed else "PROCESS_SAMPLE_ASSESSED",
                      "from_status": old.get("process_assessment_status", "INSUFFICIENT_DATA"),
                      "to_status": process_status, "reason_codes": result["reason_codes"],
+                     "auto_safety_status": result.get("auto_safety_status", "NOT_MEASURED"),
+                     "mixture_hold_seconds": result.get("mixture_hold_seconds", 0),
                      "source_assessment_pk": stream_pk,
                      "source_assessment_sk": f"ASSESSMENT#{second:06d}",
                      "rule_version": RULE_VERSION, "occurred_at": now}

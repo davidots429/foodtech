@@ -11,3 +11,5 @@
 `tonkatsu-process-high-v1.json`은 첫 REST/JSON Mock 프로파일과 동일한 스키마를 사용한다. `batch-a-process-high-001`에 181°C 표본을 5초 간격으로 0~20초까지 제공하여, 20초 경계에서 `HIGH_PROCESS_FAILURE`가 발생하는 경우를 재현한다. 실제 장비의 운전값이나 호환 사양이 아니다.
 
 `jeyuk-small-process-v1.json`은 소형 볶음·교반기의 1초 원표본 걸림 경계 fixture다. 20rpm·부하율 95%가 지속될 때 5초에는 `AGITATOR_JAM_WARNING`, 30초에는 `AGITATOR_FAILURE`가 되는 기대 결과를 기록한다. 5초 전송 평균이나 실제 장비 사양을 표현하지 않는다.
+
+`jeyuk-small-safety-v1.json`은 마지막 채소·소스 투입 완료를 1초에 기록하고, 이후 승인된 최저온도 지점의 혼합물 온도 75°C를 60초 연속 유지하는 합성 사례다. 60초에는 유지 59초로 대기하며 61초에 자동 안전 증거가 `PASSED`가 된다. 실제 장비·식품 검증 데이터가 아니다.
