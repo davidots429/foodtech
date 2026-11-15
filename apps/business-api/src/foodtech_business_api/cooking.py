@@ -1,6 +1,8 @@
 """Synthetic cooking jobs; tonkatsu safety/evaluation and Jeyuk process linkage."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import uuid
@@ -133,6 +135,18 @@ class SourceBinding(StrictModel):
                           pattern=r"^(?:batch-a-|jeyuk-)[A-Za-z0-9-]+$")
 
 
+class JeyukValidationContext(StrictModel):
+    schema_version: Literal["jeyuk-validation-context-v1"]
+    expected_version: int = Field(ge=1)
+    ingredient_spec_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    ingredient_lot_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    supplier_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    sensor_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    sensor_calibration_record_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    process_condition_profile_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    process_condition_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+
+
 class Transition(StrictModel):
     event: Literal["PREHEAT_COMPLETED", "PREHEAT_CONDITION_LOST", "COOKING_STARTED",
                    "COOKING_PAUSED", "COOKING_RESUMED", "COOKING_COMPLETED", "COOKING_CANCELED"]
@@ -246,6 +260,8 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "manual_stopped_at": None,
         "created_at": _now(), "updated_at": _now(),
         "source_job_id": None, "recook_reason": None, "source_binding": None,
+        "validation_context": None, "validation_context_digest": None,
+        "validation_context_version": 0, "validation_context_status": "NOT_RECORDED",
         "actual_placed_at": None, "actual_lifted_at": None,
         "completion_recorded_at": None, "actual_cooking_seconds": None,
         "process_assessment_status": ("WARNING" if load_status == "OVER_RECOMMENDED_LOAD" else
@@ -307,6 +323,50 @@ async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dic
         await _store_call(store, store.bind_stream, pk, int(old["version"]), meta, stream_pk)
     except Conflict as exc:
         raise HTTPException(409, "이 수집 배치는 이미 연결되었거나 작업이 변경되었습니다.") from exc
+    return meta
+
+
+@router.post("/{job_id}/validation-context")
+async def record_jeyuk_validation_context(job_id: str, request: Request,
+                                          body: JeyukValidationContext) -> dict:
+    session, store, pk, old, _ = await _read(request, job_id, write=True)
+    if int(old["version"]) != body.expected_version:
+        raise _conflict()
+    if old["menu"] != "JEYUK":
+        raise HTTPException(422, "제육볶음 작업에만 재검증 조합을 기록할 수 있습니다.")
+    if old["status"] not in {"PENDING", "READY"} or not old.get("source_binding"):
+        raise HTTPException(409, "수집 배치를 연결한 뒤 조리 시작 전에 조합을 기록할 수 있습니다.")
+    binding = old["source_binding"]
+    context = {
+        "schema_version": body.schema_version,
+        "recipe_version": old["recipe_version"],
+        "equipment_profile": old["equipment_profile"],
+        "equipment_device_id": binding["device_id"],
+        "source_id": binding["source_id"],
+        "actual_load_kg": str(Decimal(old["actual_load_kg"]).quantize(Decimal("0.01"))),
+        "ingredient_spec_id": body.ingredient_spec_id,
+        "ingredient_lot_id": body.ingredient_lot_id,
+        "supplier_id": body.supplier_id,
+        "sensor_id": body.sensor_id,
+        "sensor_calibration_record_id": body.sensor_calibration_record_id,
+        "process_condition_profile_id": body.process_condition_profile_id,
+        "process_condition_version": body.process_condition_version,
+    }
+    # Batch and job IDs identify observations, not the reusable validation combination.
+    digest = hashlib.sha256(json.dumps(context, sort_keys=True, ensure_ascii=False,
+                                       separators=(",", ":")).encode("utf-8")).hexdigest()
+    version = int(old.get("validation_context_version", 0)) + 1
+    now = _now()
+    meta = {**old, "validation_context": context, "validation_context_digest": digest,
+            "validation_context_version": version, "validation_context_status": "DECLARED_UNVERIFIED",
+            "version": int(old["version"]) + 1, "updated_at": now}
+    event = {"sk": f"EVENT#VALIDATION_CONTEXT#{version:012d}",
+             "domain": "VALIDATION_CONTEXT", "trigger": "VALIDATION_CONTEXT_RECORDED",
+             "from_status": old.get("validation_context_status", "NOT_RECORDED"),
+             "to_status": "DECLARED_UNVERIFIED", "previous_digest": old.get("validation_context_digest"),
+             "context_digest": digest, "context_version": version, "context": context,
+             "actor_subject": session.subject, "occurred_at": now}
+    await _commit(store, pk, old, meta, event=event)
     return meta
 
 
@@ -695,6 +755,8 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
             "manual_stopped_at": None,
             "created_at": _now(), "updated_at": _now(),
             "source_job_id": job_id, "recook_reason": body.reason, "source_binding": None,
+            "validation_context": None, "validation_context_digest": None,
+            "validation_context_version": 0, "validation_context_status": "NOT_RECORDED",
             "actual_placed_at": None, "actual_lifted_at": None,
             "completion_recorded_at": None, "actual_cooking_seconds": None,
             "process_assessment_status": ("WARNING" if old.get("process_load_status") == "OVER_RECOMMENDED_LOAD"

@@ -82,6 +82,8 @@
 
 `equipment_profile="jeyuk-small"`로 생성하는 제육볶음 합성 작업은 실제 투입량(kg)을 받으며 1.8kg 권장량을 넘으면 경고, 3.0kg 정격량을 넘으면 생성을 거부한다. 조리 시작 전 `synthetic-rest / mockprofile-110-a-001 / jeyuk-...` fixture를 작업 하나에 연결한다. Worker가 연결된 원표본의 표면온도·교반 RPM·모터 부하 판정을 반영하고 실패가 확정되면 작업을 `FAILED`로 전이해 평가를 차단한다. 돈까스 두께·탐침·평가 입력 계약을 제육볶음에 적용하지 않는다. 2026-11-15 개발용 AWS에서 합성 원표본 30건의 5초 걸림 경고, 30초 실패, 작업 실패 전이와 재전달 시 중복 변경 방지를 확인하고 시험 항목을 정리했다. 재실행 명령은 `AWS_PROFILE=foodtech .venv/bin/python tests/live/jeyuk_job_dynamodb_check.py`다.
 
+`POST /api/customer/cooking-jobs/{job_id}/validation-context`는 제육볶음의 수집 배치 연결 후 조리 시작 전에 원재료 규격·로트·공급처, 센서·교정 기록, 공정조건 프로파일·버전을 받는다. 작업에 고정된 레시피 버전·장비 프로파일·장비 ID·수집 출처·실제 적재량을 합쳐 버전 있는 조합을 만들고, 배치·작업 ID를 제외한 정렬 JSON의 SHA-256 식별 해시를 기록한다. 수정마다 이전 기록을 보존하는 이벤트를 남기고 작업 버전을 검사한다. 화면과 API 상태는 `DECLARED_UNVERIFIED`로만 표시하며 이 단계에서 72시간 유효 기간을 시작하거나 안전·평가 판정을 바꾸지 않는다. 실제 수집·안전 증거와 조합의 일치 확인 및 유효 기간 판정은 후속 범위다.
+
 자동 혼합물 안전 증거는 같은 제육볶음 작업의 `auto_safety_status`, `mixture_hold_seconds`, `safety_passed_at_second`에 별도로 기록한다. 최종 재료 투입 완료 다음 초부터 75°C 이상 60초를 채우면 자동 증거는 `PASSED`가 되지만 최초·재검증용 수동 탐침 기록은 아직 없으므로 `evaluation_blocked`를 해제하지 않는다. 개발용 AWS에서 61개 합성 표본의 이 경계를 확인했다. 재실행에는 위 명령에 `--safety`를 붙인다.
 
 `POST /api/customer/cooking-jobs/{job_id}/safety/discharge-check`는 완료된 제육볶음 작업에 한해 초기·재검증 표본을 기록한다. 배출 초기·중간·말기의 서로 다른 육류 포함 표본, 가장 두껍거나 뭉친 육류 부분 선택, 탐침 ID·교정 상태·측정시각과 온도를 저장한다. 교정된 세 표본이 모두 75°C 이상이면 수동 판정은 `PASSED`, 유효한 값 하나라도 미달하면 `FAILED`, 누락·무효값은 `ASSESSMENT_INCOMPLETE`다. 작업 안전 상태 `PASSED`는 자동 혼합물 판정과 수동 표본 판정이 모두 통과한 경우에만 기록한다. 모든 재검증은 이전 사건을 보존하며 기존 평가 포인터는 자동 복원하지 않는다. 고객 화면의 표본값은 시연용 합성 입력이다.
