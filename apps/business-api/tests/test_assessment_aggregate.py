@@ -169,6 +169,48 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["quality_pass_rate_percent"])
         self.assertIsNone(result["item_score_means"])
 
+    async def test_jeyuk_group_uses_menu_scale_and_over_recommended_band(self):
+        for job_id in (self.first_id, self.second_id):
+            pk = cooking._pk(self.subject, job_id)
+            self.store.items[(pk, "META")].update(
+                menu="JEYUK", equipment_profile="jeyuk-small")
+            self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
+                menu="JEYUK", equipment_profile="jeyuk-small",
+                scale_version="jeyuk-common-v1", load_band="OVER_RECOMMENDED")
+        body = {**self._body(), "menu": "JEYUK", "load_band": "OVER_RECOMMENDED"}
+        created = await self.client.post("/api/customer/assessment-aggregates", json=body,
+                                         headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(created.status_code, 201, created.text)
+        result = created.json()
+        self.assertEqual(result["sample_count"], 1)
+        self.assertEqual(result["selection"]["scale_version"], "jeyuk-common-v1")
+        self.assertEqual(result["formula_version"], "jeyuk-selected-sample-v1")
+        group_path = f"/api/customer/assessment-aggregates/{result['group_id']}"
+        listed = (await self.client.get(f"/api/customer/assessment-aggregates/jobs/{self.first_id}/groups")).json()
+        self.assertEqual(listed["items"][0]["menu"], "JEYUK")
+        refreshed = await self.client.post(group_path + f"/results/{result['result_id']}/refresh",
+                                            headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(refreshed.status_code, 201, refreshed.text)
+        self.assertEqual(refreshed.json()["result_id"], result["result_id"])
+
+        second_pk = cooking._pk(self.subject, self.second_id)
+        self.store.items[(second_pk, "META")].update(version=4, safety_status="PASSED",
+                                                      evaluation_blocked=False)
+        self.store.items[(second_pk, "ASSESSMENT#CURRENT")]["usable"] = True
+        recalculated = await self.client.post(group_path + f"/results/{result['result_id']}/refresh",
+                                               headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(recalculated.status_code, 201, recalculated.text)
+        self.assertEqual(recalculated.json()["sample_count"], 2)
+        self.assertNotEqual(recalculated.json()["result_id"], result["result_id"])
+        self.assertEqual((await self.client.get(group_path + f"/results/{result['result_id']}/status"))
+                         .json()["status"], "STALE")
+
+    async def test_tonkatsu_over_recommended_band_is_rejected(self):
+        response = await self.client.post("/api/customer/assessment-aggregates",
+                                          json={**self._body(), "load_band": "OVER_RECOMMENDED"},
+                                          headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(response.status_code, 422)
+
     async def test_refresh_backfills_legacy_dependency_and_current_pointer(self):
         original = (await self.client.post("/api/customer/assessment-aggregates", json=self._body(),
                     headers={"X-CSRF-Token": "test-csrf"})).json()

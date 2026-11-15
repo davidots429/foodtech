@@ -16,7 +16,10 @@ from .cooking_store import Conflict
 
 router = APIRouter(prefix="/api/customer/assessment-aggregates", tags=["assessment-aggregate"])
 FORMULA_VERSION = "tonkatsu-selected-sample-v1"
+JEYUK_FORMULA_VERSION = "jeyuk-selected-sample-v1"
 MAX_SAMPLE = 20
+PROFILES = {"TONKATSU": ("synthetic-fryer", "tonkatsu-common-v1", FORMULA_VERSION),
+            "JEYUK": ("jeyuk-small", "jeyuk-common-v1", JEYUK_FORMULA_VERSION)}
 
 
 class AggregateRequest(BaseModel):
@@ -25,7 +28,24 @@ class AggregateRequest(BaseModel):
     period_start: datetime
     period_end: datetime
     recipe_version: str = Field(min_length=1, max_length=80)
-    load_band: Literal["PARTIAL", "REFERENCE"]
+    menu: Literal["TONKATSU", "JEYUK"] = "TONKATSU"
+    load_band: Literal["PARTIAL", "REFERENCE", "OVER_RECOMMENDED"]
+
+
+def _selection(body: AggregateRequest) -> dict:
+    profile, scale, _ = PROFILES[body.menu]
+    return {"job_ids": sorted(str(value) for value in body.job_ids),
+            "period_start": body.period_start.astimezone(timezone.utc).isoformat(),
+            "period_end": body.period_end.astimezone(timezone.utc).isoformat(),
+            "menu": body.menu, "equipment_profile": profile,
+            "recipe_version": body.recipe_version.strip(), "scale_version": scale,
+            "load_band": body.load_band}
+
+
+def _stored_request(selection: dict) -> AggregateRequest:
+    return AggregateRequest.model_validate({key: selection[key] for key in
+                                            ("job_ids", "period_start", "period_end",
+                                             "recipe_version", "load_band", "menu")})
 
 
 def _hash(value: dict) -> str:
@@ -41,9 +61,9 @@ def _percent(numerator: int, denominator: int) -> str | None:
 
 
 def _reason(meta: dict, pointer: dict | None, assessment: dict | None,
-            *, recipe: str, load_band: str, start: datetime, end: datetime) -> str | None:
-    if meta["menu"] != "TONKATSU" or meta["equipment_profile"] != "synthetic-fryer" or \
-            meta["recipe_version"] != recipe:
+            *, selection: dict, start: datetime, end: datetime) -> str | None:
+    if meta["menu"] != selection["menu"] or meta["equipment_profile"] != selection["equipment_profile"] or \
+            meta["recipe_version"] != selection["recipe_version"]:
         return "DIMENSION_MISMATCH"
     if meta["status"] != "COMPLETED":
         return "JOB_NOT_COMPLETED"
@@ -58,10 +78,10 @@ def _reason(meta: dict, pointer: dict | None, assessment: dict | None,
     if not assessment or assessment["status"] != "COMPLETED" or \
             assessment["sk"] != pointer["assessment_sk"]:
         return "NO_COMPLETED_ASSESSMENT"
-    if assessment["scale_version"] != "tonkatsu-common-v1" or assessment["menu"] != meta["menu"] or \
+    if assessment["scale_version"] != selection["scale_version"] or assessment["menu"] != meta["menu"] or \
             assessment["equipment_profile"] != meta["equipment_profile"]:
         return "SCALE_OR_PROFILE_MISMATCH"
-    if assessment["load_band"] != load_band:
+    if assessment["load_band"] != selection["load_band"]:
         return "LOAD_BAND_MISMATCH"
     try:
         completed_at = datetime.fromisoformat(assessment["completed_at"].replace("Z", "+00:00"))
@@ -88,10 +108,10 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
     recipe = body.recipe_version.strip()
     if not recipe:
         raise HTTPException(422, "레시피 버전을 입력해야 합니다.")
-    selection = {"job_ids": ids, "period_start": start.isoformat(), "period_end": end.isoformat(),
-                 "menu": "TONKATSU", "equipment_profile": "synthetic-fryer",
-                 "recipe_version": recipe, "scale_version": "tonkatsu-common-v1",
-                 "load_band": body.load_band}
+    if body.menu == "TONKATSU" and body.load_band == "OVER_RECOMMENDED":
+        raise HTTPException(422, "돈까스 첫 척도에는 권장량 초과 구간이 없습니다.")
+    selection = _selection(body)
+    _, _, formula_version = PROFILES[body.menu]
     group_id = _hash(selection)
     snapshots: list[tuple[str, dict, dict | None, dict | None]] = []
     references = []
@@ -104,8 +124,7 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
         process_pointer = await _store_call(store, store.process_pointer, pk)
         assessment = (await _store_call(store, store.assessment, pk, int(pointer["version"]))
                       if pointer else None)
-        reason = _reason(meta, pointer, assessment, recipe=recipe, load_band=body.load_band,
-                         start=start, end=end)
+        reason = _reason(meta, pointer, assessment, selection=selection, start=start, end=end)
         snapshots.append((pk, meta, pointer, process_pointer))
         reference = {"job_id": job_id, "job_version": int(meta["version"]),
                      "safety_version": int(meta["safety_version"]),
@@ -121,7 +140,7 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
         if reason is None:
             included.append(assessment)
     result_id = _hash({"selection": selection, "references": references,
-                       "formula_version": FORMULA_VERSION})
+                       "formula_version": formula_version})
     count = len(included)
     excluded = [{"job_id": ref["job_id"], "reason": ref["exclusion_reason"]}
                 for ref in references if not ref["included"]]
@@ -130,7 +149,7 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
     item_means = ({name: str((Decimal(sum(item["scores"][name] for item in included)) / Decimal(count))
                              .quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) for name in SCORE_ITEMS}
                   if count else None)
-    record = {"group_id": group_id, "result_id": result_id, "formula_version": FORMULA_VERSION,
+    record = {"group_id": group_id, "result_id": result_id, "formula_version": formula_version,
               "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "scope": "SELECTED_SAMPLE", "selection": selection, "references": references,
               "sample_count": count, "excluded_count": len(excluded), "excluded": excluded,
@@ -162,9 +181,7 @@ async def refresh_dependents(store, job_pk: str) -> int:
                 dependency["aggregate_pk"] != f"SCOPE#USER#{subject}#AGGREGATE#{group_id}" or \
                 job_id not in selection["job_ids"]:
             raise ValueError("invalid aggregate dependency")
-        body = AggregateRequest.model_validate({key: selection[key] for key in
-                                                ("job_ids", "period_start", "period_end",
-                                                 "recipe_version", "load_band")})
+        body = _stored_request(selection)
         result = await _calculate(SimpleNamespace(subject=subject), store, body)
         if result["group_id"] != group_id:
             raise ValueError("aggregate dependency selection changed")
@@ -198,9 +215,7 @@ async def list_groups_for_job(job_id: UUID, request: Request,
                     dependency["aggregate_pk"] != \
                     f"SCOPE#USER#{session.subject}#AGGREGATE#{group_id}":
                 raise ValueError
-            body = AggregateRequest.model_validate({key: selection[key] for key in
-                                                    ("job_ids", "period_start", "period_end",
-                                                     "recipe_version", "load_band")})
+            body = _stored_request(selection)
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             raise HTTPException(409, "집계 그룹 연결 기록이 올바르지 않습니다.") from exc
         pointer = await _store_call(store, store.current_aggregate, dependency["aggregate_pk"])
@@ -209,7 +224,8 @@ async def list_groups_for_job(job_id: UUID, request: Request,
             raise HTTPException(409, "집계 그룹의 현재 결과 포인터가 올바르지 않습니다.")
         groups.append({"group_id": group_id, "result_id": result_id,
                        "updated_at": pointer.get("updated_at") if pointer else None,
-                       "recipe_version": body.recipe_version, "load_band": body.load_band,
+                       "menu": body.menu, "recipe_version": body.recipe_version,
+                       "load_band": body.load_band,
                        "period_start": selection["period_start"],
                        "period_end": selection["period_end"],
                        "job_count": len(body.job_ids)})
@@ -302,17 +318,10 @@ async def refresh_aggregate(group_id: str, result_id: str, request: Request) -> 
     if _hash(selection) != group_id:
         raise HTTPException(409, "집계 그룹 조건이 변경되었습니다.")
     try:
-        body = AggregateRequest.model_validate({key: selection[key] for key in
-                                                ("job_ids", "period_start", "period_end",
-                                                 "recipe_version", "load_band")})
+        body = _stored_request(selection)
     except (KeyError, ValidationError) as exc:
         raise HTTPException(409, "저장된 집계 조건을 다시 사용할 수 없습니다.") from exc
-    normalized = {"job_ids": sorted(str(value) for value in body.job_ids),
-                  "period_start": body.period_start.astimezone(timezone.utc).isoformat(),
-                  "period_end": body.period_end.astimezone(timezone.utc).isoformat(),
-                  "menu": "TONKATSU", "equipment_profile": "synthetic-fryer",
-                  "recipe_version": body.recipe_version.strip(), "scale_version": "tonkatsu-common-v1",
-                  "load_band": body.load_band}
+    normalized = _selection(body)
     if normalized != selection:
         raise HTTPException(409, "집계 그룹 조건이 변경되었습니다.")
     result = await _calculate(session, store, body)

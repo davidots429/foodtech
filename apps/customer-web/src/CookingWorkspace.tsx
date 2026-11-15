@@ -923,10 +923,10 @@ export function CookingWorkspace({ csrf }: Props) {
             </div>}
           </section>
 
-          {job.menu === "TONKATSU" && <AssessmentAggregate csrf={csrf} currentJobId={job.job_id}
+          <AssessmentAggregate csrf={csrf} currentJobId={job.job_id} menu={job.menu}
             recipeVersion={job.recipe_version}
-            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band as "PARTIAL" | "REFERENCE" | undefined}
-            availableJobs={listedJobs} />}
+            defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band}
+            availableJobs={listedJobs} />
 
           <section className="subcard" aria-labelledby="recook-title">
             <h3 id="recook-title">7. 재조리 연결</h3>
