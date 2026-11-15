@@ -132,6 +132,16 @@ async def refresh_dependents(store, job_pk: str) -> dict[str, int]:
     return {"refreshed_group_count": refreshed, "blocked_group_count": blocked}
 
 
+@router.get("/{candidate_job_id}/comparisons/history")
+async def list_comparison_results(candidate_job_id: UUID, request: Request,
+                                  limit: int = Query(20, ge=1, le=50),
+                                  cursor: str | None = None) -> dict:
+    if cursor and (len(cursor) != 64 or any(char not in "0123456789abcdef" for char in cursor)):
+        raise HTTPException(400, "비교 결과 커서가 올바르지 않습니다.")
+    _, store, candidate_pk, _, _ = await _read(request, str(candidate_job_id))
+    return await _store_call(store, store.list_comparison_results, candidate_pk, limit, cursor)
+
+
 @router.get("/{candidate_job_id}/comparisons/{comparison_id}")
 async def get_comparison(candidate_job_id: UUID, comparison_id: str, request: Request) -> dict:
     _, _, record = await _record(candidate_job_id, comparison_id, request)

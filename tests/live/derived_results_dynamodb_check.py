@@ -148,6 +148,10 @@ async def verify() -> None:
                                                      "comparison_id": comparison["comparison_id"],
                                                      "updated_at": comparison["compared_at"]}]
                 assert comparison_list["next_cursor"] is None
+                comparison_history = comparison_path + "/history"
+                first_history = await get(client, comparison_history + "?limit=1")
+                assert [item["comparison_id"] for item in first_history["items"]] == [comparison["comparison_id"]]
+                assert first_history["next_cursor"] is None
                 comparison_dependency = f"COMPARISON#DEP#{candidate['job_id']}#{baseline['job_id']}"
                 for selected in (baseline, candidate):
                     store.table.delete_item(Key={"pk": cooking._pk(subject, selected["job_id"]),
@@ -263,6 +267,13 @@ async def verify() -> None:
                 assert auto_comparison["candidate_assessment_version"] == 2
                 assert (await get(client, comparison_path))["items"][0]["comparison_id"] == \
                     auto_comparison["comparison_id"]
+                first_history = await get(client, comparison_history + "?limit=1")
+                assert len(first_history["items"]) == 1 and first_history["next_cursor"]
+                last_history = await get(client, comparison_history +
+                                         "?limit=1&cursor=" + first_history["next_cursor"])
+                assert len(last_history["items"]) == 1 and last_history["next_cursor"] is None
+                assert {item["comparison_id"] for item in first_history["items"] + last_history["items"]} == \
+                    {comparison["comparison_id"], auto_comparison["comparison_id"]}
                 new_comparison = await post(client, comparison_record + "/refresh")
                 new_aggregate = await post(client, aggregate_record + "/refresh")
                 assert new_comparison["comparison_id"] != comparison["comparison_id"]
@@ -280,6 +291,7 @@ async def verify() -> None:
 
                 current_subject = "other-synthetic-user"
                 assert (await client.get(comparison_record)).status_code == 404
+                assert (await client.get(comparison_history)).status_code == 404
                 assert (await client.get(aggregate_record)).status_code == 404
                 assert (await client.get(result_history)).status_code == 404
                 assert (await client.get(related_groups)).status_code == 404
@@ -340,6 +352,7 @@ async def verify() -> None:
                 summary = {"account": ACCOUNT, "region": REGION, "table": TABLE,
                            "comparison_stale_then_new_version": True,
                            "comparison_auto_refreshed_and_legacy_index_backfilled": True,
+                           "comparison_result_history_paginated": True,
                            "aggregate_stale_then_new_version": True,
                            "aggregate_auto_refreshed_and_current_lookup": True,
                            "related_group_list_and_repair": True,

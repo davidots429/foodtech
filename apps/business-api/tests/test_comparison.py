@@ -185,6 +185,19 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed[0]["comparison_id"], new["comparison_id"])
         historical = (await self.client.get(self._path() + "/" + old["comparison_id"])).json()
         self.assertEqual(historical["score_total_delta"], 7)
+        history_path = self._path() + "/history"
+        first_page = (await self.client.get(history_path, params={"limit": 1})).json()
+        self.assertEqual(len(first_page["items"]), 1)
+        self.assertTrue(first_page["next_cursor"])
+        second_page = (await self.client.get(history_path, params={
+            "limit": 1, "cursor": first_page["next_cursor"]})).json()
+        self.assertEqual(len(second_page["items"]), 1)
+        self.assertIsNone(second_page["next_cursor"])
+        self.assertEqual({item["comparison_id"] for item in first_page["items"] + second_page["items"]},
+                         {old["comparison_id"], new["comparison_id"]})
+        self.assertEqual((await self.client.get(history_path, params={"cursor": "invalid"})).status_code, 400)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(history_path)).status_code, 404)
 
     async def test_safety_change_between_read_and_write_rejects_comparison(self):
         candidate_pk = cooking._pk(self.subject, self.candidate_id)
@@ -256,6 +269,44 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ComparisonTransactionContractTests(unittest.TestCase):
+    def test_dynamo_history_query_excludes_pointer_keys_and_exact_end_cursor(self):
+        store = object.__new__(DynamoCookingStore)
+        store.table = MagicMock()
+        candidate_pk = "SCOPE#USER#owner#JOB#candidate"
+        result_id = "a" * 64
+        item = {"pk": candidate_pk, "sk": f"COMPARISON#{result_id}",
+                "comparison_id": result_id, "baseline_job_id": str(uuid4()),
+                "compared_at": "2026-11-15T00:00:00Z", "score_total_delta": 2,
+                "improvement_status": "OBSERVED"}
+        store.table.query.return_value = {"Items": [item]}
+        page = store.list_comparison_results(candidate_pk, 1, result_id)
+        self.assertEqual(page["items"][0]["comparison_id"], result_id)
+        self.assertIsNone(page["next_cursor"])
+        args = store.table.query.call_args.kwargs
+        self.assertEqual(args["ExclusiveStartKey"], {"pk": candidate_pk, "sk": f"COMPARISON#{result_id}"})
+        self.assertEqual(args["Limit"], 2)
+        self.assertTrue(args["ConsistentRead"])
+        self.assertEqual(args["KeyConditionExpression"].get_expression()["values"][1]
+                         .get_expression()["operator"], "begins_with")
+
+    def test_dynamo_history_skips_pointer_page_before_result(self):
+        store = object.__new__(DynamoCookingStore)
+        store.table = MagicMock()
+        candidate_pk = "SCOPE#USER#owner#JOB#candidate"
+        result_id = "b" * 64
+        pointer_key = {"pk": candidate_pk, "sk": "COMPARISON#CURRENT#baseline"}
+        store.table.query.side_effect = [
+            {"Items": [pointer_key], "LastEvaluatedKey": pointer_key},
+            {"Items": [{"pk": candidate_pk, "sk": f"COMPARISON#{result_id}",
+                        "comparison_id": result_id, "baseline_job_id": str(uuid4()),
+                        "compared_at": "2026-11-15T00:00:00Z", "score_total_delta": 2,
+                        "improvement_status": "OBSERVED"}]},
+        ]
+        page = store.list_comparison_results(candidate_pk, 1, None)
+        self.assertEqual([item["comparison_id"] for item in page["items"]], [result_id])
+        self.assertIsNone(page["next_cursor"])
+        self.assertEqual(store.table.query.call_args.kwargs["ExclusiveStartKey"], pointer_key)
+
     def test_dynamo_current_comparison_query_uses_candidate_partition_and_cursor(self):
         store = object.__new__(DynamoCookingStore)
         store.table = MagicMock()
