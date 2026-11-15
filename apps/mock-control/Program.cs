@@ -6,6 +6,11 @@ using System.Globalization;
 
 const string programVersion = "1.0.0";
 var options = ParseArgs(args);
+if (args.Length > 0 && args[0] == "simulate-jeyuk")
+{
+    JeyukSimulation.Emit(Required(options, "fixture"), Required(options, "output"));
+    return;
+}
 var fixturePath = Required(options, "fixture");
 using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
 var root = fixture.RootElement;

@@ -1,0 +1,84 @@
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+
+internal static class JeyukSimulation
+{
+    private const int MaximumSamples = 10_000;
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    public static void Emit(string fixturePath, string outputPath)
+    {
+        using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
+        var root = fixture.RootElement;
+        var fixtureId = RequiredString(root, "fixtureId");
+        var profile = RequiredString(root, "profile");
+        if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
+            profile is not ("SMALL" or "MEDIUM" or "LARGE"))
+            throw new InvalidDataException("Only approved synthetic jeyuk profiles are supported.");
+        var actualLoadKg = PositiveDecimal(root, "actualLoadKg");
+        var segments = root.GetProperty("samples");
+        if (segments.ValueKind != JsonValueKind.Array || segments.GetArrayLength() == 0)
+            throw new InvalidDataException("At least one sample segment is required.");
+
+        // Validate the entire fixture before creating the output file.
+        var samples = new List<JeyukSample>();
+        foreach (var segment in segments.EnumerateArray())
+        {
+            var seconds = segment.GetProperty("seconds").GetInt32();
+            if (seconds <= 0 || seconds > MaximumSamples - samples.Count)
+                throw new InvalidDataException("Invalid or excessive sample duration.");
+            var surface = Decimal(segment, "surfaceCelsius");
+            var actualRpm = NonnegativeDecimal(segment, "actualRpm");
+            var targetRpm = NonnegativeDecimal(segment, "targetRpm");
+            var motorLoad = NonnegativeDecimal(segment, "motorLoadPercent");
+            for (var i = 0; i < seconds; i++)
+                samples.Add(new JeyukSample(
+                    fixtureId, "SYNTHETIC", "mockprofile-110", "mockprofile-110-a-001",
+                    profile, actualLoadKg, samples.Count + 1, 1,
+                    surface, actualRpm, targetRpm, motorLoad));
+        }
+
+        using (var writer = new StreamWriter(outputPath, false, new UTF8Encoding(false)))
+            foreach (var sample in samples)
+                writer.WriteLine(JsonSerializer.Serialize(sample, JsonOptions));
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            fixtureId, provenance = "SYNTHETIC", profileId = "mockprofile-110",
+            instanceId = "mockprofile-110-a-001", profile, sampleIntervalSeconds = 1,
+            count = samples.Count, output = outputPath,
+        }));
+    }
+
+    private static string RequiredString(JsonElement root, string name)
+    {
+        var value = root.GetProperty(name).GetString();
+        return !string.IsNullOrWhiteSpace(value) ? value : throw new InvalidDataException($"{name} is required.");
+    }
+
+    private static decimal PositiveDecimal(JsonElement root, string name)
+    {
+        var value = Decimal(root, name);
+        return value > 0 ? value : throw new InvalidDataException($"{name} must be positive.");
+    }
+
+    private static decimal NonnegativeDecimal(JsonElement root, string name)
+    {
+        var value = Decimal(root, name);
+        return value >= 0 ? value : throw new InvalidDataException($"{name} must be nonnegative.");
+    }
+
+    private static decimal Decimal(JsonElement root, string name)
+    {
+        var element = root.GetProperty(name);
+        if (element.ValueKind != JsonValueKind.String ||
+            !decimal.TryParse(element.GetString(), NumberStyles.Number, CultureInfo.InvariantCulture, out var value))
+            throw new InvalidDataException($"{name} must be a decimal string.");
+        return value;
+    }
+
+    private sealed record JeyukSample(
+        string FixtureId, string Provenance, string ProfileId, string InstanceId,
+        string Profile, decimal ActualLoadKg, int Second, int SampleIntervalSeconds,
+        decimal SurfaceCelsius, decimal ActualRpm, decimal TargetRpm, decimal MotorLoadPercent);
+}
