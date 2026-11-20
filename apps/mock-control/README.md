@@ -59,5 +59,7 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
 
 `serve-opcua --fixture fixtures/mockprofile-203-a-001.json --pki <절대 경로> --port <포트>`는 OPC Foundation .NET SDK 2.0.2 기반 UA-TCP 서버를 연다. `SignAndEncrypt` 정책만 제공하고 미신뢰 클라이언트 인증서를 자동 수락하지 않는다. 시험 전에 수집기의 공개 인증서 DER을 PKI 경로의 `trusted/certs`에 넣고, 수집기에도 서버의 RSA 공개 인증서 DER을 별도로 신뢰시킨다. 개인키가 포함된 PKI 디렉터리는 저장소에 넣지 않는다.
 
-합성 namespace `urn:foodtech:synthetic:opcua:203:a:v1`의 `SyntheticDevice` 아래 읽기 전용 온도·회전수·순번·식별자 등의 UA Node를 Browse·Read할 수 있다. 일관된 한 건의 수집을 위해 `RecordSnapshot` 문자열 Node에 같은 합성 레코드를 담으며 UA Binary Subscription으로 전달한다. 최초 구독부터 5초 간격으로 세 합성 표본이 바뀐다. 이는 표준 30200 정보모델이나 실제 제조사 사양을 구현했다는 주장이 아니다. 세션 단절 후 재전송·프로세스 재시작·장기 장애, 다른 203 fixture와 UA JSON·다른 프로파일은 별도 구현·검증 대상이다.
+합성 namespace `urn:foodtech:synthetic:opcua:203:a:v1`의 `SyntheticDevice` 아래 읽기 전용 온도·회전수·순번·식별자 등의 UA Node를 Browse·Read할 수 있다. 일관된 한 건의 수집을 위해 `RecordSnapshot` 문자열 Node에 같은 합성 레코드를 담으며 UA Binary Subscription으로 전달한다. 최초 구독부터 5초 간격으로 세 합성 표본이 바뀐다. 이는 표준 30200 정보모델이나 실제 제조사 사양을 구현했다는 주장이 아니다. 일반 UA Republish·장기 장애, 다른 203 fixture와 UA JSON·다른 프로파일은 별도 구현·검증 대상이다.
+
+`AvailableSnapshots` 읽기 전용 문자열 Node는 현재까지 발생한 합성 원표본만 JSON 문자열 배열로 반환한다. 전체 배열의 UTF-8 크기는 최대 2,000,000바이트다. 서버 재시작 시 동일 fixture를 처음부터 재생하므로 수집기는 이미 처리한 순번을 대조하고 누락된 자료를 다시 읽을 수 있다. 이 Node는 프로젝트 합성 복구 계약이며 OPC UA 표준 HistoryRead 서비스나 실제 장비의 이력 제공을 뜻하지 않는다.
 

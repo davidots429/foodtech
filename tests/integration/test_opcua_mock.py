@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -112,17 +113,39 @@ class OpcUaMockTests(unittest.IsolatedAsyncioTestCase):
                         self.records = []
                         self.results = []
                         self.times = []
+                        self.first_saved = threading.Event()
                     def ingest(self, raw):
                         self.records.append(json.loads(raw))
                         self.times.append(time.monotonic())
                         self.results.append(assess(str(len(self.records)), raw))
+                        self.first_saved.set()
                     def drain(self, _stream):
                         return []
+                class FailingIngestor:
+                    def __init__(self):
+                        self.persisted = []
+                    def ingest(self, raw):
+                        self.persisted.append(json.loads(raw))
+                        raise RuntimeError("simulated storage failure")
+                    def drain(self, _stream):
+                        return []
+                failed = FailingIngestor()
+                with self.assertRaisesRegex(RuntimeError, "simulated storage failure"):
+                    await collect(endpoint, str(client_pem), str(client_key), str(server_cert), failed,
+                                  count=3, timeout_seconds=25)
                 ingestor = Ingestor()
-                self.assertEqual(await collect(endpoint, str(client_pem), str(client_key), str(server_cert), ingestor,
-                                               count=3, timeout_seconds=25), 3)
+                task = asyncio.create_task(collect(endpoint, str(client_pem), str(client_key), str(server_cert), ingestor,
+                                                  count=3, timeout_seconds=60))
+                self.assertTrue(await asyncio.to_thread(ingestor.first_saved.wait, 10))
+                server.terminate()
+                await asyncio.to_thread(server.wait, timeout=10)
+                await asyncio.sleep(2)
+                server = subprocess.Popen(["dotnet", str(DLL), "serve-opcua", "--fixture", str(FIXTURE),
+                                           "--pki", str(pki), "--port", str(port)], env=os.environ.copy(),
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.assertEqual(await task, 3)
                 self.assertEqual([record["sequenceNumber"] for record in ingestor.records], [1, 2, 3])
-                self.assertGreaterEqual(ingestor.times[2] - ingestor.times[1], 4.3)
+                self.assertEqual(failed.persisted[0], ingestor.records[0])
                 self.assertEqual([result.quality_status for result in ingestor.results], ["VALID", "VALID", "QUARANTINED"])
                 self.assertTrue(all(result.mapping_version == "mockprofile-203-a-map-v1" for result in ingestor.results))
             finally:
