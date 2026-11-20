@@ -70,7 +70,7 @@ const validationCheckLabels: Record<string, string> = {
   source_safety_samples_valid: "원천 안전 표본의 교정·위치 확인",
   source_validation_identity_matches: "원천의 합성 원재료·센서·공정 ID 일치",
   source_relative_duration_covers_cooking: "상대 표본 길이가 조리시간 이상",
-  source_process_span_covers_cooking: "원천 표본과 실제 조리구간의 시각 일치",
+  source_process_span_covers_cooking: "합성 원천 표본과 작업 조리구간의 시각 일치",
 };
 
 const jobLabels: Record<CookingJob["status"], string> = {

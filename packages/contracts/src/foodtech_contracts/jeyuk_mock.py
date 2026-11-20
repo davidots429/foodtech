@@ -3,6 +3,7 @@
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 
@@ -21,6 +22,7 @@ class JeyukMockSample:
     safety_sensor_position: str | None
     last_ingredient_addition_completed: bool | None
     validation_identity: dict[str, str] | None
+    observed_at: datetime | None
 
 
 def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
@@ -53,9 +55,24 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
                      "lastIngredientAdditionCompleted"}
     identity_fields = {"ingredientSpecId", "ingredientLotId", "supplierId", "sensorId",
                        "sensorCalibrationRecordId", "processConditionProfileId", "processConditionVersion"}
-    if not isinstance(record, dict) or set(record) not in (
+    if not isinstance(record, dict) or (set(record) - {"observedAt"}) not in (
             required, required | safety_fields, required | safety_fields | {"validationIdentity"}):
         raise ValueError("unexpected Jeyuk Mock sample fields")
+    observed = record.get("observedAt")
+    if observed is not None:
+        try:
+            if not isinstance(observed, str):
+                raise ValueError("timestamp must be a string")
+            fraction = re.search(r"\.(\d+)(?:Z|[+-]\d\d:\d\d)$", observed)
+            if fraction and any(digit != "0" for digit in fraction.group(1)[6:]):
+                raise ValueError("timestamp precision exceeds microseconds")
+            observed = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+            if observed.utcoffset() is None:
+                raise ValueError("timestamp requires an offset")
+        except (ValueError, OverflowError) as exc:
+            raise ValueError("invalid synthetic observation timestamp") from exc
+    elif "observedAt" in record:
+        raise ValueError("observation timestamp cannot be null")
     if (record["provenance"] != "SYNTHETIC" or record["profileId"] != "mockprofile-110"
             or record["instanceId"] != "mockprofile-110-a-001"
             or record["profile"] not in ("SMALL", "MEDIUM", "LARGE")
@@ -85,5 +102,5 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
         record["calibrationStatus"] if has_safety else None,
         record["safetySensorPosition"] if has_safety else None,
         record["lastIngredientAdditionCompleted"] if has_safety else None,
-        identity,
+        identity, observed,
     )

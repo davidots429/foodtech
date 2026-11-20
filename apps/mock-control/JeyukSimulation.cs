@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
 
@@ -11,6 +12,22 @@ internal static class JeyukSimulation
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    public static void Bind(string fixturePath, string outputPath, string fixtureId, string startAt)
+    {
+        if (Path.GetFullPath(fixturePath) == Path.GetFullPath(outputPath))
+            throw new ArgumentException("The source fixture must not be overwritten.");
+        var root = JsonNode.Parse(File.ReadAllText(fixturePath, Encoding.UTF8))?.AsObject()
+                   ?? throw new InvalidDataException("A fixture object is required.");
+        root["fixtureId"] = fixtureId;
+        root["logicalStartAt"] = startAt;
+        var json = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        using var validated = JsonDocument.Parse(json);
+        Expand(validated.RootElement);
+        using var stream = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write);
+        using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+        writer.Write(json);
+    }
 
     public static void Emit(string fixturePath, string outputPath)
     {
@@ -39,6 +56,16 @@ internal static class JeyukSimulation
             profile is not ("SMALL" or "MEDIUM" or "LARGE"))
             throw new InvalidDataException("Only approved synthetic jeyuk profiles are supported.");
         var actualLoadKg = PositiveDecimal(root, "actualLoadKg");
+        DateTimeOffset? logicalStart = null;
+        if (root.TryGetProperty("logicalStartAt", out var startElement))
+        {
+            var text = startElement.ValueKind == JsonValueKind.String ? startElement.GetString() : null;
+            if (text is null || !(text.EndsWith("Z", StringComparison.Ordinal) || text.EndsWith("+00:00", StringComparison.Ordinal)) ||
+                !DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ||
+                parsed.Offset != TimeSpan.Zero || parsed.Ticks % 10 != 0)
+                throw new InvalidDataException("logicalStartAt must include a UTC offset.");
+            logicalStart = parsed;
+        }
         Dictionary<string, string>? identity = null;
         if (root.TryGetProperty("validationIdentity", out var identityElement))
         {
@@ -106,7 +133,8 @@ internal static class JeyukSimulation
                     fixtureId, "SYNTHETIC", "mockprofile-110", "mockprofile-110-a-001",
                     profile, actualLoadKg, samples.Count + 1, 1,
                     surface, actualRpm, targetRpm, motorLoad, mixture, calibration,
-                    sensorPosition, lastIngredientCompleted, identity));
+                    sensorPosition, lastIngredientCompleted, identity,
+                    logicalStart?.AddSeconds(samples.Count + 1).ToString("O", CultureInfo.InvariantCulture)));
         }
         if (safetyFixture == true && completionEvents != 1)
             throw new InvalidDataException("Exactly one final ingredient addition event is required.");
@@ -146,5 +174,5 @@ internal static class JeyukSimulation
         string Profile, decimal ActualLoadKg, int Second, int SampleIntervalSeconds,
         decimal SurfaceCelsius, decimal ActualRpm, decimal TargetRpm, decimal MotorLoadPercent,
         decimal? MixtureCelsius, string? CalibrationStatus, string? SafetySensorPosition,
-        bool? LastIngredientAdditionCompleted, Dictionary<string, string>? ValidationIdentity);
+        bool? LastIngredientAdditionCompleted, Dictionary<string, string>? ValidationIdentity, string? ObservedAt);
 }

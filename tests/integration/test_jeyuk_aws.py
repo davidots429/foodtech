@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -92,7 +93,12 @@ class JeyukAwsTests(unittest.TestCase):
             with self.subTest(size=size), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "samples.jsonl"
                 fixture = ROOT / f"fixtures/jeyuk-{size}-full-v1.json"
-                subprocess.run(["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(fixture),
+                bound = Path(directory) / "bound.json"
+                start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+                subprocess.run(["dotnet", str(DLL), "bind-jeyuk", "--fixture", str(fixture), "--output", str(bound),
+                                "--fixture-id", f"jeyuk-{size}-full-v1", "--start-at", start.isoformat()],
+                               check=True, capture_output=True)
+                subprocess.run(["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(bound),
                                 "--output", str(output)], check=True, capture_output=True)
                 raws = output.read_text().splitlines()
                 table, sqs = FakeTable(), FakeSqs()
@@ -123,12 +129,13 @@ class JeyukAwsTests(unittest.TestCase):
                     "mixture_hold_seconds": result["mixture_hold_seconds"],
                     "safety_passed_at_second": result["safety_passed_at_second"],
                     "actual_cooking_seconds": seconds, "process_time_status": cooking_time_status(size.upper(), seconds),
+                    "actual_placed_at": start.isoformat(),
+                    "actual_lifted_at": (start + timedelta(seconds=seconds)).isoformat(),
                     "process_assessment_status": result["process_status"]}
                 assessments = [table.items[(pk, f"ASSESSMENT#{index:06d}")] for index in range(1, seconds + 1)]
                 recorded_raw = [table.items[(pk, f"RAW#{index:06d}")] for index in range(1, seconds + 1)]
                 checks = audit_source_records(job, assessments, recorded_raw)
-                self.assertTrue(all(value for key, value in checks.items() if key != "source_process_span_covers_cooking"))
-                self.assertFalse(checks["source_process_span_covers_cooking"])
+                self.assertTrue(all(checks.values()))
 
     def test_safety_hold_is_persisted_with_process_state(self):
         with tempfile.TemporaryDirectory() as directory:
