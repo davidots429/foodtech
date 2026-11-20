@@ -6,6 +6,12 @@ using System.Globalization;
 
 const string programVersion = "1.0.0";
 var options = ParseArgs(args);
+if (args.Length > 0 && args[0] == "serve-opcua")
+{
+    await OpcUaMock.Run(Required(options, "fixture"), Required(options, "pki"),
+                        int.Parse(Required(options, "port")));
+    return;
+}
 if (args.Length > 0 && args[0] == "serve-mqtt")
 {
     await MqttMock.Run(Required(options, "fixture"), Required(options, "cert"),

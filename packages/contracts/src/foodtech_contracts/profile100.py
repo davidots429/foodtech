@@ -16,10 +16,13 @@ SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-100-a-v1.s
 VALIDATOR = jsonschema.Draft202012Validator(SCHEMA, format_checker=jsonschema.FormatChecker())
 MQTT_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-300-a-v1.schema.json").read_text())
 MQTT_VALIDATOR = jsonschema.Draft202012Validator(MQTT_SCHEMA, format_checker=jsonschema.FormatChecker())
+UA_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-203-a-v1.schema.json").read_text())
+UA_VALIDATOR = jsonschema.Draft202012Validator(UA_SCHEMA, format_checker=jsonschema.FormatChecker())
 
 
 def _validate(record: dict) -> None:
-    validator = MQTT_VALIDATOR if record.get("deviceId") == "mockprofile-300-a-001" else VALIDATOR
+    validator = {"mockprofile-300-a-001": MQTT_VALIDATOR, "mockprofile-203-a-001": UA_VALIDATOR}.get(
+        record.get("deviceId"), VALIDATOR)
     validator.validate(record)
 
 

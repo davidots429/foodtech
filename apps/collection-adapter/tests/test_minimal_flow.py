@@ -112,8 +112,8 @@ class MinimalFlowTests(unittest.TestCase):
     def records(self):
         return [json.dumps(item, separators=(",", ":")) for item in FIXTURE["records"]]
 
-    def test_rest_rejects_mqtt_device_even_when_its_schema_is_valid(self):
-        raw = json.dumps({**FIXTURE["records"][0], "deviceId": "mockprofile-300-a-001", "sourceId": "synthetic-mqtt"})
+    def test_rest_rejects_other_devices_even_when_their_schemas_are_valid(self):
+        raw = ""
         class Client:
             def __init__(self, *_args): pass
             def poll(self, _cursor): return PollResult((raw,), 1)
@@ -127,8 +127,11 @@ class MinimalFlowTests(unittest.TestCase):
             "FOODTECH_MOCK_CA_FILE", "FOODTECH_DATA_TABLE", "FOODTECH_ORDERED_QUEUE_URL")}
         with patch.dict("os.environ", config), patch.object(collector_cli, "RestMockClient", Client), \
              patch.object(collector_cli, "DynamoOrderedIngestor", Ingestor), patch("sys.argv", ["collector"]):
-            with self.assertRaisesRegex(ValueError, "unexpected REST Mock device"):
-                collector_cli.main()
+            for device, source in (("mockprofile-300-a-001", "synthetic-mqtt"),
+                                   ("mockprofile-203-a-001", "synthetic-opcua")):
+                raw = json.dumps({**FIXTURE["records"][0], "deviceId": device, "sourceId": source})
+                with self.assertRaisesRegex(ValueError, "unexpected REST Mock device"):
+                    collector_cli.main()
 
     def test_schema_hash_and_quality(self):
         records = self.records()
