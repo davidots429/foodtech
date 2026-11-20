@@ -40,19 +40,24 @@ using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UT
 var root = fixture.RootElement;
 var jeyuk = root.TryGetProperty("fixtureId", out _);
 var combi = root.TryGetProperty("profileId", out var profile) && profile.GetString() == "mockprofile-120";
-if (!jeyuk && !combi && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
+var xml = root.TryGetProperty("profileId", out var xmlProfile) && xmlProfile.GetString() == "mockprofile-101";
+if (!jeyuk && !combi && !xml && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
     root.GetProperty("instanceId").GetString() is not ("mockprofile-100-a-001" or "mockprofile-100-b-001" or "mockprofile-100-c-001")))
     throw new InvalidDataException("Only approved synthetic profiles are supported.");
-if ((jeyuk || combi) && (args.Length == 0 || args[0] != "serve"))
+if (xml && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
+            root.GetProperty("instanceId").GetString() != "mockprofile-101-a-001"))
+    throw new InvalidDataException("Only approved synthetic XML is supported.");
+if ((jeyuk || combi || xml) && (args.Length == 0 || args[0] != "serve"))
     throw new ArgumentException("Use the matching simulation command or serve for this fixture.");
 var instanceId = jeyuk || combi ? "" : root.GetProperty("instanceId").GetString();
-if (!jeyuk && !combi && root.GetProperty("profileId").GetString() != "mockprofile-100")
+if (!jeyuk && !combi && !xml && root.GetProperty("profileId").GetString() != "mockprofile-100")
     throw new InvalidDataException("Unexpected synthetic profile.");
 var records = jeyuk || combi ? Array.Empty<JsonElement>() :
     root.GetProperty("records").EnumerateArray().Select(item => item.Clone()).ToArray();
 var recordLines = jeyuk ? JeyukSimulation.Expand(root).ToArray() : combi ? CombiSimulation.Generate(root).Raw :
+    xml ? records.Select(item => item.GetString() ?? throw new InvalidDataException("Invalid XML fixture.")).ToArray() :
     records.Select(item => JsonSerializer.Serialize(item)).ToArray();
-var profileId = jeyuk ? "mockprofile-110" : combi ? "mockprofile-120" : "mockprofile-100";
+var profileId = jeyuk ? "mockprofile-110" : combi ? "mockprofile-120" : xml ? "mockprofile-101" : "mockprofile-100";
 
 if (args.Length > 0 && args[0] == "hash")
 {
@@ -130,7 +135,8 @@ app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
     context.Response.Headers["X-Contract-Version"] = "1.0";
     context.Response.Headers["X-Profile-ID"] = profileId;
     context.Response.Headers["X-Provenance"] = "SYNTHETIC";
-    context.Response.Headers["X-Next-Cursor"] = recordLines.Length.ToString();
+    context.Response.Headers["X-Next-Cursor"] = (xml ? Math.Min(start + 1, recordLines.Length) : recordLines.Length).ToString();
+    if (xml) return Results.Text(start == recordLines.Length ? "" : recordLines[start], "application/xml", Encoding.UTF8);
     if (fault == "invalid-utf8" && start == 0)
     {
         var remaining = Encoding.UTF8.GetBytes(string.Join("\n", recordLines.Skip(1)) +
