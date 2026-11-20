@@ -66,6 +66,17 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "another-customer"
         self.assertEqual((await self.client.get(path)).status_code, 404)
 
+    async def test_jeyuk_temperature_evidence_excludes_unapproved_fields(self):
+        meta = self.store.items[(self.pk, "META")]
+        meta.update(menu="JEYUK", jeyuk_feed_safety_aligned=True, jeyuk_feed_mass_status="MATCHED",
+                    jeyuk_feeds={"MEAT": {"mass_kg": "1", "initial_temperature_c": "4",
+                        "temperature_observed_at": "2026-01-01T00:00:00Z", "reason": "private reason"}})
+        response = await self.client.get(f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence")
+        self.assertEqual(response.status_code, 200, response.text)
+        feed = response.json()["recorded"]["jeyuk_feeds"]["MEAT"]
+        self.assertEqual(feed["initial_temperature_c"], "4")
+        self.assertNotIn("private reason", response.text)
+
     async def test_reheat_history_links_rechecks_without_private_content(self):
         meta = self.store.items[(self.pk, "META")]
         for number in (1, 2):

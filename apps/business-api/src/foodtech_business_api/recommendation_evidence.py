@@ -82,6 +82,12 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
                 "oil_capacity_l", "oil_batches_since_change", "oil_cooked_mass_kg", "oil_changed_at")}
                if initial_current else None)
     fields["tonkatsu_initial_context"] = initial
+    jeyuk_feeds = job.get("jeyuk_feeds")
+    fields["jeyuk_feeds"] = ({name: {key: feed.get(key) for key in
+                                  ("mass_kg", "initial_temperature_c", "temperature_observed_at")}
+                               for name, feed in jeyuk_feeds.items()
+                               if name in {"MEAT", "VEGETABLE", "SAUCE"} and isinstance(feed, dict)}
+                              if job.get("menu") == "JEYUK" and isinstance(jeyuk_feeds, dict) else None)
     missing = []
     if job.get("provenance") != "SYNTHETIC" or job.get("menu") not in {"TONKATSU", "JEYUK"}:
         missing.append("SUPPORTED_SYNTHETIC_JOB")

@@ -71,10 +71,17 @@ class ChatBffTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(stale.status_code, 200)
                 stale_context = json.loads(gateway.calls[-1][1]["messages"][-1]["content"])["synthetic_job_context"]
                 self.assertIsNone(stale_context["quality_passed"])
+                store.items[(pk, "META")].update(menu="JEYUK", safety_version=1)
+                legacy = await client.post("/api/customer/ai/cooking-chat", json=body,
+                                           headers={"X-CSRF-Token": "csrf-test"})
+                self.assertEqual(legacy.status_code, 200)
+                legacy_context = json.loads(gateway.calls[-1][1]["messages"][-1]["content"])["synthetic_job_context"]
+                self.assertEqual(legacy_context["safety_status"], "INCOMPLETE")
+                self.assertIsNone(legacy_context["quality_passed"])
                 foreign = await client.post("/api/customer/ai/cooking-chat", headers={"X-CSRF-Token": "csrf-test"},
                     json={**body, "job_id": str(uuid4())})
                 self.assertEqual(foreign.status_code, 404)
-                self.assertEqual(len(gateway.calls), 4)
+                self.assertEqual(len(gateway.calls), 6)
 
     async def test_customer_scope_csrf_and_ordered_context(self):
         gateway = GatewayClient()
