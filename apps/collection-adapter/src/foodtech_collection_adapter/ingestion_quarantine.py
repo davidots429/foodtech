@@ -29,6 +29,12 @@ def failure(raw: str | bytes) -> tuple[str, list[str]] | None:
         return "SCHEMA_VIOLATION", []
     if not isinstance(value, dict):
         return "SCHEMA_VIOLATION", []
+    if (value.get("device_id") == "mockprofile-100-b-001" or
+            ("deviceId" not in value and any(key in value for key in ("schema_version", "source_id", "device_id")))):
+        value = {"sourceId": value.get("source_id"), "deviceId": value.get("device_id"),
+                 "batchId": value.get("batch_id"), "schemaVersion": value.get("schema_version"),
+                 "sequenceNumber": value.get("sequence_number"), "recordId": value.get("record_id"),
+                 "eventTime": value.get("event_time_ms")}
     required = ("sourceId", "deviceId", "batchId", "schemaVersion", "sequenceNumber")
     missing = [name for name in required if value.get(name) is None or value.get(name) == ""]
     if not value.get("recordId") and not value.get("eventTime"):
@@ -45,13 +51,17 @@ class IngestionQuarantine:
         self.table = session.resource("dynamodb").Table(table)
         self.bucket = bucket
 
-    def preserve(self, raw: str | bytes, *, cursor_key: str, position: int, reason: str, missing: list[str]) -> str:
+    def preserve(self, raw: str | bytes, *, cursor_key: str, position: int, reason: str, missing: list[str],
+                 instance_id: str = "mockprofile-100-a-001") -> str:
         payload = raw if isinstance(raw, bytes) else raw.encode("utf-8")
         if len(payload) > MAX_PAYLOAD_BYTES:
             raise ValueError("payload exceeds quarantine limit; source cursor was not advanced")
         digest = hashlib.sha256(payload).hexdigest()
         # A retry of the same source cursor and identical bytes uses the same record.
-        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"foodtech:rest100:{cursor_key}:{position}:{digest}"))
+        identity = (f"foodtech:rest100:{cursor_key}:{position}:{digest}"
+                    if instance_id == "mockprofile-100-a-001" else
+                    f"foodtech:rest100:{instance_id}:{cursor_key}:{position}:{digest}")
+        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
         object_key = f"ingestion/REST/mockprofile-100/{event_id}/{digest}.bin"
         self.s3.put_object(Bucket=self.bucket, Key=object_key, Body=payload,
                            ContentType="application/octet-stream", ServerSideEncryption="AES256")
@@ -59,7 +69,7 @@ class IngestionQuarantine:
                 "object_key": object_key, "bucket": self.bucket, "sha256": digest,
                 "ingestion_failure_reason_code": reason, "missing_components": missing,
                 "received_at": datetime.now(timezone.utc).isoformat(), "protocol": "REST",
-                "profile_id": "mockprofile-100", "cursor_key": cursor_key, "source_position": position,
+                "profile_id": "mockprofile-100", "instance_id": instance_id, "cursor_key": cursor_key, "source_position": position,
                 "provenance": "SYNTHETIC"}
         try:
             self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")

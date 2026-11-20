@@ -41,10 +41,13 @@ var root = fixture.RootElement;
 var jeyuk = root.TryGetProperty("fixtureId", out _);
 var combi = root.TryGetProperty("profileId", out var profile) && profile.GetString() == "mockprofile-120";
 if (!jeyuk && !combi && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-    root.GetProperty("instanceId").GetString() != "mockprofile-100-a-001"))
+    root.GetProperty("instanceId").GetString() is not ("mockprofile-100-a-001" or "mockprofile-100-b-001")))
     throw new InvalidDataException("Only approved synthetic profiles are supported.");
 if ((jeyuk || combi) && (args.Length == 0 || args[0] != "serve"))
     throw new ArgumentException("Use the matching simulation command or serve for this fixture.");
+var instanceId = jeyuk || combi ? "" : root.GetProperty("instanceId").GetString();
+if (!jeyuk && !combi && root.GetProperty("profileId").GetString() != "mockprofile-100")
+    throw new InvalidDataException("Unexpected synthetic profile.");
 var records = jeyuk || combi ? Array.Empty<JsonElement>() :
     root.GetProperty("records").EnumerateArray().Select(item => item.Clone()).ToArray();
 var recordLines = jeyuk ? JeyukSimulation.Expand(root).ToArray() : combi ? CombiSimulation.Generate(root).Raw :
@@ -53,6 +56,7 @@ var profileId = jeyuk ? "mockprofile-110" : combi ? "mockprofile-120" : "mockpro
 
 if (args.Length > 0 && args[0] == "hash")
 {
+    if (instanceId != "mockprofile-100-a-001") throw new ArgumentException("Hash vectors only support vendor-a.");
     foreach (var record in records)
     {
         var digest = SHA256.HashData(CanonicalBytes(record));
@@ -67,7 +71,7 @@ if (args.Length > 0 && args[0] == "emit")
     using var writer = new StreamWriter(output, false, new UTF8Encoding(false));
     foreach (var record in records) writer.WriteLine(JsonSerializer.Serialize(record));
     Console.WriteLine(JsonSerializer.Serialize(new {
-        programVersion, profileId = "mockprofile-100", instanceId = "mockprofile-100-a-001",
+        programVersion, profileId = "mockprofile-100", instanceId,
         provenance = "SYNTHETIC", count = records.Length, output
     }));
     return;

@@ -19,6 +19,8 @@ def main() -> int:
     parser.add_argument("--cursor-key", default="default", help="separate cursor for each Mock fixture")
     parser.add_argument("--profile", choices=("mockprofile-100", "mockprofile-110"),
                         default="mockprofile-100")
+    parser.add_argument("--instance", choices=("mockprofile-100-a-001", "mockprofile-100-b-001"),
+                        default="mockprofile-100-a-001")
     args = parser.parse_args()
     if args.polls < 1 or args.interval < 0:
         parser.error("polls must be positive and interval must be nonnegative")
@@ -31,6 +33,8 @@ def main() -> int:
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         parser.error("missing configuration: " + ", ".join(missing))
+    if args.profile != "mockprofile-100" and args.instance != "mockprofile-100-a-001":
+        parser.error("--instance applies only to the basic profile")
     client_kwargs = {"profile_id": args.profile} if args.profile == "mockprofile-110" else {}
     client = RestMockClient(
         os.environ["FOODTECH_MOCK_BASE_URL"], os.environ["FOODTECH_MOCK_CLIENT_ID"],
@@ -56,8 +60,9 @@ def main() -> int:
             client.close()
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
     quarantine = None
+    cursor_key = args.cursor_key if args.instance == "mockprofile-100-a-001" else "vendor-b#" + args.cursor_key
     try:
-        cursor, streams = ingestor.cursor_state(args.cursor_key)
+        cursor, streams = ingestor.cursor_state(cursor_key)
         for index in range(args.polls):
             result = client.poll(cursor)
             released = []
@@ -69,17 +74,17 @@ def main() -> int:
                         raise ValueError("ingestion quarantine bucket is required for malformed input")
                     if quarantine is None:
                         quarantine = IngestionQuarantine(bucket, os.environ["FOODTECH_DATA_TABLE"])
-                    quarantine.preserve(raw, cursor_key=args.cursor_key, position=cursor + offset,
-                                        reason=invalid[0], missing=invalid[1])
+                    quarantine.preserve(raw, cursor_key=cursor_key, position=cursor + offset,
+                                        reason=invalid[0], missing=invalid[1], instance_id=args.instance)
                     continue
                 record = decode_record(raw)
-                if record["deviceId"] != "mockprofile-100-a-001":
+                if record["deviceId"] != args.instance:
                     raise ValueError("unexpected REST Mock device")
                 streams.add(stream_key(record))
                 released.extend(ingestor.ingest(raw))
             for stream in sorted(streams):
                 released.extend(ingestor.drain(stream))
-            ingestor.save_cursor(result.next_cursor, streams, args.cursor_key)
+            ingestor.save_cursor(result.next_cursor, streams, cursor_key)
             cursor = result.next_cursor
             print(f"poll={index + 1} received={len(result.records)} released={len(released)} cursor={cursor}")
             if index + 1 < args.polls:
