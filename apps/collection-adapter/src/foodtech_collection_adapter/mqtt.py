@@ -1,6 +1,7 @@
 """Read-only MQTT 5/TLS subscriber for the synthetic vendor-a Mock."""
 
 import argparse
+import hashlib
 import os
 import ssl
 import time
@@ -82,6 +83,7 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
     client.username_pw_set(username, password)
     client.tls_set_context(ssl.create_default_context(cafile=ca_file))
     received, streams, failure = [], set(), []
+    accepted_deliveries = set()
     connected_once = False
 
     def on_connect(_client, _userdata, _flags, reason, _properties):
@@ -103,7 +105,11 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
             stream = accept_message(_client, message, ingestor, quarantine, client_id, instance)
             if stream is not None:
                 streams.add(stream)
-            received.append(message.mid)
+            delivery = (message.mid, hashlib.sha256(message.payload).digest())
+            retransmission = bool(message.dup and delivery in accepted_deliveries)
+            accepted_deliveries.add(delivery)
+            if not retransmission:
+                received.append(message.mid)
         except Exception as exc:
             failure.append(f"MQTT message was not durably accepted ({type(exc).__name__})")
 
