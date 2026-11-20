@@ -6,7 +6,9 @@ type Live = { state: "NOT_STARTED" | "COLLECTING" | "COMPLETED"; count: number; 
     door_state: string; fan_level: number };
   latest_window?: { phase: string; first_phase_second: number; last_phase_second: number;
     current_celsius: string; minimum_celsius: string; maximum_celsius: string;
-    average_celsius: string; outside_target_seconds: number } | null };
+    average_celsius: string; outside_target_seconds: number } | null;
+  rice_monitor?: { last_second: number; complete_from_start: boolean; humidity_source: string;
+    low_total: number; high_total: number; failure_codes: string[]; warning_codes: string[] } | null };
 
 export function CombiLive({ mealId }: { mealId: string }) {
   const [live, setLive] = useState<Live | null>(null);
@@ -39,6 +41,14 @@ export function CombiLive({ mealId }: { mealId: string }) {
       {" "}· 현재 {live.latest_window.current_celsius}°C · 최저 {live.latest_window.minimum_celsius}°C
       {" "}· 최고 {live.latest_window.maximum_celsius}°C · 평균 {live.latest_window.average_celsius}°C
       {" "}· 목표 범위 이탈 {live.latest_window.outside_target_seconds}초</p>}
-    <p>수집 중 표본은 합성 관찰값이며 안전·공정 판정이 아닙니다.</p>
+    {live?.rice_monitor && <div>
+      <p>밥 온도·습도 수집 중 감지 · {live.rice_monitor.last_second}초까지
+        {" "}· 저온 이탈 누적 {live.rice_monitor.low_total}초 · 고온 이탈 누적 {live.rice_monitor.high_total}초
+        {" "}· 습도 출처 {live.rice_monitor.humidity_source}</p>
+      {!live.rice_monitor.complete_from_start && <p role="alert">처음부터 연속된 관찰이 아니거나 습도 출처가 변경되어 확인이 필요합니다.</p>}
+      {live.rice_monitor.failure_codes.length > 0 && <p role="alert">공정 실패 조건 감지: {live.rice_monitor.failure_codes.join(", ")}</p>}
+      {live.rice_monitor.warning_codes.length > 0 && <p>경고 조건 감지: {live.rice_monitor.warning_codes.join(", ")}</p>}
+    </div>}
+    <p>수집 중 감지는 합성 관찰값에 대한 부분 결과이며 최종 공정·안전 판정이 아닙니다.</p>
   </div>;
 }
