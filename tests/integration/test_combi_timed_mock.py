@@ -22,6 +22,10 @@ class TimedCombiTests(unittest.TestCase):
         fixture = json.loads((ROOT / 'fixtures/combi-normal-medium-v1.json').read_text())
         for phase in fixture['phases']:
             phase['segments'][0]['seconds'] = 5
+        base = fixture['phases'][0]['segments'][0]
+        fixture['phases'][0]['segments'] = [{**base, 'seconds': 2},
+            {**base, 'seconds': 1, 'doorState': 'OPEN', 'criticalAlarm': True},
+            {**base, 'seconds': 2}]
         jobs = {p['phase']: p['cookingJobId'] for p in fixture['phases']}
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
@@ -49,19 +53,20 @@ class TimedCombiTests(unittest.TestCase):
                 client = RestMockClient(base,'test-client','test-secret',str(cert),profile_id='mockprofile-120')
                 try:
                     first = client.poll()
-                    self.assertEqual((first.records,first.next_cursor,first.complete),((),0,False))
-                    with self.assertRaises(httpx.HTTPStatusError) as future:
-                        client.poll(5)
-                    self.assertEqual(future.exception.response.status_code, 409)
-                    received = []; cursor = 0; deadline = time.monotonic() + 22
+                    self.assertFalse(first.complete)
+                    self.assertEqual(first.next_cursor, len(first.records))
+                    received = list(first.records); cursor = first.next_cursor; deadline = time.monotonic() + 22
+                    alarm_delivered_before_window = (cursor < 5 and any(json.loads(raw)['criticalAlarm'] for raw in received))
                     while time.monotonic() < deadline:
-                        result = client.poll(cursor)
+                        result = client.poll(cursor, wait_seconds=4)
                         self.assertEqual(result.next_cursor, cursor + len(result.records))
-                        self.assertEqual(len(result.records) % 5, 0)
+                        if any(json.loads(raw)['criticalAlarm'] for raw in result.records):
+                            alarm_delivered_before_window = result.next_cursor < 5
                         received.extend(result.records); cursor = result.next_cursor
                         if result.complete: break
-                        time.sleep(.25)
+                        time.sleep(.05)
                     self.assertTrue(result.complete)
+                    self.assertTrue(alarm_delivered_before_window)
                     self.assertEqual(cursor,15)
                     validator = CombiStreamValidator(fixture['mealBatchId'],fixture['deviceId'],jobs)
                     self.assertEqual([validator.accept(x)['sequence'] for x in received],list(range(1,16)))
