@@ -1,7 +1,10 @@
 import json
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from boto3.dynamodb.types import TypeSerializer
+from botocore.session import get_session
+from botocore.validate import validate_parameters
 
 import httpx
 import jsonschema
@@ -71,6 +74,21 @@ class MinimalFlowTests(unittest.TestCase):
         ingestor.save_cursor(5, {"stream-b", "stream-a"}, "high-fixture")
         self.assertEqual(ingestor.cursor_state("high-fixture"), (5, {"stream-a", "stream-b"}))
         self.assertEqual(ingestor.cursor_state("default"), (0, set()))
+
+    def test_raw_and_source_revision_are_written_atomically(self):
+        ingestor = DynamoOrderedIngestor.__new__(DynamoOrderedIngestor)
+        ingestor.table = Mock(name="table")
+        ingestor.table.name = "test"
+        ingestor.ddb = Mock()
+        ingestor.serializer = TypeSerializer()
+        ingestor.drain = Mock(return_value=[])
+        ingestor.ingest(json.dumps(FIXTURE["records"][0]), now=123)
+        actions = ingestor.ddb.transact_write_items.call_args.kwargs["TransactItems"]
+        self.assertEqual(len(actions), 3)
+        self.assertEqual(actions[2]["Update"]["Key"]["sk"], {"S": "SOURCE#REVISION"})
+        self.assertEqual(actions[2]["Update"]["ExpressionAttributeValues"][":one"], {"N": "1"})
+        shape = get_session().get_service_model("dynamodb").operation_model("TransactWriteItems").input_shape
+        validate_parameters({"TransactItems": actions}, shape)
 
     def test_cli_drains_stream_from_received_batch(self):
         record = {**FIXTURE["records"][0], "batchId": "batch-a-other-001"}

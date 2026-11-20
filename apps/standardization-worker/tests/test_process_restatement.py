@@ -106,9 +106,9 @@ class ProcessRestatementTests(unittest.TestCase):
             {"Item": {request["sk"]: request, "META": job}[kwargs["Key"]["sk"]]}
             if kwargs["Key"]["sk"] != "PROCESS#LATEST_RESTATED" else {})
         data = Mock(name="data")
-        data.get_item.side_effect = lambda **kwargs: {"Item": {
-            "EVENT#first": first, "EVENT#late": late,
-            "EVENT#after-terminal": after_terminal}[kwargs["Key"]["pk"]]}
+        data.get_item.side_effect = lambda **kwargs: ({} if kwargs["Key"]["sk"] == "SOURCE#REVISION" else
+            {"Item": {"EVENT#first": first, "EVENT#late": late,
+                      "EVENT#after-terminal": after_terminal}[kwargs["Key"]["pk"]]})
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
         processor.cooking, processor.data, processor.client = cooking, data, Mock()
         processor.serializer = TypeSerializer()
@@ -127,7 +127,7 @@ class ProcessRestatementTests(unittest.TestCase):
         processor._collection_receipts = lambda _pk: [receipt]
         self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
         operations = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(operations), 4)
+        self.assertEqual(len(operations), 5)
         self.assertEqual(operations[0]["ConditionCheck"]["Key"]["sk"]["S"], "META")
         self.assertEqual(operations[1]["Put"]["Item"]["status"]["S"], "DERIVED_ONLY")
         self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "3")
@@ -139,8 +139,24 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(operations[3]["Put"]["Item"]["sk"]["S"], "PROCESS#LATEST_RESTATED")
         self.assertEqual(operations[3]["Put"]["Item"]["version"]["N"], "1")
         self.assertEqual(operations[3]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
+        self.assertEqual(operations[4]["ConditionCheck"]["ConditionExpression"], "attribute_not_exists(pk)")
         self.assertEqual(job["status"], "COMPLETED")
         processor._refresh_dependents.assert_called_once_with("JOB#1")
+        assessment_lookup = {"EVENT#first": first, "EVENT#late": late, "EVENT#after-terminal": after_terminal}
+        data.get_item.side_effect = lambda **kwargs: ({"Item": {"revision": 4}}
+            if kwargs["Key"]["sk"] == "SOURCE#REVISION" else {"Item": assessment_lookup[kwargs["Key"]["pk"]]})
+        self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+        operations = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
+        self.assertEqual(operations[1]["Put"]["Item"]["source_revision"]["N"], "4")
+        self.assertEqual(operations[4]["ConditionCheck"]["ExpressionAttributeValues"][":r"]["N"], "4")
+        revisions = iter((4, 5))
+        data.get_item.side_effect = lambda **kwargs: ({"Item": {"revision": next(revisions)}}
+            if kwargs["Key"]["sk"] == "SOURCE#REVISION" else {"Item": assessment_lookup[kwargs["Key"]["pk"]]})
+        processor.client.transact_write_items.reset_mock()
+        self.assertEqual(processor.process("JOB#1", "late"), "SOURCE_CHANGED_RETRY")
+        processor.client.transact_write_items.assert_not_called()
+        data.get_item.side_effect = lambda **kwargs: ({} if kwargs["Key"]["sk"] == "SOURCE#REVISION" else
+            {"Item": assessment_lookup[kwargs["Key"]["pk"]]})
         pointer = {"pk": "JOB#1", "sk": "PROCESS#LATEST_RESTATED", "version": 1}
         cooking.get_item.side_effect = lambda **kwargs: {"Item": {
             request["sk"]: request, "META": job,

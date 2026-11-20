@@ -167,6 +167,11 @@ class DynamoProcessRestatement:
             if not last:
                 return items
 
+    def _source_revision(self, stream_pk: str) -> int | None:
+        item = self.data.get_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"},
+                                  ConsistentRead=True).get("Item")
+        return int(item["revision"]) if item else None
+
     @staticmethod
     def _eligible(item: dict, job: dict) -> str | None:
         normalized = item.get("normalized")
@@ -212,6 +217,7 @@ class DynamoProcessRestatement:
                    for item in selected}
         events = self._query(job_pk, "EVENT#PROCESS#")
         sources.update((item["source_assessment_pk"], "ASSESSMENT#v1") for item in events)
+        source_revision = self._source_revision(stream_pk)
         raw = self._stream_sources(stream_pk)
         receipts = self._collection_receipts(stream_pk)
         matching = sorted(item["sk"] for item in receipts if matches_snapshot(item, stream_pk, raw))
@@ -236,7 +242,8 @@ class DynamoProcessRestatement:
             else:
                 assessments.append(item)
         derived = replay_process(assessments, job)
-        if {item["ingestion_event_id"] for item in self._stream_sources(stream_pk)} != raw_ids:
+        if {item["ingestion_event_id"] for item in self._stream_sources(stream_pk)} != raw_ids or \
+                self._source_revision(stream_pk) != source_revision:
             return "SOURCE_CHANGED_RETRY"
         pointer_key = {"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"}
         previous_pointer = self.cooking.get_item(Key=pointer_key, ConsistentRead=True).get("Item")
@@ -244,6 +251,7 @@ class DynamoProcessRestatement:
         manifest = {"request_sk": request["sk"], "job_version": int(job["version"]),
                     "rule_version": RULE_VERSION, "coverage_version": COVERAGE_VERSION,
                     "collection_receipt_sk": receipt_sk,
+                    "source_revision": source_revision,
                     "source_assessment_keys": [f"{pk}/{sk}" for pk, sk in sorted(sources)],
                     "excluded": excluded}
         digest = hashlib.sha256(rfc8785.dumps(manifest)).hexdigest()
@@ -254,6 +262,7 @@ class DynamoProcessRestatement:
                   "trigger_request_sk": request["sk"], "job_id": job["job_id"],
                   "job_version_at_derivation": int(job["version"]),
                   "source_stream_pk": stream_pk, "source_raw_count": len(raw),
+                  "source_revision": source_revision,
                   "collection_evidence": {"receipt_sk": receipt_sk, "raw_snapshot_matches": bool(receipt_sk)},
                   "source_assessment_keys": manifest["source_assessment_keys"],
                   "excluded_sources": excluded, "input_hash": digest,
@@ -268,6 +277,14 @@ class DynamoProcessRestatement:
                               "ExpressionAttributeValues": {":previous": {"N": str(previous_pointer["version"])}}}
                              if previous_pointer else {"ConditionExpression": "attribute_not_exists(pk)"})
         try:
+            revision_check = {"TableName": self.data.name,
+                              "Key": self._item({"pk": stream_pk, "sk": "SOURCE#REVISION"})}
+            if source_revision is None:
+                revision_check["ConditionExpression"] = "attribute_not_exists(pk)"
+            else:
+                revision_check.update({"ConditionExpression": "#r = :r",
+                    "ExpressionAttributeNames": {"#r": "revision"},
+                    "ExpressionAttributeValues": {":r": {"N": str(source_revision)}}})
             self.client.transact_write_items(TransactItems=[
                 {"ConditionCheck": {"TableName": self.cooking.name,
                                     "Key": self._item({"pk": job_pk, "sk": "META"}),
@@ -282,6 +299,7 @@ class DynamoProcessRestatement:
                          "ExpressionAttributeValues": {":pending": {"S": "PENDING"}}}},
                 {"Put": {"TableName": self.cooking.name, "Item": self._item(pointer),
                          **pointer_condition}},
+                {"ConditionCheck": revision_check},
             ])
         except self.client.exceptions.TransactionCanceledException:
             current = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")
