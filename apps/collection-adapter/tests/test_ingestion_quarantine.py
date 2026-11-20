@@ -88,6 +88,9 @@ class QuarantineTests(unittest.TestCase):
         stir_id = sink.preserve_opcua_history(b'["bad-stir"]', instance_id="mockprofile-210-b-001",
                                               profile_id="mockprofile-210")
         self.assertEqual(sink.table.items[f"INGESTION_DLQ#{stir_id}"]["profile_id"], "mockprofile-210")
+        combi_id = sink.preserve_opcua_history(b'["bad-combi"]', instance_id="mockprofile-220-c-001",
+                                               profile_id="mockprofile-220")
+        self.assertEqual(sink.table.items[f"INGESTION_DLQ#{combi_id}"]["profile_id"], "mockprofile-220")
         with self.assertRaises(ValueError):
             sink.preserve_opcua_history(b"bad", instance_id="mockprofile-200-b-001", profile_id="mockprofile-210")
 

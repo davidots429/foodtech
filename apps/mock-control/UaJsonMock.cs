@@ -19,7 +19,7 @@ internal static class UaJsonMock
         var instance = root.GetProperty("instanceId").GetString();
         var profile = root.GetProperty("profileId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            profile is not ("mockprofile-200" or "mockprofile-210") ||
+            profile is not ("mockprofile-200" or "mockprofile-210" or "mockprofile-220") ||
             instance is null || !new[] { $"{profile}-a-001", $"{profile}-b-001", $"{profile}-c-001" }.Contains(instance))
             throw new InvalidDataException("Only the approved synthetic fixture is supported.");
         var b = instance == $"{profile}-b-001";

@@ -29,7 +29,8 @@ class UaJsonVendorTests(unittest.TestCase):
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
                             "-password", "pass:test-password"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for profile, vendor in (("200", "b"), ("200", "c"), ("210", "a"), ("210", "b"), ("210", "c")):
+            for profile, vendor in (("200", "b"), ("200", "c"), ("210", "a"), ("210", "b"), ("210", "c"),
+                                    ("220", "a"), ("220", "b"), ("220", "c")):
                 with self.subTest(profile=profile, vendor=vendor):
                     instance = f"mockprofile-{profile}-{vendor}-001"
                     with socket.socket() as probe:
@@ -70,10 +71,14 @@ class UaJsonVendorTests(unittest.TestCase):
                         if profile == "210":
                             self.assertIn("POT_TEMPERATURE", results[0].normalized)
                             self.assertNotIn("CHAMBER_TEMPERATURE", results[0].normalized)
+                        if profile == "220":
+                            self.assertEqual(results[0].normalized["CLIMATE_SETTING_PERCENT"]["value"], "100")
+                            self.assertEqual(results[0].normalized["RELATIVE_HUMIDITY"]["value"], "98")
+                            self.assertEqual(results[0].normalized["FAN_SPEED_LEVEL"]["value"], 4)
                         if vendor == "b":
                             self.assertEqual(results[0].normalized["OUTPUT_PERCENT"]["value"], "60")
                         elif vendor == "c":
-                            self.assertEqual(results[0].normalized["SPEED_LEVEL"]["value"], 6)
+                            self.assertEqual(results[0].normalized["SPEED_LEVEL"]["value"], 4 if profile == "220" else 6)
                         if vendor != "a":
                             self.assertNotIn("ROTATIONAL_SPEED_RPM", results[0].normalized)
                     finally:
