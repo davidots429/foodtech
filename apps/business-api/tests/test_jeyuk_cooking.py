@@ -139,13 +139,29 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         meta = self.store.items[(pk, "META")]
         meta.update(status="COMPLETED", auto_safety_status="PASSED", mixture_hold_seconds=60,
                     safety_passed_at_second=61, discharge_check_status="PASSED",
+                    actual_cooking_seconds=61, process_time_status="NORMAL",
                     discharge_check_version=1, discharge_check=[{"phase": phase} for phase in
                                                                   ("EARLY", "MIDDLE", "LATE")],
                     safety_status="PASSED", evaluation_blocked=False,
-                    process_assessment={"second": 61, "source_assessment_pk": "JEYUK#jeyuk-evidence-a",
+                    process_assessment={"second": 61, "status": "NORMAL",
+                                        "source_assessment_pk": "JEYUK#jeyuk-evidence-a",
                                         "source_assessment_sk": "ASSESSMENT#000061",
                                         "rule_version": cooking.JEYUK_RULE_VERSION})
-        linked = (await self.client.get(path + "/validation-evidence")).json()
+        unconfigured = (await self.client.get(path + "/validation-evidence")).json()
+        self.assertEqual(unconfigured["status"], "INCOMPLETE")
+        self.assertFalse(unconfigured["source_table_configured"])
+        source_checks = {name: True for name in (
+            "source_records_contiguous", "source_records_match_binding",
+            "source_derived_results_match_raw",
+            "source_process_conditions_normal", "source_safety_samples_valid",
+            "source_process_span_covers_cooking")}
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
+             patch.object(cooking, "_read_jeyuk_source_records",
+                          return_value=([], [])) as source_read, \
+             patch("foodtech_business_api.jeyuk_source_evidence.audit_source_records",
+                   return_value=source_checks):
+            linked = (await self.client.get(path + "/validation-evidence")).json()
+            source_read.assert_called_once_with("test-source", "jeyuk-evidence-a", 61)
         self.assertEqual(linked["status"], "LINKED_UNVERIFIED")
         self.assertEqual(linked["process_reference"],
                          {"pk": "JEYUK#jeyuk-evidence-a", "sk": "ASSESSMENT#000061", "second": 61})

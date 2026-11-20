@@ -57,7 +57,8 @@ async def run_check(*, safety: bool = False) -> int:
 
     try:
         with patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false",
-                                     "FOODTECH_COOKING_TABLE": COOKING_TABLE}), \
+                                     "FOODTECH_COOKING_TABLE": COOKING_TABLE,
+                                     "FOODTECH_DATA_TABLE": DATA_TABLE}), \
              patch.object(cooking, "_session", side_effect=fake_session), \
              patch.object(cooking, "get_cooking_store", return_value=cooking_store):
             worker = DynamoStandardizationWorker(DATA_TABLE, ordered_url, quarantine_url)
@@ -74,6 +75,15 @@ async def run_check(*, safety: bool = False) -> int:
                 job = await post(client, path + "/source-binding", {
                     "expected_version": job["version"], "source_id": "synthetic-rest",
                     "device_id": "mockprofile-110-a-001", "batch_id": fixture_id})
+                if safety:
+                    job = await post(client, path + "/validation-context", {
+                        "schema_version": "jeyuk-validation-context-v1",
+                        "expected_version": job["version"],
+                        "ingredient_spec_id": "synthetic-pork-v1",
+                        "ingredient_lot_id": "synthetic-lot-v1", "supplier_id": "synthetic-supplier",
+                        "sensor_id": "synthetic-probe", "sensor_calibration_record_id": "synthetic-cal-v1",
+                        "process_condition_profile_id": "jeyuk-small-safety",
+                        "process_condition_version": "v1"})
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "PREHEAT_COMPLETED"})
                 job = await post(client, path + "/transitions", {
@@ -116,6 +126,16 @@ async def run_check(*, safety: bool = False) -> int:
                             (final["status"], final["auto_safety_status"], final["evaluation_blocked"]) !=
                             ("RUNNING", "PASSED", True)):
                         raise AssertionError("post-addition sixty-second safety hold was not recorded")
+                    evidence_response = await client.get(path + "/validation-evidence")
+                    if evidence_response.status_code != 200:
+                        raise AssertionError(f"source evidence read failed: {evidence_response.text}")
+                    evidence = evidence_response.json()
+                    for check in ("source_records_contiguous", "source_records_match_binding",
+                                  "source_derived_results_match_raw", "source_safety_samples_valid"):
+                        if not evidence["checks"][check]:
+                            raise AssertionError(f"source evidence check failed: {check}")
+                    if evidence["activation_allowed"] or evidence["checks"]["job_completed"]:
+                        raise AssertionError("running job must not activate validation")
                 elif (processed[4]["job_result"] != "WARNING" or
                       processed[29]["job_result"] != "FAILED" or
                       (final["status"], final["process_assessment_status"],

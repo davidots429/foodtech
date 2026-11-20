@@ -60,6 +60,11 @@ def _validation_digest(context: dict) -> str:
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+async def _read_jeyuk_source_records(table_name: str, batch_id: str, last_second: int):
+    from .jeyuk_source_evidence import read_source_records
+    return await asyncio.to_thread(read_source_records, table_name, batch_id, last_second)
+
+
 def _conflict() -> HTTPException:
     return HTTPException(409, "작업 상태가 변경되었습니다. 다시 조회한 뒤 제출해 주세요.")
 
@@ -395,6 +400,21 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                            context.get("actual_load_kg") ==
                            str(Decimal(job["actual_load_kg"]).quantize(Decimal("0.01"))) and
                            job.get("validation_context_digest") == _validation_digest(context))
+    source_checks = {"source_records_contiguous": False,
+                     "source_records_match_binding": False,
+                     "source_derived_results_match_raw": False,
+                     "source_process_conditions_normal": False,
+                     "source_safety_samples_valid": False,
+                     "source_process_span_covers_cooking": False}
+    source_table = os.getenv("FOODTECH_DATA_TABLE", "")
+    if process_linked and context_matches_job and source_table and second <= 600:
+        from .jeyuk_source_evidence import audit_source_records
+        try:
+            assessments, raws = await _read_jeyuk_source_records(source_table, binding["batch_id"], second)
+            source_checks = audit_source_records(job, assessments, raws)
+        except Exception as exc:
+            logger.exception("Jeyuk source evidence read failed")
+            raise HTTPException(503, "원천 수집 증거를 조회하지 못했습니다. 잠시 후 다시 시도해 주세요.") from exc
     checks = {
         "context_recorded": (job.get("validation_context_status") == "DECLARED_UNVERIFIED" and
                              bool(job.get("validation_context_digest"))),
@@ -409,6 +429,7 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                                     int(job.get("discharge_check_version", 0)) > 0 and
                                     len(job.get("discharge_check") or []) == 3),
         "current_safety_passed": job.get("safety_status") == "PASSED" and not job.get("evaluation_blocked"),
+        **source_checks,
     }
     return {
         "job_id": job_id,
@@ -422,11 +443,11 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
         "process_reference": ({"pk": process["source_assessment_pk"],
                                "sk": process["source_assessment_sk"], "second": second}
                               if process_linked else None),
+        "source_table_configured": bool(source_table),
         "activation_allowed": False,
-        "remaining_verification": ["SOURCE_RECORD_CONTENT_AND_COMPLETENESS",
-                                   "SENSOR_AND_CALIBRATION_IDENTITY",
+        "remaining_verification": ["SENSOR_AND_CALIBRATION_IDENTITY",
                                    "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",
-                                   "FULL_PROCESS_CONDITION_MATCH_AND_GAP_CHECK"],
+                                   "PROCESS_CONDITION_PROFILE_IDENTITY"],
     }
 
 
