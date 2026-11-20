@@ -216,6 +216,20 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(group_path + f"/results/{result['result_id']}/status"))
                          .json()["status"], "STALE")
 
+    async def test_jeyuk_aggregate_keeps_equipment_sizes_separate(self):
+        first_pk = cooking._pk(self.subject, self.first_id)
+        second_pk = cooking._pk(self.subject, self.second_id)
+        for pk, size in ((first_pk, "medium"), (second_pk, "large")):
+            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile=f"jeyuk-{size}")
+            self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
+                menu="JEYUK", equipment_profile=f"jeyuk-{size}", scale_version="jeyuk-common-v1")
+        body = {**self._body(), "menu": "JEYUK", "equipment_profile": "jeyuk-medium"}
+        response = await self.client.post("/api/customer/assessment-aggregates", json=body,
+                                          headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["sample_count"], 1)
+        self.assertEqual(response.json()["selection"]["equipment_profile"], "jeyuk-medium")
+
     async def test_tonkatsu_over_recommended_band_is_rejected(self):
         response = await self.client.post("/api/customer/assessment-aggregates",
                                           json={**self._body(), "load_band": "OVER_RECOMMENDED"},
