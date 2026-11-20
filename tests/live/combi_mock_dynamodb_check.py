@@ -3,6 +3,7 @@
 The HTTP customer session is synthetic; only random test partitions are removed.
 """
 import asyncio
+import argparse
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TABLE = "foodtech-cooking-jobs-dev"
 
 
-async def scenario(store, partitions):
+async def scenario(store, partitions, *, reassess=False):
     subject = "synthetic-combi-mock-" + uuid.uuid4().hex
     ids = [uuid.uuid4() for _ in range(4)]
     pk = f"SCOPE#USER#{subject}#COMBI_MEAL#{ids[0]}"
@@ -56,7 +58,8 @@ async def scenario(store, partitions):
             for phase, key in zip(fixture["phases"],
                                   ("rice_cooking_job_id", "mode_transition_id", "mackerel_cooking_job_id")):
                 phase["cookingJobId"] = meal[key]
-                phase["segments"][0]["seconds"] = 5
+                if not reassess or phase["phase"] != "RICE":
+                    phase["segments"][0]["seconds"] = 5
             with tempfile.TemporaryDirectory() as directory:
                 temp = Path(directory)
                 source, key, cert, pfx = (temp / name for name in ("fixture.json", "key.pem", "cert.pem", "cert.pfx"))
@@ -91,26 +94,68 @@ async def scenario(store, partitions):
                     mock = RestMockClient(base, "test-client", "test-secret", str(cert), profile_id="mockprofile-120")
                     try:
                         result = await import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"],
-                                                   "validation-csrf", publish_live=True)
+                                                   "validation-csrf", publish_live=not reassess)
                     finally:
                         mock.close()
                 finally:
                     server.terminate()
                     server.wait(timeout=5)
-            assert result["phase_counts"] == {"RICE": 5, "TRANSITION": 5, "MACKEREL": 5}
+            assert result["phase_counts"] == {"RICE": 1800 if reassess else 5, "TRANSITION": 5, "MACKEREL": 5}
             path = f"/api/customer/combi-meals/{meal['meal_batch_id']}"
-            live = await api.get(path + "/source-live")
-            live.raise_for_status()
-            assert live.json()["state"] == "COMPLETED" and live.json()["count"] == 15
+            if not reassess:
+                live = await api.get(path + "/source-live")
+                live.raise_for_status()
+                assert live.json()["state"] == "COMPLETED" and live.json()["count"] == 15
             fetched = await api.get(path)
             fetched.raise_for_status()
             assert fetched.json()["meal"]["source"]["raw_sha256"] == result["raw_sha256"]
             assert fetched.json()["mackerel"]["safety_status"] == "NOT_MEASURED"
+            if reassess:
+                headers = {"X-CSRF-Token": "validation-csrf"}
+                start = datetime.fromisoformat(fixture["logicalStartAt"].replace("Z", "+00:00"))
+                version = fetched.json()["meal"]["version"]
+                for event, offset in (("RICE_STARTED", 0), ("RICE_PROGRAM_COMPLETED", 1800), ("RICE_UNLOADED", 1800)):
+                    reply = await api.post(path + "/events", headers=headers, json={
+                        "expected_version": version, "event": event, "observed_at": (start + timedelta(seconds=offset)).isoformat()})
+                    reply.raise_for_status(); version = reply.json()["meal"]["version"]
+                assessed = await api.post(path + "/source-assessment/rice", headers=headers, json={"expected_version": version})
+                assessed.raise_for_status(); version = assessed.json()["meal"]["version"]
+                assert assessed.json()["step"]["monitored_process_assessment"]["fan_observation"]["status"] == "MATCHED"
+                checked = await api.post(path + "/rice-safety", headers=headers, json={
+                    "expected_version": version, "observation": "NO_ANOMALY", "note": "합성 확인"})
+                checked.raise_for_status(); version = checked.json()["meal"]["version"]
+                assert checked.json()["step"]["safety_status"] == "PASSED"
+                quality = await api.post(path + "/quality/rice", headers=headers, json={
+                    "expected_version": version, "expected_current_version": 0, "kind": "INITIAL",
+                    "scores": {name: 4 for name in cooking.SCORE_ITEMS},
+                    "observations": {name: "합성 관찰" for name in cooking.SCORE_ITEMS},
+                    "quality_decision": "QUALITY_PASSED", "planned_portions": 3, "actual_portions": 3})
+                quality.raise_for_status(); version = quality.json()["meal"]["version"]
+                assert quality.json()["step"]["quality_current"]["usable"]
+                # Recreate the pre-fan schema only in this randomly named synthetic item.
+                store.table.update_item(Key={"pk": pk, "sk": f"JOB#RICE#{meal['rice_cooking_job_id']}"},
+                    UpdateExpression="REMOVE monitored_process_assessment.fan_observation")
+                masked = await api.get(path); masked.raise_for_status()
+                assert masked.json()["rice"]["safety_status"] == "INCOMPLETE"
+                updated = await api.post(path + "/source-assessment/rice", headers=headers, json={
+                    "expected_version": version, "reassess_legacy_fan": True})
+                updated.raise_for_status(); version = updated.json()["meal"]["version"]
+                assert updated.json()["step"]["monitored_process_assessment"]["fan_observation"]["status"] == "MATCHED"
+                assert updated.json()["step"]["safety_status"] == "INCOMPLETE"
+                assert not updated.json()["step"]["quality_current"]["usable"]
+                assert "fan_observation" not in updated.json()["event"]["previous_assessment"]
+                checked = await api.post(path + "/rice-safety", headers=headers, json={
+                    "expected_version": version, "observation": "NO_ANOMALY", "note": "재확인"})
+                checked.raise_for_status()
+                assert checked.json()["step"]["safety_status"] == "PASSED"
+                assert not checked.json()["step"]["quality_current"]["usable"]
+                return {"phase_counts": result["phase_counts"], "legacy_reassessment": "verified",
+                        "prior_quality_restored": False, "final_hash_matches": True}
             return {"phase_counts": result["phase_counts"], "live_count": 15,
                     "final_hash_matches": True, "safety_not_assumed": True}
 
 
-async def main():
+async def main(*, reassess=False):
     if os.getenv("AWS_PROFILE") != "foodtech" or os.getenv("FOODTECH_COOKING_TABLE") != TABLE:
         raise SystemExit("Use AWS_PROFILE=foodtech and the exact development cooking table")
     if not shutil.which("dotnet") or not shutil.which("openssl") or not (
@@ -122,11 +167,13 @@ async def main():
     store = DynamoCookingStore(TABLE)
     partitions = []
     try:
-        result = await scenario(store, partitions)
+        result = await scenario(store, partitions, reassess=reassess)
     finally:
         remove_and_verify(store.table, partitions)
     print(json.dumps({**result, "cleanup": "verified", "table": TABLE}))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--reassess", action="store_true")
+    asyncio.run(main(reassess=parser.parse_args().reassess))
