@@ -8,7 +8,9 @@ type Evidence = {
     temperature_sample_summary: { sample_count: number; minimum_sample_celsius: string;
       maximum_sample_celsius: string; below_160_between_qualifying_samples_us: number;
       above_180_between_qualifying_samples_us: number; longest_above_180_sample_span_us: number;
-      last_sampled_recovery: { span_us: number; onset_bracketed_by_samples: boolean } | null } | null };
+      last_sampled_recovery: { span_us: number; onset_bracketed_by_samples: boolean } | null } | null;
+    preplacement_temperature_observation: { status: "OBSERVED" | "NOT_CAPTURED" | "AMBIGUOUS";
+      sample_celsius: string | null; age_before_placement_us: number | null; quality_status: string | null } | null };
   unverified_categories: string[];
   completeness: "INSUFFICIENT" | "NOT_ASSESSED";
   completeness_reasons: string[];
@@ -35,6 +37,9 @@ const labels: Record<string, string> = {
   INITIAL_CONTEXT_DECLARED_UNVERIFIED: "입력된 재료·기름 정보의 검증",
   STORAGE_OUTSIDE_SCENARIO: "승인된 냉장 생제품 시나리오와 다른 보관 상태",
   THICKNESS_PROFILE: "두께 프로파일", INGREDIENT_INITIAL_STATE: "재료 초기 상태",
+  PREPLACEMENT_TEMPERATURE_UNAVAILABLE: "투입 전 온도 표본",
+  PREPLACEMENT_RECENCY_NOT_ASSESSED: "투입 전 표본의 최신성 기준",
+  PREPLACEMENT_TEMPERATURE_FLAGGED: "투입 전 표본의 품질 경고 검토",
   FRYER_AND_BATCH_BASELINE: "튀김기·배치 기준 정보", COMPARABLE_PREVIOUS_JOB: "비교 가능한 이전 조리",
   TARGET_SETTINGS_AND_INTERVALS: "목표 설정과 투입 간격", PREVIOUS_JAM_OR_OVERLOAD: "이전 걸림·과부하 여부",
 };
@@ -122,6 +127,13 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}
         {" "}· 품질평가 {value.recorded.quality?.score_percent == null ? "현재 유효 평가 없음" : `${value.recorded.quality.score_percent}점`}</p>
       {value.process_stale && <p className="warning">공정 재계산 이후 작업이 변경되어 다시 확인해야 합니다.</p>}
+      {value.recorded.preplacement_temperature_observation?.status === "OBSERVED" &&
+        typeof value.recorded.preplacement_temperature_observation.age_before_placement_us === "number" && <p>
+        재계산 당시 투입 전 마지막으로 기록된 표본: {value.recorded.preplacement_temperature_observation.sample_celsius}°C ·
+        투입 {value.recorded.preplacement_temperature_observation.age_before_placement_us / 1_000_000}초 전 ·
+        품질 {value.recorded.preplacement_temperature_observation.quality_status}</p>}
+      {value.recorded.preplacement_temperature_observation?.status === "AMBIGUOUS" &&
+        <p className="warning">같은 시각의 투입 전 표본이 여러 개여서 온도를 선택하지 않았습니다.</p>}
       {value.recorded.temperature_sample_summary && <div>
         <p>조리 중 관찰 표본 {value.recorded.temperature_sample_summary.sample_count}개 ·
           표본 최저 {value.recorded.temperature_sample_summary.minimum_sample_celsius}°C ·

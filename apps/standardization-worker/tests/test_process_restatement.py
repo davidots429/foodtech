@@ -128,10 +128,12 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(result["process_assessment_status"], "WARNING")
 
     def test_process_writes_immutable_result_and_request_without_meta_update(self):
-        job = self.job()
-        first = self.sample("first", 1, 0)
-        late = self.sample("late", 2, 5, late=True)
-        after_terminal = self.sample("after-terminal", 3, 10)
+        job = {**self.job(), "actual_placed_at": "2026-11-14T00:00:00Z"}
+        preload = self.sample("preload", 1, 0, 169)
+        preload["normalized"]["event_time"] = "2026-11-13T23:59:55Z"
+        first = self.sample("first", 2, 0)
+        late = self.sample("late", 3, 5, late=True)
+        after_terminal = self.sample("after-terminal", 4, 10)
         request = {"pk": "JOB#1", "sk": "RESTATEMENT#REQUEST#late", "status": "PENDING",
                    "source_assessment_pk": "EVENT#late", "source_assessment_sk": "ASSESSMENT#v1",
                    "source_stream_pk": stream_binding_key(**self.binding)}
@@ -142,7 +144,7 @@ class ProcessRestatementTests(unittest.TestCase):
             if kwargs["Key"]["sk"] != "PROCESS#LATEST_RESTATED" else {})
         data = Mock(name="data")
         data.get_item.side_effect = lambda **kwargs: ({} if kwargs["Key"]["sk"] == "SOURCE#REVISION" else
-            {"Item": {"EVENT#first": first, "EVENT#late": late,
+            {"Item": {"EVENT#preload": preload, "EVENT#first": first, "EVENT#late": late,
                       "EVENT#after-terminal": after_terminal}[kwargs["Key"]["pk"]]})
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
         processor.cooking, processor.data, processor.client = cooking, data, Mock()
@@ -153,11 +155,11 @@ class ProcessRestatementTests(unittest.TestCase):
         import hashlib
         source_pk = stream_binding_key(**self.binding)
         raws = [{"ingestion_event_id": event_id, "pk": source_pk, "provenance": "SYNTHETIC", "raw": event_id}
-                for event_id in ("first", "late", "after-terminal")]
+                for event_id in ("preload", "first", "late", "after-terminal")]
         receipt = {"sk": "COLLECTION#RECEIPT#1", "stream_pk": source_pk,
                    "receipt_version": "synthetic-rest-collection-receipt-v1", "provenance": "SYNTHETIC",
-                   "profile_id": "mockprofile-100", "starting_cursor": 0, "ending_cursor": 3,
-                   "record_count": 3, "raw_sha256": [hashlib.sha256(row["raw"].encode()).hexdigest() for row in raws]}
+                   "profile_id": "mockprofile-100", "starting_cursor": 0, "ending_cursor": 4,
+                   "record_count": 4, "raw_sha256": [hashlib.sha256(row["raw"].encode()).hexdigest() for row in raws]}
         processor._stream_sources = lambda _pk: raws
         processor._collection_receipts = lambda _pk: [receipt]
         self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
@@ -165,9 +167,11 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(len(operations), 5)
         self.assertEqual(operations[0]["ConditionCheck"]["Key"]["sk"]["S"], "META")
         self.assertEqual(operations[1]["Put"]["Item"]["status"]["S"], "DERIVED_ONLY")
-        self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "3")
+        self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "4")
         self.assertEqual(operations[1]["Put"]["Item"]["observation_coverage"]["M"]["sample_count"]["N"], "3")
         self.assertTrue(operations[1]["Put"]["Item"]["collection_evidence"]["M"]["raw_snapshot_matches"]["BOOL"])
+        observed = operations[1]["Put"]["Item"]["preplacement_temperature_observation"]["M"]
+        self.assertEqual((observed["sample_celsius"]["S"], observed["age_before_placement_us"]["N"]), ("169", "5000000"))
         original_key = operations[1]["Put"]["Item"]["sk"]["S"]
         self.assertEqual(len(operations[1]["Put"]["Item"]["included_ingestion_event_ids"]["L"]), 3)
         self.assertEqual(operations[2]["Put"]["Item"]["status"]["S"], "COMPLETED")
@@ -177,7 +181,8 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(operations[4]["ConditionCheck"]["ConditionExpression"], "attribute_not_exists(pk)")
         self.assertEqual(job["status"], "COMPLETED")
         processor._refresh_dependents.assert_called_once_with("JOB#1")
-        assessment_lookup = {"EVENT#first": first, "EVENT#late": late, "EVENT#after-terminal": after_terminal}
+        assessment_lookup = {"EVENT#preload": preload, "EVENT#first": first, "EVENT#late": late,
+                             "EVENT#after-terminal": after_terminal}
         data.get_item.side_effect = lambda **kwargs: ({"Item": {"revision": 4}}
             if kwargs["Key"]["sk"] == "SOURCE#REVISION" else {"Item": assessment_lookup[kwargs["Key"]["pk"]]})
         self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")

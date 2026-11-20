@@ -56,6 +56,10 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
         fields["temperature_sample_summary"]["last_sampled_recovery"] = ({key: recovery.get(key) for key in
             ("first_below_at", "first_in_range_at", "span_us", "onset_bracketed_by_samples")}
             if isinstance(recovery, dict) else None)
+    preload = derived.get("preplacement_temperature_observation") if derived else None
+    fields["preplacement_temperature_observation"] = ({key: preload.get(key) for key in
+        ("version", "status", "sample_at", "sample_celsius", "quality_status", "age_before_placement_us")}
+        if isinstance(preload, dict) and not stale else None)
     recorded_batch = job.get("tonkatsu_batch")
     fields["tonkatsu_batch"] = ({key: recorded_batch.get(key) for key in
         ("rule_version", "mode", "product_weights_g", "product_count", "total_mass_kg",
@@ -90,6 +94,12 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
     if stale:
         missing.append("CURRENT_PROCESS_DERIVATION")
     if job.get("menu") == "TONKATSU":
+        if not preload or stale or preload.get("status") != "OBSERVED":
+            missing.append("PREPLACEMENT_TEMPERATURE_UNAVAILABLE")
+        else:
+            missing.append("PREPLACEMENT_RECENCY_NOT_ASSESSED")
+            if preload.get("quality_status") == "WARNING":
+                missing.append("PREPLACEMENT_TEMPERATURE_FLAGGED")
         if not job.get("thickness_profile"):
             missing.append("THICKNESS_PROFILE")
         if raw_initial and not initial_current:
