@@ -21,16 +21,17 @@ var fixturePath = Required(options, "fixture");
 using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
 var root = fixture.RootElement;
 var jeyuk = root.TryGetProperty("fixtureId", out _);
-if (!jeyuk && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
+var combi = root.TryGetProperty("profileId", out var profile) && profile.GetString() == "mockprofile-120";
+if (!jeyuk && !combi && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
     root.GetProperty("instanceId").GetString() != "mockprofile-100-a-001"))
     throw new InvalidDataException("Only approved synthetic profiles are supported.");
-if (jeyuk && (args.Length == 0 || args[0] != "serve"))
-    throw new ArgumentException("Use simulate-jeyuk or serve for the jeyuk fixture.");
-var records = jeyuk ? Array.Empty<JsonElement>() :
+if ((jeyuk || combi) && (args.Length == 0 || args[0] != "serve"))
+    throw new ArgumentException("Use the matching simulation command or serve for this fixture.");
+var records = jeyuk || combi ? Array.Empty<JsonElement>() :
     root.GetProperty("records").EnumerateArray().Select(item => item.Clone()).ToArray();
-var recordLines = jeyuk ? JeyukSimulation.Expand(root).ToArray() :
+var recordLines = jeyuk ? JeyukSimulation.Expand(root).ToArray() : combi ? CombiSimulation.Generate(root).Raw :
     records.Select(item => JsonSerializer.Serialize(item)).ToArray();
-var profileId = jeyuk ? "mockprofile-110" : "mockprofile-100";
+var profileId = jeyuk ? "mockprofile-110" : combi ? "mockprofile-120" : "mockprofile-100";
 
 if (args.Length > 0 && args[0] == "hash")
 {
