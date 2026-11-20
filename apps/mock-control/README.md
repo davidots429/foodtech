@@ -49,3 +49,9 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
 
 정상 중형 fixture는 밥 1,800초, 습도 미지원 건열 전환 180초, 고등어 720초를 순서대로 재현한다. 동일 fixture로 기존 `serve` 명령을 실행하면 인증된 HTTPS GET으로 `mockprofile-120` 원표본을 제공한다. 수집 클라이언트는 해당 프로파일 헤더를 확인하고 별도 검증기는 명시된 식사 배치·장비·세 작업 ID와 순번·단계·1초 시각을 확인한다. 현재 요청은 원표본 전체를 반환하며 5초 주기 실시간 송신, AWS 수집·고객 작업 연결 및 다른 크기·장애 fixture는 후속 작업이다. 판정은 플랫폼에서 수행하며 실제 제조사 규격이나 식품 안전을 주장하지 않는다.
 
+## 합성 MQTT Mock
+
+`serve-mqtt --fixture fixtures/mockprofile-300-a-001.json --cert <pfx> --port <포트>`는 MQTTnet 5.2.0.1603 기반 MQTT 5 서버를 로컬 루프백의 TLS로만 연다. `FOODTECH_MQTT_USER`, `FOODTECH_MQTT_PASSWORD`, `FOODTECH_MOCK_CERT_PASSWORD`를 환경 변수로 제공한다. 인증된 `foodtech-collector-` 접두 클라이언트만 연결하고 `foodtech/synthetic/mockprofile-300-a-001/observations`를 QoS 1로 구독할 수 있다. 와일드카드·다른 Topic·외부 발행은 거부한다. 첫 구독 후 합성 fixture 세 건을 5초 간격으로 한 번 발행하며, 메시지 두 번째 연결 시 처음부터 다시 재생하지 않는다.
+
+이는 `mockprofile-300`의 vendor-a JSON 단일 논리 인스턴스이며 실제 장비 호환성을 주장하지 않는다. 세션은 Mock 프로세스 메모리에서 유지되고 수집기의 세션 만료 초기값은 300초다. 프로세스 재시작 이후 복구·장기 단절·다중 인스턴스, 다른 vendor·XML·CSV, AWS에서의 실제 연결과 부하 검증은 아직 남아 있다.
+

@@ -2,7 +2,12 @@
 name = "foodtech-collection-adapter"
 version = "0.0.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["boto3>=1.40,<2", "httpx>=0.28,<1", "foodtech-contracts"]
+dependencies = [
+    "boto3>=1.40,<2",
+    "httpx>=0.28,<1",
+    "foodtech-contracts",
+    "paho-mqtt>=2.1,<3",
+]
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]
