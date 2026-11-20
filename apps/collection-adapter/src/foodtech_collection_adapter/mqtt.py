@@ -13,12 +13,19 @@ from foodtech_contracts import decode_record, stream_key
 from .aws_flow import DynamoOrderedIngestor
 from .ingestion_quarantine import IngestionQuarantine, failure as ingestion_failure
 
+INSTANCES = ("mockprofile-300-a-001", "mockprofile-300-b-001", "mockprofile-300-c-001")
 TOPIC = "foodtech/synthetic/mockprofile-300-a-001/observations"
 
 
-def accept_message(client, message, ingestor, quarantine, client_id):
+def topic_for(instance: str) -> str:
+    if instance not in INSTANCES:
+        raise ValueError("unsupported synthetic MQTT instance")
+    return f"foodtech/synthetic/{instance}/observations"
+
+
+def accept_message(client, message, ingestor, quarantine, client_id, instance=INSTANCES[0]):
     """Acknowledge only after a normal event or a quarantined raw payload is durable."""
-    if message.topic != TOPIC or message.qos != 1 or message.retain:
+    if message.topic != topic_for(instance) or message.qos != 1 or message.retain:
         raise ValueError("unexpected MQTT message contract")
     try:
         raw = message.payload.decode("utf-8", errors="strict")
@@ -35,7 +42,7 @@ def accept_message(client, message, ingestor, quarantine, client_id):
         stream = None
     else:
         record = decode_record(raw)
-        if record["sourceId"] != "synthetic-mqtt" or record["deviceId"] != "mockprofile-300-a-001":
+        if record["sourceId"] != "synthetic-mqtt" or record["deviceId"] != instance:
             raise ValueError("unexpected synthetic source")
         ingestor.ingest(raw)
         stream = stream_key(record)
@@ -45,10 +52,11 @@ def accept_message(client, message, ingestor, quarantine, client_id):
 
 
 def collect(host: str, port: int, ca_file: str, username: str, password: str,
-            client_id: str, ingestor, *, count: int, timeout_seconds: int, quarantine=None) -> int:
+            client_id: str, ingestor, *, count: int, timeout_seconds: int, quarantine=None, instance: str = INSTANCES[0]) -> int:
     if (not host or not 1024 <= port <= 65535 or not ca_file or not username or not password or
             not client_id.startswith("foodtech-collector-") or not 1 <= count <= 5000 or timeout_seconds < 1):
         raise ValueError("invalid MQTT subscriber configuration")
+    topic = topic_for(instance)
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id,
                          protocol=mqtt.MQTTv5, manual_ack=True)
     client.username_pw_set(username, password)
@@ -59,7 +67,7 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
         if reason.is_failure:
             failure.append("MQTT authentication failed")
         else:
-            _client.subscribe(TOPIC, qos=1)
+            _client.subscribe(topic, qos=1)
 
     def on_subscribe(_client, _userdata, _mid, reasons, _properties):
         if not reasons or any(reason.is_failure for reason in reasons):
@@ -67,7 +75,7 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
 
     def on_message(_client, _userdata, message):
         try:
-            stream = accept_message(_client, message, ingestor, quarantine, client_id)
+            stream = accept_message(_client, message, ingestor, quarantine, client_id, instance)
             if stream is not None:
                 streams.add(stream)
             received.append(message.mid)
@@ -102,6 +110,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Collect the synthetic MQTT Mock over TLS")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--instance", choices=INSTANCES, default=INSTANCES[0])
     args = parser.parse_args()
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
     bucket = os.environ.get("FOODTECH_INGESTION_DLQ_BUCKET")
@@ -109,7 +118,7 @@ def main() -> None:
     count = collect(os.environ["FOODTECH_MQTT_HOST"], int(os.environ["FOODTECH_MQTT_PORT"]),
                     os.environ["FOODTECH_MQTT_CA_FILE"], os.environ["FOODTECH_MQTT_USER"],
                     os.environ["FOODTECH_MQTT_PASSWORD"], os.environ["FOODTECH_MQTT_CLIENT_ID"], ingestor,
-                    count=args.count, timeout_seconds=args.timeout, quarantine=quarantine)
+                    count=args.count, timeout_seconds=args.timeout, quarantine=quarantine, instance=args.instance)
     print(f"accepted={count} provenance=SYNTHETIC")
 
 

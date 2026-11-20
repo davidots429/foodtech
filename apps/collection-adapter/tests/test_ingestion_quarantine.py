@@ -103,6 +103,26 @@ class MqttQuarantineTests(unittest.TestCase):
         self.assertEqual(sink.table.items[0]["ingestion_failure_reason_code"], "UNSUPPORTED_ENCODING")
         self.assertNotIn("event_id", sink.table.items[0])
 
+    def test_vendor_topic_and_invalid_source_quarantine(self):
+        from foodtech_collection_adapter.mqtt import accept_message, topic_for
+        calls = []
+        class Client:
+            def ack(self, mid, qos): calls.append("ack"); return 0
+        class Sink:
+            def preserve_mqtt(self, payload, **kwargs): calls.append((payload, kwargs["topic"]))
+        class Ingestor:
+            def ingest(self, raw): raise AssertionError("invalid data entered normal pipeline")
+        for vendor in ("b", "c"):
+            instance = f"mockprofile-300-{vendor}-001"
+            message = SimpleNamespace(topic=topic_for(instance), qos=1, retain=False, payload=b"{bad", mid=7)
+            self.assertIsNone(accept_message(Client(), message, Ingestor(), Sink(), "foodtech-collector-test", instance))
+            self.assertEqual(calls, [(b"{bad", topic_for(instance)), "ack"])
+            calls.clear()
+            message.topic = topic_for("mockprofile-300-a-001")
+            with self.assertRaisesRegex(ValueError, "message contract"):
+                accept_message(Client(), message, Ingestor(), Sink(), "foodtech-collector-test", instance)
+            self.assertEqual(calls, [])
+
     def test_ack_follows_successful_preservation_only(self):
         from foodtech_collection_adapter.mqtt import TOPIC, accept_message
         calls = []

@@ -11,7 +11,6 @@ using MQTTnet.Server;
 
 internal static class MqttMock
 {
-    private const string Topic = "foodtech/synthetic/mockprofile-300-a-001/observations";
     private const string Publisher = "foodtech-internal-mock";
 
     public static async Task Run(string path, string certificatePath, int port, string? fault)
@@ -26,14 +25,18 @@ internal static class MqttMock
             throw new InvalidOperationException("MQTT credentials and certificate password are required.");
         using var fixture = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
         var root = fixture.RootElement;
+        var instance = root.GetProperty("instanceId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
             root.GetProperty("profileId").GetString() != "mockprofile-300" ||
-            root.GetProperty("instanceId").GetString() != "mockprofile-300-a-001")
+            instance is not ("mockprofile-300-a-001" or "mockprofile-300-b-001" or "mockprofile-300-c-001"))
             throw new InvalidDataException("Only the approved synthetic MQTT profile is supported.");
+        var topic = $"foodtech/synthetic/{instance}/observations";
+        var b = instance == "mockprofile-300-b-001";
+        var c = instance == "mockprofile-300-c-001";
         var records = root.GetProperty("records").EnumerateArray().Select((item, index) => {
-            if (item.GetProperty("sourceId").GetString() != "synthetic-mqtt" ||
-                item.GetProperty("deviceId").GetString() != "mockprofile-300-a-001" ||
-                item.GetProperty("sequenceNumber").GetInt32() != index + 1)
+            if (item.GetProperty(b ? "source_id" : c ? "SrcId" : "sourceId").GetString() != "synthetic-mqtt" ||
+                item.GetProperty(b ? "device_id" : c ? "DeviceId" : "deviceId").GetString() != instance ||
+                item.GetProperty(b ? "sequence_number" : c ? "SeqNo" : "sequenceNumber").GetInt32() != index + 1)
                 throw new InvalidDataException("Invalid synthetic MQTT record identity or sequence.");
             return item.GetRawText();
         }).ToArray();
@@ -53,7 +56,7 @@ internal static class MqttMock
             return Task.CompletedTask;
         };
         server.InterceptingSubscriptionAsync += args => {
-            if (!string.Equals(args.TopicFilter.Topic, Topic, StringComparison.Ordinal) ||
+            if (!string.Equals(args.TopicFilter.Topic, topic, StringComparison.Ordinal) ||
                 args.TopicFilter.QualityOfServiceLevel != MqttQualityOfServiceLevel.AtLeastOnce)
                 args.Response.ReasonCode = MqttSubscribeReasonCode.NotAuthorized;
             return Task.CompletedTask;
@@ -64,7 +67,7 @@ internal static class MqttMock
         };
         var started = 0;
         server.ClientSubscribedTopicAsync += args => {
-            if (args.TopicFilter.Topic != Topic || Interlocked.Exchange(ref started, 1) != 0) return Task.CompletedTask;
+            if (args.TopicFilter.Topic != topic || Interlocked.Exchange(ref started, 1) != 0) return Task.CompletedTask;
             _ = Task.Run(async () => {
                 try
                 {
@@ -74,7 +77,7 @@ internal static class MqttMock
                         var payload = index == 0 && fault == "invalid-utf8" ? new byte[] { 0xff, 0xfe, 0x80 } :
                             index == 0 && fault == "invalid-json" ? Encoding.UTF8.GetBytes("{\"incomplete\":") :
                             Encoding.UTF8.GetBytes(records[index]);
-                        var message = new MqttApplicationMessageBuilder().WithTopic(Topic).WithPayload(payload)
+                        var message = new MqttApplicationMessageBuilder().WithTopic(topic).WithPayload(payload)
                             .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build();
                         await server.InjectApplicationMessage(new InjectedMqttApplicationMessage(message) { SenderClientId = Publisher });
                         if (index + 1 < records.Length) await Task.Delay(TimeSpan.FromSeconds(5));
