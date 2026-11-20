@@ -39,6 +39,19 @@ class CreateMeal(BaseModel):
     rack_tare_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
 
 
+class RicePreparation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: StrictInt = Field(ge=1)
+    wash_count: StrictInt = Field(ge=0, le=20)
+    soaking_water_celsius: Decimal = Field(ge=0, le=100, max_digits=5, decimal_places=2)
+    washed_rice_kg: Decimal | None = Field(default=None, gt=0, max_digits=7, decimal_places=2)
+    soaked_rice_kg: Decimal | None = Field(default=None, gt=0, max_digits=7, decimal_places=2)
+    soaking_started_at: datetime
+    soaking_completed_at: datetime
+    draining_completed_at: datetime
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class MackerelProduct(BaseModel):
     model_config = ConfigDict(extra="forbid")
     product_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
@@ -598,6 +611,56 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
     return result
 
 
+@router.post("/{meal_id}/rice-preparation", status_code=201)
+async def record_rice_preparation(meal_id: UUID, request: Request, body: RicePreparation) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {key: value for key, value in row.items() if key != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.")
+    step = rows.get(f"JOB#RICE#{old['rice_cooking_job_id']}")
+    if old["status"] != "PREPARING_RICE" or not step or step.get("status") != "PENDING":
+        raise HTTPException(409, "밥 조리 시작 전 전처리만 기록할 수 있습니다.")
+    times = (body.soaking_started_at, body.soaking_completed_at, body.draining_completed_at)
+    if any(value.utcoffset() is None for value in times):
+        raise HTTPException(422, "전처리 시각에는 시간대가 필요합니다.")
+    started, soaked, drained = (value.astimezone(timezone.utc) for value in times)
+    if not started <= soaked <= drained <= datetime.now(timezone.utc):
+        raise HTTPException(422, "불림·배수 시각 순서와 현재 시각을 확인해 주세요.")
+    previous = step.get("rice_preparation")
+    if previous and not (body.reason and body.reason.strip()):
+        raise HTTPException(422, "전처리 기록 수정 사유가 필요합니다.")
+    washed = body.washed_rice_kg if "washed_rice_kg" in body.model_fields_set else (previous or {}).get("washed_rice_kg")
+    soaked_mass = body.soaked_rice_kg if "soaked_rice_kg" in body.model_fields_set else (previous or {}).get("soaked_rice_kg")
+    def elapsed(start: datetime, end: datetime) -> str:
+        delta = end - start
+        return str(Decimal((delta.days * 86400 + delta.seconds) * 1000000 + delta.microseconds) / Decimal(1000000))
+    current = {"provenance": "SYNTHETIC", "wash_count": body.wash_count,
+               "soaking_water_celsius": str(body.soaking_water_celsius),
+               "washed_rice_kg": str(washed) if washed is not None else None,
+               "soaked_rice_kg": str(soaked_mass) if soaked_mass is not None else None,
+               "soaking_started_at": started.isoformat().replace("+00:00", "Z"),
+               "soaking_completed_at": soaked.isoformat().replace("+00:00", "Z"),
+               "draining_completed_at": drained.isoformat().replace("+00:00", "Z"),
+               "soaking_seconds": elapsed(started, soaked), "draining_seconds": elapsed(soaked, drained)}
+    version = int(old["version"]) + 1
+    meta = {**old, "version": version, "updated_at": _now()}
+    updated = {**step, "rice_preparation": current}
+    event = {"sk": f"EVENT#{version:012d}", "event": "RICE_PREPARATION_REVISED" if previous else "RICE_PREPARATION_RECORDED",
+             "from_status": old["status"], "to_status": old["status"], "observed_at": current["draining_completed_at"],
+             "recorded_at": _now(), "actor": session.subject, "previous": previous, "preparation": current,
+             "reason": body.reason.strip() if body.reason else None}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}
+
+
 @router.post("/{meal_id}/events")
 async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict:
     session, store = await _context(request, write=True)
@@ -658,6 +721,9 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
         updated.update(status="RUNNING", active_cooking_started_at=at,
                        products=[item.model_dump(mode="json") for item in products])
     elif body.event == "RICE_STARTED":
+        preparation = step.get("rice_preparation") or {}
+        if preparation.get("draining_completed_at") and observed < datetime.fromisoformat(preparation["draining_completed_at"].replace("Z", "+00:00")):
+            raise HTTPException(422, "밥 조리는 기록된 배수 완료 이후에 시작해야 합니다.")
         updated.update(status="RUNNING", active_cooking_started_at=at)
     elif body.event in {"RICE_PROGRAM_COMPLETED", "MACKEREL_PROGRAM_COMPLETED"}:
         start = datetime.fromisoformat(step["active_cooking_started_at"].replace("Z", "+00:00"))

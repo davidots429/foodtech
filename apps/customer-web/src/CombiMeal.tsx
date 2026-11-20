@@ -3,6 +3,7 @@ import { api } from "./cookingApi";
 import { CombiQuality } from "./CombiQuality";
 import { CombiWindows } from "./CombiWindows";
 import { CombiLive } from "./CombiLive";
+import { RicePreparation, type RicePreparationRecord } from "./RicePreparation";
 
 type FanObservation = { status: string; target_level: number; deviation_seconds: number; missing_seconds: number };
 type ProbeSummary = { probe_id: string; product_id: string; rack_id: string; shelf: number; pan_id: string;
@@ -14,6 +15,7 @@ type Meal = {
   rice: { job_id: string; status: string; safety_status: string; quality_current?: { version: number;
     quality_status: string; score_percent: string; quality_target: boolean; usable?: boolean };
     water_ratio_status: string; effective_water_ratio: string;
+    rice_preparation?: RicePreparationRecord;
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     monitored_process_source?: { raw_sha256: string; phase: string };
@@ -295,6 +297,9 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       <p>밥: 유효 수분비 {meal.rice.effective_water_ratio} · {meal.rice.water_ratio_status === "NORMAL" ? "권장 범위" : "권장 범위 밖"} · 목표 추가 물 {meal.rice.target_added_water_kg ?? "계산 불가"} kg</p>
       <p>내용물·팬 {meal.rice.payload_kg} kg · 랙 포함 {meal.rice.gross_kg} kg</p>
       <p>밥 작업 <code>{meal.rice.job_id}</code> → 모드 전환 <code>{meal.transition.transition_id}</code> → 고등어 작업 <code>{meal.mackerel.job_id}</code></p>
+      <RicePreparation key={meal.meal.meal_batch_id} mealId={meal.meal.meal_batch_id} version={meal.meal.version}
+        editable={meal.meal.status === "PREPARING_RICE"} current={meal.rice.rice_preparation} csrf={csrf}
+        onSaved={async () => setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`))} />
       {meal.meal.source ? <p>연결된 합성 Mock: {meal.meal.source.device_id} · 원표본 {meal.meal.source.record_count}건 · SHA-256 <code>{meal.meal.source.raw_sha256}</code></p>
         : meal.meal.status === "PREPARING_RICE" && <div><p>별도 Mock에서 위 식사·작업 ID로 생성한 JSONL 원표본을 조리 시작 전에 연결할 수 있습니다. 판정은 이후 단계에서 수행합니다.</p>
           <label>합성 장비 ID<input value={sourceDevice} maxLength={80} onChange={event => setSourceDevice(event.target.value)} /></label>
