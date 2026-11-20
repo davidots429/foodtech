@@ -1,0 +1,69 @@
+{
+  "provenance": "SYNTHETIC",
+  "profileId": "mockprofile-120",
+  "mockInstanceId": "mockprofile-120-a-001",
+  "mealBatchId": "synthetic-meal-transition-timeout-v1",
+  "deviceId": "synthetic-combi-medium",
+  "generatorVersion": "combi-generator-v1",
+  "seed": 2027,
+  "logicalStartAt": "2026-01-01T00:00:00Z",
+  "phases": [
+    {
+      "phase": "RICE",
+      "cookingJobId": "synthetic-rice-v1",
+      "programVersion": "rice-steam-v1",
+      "segments": [
+        {
+          "seconds": 1800,
+          "chamberCelsius": "100",
+          "climateSetpointPercent": "100",
+          "measuredHumidityPercent": "98",
+          "humidityValueSource": "MEASURED",
+          "fanLevel": 4,
+          "doorState": "CLOSED",
+          "criticalAlarm": false,
+          "ventSupported": false,
+          "ventEvent": null
+        }
+      ]
+    },
+    {
+      "phase": "TRANSITION",
+      "cookingJobId": "synthetic-transition-v1",
+      "programVersion": "dry-transition-v1",
+      "segments": [
+        {
+          "seconds": 300,
+          "chamberCelsius": "200",
+          "climateSetpointPercent": "10",
+          "measuredHumidityPercent": null,
+          "humidityValueSource": "NOT_SUPPORTED",
+          "fanLevel": 3,
+          "doorState": "CLOSED",
+          "criticalAlarm": false,
+          "ventSupported": false,
+          "ventEvent": null
+        }
+      ]
+    },
+    {
+      "phase": "MACKEREL",
+      "cookingJobId": "synthetic-mackerel-v1",
+      "programVersion": "mackerel-dry-v1",
+      "segments": [
+        {
+          "seconds": 720,
+          "chamberCelsius": "220",
+          "climateSetpointPercent": "10",
+          "measuredHumidityPercent": "10",
+          "humidityValueSource": "MEASURED",
+          "fanLevel": 3,
+          "doorState": "CLOSED",
+          "criticalAlarm": false,
+          "ventSupported": false,
+          "ventEvent": null
+        }
+      ]
+    }
+  ]
+}

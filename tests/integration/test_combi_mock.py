@@ -20,6 +20,39 @@ DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class CombiMockTests(unittest.TestCase):
+    def test_failure_fixtures_produce_approved_platform_findings(self):
+        for name in ("rice-low", "transition-timeout", "mackerel-low"):
+            with self.subTest(scenario=name), tempfile.TemporaryDirectory() as directory:
+                raw_path = Path(directory) / "raw.jsonl"
+                aggregate_path = Path(directory) / "aggregate.jsonl"
+                subprocess.run(["dotnet", str(DLL), "simulate-combi", "--fixture",
+                                str(ROOT / f"fixtures/combi-{name}-v1.json"),
+                                "--output", str(raw_path), "--aggregates", str(aggregate_path)],
+                               capture_output=True, check=True, text=True)
+                raw = [json.loads(line, parse_float=Decimal) for line in raw_path.read_text().splitlines()]
+                self.assertTrue(all(item["provenance"] == "SYNTHETIC" for item in raw))
+                self.assertEqual([item["sequence"] for item in raw], list(range(1, len(raw) + 1)))
+                if name == "rice-low":
+                    rows = [item for item in raw if item["phase"] == "RICE"]
+                    result = assess_rice([RiceSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
+                        Decimal(item["measuredHumidityPercent"]), item["doorState"]) for item in rows],
+                        len(rows), "NORMAL", "MEASURED")
+                    self.assertEqual(result["status"], "FAILED")
+                    self.assertIn("LOW_TEMPERATURE_PROCESS_FAILURE", result["reason_codes"])
+                elif name == "transition-timeout":
+                    rows = [item for item in raw if item["phase"] == "TRANSITION"]
+                    result = assess_transition([TransitionSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
+                        Decimal(item["climateSetpointPercent"]), item["doorState"] == "CLOSED",
+                        item["criticalAlarm"], None) for item in rows], humidity_supported=False, vent_supported=False)
+                    self.assertEqual(result["status"], "MODE_TRANSITION_TIMEOUT")
+                    self.assertFalse(result["mackerel_load_allowed"])
+                else:
+                    rows = [item for item in raw if item["phase"] == "MACKEREL"]
+                    result = assess_fish([FishSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
+                        item["doorState"]) for item in rows], len(rows), "NORMAL")
+                    self.assertEqual(result["status"], "FAILED")
+                    self.assertIn("LOW_TEMPERATURE_PROCESS_FAILURE", result["reason_codes"])
+
     def test_three_phases_and_five_second_summaries(self):
         with tempfile.TemporaryDirectory() as directory:
             raw_path = Path(directory) / "raw.jsonl"
