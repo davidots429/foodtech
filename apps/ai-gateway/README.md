@@ -38,3 +38,9 @@
 2026-11-07 개발용 KMS·Vault 테이블에서 더미 키의 암호화·복호화, 잘못된 context 거부, 실제 DynamoDB 실행 레지스트리의 동의·예약·성공 결과와 한도 차감을 검증했다. 외부 공급자는 네트워크 대역으로 처리했으며 실제 키·유료 API 요청은 없었다. 시험 후 두 테이블 항목 수는 0이다. [재실행 스크립트](../../tests/live/credential_vault_check.py)를 사용한다. 별도의 임시 Fargate Task에서 Gateway 역할의 Vault `GetItem`·KMS `Decrypt` 허용과 반대 방향 권한 거부도 확인했다.
 
 고객 외부 실행은 `FOODTECH_EXTERNAL_EXECUTION_ENABLED=true`를 명시한 환경에서만 열린다. 최초 범위는 Gateway 코드에 고정한 `synthetic-general-guide-v1` 질문 한 건이다. 고객 원문 프롬프트·레시피·장비 데이터는 이 경로에 넣지 않는다. `POST /internal/ai/external/preview`는 활성 모델·동일 tenant의 활성 자격증명·관리자 승인 가격 상한(`input_cost_ceiling_usd`, `output_cost_ceiling_usd`, `price_version`)·세 범위의 한도를 확인하고 5분 견적을 기록한다. 입력 토큰은 고정 질문의 UTF-8 바이트 수에 여유분을 더해 보수적으로 산정하고 출력은 128토큰으로 제한한다. 실제 공급자 가격·청구와의 일치 여부는 운영 전 재검증해야 한다. `POST /internal/ai/external/quotes/{id}/confirm`는 고지 버전의 명시 동의를 받아 견적을 한 번만 소비하고 동의·실행을 원자적으로 만든 뒤 Gateway 정책의 예약·호출·정산을 실행한다. `GET /internal/ai/executions/{id}/status`는 같은 tenant의 상태·결과·실제 비용만 반환한다. 견적·동의·실행에 API 키나 프롬프트 원문을 저장하지 않는다. 실제 보고 비용이 예약액을 초과하면 추가 자동 차감 대신 실제 금액과 미대사 초과액을 기록하고 tenant·공급자·프로젝트 한도를 0으로 잠가 후속 호출을 중단한다. 청구 대사·가격 갱신·한도 재개 절차, 실제 외부 공급자 네트워크·egress, tenant STS tag 조건과 서비스 Task 배포는 후속 검증이다. 현재 개발 환경의 외부 실행 스위치는 기본 비활성이고 실제 유료 API 호출은 수행하지 않았다. `AWS_PROFILE=foodtech uv run --no-sync python tests/live/external_flow_check.py`는 개발용 레지스트리에서 합성 공급자 응답으로 정상 정산과 초과액 한도 잠금을 검증하고 시험 항목을 삭제한다. 2026-11-07 시험은 통과했고 테이블은 0건으로 복원됐다.
+
+### 신규 고객 무료 체험 한도
+
+로컬 모델 무료 체험의 고객별 월 한도를 자동으로 준비하려면 Gateway에 `FOODTECH_FREE_TRIAL_AUTO_PROVISION=true`, `FOODTECH_FREE_TRIAL_MONTHLY_CALLS`, `FOODTECH_FREE_TRIAL_MONTHLY_USD`를 명시한다. 설정된 달의 첫 고객 요청에서만 tenant 한도를 조건부 생성하며, 동시 요청·재시도 또는 설정 변경으로 기존 잔여량을 재충전하지 않는다. 한도 수치는 시험·시연 운영자가 설정하며 코드가 임의로 정하지 않는다. USD 한도는 기존 외부 실행과 공유하는 tenant 예산이다. 기본값은 자동 생성 비활성이고 설정 오류는 요청을 거부한다.
+
+기존 모델 승인과 공급자·프로젝트 월 한도는 관리자가 별도로 준비해야 하며 어느 하나라도 없거나 소진되면 호출을 허용하지 않는다. 한도가 다음 UTC 월에 생성되는 것은 해당 월의 새 기록으로 처리한다. 이 기능만으로 모델·서버 배포나 실환경 성능 검증이 완료되는 것은 아니다. 실제 DynamoDB 경쟁 검증은 후속이다.

@@ -1,4 +1,5 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -13,6 +14,10 @@ from foodtech_ai_gateway.service import GatewayService
 
 
 NOW = datetime.now(timezone.utc)
+
+
+class ConditionalCheckFailedException(ValueError):
+    pass
 
 
 class TransactionCanceledException(Exception):
@@ -31,7 +36,7 @@ class MemoryTable:
     def put_item(self, *, Item, ConditionExpression):
         key = (Item["pk"], Item["sk"])
         if key in self.items:
-            raise ValueError("duplicate record")
+            raise ConditionalCheckFailedException("duplicate record")
         self.items[key] = dict(Item)
 
     def update_item(self, **kwargs):
@@ -51,7 +56,8 @@ class MemoryResource:
 
 
 class AtomicClient:
-    exceptions = SimpleNamespace(TransactionCanceledException=TransactionCanceledException)
+    exceptions = SimpleNamespace(TransactionCanceledException=TransactionCanceledException,
+                                 ConditionalCheckFailedException=ConditionalCheckFailedException)
 
     def __init__(self, table):
         self.table = table
@@ -145,6 +151,26 @@ class RegistryTests(unittest.TestCase):
         self.registry.create_limit("PROVIDER", "ollama", Decimal("1"))
         self.registry.create_limit("PROJECT", "GLOBAL", Decimal("1"))
         self.service = GatewayService(self.registry)
+
+    def test_trial_limit_concurrent_creation_never_resets_an_existing_limit(self):
+        def create(_):
+            self.registry.ensure_trial_tenant_limit("new-customer", Decimal("0"), 2)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(create, range(40)))
+        key = ("LIMIT#2026-11#TENANT#new-customer", "META")
+        item = self.resource.table.items[key]
+        self.assertEqual(item["calls_remaining"], 2)
+        item["calls_remaining"] = 0
+        item["version"] = 9
+        create(0)
+        self.assertEqual(item["calls_remaining"], 0)
+        self.assertEqual(item["version"], 9)
+        self.registry.period = "2026-12"
+        create(0)
+        self.assertEqual(self.resource.table.items[("LIMIT#2026-12#TENANT#new-customer", "META")]["calls_remaining"], 2)
+        self.assertEqual(item["calls_remaining"], 0)
+        with self.assertRaises(ValueError):
+            self.registry.ensure_trial_tenant_limit("x", Decimal("NaN"), 1)
 
     def test_execution_id_reads_durable_records_and_claims_limits_once(self):
         self.assertEqual(self.registry.execution("run-1").tenant_id, "tenant-a")

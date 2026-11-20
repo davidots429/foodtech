@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -59,6 +60,33 @@ class ExecutionFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.registry.execution_state(execution_id), "SUCCEEDED")
             self.assertEqual(self.registry.execution_result(execution_id)["response_text"],
                              "합성 답변")
+
+    async def test_new_customer_gets_configured_limit_once_without_refill(self):
+        settings = {"FOODTECH_FREE_TRIAL_AUTO_PROVISION": "true",
+                    "FOODTECH_FREE_TRIAL_MONTHLY_CALLS": "2", "FOODTECH_FREE_TRIAL_MONTHLY_USD": "0"}
+        with patch.dict(os.environ, settings):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url="https://gateway.local") as client:
+                for expected_status in (200, 200, 403):
+                    created = await client.post("/internal/ai/executions", json={"tenant_id": "new-customer"})
+                    self.assertEqual(created.status_code, 201)
+                    response = await client.post(f"/internal/ai/executions/{created.json()['execution_id']}/invoke",
+                                                 json={"tenant_id": "new-customer", "prompt": "안내"})
+                    self.assertEqual(response.status_code, expected_status)
+                self.assertEqual(self.registry.budget("new-customer", "ollama").calls_remaining, 0)
+                self.registry.ensure_trial_tenant_limit("new-customer", Decimal("500"), 100)
+                self.assertEqual(self.registry.budget("new-customer", "ollama").calls_remaining, 0)
+                self.assertEqual(self.registry.budget("new-customer", "ollama").user_remaining_usd, Decimal("0"))
+
+    async def test_invalid_free_trial_configuration_fails_before_creating_limit(self):
+        settings = {"FOODTECH_FREE_TRIAL_AUTO_PROVISION": "true",
+                    "FOODTECH_FREE_TRIAL_MONTHLY_CALLS": "-1", "FOODTECH_FREE_TRIAL_MONTHLY_USD": "NaN"}
+        with patch.dict(os.environ, settings):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url="https://gateway.local") as client:
+                response = await client.post("/internal/ai/executions", json={"tenant_id": "new-customer"})
+                self.assertEqual(response.status_code, 503)
+                self.assertIsNone(self.registry.budget("new-customer", "ollama"))
 
     async def test_failure_persisted_and_cannot_invoke_twice(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
