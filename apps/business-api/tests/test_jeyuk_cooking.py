@@ -256,6 +256,12 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
                  "celsius": value}
                 for index, (phase, value) in enumerate(zip(("EARLY", "MIDDLE", "LATE"), temperatures), 1)]}
 
+        future = body(job["version"])
+        future["samples"][-1]["sampled_at"] = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        rejected = await self.client.post(path + "/safety/discharge-check", headers=CSRF, json=future)
+        self.assertEqual(rejected.status_code, 422)
+        self.assertEqual(self.store.items[(pk, "META")]["version"], job["version"])
+
         first = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
                                        json=body(job["version"]))
         self.assertEqual(first.status_code, 200, first.text)
