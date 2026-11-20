@@ -39,6 +39,23 @@ internal static class JeyukSimulation
             profile is not ("SMALL" or "MEDIUM" or "LARGE"))
             throw new InvalidDataException("Only approved synthetic jeyuk profiles are supported.");
         var actualLoadKg = PositiveDecimal(root, "actualLoadKg");
+        Dictionary<string, string>? identity = null;
+        if (root.TryGetProperty("validationIdentity", out var identityElement))
+        {
+            string[] identityFields = ["ingredientSpecId", "ingredientLotId", "supplierId", "sensorId",
+                "sensorCalibrationRecordId", "processConditionProfileId", "processConditionVersion"];
+            if (identityElement.ValueKind != JsonValueKind.Object ||
+                identityElement.EnumerateObject().Count() != identityFields.Length)
+                throw new InvalidDataException("Validation identity requires exactly seven fields.");
+            identity = new Dictionary<string, string>();
+            foreach (var field in identityFields)
+            {
+                var value = RequiredString(identityElement, field);
+                if (!Regex.IsMatch(value, @"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,79}\z", RegexOptions.CultureInvariant))
+                    throw new InvalidDataException("Invalid validation identity field.");
+                identity.Add(field, value);
+            }
+        }
         var segments = root.GetProperty("samples");
         if (segments.ValueKind != JsonValueKind.Array || segments.GetArrayLength() == 0)
             throw new InvalidDataException("At least one sample segment is required.");
@@ -60,6 +77,8 @@ internal static class JeyukSimulation
             if (safetyFixture is not null && safetyFixture != hasSafety)
                 throw new InvalidDataException("Safety fields must be present on every sample segment.");
             safetyFixture = hasSafety;
+            if (identity is not null && !hasSafety)
+                throw new InvalidDataException("Validation identity requires safety samples.");
             decimal? mixture = null;
             string? calibration = null;
             string? sensorPosition = null;
@@ -87,7 +106,7 @@ internal static class JeyukSimulation
                     fixtureId, "SYNTHETIC", "mockprofile-110", "mockprofile-110-a-001",
                     profile, actualLoadKg, samples.Count + 1, 1,
                     surface, actualRpm, targetRpm, motorLoad, mixture, calibration,
-                    sensorPosition, lastIngredientCompleted));
+                    sensorPosition, lastIngredientCompleted, identity));
         }
         if (safetyFixture == true && completionEvents != 1)
             throw new InvalidDataException("Exactly one final ingredient addition event is required.");
@@ -127,5 +146,5 @@ internal static class JeyukSimulation
         string Profile, decimal ActualLoadKg, int Second, int SampleIntervalSeconds,
         decimal SurfaceCelsius, decimal ActualRpm, decimal TargetRpm, decimal MotorLoadPercent,
         decimal? MixtureCelsius, string? CalibrationStatus, string? SafetySensorPosition,
-        bool? LastIngredientAdditionCompleted);
+        bool? LastIngredientAdditionCompleted, Dictionary<string, string>? ValidationIdentity);
 }

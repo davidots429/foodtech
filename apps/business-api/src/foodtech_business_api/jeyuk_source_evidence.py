@@ -56,6 +56,7 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
               "source_derived_results_match_raw": False,
               "source_process_conditions_normal": False,
               "source_safety_samples_valid": False,
+              "source_validation_identity_matches": False,
               "source_process_span_covers_cooking": False}
     if not contiguous:
         return result
@@ -128,6 +129,18 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
         all(sample.calibration_status == "OK" and
             sample.safety_sensor_position == "LOWEST_MIXTURE_POINT"
             for sample in samples))
+    expected_identity = {
+        "ingredientSpecId": context.get("ingredient_spec_id"),
+        "ingredientLotId": context.get("ingredient_lot_id"),
+        "supplierId": context.get("supplier_id"),
+        "sensorId": context.get("sensor_id"),
+        "sensorCalibrationRecordId": context.get("sensor_calibration_record_id"),
+        "processConditionProfileId": context.get("process_condition_profile_id"),
+        "processConditionVersion": context.get("process_condition_version"),
+    }
+    result["source_validation_identity_matches"] = (
+        all(isinstance(value, str) and value for value in expected_identity.values()) and
+        all(sample.validation_identity == expected_identity for sample in samples))
     duration = job.get("actual_cooking_seconds")
     result["source_process_span_covers_cooking"] = (
         type(duration) is int and duration > 0 and last_second >= duration and

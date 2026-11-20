@@ -12,6 +12,9 @@ def fixture(count=61, *, warning_at=None, expired_at=None):
     pk = f"JEYUK#{batch}"
     assessments = []
     raws = []
+    identity = {"ingredientSpecId": "pork-v1", "ingredientLotId": "lot-v1", "supplierId": "supplier-v1",
+                "sensorId": "sensor-v1", "sensorCalibrationRecordId": "cal-v1",
+                "processConditionProfileId": "profile-v1", "processConditionVersion": "v1"}
     process = ProcessMonitor("SMALL", Decimal("1.8"))
     safety = JeyukSafetyMonitor()
     for second in range(1, count + 1):
@@ -23,6 +26,7 @@ def fixture(count=61, *, warning_at=None, expired_at=None):
                "actualRpm": 30, "targetRpm": 30, "motorLoadPercent": 50,
                "mixtureCelsius": 75, "calibrationStatus": "EXPIRED" if second == expired_at else "OK",
                "safetySensorPosition": "LOWEST_MIXTURE_POINT",
+               "validationIdentity": identity,
                "lastIngredientAdditionCompleted": second == 1}
         raws.append({"pk": pk, "sk": raw_sk, "raw": json.dumps(raw)})
         process_reading = process.observe(second, surface_celsius=Decimal(raw["surfaceCelsius"]),
@@ -46,7 +50,10 @@ def fixture(count=61, *, warning_at=None, expired_at=None):
                             "safety_passed_at_second": safety_reading.passed_at_second,
                             "safety_rule_version": SAFETY_RULE_VERSION})
     job = {"source_binding": {"batch_id": batch},
-           "validation_context": {"actual_load_kg": "1.80"},
+           "validation_context": {"actual_load_kg": "1.80", "ingredient_spec_id": "pork-v1",
+                                  "ingredient_lot_id": "lot-v1", "supplier_id": "supplier-v1",
+                                  "sensor_id": "sensor-v1", "sensor_calibration_record_id": "cal-v1",
+                                  "process_condition_profile_id": "profile-v1", "process_condition_version": "v1"},
            "process_assessment": {"second": count, "source_assessment_sk": f"ASSESSMENT#{count:06d}",
                                   "status": "NORMAL", "rule_version": PROCESS_RULE_VERSION},
            "auto_safety_status": safety_reading.status,
@@ -75,6 +82,16 @@ class JeyukSourceEvidenceTests(unittest.TestCase):
         assessments[5]["surface_band"] = "HIGH_WARNING"
         checked = audit_source_records(job, assessments, raws)
         self.assertFalse(checked["source_derived_results_match_raw"])
+
+    def test_identity_mismatch_or_legacy_sample_does_not_match(self):
+        job, assessments, raws = fixture()
+        raw = json.loads(raws[3]["raw"])
+        raw["validationIdentity"]["ingredientLotId"] = "another-lot"
+        raws[3]["raw"] = json.dumps(raw)
+        self.assertFalse(audit_source_records(job, assessments, raws)["source_validation_identity_matches"])
+        del raw["validationIdentity"]
+        raws[3]["raw"] = json.dumps(raw)
+        self.assertFalse(audit_source_records(job, assessments, raws)["source_validation_identity_matches"])
 
     def test_warning_expired_calibration_and_short_span_remain_unverified(self):
         job, assessments, raws = fixture(warning_at=6, expired_at=7)
