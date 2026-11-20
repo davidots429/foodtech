@@ -99,6 +99,28 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.registry.consent(quote["quote_id"]))
         self.assertIsNone(self.registry.execution(quote["execution_id"]))
 
+    def test_bound_job_is_preserved_and_changed_binding_is_rejected(self):
+        parent = self.resource.table.items[(f"EXEC#{self.parent}", "META")]
+        parent.update(job_id=str(uuid4()), job_version=7)
+        quote = self.flow.preview("customer-a", self.parent)
+        self.assertEqual((quote["job_id"], quote["job_version"]), (parent["job_id"], 7))
+        parent.update(job_version=8, version=parent["version"] + 1)
+        with self.assertRaisesRegex(DowngradeError, "PARENT_CHANGED"):
+            self.flow.confirm("customer-a", quote["quote_id"], NOTICE_VERSION, True)
+        self.assertIsNone(self.registry.execution(quote["execution_id"]))
+        quote = self.flow.preview("customer-a", self.parent)
+        execution_id = self.flow.confirm("customer-a", quote["quote_id"], NOTICE_VERSION, True)
+        child = self.registry.execution(execution_id)
+        self.assertEqual((child.job_id, child.job_version), (parent["job_id"], 8))
+
+    def test_legacy_execution_without_job_fields_remains_readable(self):
+        parent = self.resource.table.items[(f"EXEC#{self.parent}", "META")]
+        parent.pop("job_id")
+        parent.pop("job_version")
+        execution = self.registry.execution(self.parent)
+        self.assertIsNone(execution.job_id)
+        self.assertIsNone(execution.job_version)
+
     async def test_routes_require_mtls_and_explicit_boolean(self):
         app.state.mtls_listener = True
         app.state.gateway_service = GatewayService(self.registry)

@@ -52,6 +52,8 @@ class Execution:
     external_transfer_consent_id: str | None = None
     downgrade_consent_id: str | None = None
     parent_execution_id: str | None = None
+    job_id: str | None = None
+    job_version: int | None = None
 
 
 @dataclass(frozen=True)

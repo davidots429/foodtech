@@ -165,6 +165,7 @@ class DynamoRegistry:
                 consent.tenant_id != execution.tenant_id or consent.execution_id != execution.execution_id or \
                 consent.parent_execution_id != execution.parent_execution_id or \
                 quote.get("parent_execution_id") != execution.parent_execution_id or \
+                quote.get("job_id") != execution.job_id or quote.get("job_version") != execution.job_version or \
                 not execution.parent_execution_id or execution.parent_execution_id == execution.execution_id or \
                 consent.model_id != execution.model_id or quote.get("model_id") != execution.model_id or \
                 execution.feature != Feature.RECIPE_CORRECTION or execution.downgrade_consent_id != consent.consent_id or \
@@ -234,7 +235,10 @@ class DynamoRegistry:
         item = self._get("EXEC", execution_id)
         if not item:
             return None
-        fields = {name: item[name] for name in Execution.__dataclass_fields__}
+        fields = {name: item.get(name) if name in {"job_id", "job_version"} else item[name]
+                  for name in Execution.__dataclass_fields__}
+        if fields["job_version"] is not None:
+            fields["job_version"] = int(fields["job_version"])
         fields["feature"] = Feature(fields["feature"])
         return Execution(**fields)
 
