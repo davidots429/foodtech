@@ -16,6 +16,7 @@ from .source_revision import read_source_revision
 def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived: dict | None) -> dict:
     usable = bool(pointer and pointer.get("usable") is True and not job.get("evaluation_blocked", True)
                   and job.get("safety_status") == "PASSED"
+                  and (job.get("menu") != "JEYUK" or job.get("jeyuk_feed_safety_aligned") is True)
                   and pointer.get("safety_version") == job.get("safety_version")
                   and assessment and assessment.get("version") == pointer.get("version")
                   and pointer.get("assessment_sk") == assessment.get("sk")
@@ -139,6 +140,7 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
 
 def _comparison_usable(job: dict | None, pointer: dict | None, record: dict, role: str) -> bool:
     return bool(job and pointer and job.get("status") == "COMPLETED" and job.get("safety_status") == "PASSED" and
+                (job.get("menu") != "JEYUK" or job.get("jeyuk_feed_safety_aligned") is True) and
                 not job.get("evaluation_blocked", True) and pointer.get("usable") is True and
                 type(job.get("version")) is int and job["version"] > 0 and
                 type(job.get("safety_version")) is int and job["safety_version"] > 0 and

@@ -1,4 +1,4 @@
-"""Opt-in Jeyuk assessment check against the development cooking table."""
+"""Opt-in assessment storage check; feed/source alignment is stubbed, not verified here."""
 
 import asyncio
 import json
@@ -59,6 +59,7 @@ async def run() -> None:
     try:
         with patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false"}), \
              patch.object(cooking, "_session", side_effect=session), \
+             patch.object(cooking, "_jeyuk_feed_alignment", return_value=True), \
              patch.object(cooking, "get_cooking_store", return_value=store):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
                 job = await post(client, "/api/customer/cooking-jobs", {

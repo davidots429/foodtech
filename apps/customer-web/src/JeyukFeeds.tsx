@@ -32,7 +32,9 @@ export function JeyukFeeds({ job, csrf, onSaved }: { job: CookingJob; csrf: stri
     finally { setBusy(false); }
   }
   return <section className="binding-box"><h4>재료 투입과 배출</h4>
-    <p className="small">합성 시연 기록입니다. 수집 데이터와의 일치 여부는 별도로 확인해야 합니다.</p>
+    <p className="small">합성 시연 기록입니다. 안전 확인 시 마지막 채소·소스 투입과 수집 표본의 시각을 대조합니다.</p>
+    {job.jeyuk_feed_safety_aligned === true ? <p className="small">재료 투입과 수집 안전 표본의 시각이 일치합니다.</p>
+      : <p className="small">재료 투입과 수집 안전 표본의 일치가 아직 확인되지 않았습니다.</p>}
     {Object.entries(names).map(([key, label]) => {
       const feed = job.jeyuk_feeds?.[key.toUpperCase()];
       return <p className="small" key={key}>{label}: {feed ? `${displayTime(feed.started_at)} ~ ${displayTime(feed.completed_at)} · ${feed.mass_kg}kg` : "미기록"}</p>;

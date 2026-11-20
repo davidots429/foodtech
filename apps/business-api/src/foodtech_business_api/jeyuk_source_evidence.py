@@ -14,6 +14,62 @@ from foodtech_contracts.jeyuk_safety import JeyukSafetyMonitor, RULE_VERSION as 
 MAX_SECONDS = max(profile.time_bands[-1] for profile in PROFILES.values())
 
 
+def feed_safety_alignment(job: dict, assessments: list[dict], raws: list[dict]) -> bool:
+    """Verify the safety hold follows the declared final feed on the bound synthetic timeline."""
+    try:
+        feeds = job["jeyuk_feeds"]
+        if set(feeds) != {"MEAT", "VEGETABLE", "SAUCE"} or job.get("jeyuk_feed_mass_status") != "MATCHED":
+            return False
+        parse = lambda value: datetime.fromisoformat(value.replace("Z", "+00:00"))
+        placed = parse(job["actual_placed_at"])
+        lifted = parse(job["actual_lifted_at"])
+        if (placed.utcoffset() is None or lifted.utcoffset() is None or lifted <= placed or
+                parse(feeds["MEAT"]["completed_at"]) != placed):
+            return False
+        final_feed = max(parse(feeds[name]["completed_at"]) for name in ("VEGETABLE", "SAUCE"))
+        if final_feed.utcoffset() is None:
+            return False
+        binding = job["source_binding"]
+        batch = binding["batch_id"]
+        process = job["process_assessment"]
+        count = int(process["second"])
+        if not 1 <= count <= MAX_SECONDS or len(raws) != count or len(assessments) != count:
+            return False
+        if process.get("source_assessment_pk") != f"JEYUK#{batch}" or process.get("source_assessment_sk") != f"ASSESSMENT#{count:06d}":
+            return False
+        monitor = JeyukSafetyMonitor()
+        marker = None
+        for second, (assessment, raw) in enumerate(zip(assessments, raws), 1):
+            if (raw.get("pk") != f"JEYUK#{batch}" or raw.get("sk") != f"RAW#{second:06d}" or
+                assessment.get("pk") != raw["pk"] or assessment.get("sk") != f"ASSESSMENT#{second:06d}" or
+                assessment.get("raw_sk") != raw["sk"]):
+                return False
+            sample = decode_jeyuk_mock_sample(raw["raw"])
+            if (sample.fixture_id != batch or sample.second != second or sample.profile != job["jeyuk_size_profile"] or
+                sample.actual_load_kg != Decimal(str(job["actual_load_kg"])) or
+                sample.observed_at != placed + timedelta(seconds=second) or sample.mixture_celsius is None):
+                return False
+            reading = monitor.observe(second, mixture_celsius=sample.mixture_celsius,
+                calibration_status=sample.calibration_status, safety_sensor_position=sample.safety_sensor_position,
+                last_ingredient_addition_completed=sample.last_ingredient_addition_completed)
+            if sample.last_ingredient_addition_completed:
+                marker = sample.observed_at
+            if (assessment.get("auto_safety_status") != reading.status or
+                assessment.get("mixture_hold_seconds") != reading.hold_seconds or
+                assessment.get("last_addition_second") != reading.last_addition_second or
+                assessment.get("safety_passed_at_second") != reading.passed_at_second or
+                assessment.get("safety_rule_version") != SAFETY_RULE_VERSION):
+                return False
+        return bool(marker and sample.observed_at <= lifted and
+                    timedelta(0) <= marker - final_feed <= timedelta(seconds=1) and
+                    reading.status == "PASSED" and reading.hold_seconds >= 60 and
+                    job.get("auto_safety_status") == reading.status and
+                    job.get("mixture_hold_seconds") == reading.hold_seconds and
+                    job.get("safety_passed_at_second") == reading.passed_at_second)
+    except (AttributeError, KeyError, TypeError, ValueError, InvalidOperation, OverflowError):
+        return False
+
+
 def read_source_records(table_name: str, batch_id: str, last_second: int) -> tuple[list[dict], list[dict]]:
     if not 1 <= last_second <= MAX_SECONDS:
         raise ValueError("Jeyuk source range exceeds the supported profile")

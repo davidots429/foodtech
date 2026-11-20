@@ -228,7 +228,7 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
                 job = await self.bind(job, f"jeyuk-{size}-safety-v1")
                 pk = cooking._pk("jeyuk-customer", job["job_id"])
                 self.store.items[(pk, "META")].update(status="COMPLETED", safety_status="PASSED",
-                                                       evaluation_blocked=False)
+                                                       evaluation_blocked=False, jeyuk_feed_safety_aligned=True)
                 assessment = {"expected_version": job["version"], "expected_current_version": 0,
                     "kind": "INITIAL", "scores": {item: 4 for item in cooking.SCORE_ITEMS},
                     "observations": {item: "합성 관찰" for item in cooking.SCORE_ITEMS},
@@ -314,8 +314,12 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.json()["safety_status"], "INCOMPLETE")
         self.assertTrue(first.json()["evaluation_blocked"])
         self.store.items[(pk, "META")]["auto_safety_status"] = "PASSED"
-        second = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
-                                        json=body(first.json()["version"], "REVALIDATION"))
+        unmatched = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
+                                           json=body(first.json()["version"], "REVALIDATION"))
+        self.assertEqual(unmatched.json()["safety_status"], "INCOMPLETE")
+        with patch.object(cooking, "_jeyuk_feed_alignment", return_value=True):
+            second = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
+                                            json=body(unmatched.json()["version"], "REVALIDATION"))
         self.assertEqual(second.json()["safety_status"], "PASSED")
         self.assertFalse(second.json()["evaluation_blocked"])
         failed = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
@@ -323,7 +327,7 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed.json()["safety_status"], "FAILED")
         self.assertTrue(failed.json()["evaluation_blocked"])
         events = (await self.client.get(path + "/events")).json()
-        self.assertEqual(len([event for event in events if event["trigger"] == "JEYUK_DISCHARGE_CHECK"]), 3)
+        self.assertEqual(len([event for event in events if event["trigger"] == "JEYUK_DISCHARGE_CHECK"]), 4)
 
     async def test_discharge_missing_invalid_and_ordered_samples(self):
         job = await self.create()
@@ -365,14 +369,20 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         blocked = await self.client.post(path + "/assessments", headers=CSRF,
                                          json=assessment(job["version"]))
         self.assertEqual(blocked.status_code, 409)
+        self.store.items[(pk, "META")].update(safety_status="PASSED", evaluation_blocked=False)
+        legacy = await self.client.post(path + "/assessments", headers=CSRF,
+                                        json=assessment(job["version"]))
+        self.assertEqual(legacy.status_code, 409)
+        self.store.items[(pk, "META")].update(safety_status="NOT_MEASURED", evaluation_blocked=True)
         samples = [{"phase": phase, "probe_id": f"probe-{index}",
                     "meat_sample_id": f"meat-{index}", "thickest_or_clumped_part": True,
                     "sampled_at": f"2026-01-01T00:00:0{index}Z",
                     "calibration_status": "OK", "celsius": 75}
                    for index, phase in enumerate(("EARLY", "MIDDLE", "LATE"), 1)]
-        safe = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
-                                      json={"expected_version": job["version"], "kind": "INITIAL",
-                                            "samples": samples})
+        with patch.object(cooking, "_jeyuk_feed_alignment", return_value=True):
+            safe = await self.client.post(path + "/safety/discharge-check", headers=CSRF,
+                                          json={"expected_version": job["version"], "kind": "INITIAL",
+                                                "samples": samples})
         self.assertEqual(safe.json()["safety_status"], "PASSED")
         wrong_scale = assessment(safe.json()["version"])
         wrong_scale["scale_version"] = "tonkatsu-common-v1"
@@ -408,7 +418,7 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         job = await self.create("2.5")
         pk = cooking._pk("jeyuk-customer", job["job_id"])
         self.store.items[(pk, "META")].update(status="COMPLETED", safety_status="PASSED",
-                                                evaluation_blocked=False, safety_version=1)
+                                                evaluation_blocked=False, safety_version=1, jeyuk_feed_safety_aligned=True)
         path = f"/api/customer/cooking-jobs/{job['job_id']}/assessments"
         body = {"expected_version": job["version"], "expected_current_version": 0,
                 "kind": "INITIAL", "scores": {item: 4 for item in cooking.SCORE_ITEMS},
