@@ -55,6 +55,9 @@ class RecipeRequestTests(unittest.IsolatedAsyncioTestCase):
         from foodtech_business_api.recommendation_evidence import read_evidence
         read_evidence.return_value["completeness"] = "INSUFFICIENT"
         self.assertEqual((await self.client.post(path, headers=self.headers, json=self.body)).status_code, 409)
+        read_evidence.return_value["completeness"] = "NOT_ASSESSED"
+        read_evidence.return_value["source_revision_status"] = "CHANGED"
+        self.assertEqual((await self.client.post(path, headers=self.headers, json=self.body)).status_code, 409)
         ai._recipe_gateway.assert_not_awaited()
 
     async def test_preview_and_confirm_forward_binding_and_strict_acknowledgement(self):

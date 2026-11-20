@@ -3,8 +3,12 @@
 The result describes recorded facts, not evidence completeness or authorization
 to call a model. Free-text notes, ownership IDs and raw probe values stay out.
 """
+import os
+
+from foodtech_contracts import stream_binding_key
 from .cooking import _read, _store_call
 from .recommendation_completeness import preliminary
+from .source_revision import read_source_revision
 
 
 def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived: dict | None) -> dict:
@@ -111,10 +115,40 @@ async def read_evidence(request, job_id: str) -> dict:
     assessment = None
     if pointer and type(pointer.get("version")) is int and pointer["version"] > 0:
         assessment = await _store_call(store, store.assessment, pk, pointer["version"])
+    source_status = "NOT_TRACKED"
+    source_pk = None
+    first_revision = None
+    derived_revision = derived.get("source_revision") if derived else None
+    table = os.getenv("FOODTECH_DATA_TABLE", "")
+    if type(derived_revision) is int and derived_revision > 0:
+        binding = job.get("source_binding")
+        try:
+            expected = stream_binding_key(**binding) if isinstance(binding, dict) else None
+        except (TypeError, ValueError, KeyError):
+            expected = None
+        if not expected or derived.get("source_stream_pk") != expected:
+            source_status = "INCONSISTENT"
+        elif not table:
+            source_status = "NOT_CONFIGURED"
+        else:
+            source_pk = expected
+            try:
+                first_revision = await read_source_revision(table, source_pk)
+            except Exception as exc:
+                raise HTTPException(503, "원천 버전을 조회하지 못했습니다.") from exc
     current_job, current_pointer = await _store_call(store, store.read, pk)
     last_process_pointer = await _store_call(store, store.process_pointer, pk)
+    if source_pk:
+        try:
+            last_revision = await read_source_revision(table, source_pk)
+        except Exception as exc:
+            raise HTTPException(503, "원천 버전을 조회하지 못했습니다.") from exc
+        if first_revision != last_revision:
+            raise HTTPException(409, "원천 자료가 조회 중 변경되었습니다. 다시 조회해 주세요.")
+        source_status = ("NOT_TRACKED" if last_revision is None else
+                         "MATCHED_AT_READ" if last_revision == derived_revision else "CHANGED")
     if not current_job or current_job.get("version") != job.get("version") or current_pointer != pointer or \
             first_process_pointer != last_process_pointer or \
             (first_process_pointer and (not derived or derived.get("sk") != first_process_pointer.get("result_sk"))):
         raise HTTPException(409, "조리 근거가 변경되었습니다. 다시 조회해 주세요.")
-    return _snapshot(job, pointer, assessment, derived)
+    return {**_snapshot(job, pointer, assessment, derived), "source_revision_status": source_status}

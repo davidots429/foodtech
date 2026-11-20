@@ -1,7 +1,7 @@
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import httpx
@@ -9,6 +9,7 @@ import httpx
 from foodtech_business_api import cooking
 from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app
+from foodtech_contracts import stream_binding_key
 
 
 class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
@@ -85,6 +86,30 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["recommendation_execution_available"])
         self.store.items[(self.pk, "META")]["version"] = 8
         self.assertFalse((await self.client.get(path)).json()["collection_snapshot_matches_receipt"])
+
+    async def test_revision_freshness_checks_owned_bound_stream_and_detects_races(self):
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001", "batch_id": "test"}
+        self.store.items[(self.pk, "META")]["source_binding"] = binding
+        derived = self.store.items[(self.pk, "RESTATEMENT#RESULT#test")]
+        derived.update(source_stream_pk=stream_binding_key(**binding), source_revision=4)
+        path = f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence"
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
+             patch("foodtech_business_api.recommendation_evidence.read_source_revision", new_callable=AsyncMock) as read:
+            read.side_effect = [4, 4]
+            result = await self.client.get(path)
+            self.assertEqual(result.json()["source_revision_status"], "MATCHED_AT_READ")
+            self.assertEqual(read.await_args.args, ("test-source", stream_binding_key(**binding)))
+            read.side_effect = [5, 5]
+            self.assertEqual((await self.client.get(path)).json()["source_revision_status"], "CHANGED")
+            read.side_effect = [4, 5]
+            self.assertEqual((await self.client.get(path)).status_code, 409)
+            read.reset_mock(side_effect=True)
+            derived["source_stream_pk"] = "STREAM#wrong"
+            self.assertEqual((await self.client.get(path)).json()["source_revision_status"], "INCONSISTENT")
+            read.assert_not_awaited()
+        derived["source_stream_pk"] = stream_binding_key(**binding)
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": ""}):
+            self.assertEqual((await self.client.get(path)).json()["source_revision_status"], "NOT_CONFIGURED")
 
     async def test_concurrent_job_change_rejects_mixed_snapshot(self):
         original = self.store.latest_process_result

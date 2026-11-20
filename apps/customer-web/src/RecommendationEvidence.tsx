@@ -9,6 +9,7 @@ type Evidence = {
   completeness: "INSUFFICIENT" | "NOT_ASSESSED";
   completeness_reasons: string[];
   collection_snapshot_matches_receipt: boolean;
+  source_revision_status: "NOT_TRACKED" | "NOT_CONFIGURED" | "INCONSISTENT" | "MATCHED_AT_READ" | "CHANGED";
 };
 
 const completenessLabels: Record<string, string> = {
@@ -90,6 +91,13 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
       {value.process_stale && <p className="warning">공정 재계산 이후 작업이 변경되어 다시 확인해야 합니다.</p>}
       {value.collection_snapshot_matches_receipt && <p>저장된 수집 원본 스냅샷이 수집 종료 기록과 일치합니다.
         전체 원천 완전성과 이후 추가 데이터는 별도로 확인해야 합니다.</p>}
+      {value.source_revision_status === "MATCHED_AT_READ" && <p>조회 시점의 수집 버전이 공정 재계산 버전과 일치합니다.
+        이후 변경과 구버전 수집기의 쓰기는 별도로 확인해야 합니다.</p>}
+      {value.source_revision_status === "CHANGED" && <p className="warning">공정 재계산 후 수집 원본이 변경되었습니다.
+        새 재계산을 확인해 주세요.</p>}
+      {value.source_revision_status === "INCONSISTENT" && <p className="warning">원천 연결과 재계산 대상이 일치하지 않습니다.</p>}
+      {value.source_revision_status === "NOT_CONFIGURED" && <p>원천 변경 확인을 위한 저장소가 설정되지 않았습니다.</p>}
+      {value.source_revision_status === "NOT_TRACKED" && <p>원천 변경을 확인할 수 있는 버전 기록이 없습니다.</p>}
       <p>입력 완전성: {value.completeness === "INSUFFICIENT" ? "필수 근거 부족" : "전체 미평가"}</p>
       <ul>{value.completeness_reasons.map(reason => <li key={reason}>{completenessLabels[reason] ?? reason}</li>)}</ul>
       {value.unverified_categories.length > 0 && <><p>아직 확인하지 못한 범주</p>
