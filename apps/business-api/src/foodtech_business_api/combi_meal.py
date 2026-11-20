@@ -141,6 +141,13 @@ class CombiSourceImport(BaseModel):
     records: list[str] = Field(min_length=3, max_length=5000)
 
 
+class CombiLiveBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    expected_cursor: int = Field(ge=0, le=4999, strict=True)
+    records: list[str] = Field(min_length=1, max_length=5)
+
+
 class CombiQualityAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
@@ -161,6 +168,75 @@ def _pk(subject: str, meal_id: str) -> str:
     return f"SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}"
 
 
+@router.get("/{meal_id}/source-live")
+async def get_combi_live(meal_id: UUID, request: Request) -> dict:
+    session, store = await _context(request)
+    pk = _pk(session.subject, str(meal_id))
+    meal, _ = await _store_call(store, store.read, pk)
+    if not meal:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    state = await _store_call(store, store.read_meal_live, pk)
+    if not state:
+        return {"state": "NOT_STARTED", "count": 0}
+    return {"state": "COMPLETED" if meal.get("source") else "COLLECTING",
+            "count": int(state["count"]), "device_id": state["device_id"],
+            "latest": state["latest"], "updated_at": state["updated_at"], "provenance": "SYNTHETIC"}
+
+
+@router.post("/{meal_id}/source-live")
+async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatch) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    meal, _ = await _store_call(store, store.read, pk)
+    if not meal:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    encoded = [line.encode("utf-8") for line in body.records]
+    if any(len(line) > 2048 for line in encoded) or body.expected_cursor + len(encoded) > 5000:
+        raise HTTPException(413, "합성 원천 자료의 크기 제한을 초과했습니다.")
+    digest = hashlib.sha256(b"\n".join(encoded) + b"\n").hexdigest()
+    state = await _store_call(store, store.read_meal_live, pk)
+    count = int((state or {}).get("count", 0))
+    if body.expected_cursor < count:
+        prior = await _store_call(store, store.read_meal_live_chunk, pk, body.expected_cursor)
+        if prior and prior.get("sha256") == digest and prior.get("device_id") == body.device_id:
+            return {"next_cursor": body.expected_cursor + len(encoded), "duplicate": True}
+        raise HTTPException(409, "이전 원천 자료와 내용이 다릅니다.")
+    if sum(len(line) + 1 for line in encoded) + int((state or {}).get("byte_count", 0)) > 2_500_000:
+        raise HTTPException(413, "합성 원천 자료의 크기 제한을 초과했습니다.")
+    if body.expected_cursor != count or meal.get("source") or (state and state["device_id"] != body.device_id):
+        raise HTTPException(409, "수집 순서 또는 배치 상태가 변경되었습니다.")
+    jobs = {"RICE": meal["rice_cooking_job_id"], "TRANSITION": meal["mode_transition_id"],
+            "MACKEREL": meal["mackerel_cooking_job_id"]}
+    validator = CombiStreamValidator(str(meal_id), body.device_id, jobs)
+    if state:
+        validator.sequence = count
+        validator.phase = state["phase"]
+        validator.phase_second = int(state["phase_second"])
+        validator.previous_time = datetime.fromisoformat(state["previous_time"].replace("Z", "+00:00"))
+        validator.schema_version = state["schema_version"]
+    try:
+        for line in body.records:
+            record = validator.accept(line)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(422, "원천 표본이 배치 계약과 일치하지 않습니다.") from exc
+    now = _now()
+    latest = {"phase": record["phase"], "phase_second": record["phaseSecond"],
+              "occurred_at": record["occurredAt"], "chamber_celsius": str(record["chamberCelsius"]),
+              "door_state": record["doorState"], "fan_level": record["fanLevel"]}
+    next_state = {"sk": "META", "count": count + len(encoded), "device_id": body.device_id,
+                  "phase": validator.phase, "phase_second": validator.phase_second,
+                  "previous_time": validator.previous_time.isoformat(), "schema_version": validator.schema_version,
+                  "latest": latest, "updated_at": now,
+                  "byte_count": int((state or {}).get("byte_count", 0)) + sum(len(line) + 1 for line in encoded)}
+    chunk = {"sk": f"CHUNK#{count:06d}", "device_id": body.device_id,
+             "records": body.records, "sha256": digest}
+    try:
+        await _store_call(store, store.append_meal_live, pk, count, next_state, chunk)
+    except Conflict as exc:
+        raise HTTPException(409, "수집 순서 또는 배치 상태가 변경되었습니다.") from exc
+    return {"next_cursor": next_state["count"], "duplicate": False}
+
+
 @router.post("/{meal_id}/source-observations", status_code=201)
 async def import_combi_source(meal_id: UUID, request: Request, body: CombiSourceImport) -> dict:
     session, store = await _context(request, write=True)
@@ -169,8 +245,8 @@ async def import_combi_source(meal_id: UUID, request: Request, body: CombiSource
     old = rows.get("META")
     if not old:
         raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
-    if int(old["version"]) != body.expected_version or old["status"] != "PREPARING_RICE" or old.get("source"):
-        raise HTTPException(409, "원천 자료는 준비 중인 배치에 한 번만 연결할 수 있습니다.")
+    if int(old["version"]) != body.expected_version or old.get("source"):
+        raise HTTPException(409, "원천 자료는 같은 버전의 배치에 한 번만 연결할 수 있습니다.")
     encoded = [line.encode("utf-8") for line in body.records]
     if any(len(line) > 2048 for line in encoded) or sum(len(line) + 1 for line in encoded) > 2_500_000:
         raise HTTPException(413, "합성 원천 자료의 크기 제한을 초과했습니다.")
@@ -189,6 +265,21 @@ async def import_combi_source(meal_id: UUID, request: Request, body: CombiSource
         raise HTTPException(422, "원천 표본이 배치 계약과 일치하지 않습니다.") from exc
     if any(count == 0 for count in counts.values()):
         raise HTTPException(422, "밥·모드 전환·고등어 표본이 모두 필요합니다.")
+    live = await _store_call(store, store.read_meal_live, pk)
+    live_count = int(live["count"]) if live else None
+    if live:
+        if live["device_id"] != body.device_id or live_count != len(body.records):
+            raise HTTPException(409, "수집 중 자료와 완료 자료가 일치하지 않습니다.")
+        cursor = 0
+        stored = await _store_call(store, store.read_meal_live_chunks, pk)
+        for prior in stored:
+            part = prior.get("records") or []
+            if (prior.get("sk") != f"CHUNK#{cursor:06d}" or not part or
+                    part != body.records[cursor:cursor + len(part)]):
+                raise HTTPException(409, "수집 중 자료와 완료 자료가 일치하지 않습니다.")
+            cursor += len(part)
+        if cursor != live_count:
+            raise HTTPException(409, "수집 중 자료와 완료 자료가 일치하지 않습니다.")
     digest = hashlib.sha256(b"\n".join(encoded) + b"\n").hexdigest()
     chunks = [{"sk": f"RAW#{offset // 100:04d}", "first_sequence": offset + 1,
                "records": body.records[offset:offset + 100]} for offset in range(0, len(body.records), 100)]
@@ -205,7 +296,7 @@ async def import_combi_source(meal_id: UUID, request: Request, body: CombiSource
              "observed_at": now, "recorded_at": now, "actor": session.subject,
              "source_sha256": digest, "record_count": len(body.records)}
     try:
-        await _store_call(store, store.attach_meal_source, pk, body.expected_version, meta, event, chunks)
+        await _store_call(store, store.attach_meal_source, pk, body.expected_version, meta, event, chunks, live_count)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "event": event}

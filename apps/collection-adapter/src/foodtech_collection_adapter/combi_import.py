@@ -14,7 +14,7 @@ from .rest import RestMockClient
 
 
 async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str,
-                      device_id: str, csrf: str, *, timeout_seconds: float = 5100) -> dict:
+                      device_id: str, csrf: str, *, timeout_seconds: float = 5100, publish_live: bool = False) -> dict:
     """Read a complete Mock stream and submit it using the caller's customer session."""
     meal_id = str(UUID(meal_id))
     path = f"/api/customer/combi-meals/{meal_id}"
@@ -41,6 +41,7 @@ async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str
                 raise TimeoutError("Mock stream did not complete before the deadline")
             await asyncio.sleep(min(5, max(0, deadline - time.monotonic())))
             continue
+        pending = []
         for line in result.records:
             length = len(line.encode("utf-8"))
             size += length + 1
@@ -49,11 +50,33 @@ async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str
             item = validator.accept(line)
             counts[item["phase"]] += 1
             records.append(line)
+            pending.append(line)
+        if publish_live:
+            for offset in range(0, len(pending), 5):
+                chunk = pending[offset:offset + 5]
+                expected = cursor + offset
+                body = {"device_id": device_id, "expected_cursor": expected, "records": chunk}
+                for attempt in range(2):
+                    try:
+                        response = await api.post(path + "/source-live", headers={"X-CSRF-Token": csrf}, json=body)
+                        break
+                    except httpx.TransportError:
+                        if attempt:
+                            raise
+                response.raise_for_status()
+                if response.json().get("next_cursor") != expected + len(chunk):
+                    raise ValueError("live source cursor does not match submitted records")
         cursor = result.next_cursor
     if any(count == 0 for count in counts.values()):
         raise ValueError("all three phases must be present")
+    response = await api.get(path)
+    response.raise_for_status()
+    current = response.json()["meal"]
+    if (current["meal_batch_id"] != meal_id or current.get("source") or
+            any(current[key] != meal[key] for key in ("rice_cooking_job_id", "mode_transition_id", "mackerel_cooking_job_id"))):
+        raise ValueError("meal binding changed during source import")
     response = await api.post(path + "/source-observations", headers={"X-CSRF-Token": csrf},
-                              json={"expected_version": meal["version"], "device_id": device_id,
+                              json={"expected_version": current["version"], "device_id": device_id,
                                     "records": records})
     response.raise_for_status()
     return response.json()["meal"]["source"]
@@ -72,6 +95,7 @@ async def _main() -> None:
     parser = argparse.ArgumentParser(description="Import a synthetic combi stream into a customer meal")
     parser.add_argument("--meal-id", required=True)
     parser.add_argument("--device-id", required=True)
+    parser.add_argument("--live", action="store_true", help="publish each received window for customer observation")
     args = parser.parse_args()
     api_url = _api_url(os.environ["FOODTECH_BUSINESS_API_URL"])
     session = os.environ["FOODTECH_CUSTOMER_SESSION"]
@@ -84,7 +108,7 @@ async def _main() -> None:
         async with httpx.AsyncClient(base_url=api_url, cookies={"ft_session": session}, timeout=30) as api:
             me = await api.get("/api/customer/me")
             me.raise_for_status()
-            source = await import_meal(mock, api, args.meal_id, args.device_id, me.json()["csrf"])
+            source = await import_meal(mock, api, args.meal_id, args.device_id, me.json()["csrf"], publish_live=args.live)
             print(f"Imported {source['record_count']} synthetic records; SHA-256: {source['raw_sha256']}")
     finally:
         mock.close()

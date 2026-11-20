@@ -56,6 +56,18 @@ class ImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source["record_count"], 3)
         self.assertEqual(sleep.await_count, 2)
 
+    async def test_finalizes_using_latest_meal_version(self):
+        mock = Mock()
+        def poll(cursor):
+            if cursor == 0:
+                return PollResult(self.records, 3)
+            self.meal["version"] = 2
+            self.meal["status"] = "RICE_COOKING"
+            return PollResult((), 3)
+        mock.poll.side_effect = poll
+        await import_meal(mock, self.api, MEAL, "combi-1", "csrf")
+        self.assertEqual(json.loads(self.posts[-1].content)["expected_version"], 2)
+
     async def test_pending_stream_timeout_never_submits_partial_records(self):
         mock = Mock()
         mock.poll.side_effect = itertools.chain([PollResult(self.records[:1], 1, False)],
