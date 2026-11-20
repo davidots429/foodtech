@@ -36,6 +36,13 @@ if (args.Length > 0 && args[0] == "simulate-combi")
                          Required(options, "aggregates"));
     return;
 }
+if (args.Length > 0 && args[0] == "bind-combi")
+{
+    CombiSimulation.Bind(Required(options, "fixture"), Required(options, "output"),
+        Required(options, "meal-id"), Required(options, "device-id"), Required(options, "rice-id"),
+        Required(options, "transition-id"), Required(options, "mackerel-id"), Required(options, "start-at"));
+    return;
+}
 var fixturePath = Required(options, "fixture");
 using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
 var root = fixture.RootElement;
