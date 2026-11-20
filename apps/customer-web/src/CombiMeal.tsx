@@ -1,17 +1,21 @@
 import { useRef, useState } from "react";
 import { api } from "./cookingApi";
+import { CombiQuality } from "./CombiQuality";
 
 type Meal = {
   meal: { meal_batch_id: string; status: string; equipment_size: string; version: number;
     source?: { device_id: string; record_count: number; raw_sha256: string; first_observed_at?: string;
       phase_counts: { RICE: number; TRANSITION: number; MACKEREL: number } } };
-  rice: { job_id: string; water_ratio_status: string; effective_water_ratio: string;
+  rice: { job_id: string; status: string; safety_status: string; quality_current?: { version: number;
+    quality_status: string; score_percent: string; quality_target: boolean };
+    water_ratio_status: string; effective_water_ratio: string;
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     monitored_process_assessment?: { status: string; humidity_value_source: string; reason_codes: string[] } };
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
     humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null };
-  mackerel: { job_id: string; safety_status: string; food_unloaded_at?: string;
+  mackerel: { job_id: string; status: string; safety_status: string; food_unloaded_at?: string;
+    quality_current?: { version: number; quality_status: string; score_percent: string; quality_target: boolean };
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     batch_representative_core_temperature?: string | null;
     monitored_process_assessment?: { status: string; recovered_at_second: number | null;
@@ -268,6 +272,11 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {meal.mackerel.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.mackerel.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
       {meal.mackerel.safety_status !== "NOT_MEASURED" && <p>고등어 합성 안전 표본: {meal.mackerel.safety_status}
         {meal.mackerel.batch_representative_core_temperature && <> · 최저 {meal.mackerel.batch_representative_core_temperature}°C</>}</p>}
+      {(["rice", "mackerel"] as const).map(menu => <CombiQuality key={`${meal.meal.meal_batch_id}-${menu}`}
+        menu={menu} mealId={meal.meal.meal_batch_id} version={meal.meal.version}
+        safety={meal[menu].safety_status} jobStatus={meal[menu].status} current={meal[menu].quality_current}
+        csrf={csrf} busy={busy} onBusy={setBusy} onUpdated={async () =>
+          setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`))} />)}
       <p>고등어 투입: {meal.transition.mackerel_load_allowed ? "허용" : "차단"}
         {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>
       <p>시간 판정은 전체 공정·안전 판정과 별도입니다. 화면의 전환 자료는 합성 표본입니다.</p>

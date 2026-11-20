@@ -266,6 +266,32 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.json()["step"]["process_status"], "NOT_MEASURED")
         self.assertEqual((await self.client.post(path + "/mackerel-safety", headers=headers,
                          json={**body, "expected_version": 12})).status_code, 409)
+        quality = {"expected_version": 12, "expected_current_version": 0, "kind": "INITIAL",
+                   "scores": {key: 4 for key in cooking.SCORE_ITEMS},
+                   "observations": {key: "합성 관찰 근거" for key in cooking.SCORE_ITEMS},
+                   "quality_decision": "QUALITY_PASSED", "planned_portions": 3, "actual_portions": 3}
+        blocked = await self.client.post(path + "/quality/rice", headers=headers, json=quality)
+        self.assertEqual(blocked.status_code, 409)
+        invalid = {**quality, "scores": {**quality["scores"], "texture": 2}}
+        self.assertEqual((await self.client.post(path + "/quality/mackerel", headers=headers,
+                                                json=invalid)).status_code, 422)
+        initial = await self.client.post(path + "/quality/mackerel", headers=headers, json=quality)
+        self.assertEqual(initial.status_code, 201, initial.text)
+        self.assertEqual((initial.json()["assessment"]["score_percent"],
+                          initial.json()["assessment"]["quality_target"]), ("80.00", True))
+        self.assertEqual(initial.json()["assessment"]["actual_mass_kg"], "0.39")
+        self.assertEqual((await self.client.post(path + "/quality/mackerel", headers=headers,
+                         json={**quality, "expected_version": 13})).status_code, 409)
+        revised = await self.client.post(path + "/quality/mackerel", headers=headers, json={
+            **quality, "expected_version": 13, "expected_current_version": 1, "kind": "REASSESSMENT",
+            "reason": "껍질 식감 재확인", "quality_decision": "QUALITY_FAILED",
+            "quality_reason_codes": ["SKIN_NOT_CRISP"]})
+        self.assertEqual(revised.status_code, 201, revised.text)
+        self.assertFalse(revised.json()["assessment"]["quality_passed"])
+        snapshot = (await self.client.get(path)).json()
+        self.assertEqual(snapshot["mackerel"]["quality_current"]["version"], 2)
+        quality_events = [event for event in snapshot["events"] if event["event"] == "MACKEREL_QUALITY_ASSESSED"]
+        self.assertEqual([event["assessment"]["version"] for event in quality_events], [1, 2])
 
     async def test_low_temperature_failure_and_expired_probe_incomplete(self):
         headers = {"X-CSRF-Token": "csrf"}
