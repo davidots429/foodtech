@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -11,6 +12,9 @@ from botocore.validate import validate_parameters
 from foodtech_ai_gateway.policy import Caller, Consent, Credential, Execution, Feature, Model, Tier
 from foodtech_ai_gateway.registry import DynamoRegistry
 from foodtech_ai_gateway.service import GatewayService
+from foodtech_ai_gateway.ollama import OllamaResult
+from foodtech_contracts.recommendation_guard import Evidence
+from foodtech_contracts.recommendation_output import TonkatsuBaseline
 
 
 NOW = datetime.now(timezone.utc)
@@ -95,6 +99,10 @@ class AtomicClient:
                         ":tenant" in values and item["tenant_id"] != values[":tenant"]
                     ):
                         raise TransactionCanceledException()
+                    if ":retry" in values and (item.get("retry_count", 0) != values[":retry"] - 1 or
+                            item.get("reserved_provider") != values[":provider"] or
+                            item.get("feature") != values[":feature"]):
+                        raise TransactionCanceledException()
                 elif key["pk"].startswith("QUOTE#"):
                     if item["state"] != values[":open"] or item["tenant_id"] != values[":tenant"] or \
                             item["expires"] <= values[":now"]:
@@ -104,16 +112,20 @@ class AtomicClient:
                         "TENANT#" in key["pk"] and item["calls_remaining"] < 1
                     ):
                         raise TransactionCanceledException()
+                elif "calls_remaining = calls_remaining - :one" in spec["UpdateExpression"] and item["calls_remaining"] < 1:
+                    raise TransactionCanceledException()
                 elif ":delta" in values and item["remaining_usd"] < values[":delta"]:
                     raise TransactionCanceledException()
-                updates.append((key, values))
+                updates.append((key, values, spec["UpdateExpression"]))
         # Validate every condition before mutating any item.
-        for key, values in updates:
+        for key, values, expression in updates:
             item = self.table.items[(key["pk"], key["sk"])]
             item["version"] += 1
             if key["pk"].startswith("EXEC#"):
                 item["state"] = values.get(":final", "RESERVED")
-                if ":provider" in values:
+                if ":retry" in values:
+                    item["retry_count"] = values[":retry"]
+                elif ":provider" in values:
                     item["reserved_provider"] = values[":provider"]
                 else:
                     item["actual_cost_usd"] = values[":actual"]
@@ -133,6 +145,8 @@ class AtomicClient:
                     item["remaining_usd"] += values[":refund"]
                 if "TENANT#" in key["pk"] and ":cost" in values:
                     item["calls_remaining"] -= 1
+                elif "calls_remaining = calls_remaining - :one" in expression:
+                    item["calls_remaining"] -= 1
         for value in puts:
             self.table.items[(value["pk"], value["sk"])] = value
 
@@ -151,6 +165,117 @@ class RegistryTests(unittest.TestCase):
         self.registry.create_limit("PROVIDER", "ollama", Decimal("1"))
         self.registry.create_limit("PROJECT", "GLOBAL", Decimal("1"))
         self.service = GatewayService(self.registry)
+
+    def recipe_execution(self):
+        self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
+                                         True, NOW, NOW))
+        self.registry.local_models.add("synthetic-tier1")
+        self.registry.create_execution(Execution("recipe-1", "tenant-a", Feature.RECIPE_CORRECTION,
+                                                  "synthetic-tier1", None, "SYNTHETIC", Decimal("0")))
+        self.resource.table.items[("LIMIT#2026-11#TENANT#tenant-a", "META")]["calls_remaining"] = 3
+        self.assertTrue(self.service.prepare(Caller("business-api", "tenant-a"), "recipe-1").allowed)
+
+    def test_local_recipe_retries_debit_each_call_once_in_order(self):
+        self.recipe_execution()
+        caller = Caller("business-api", "tenant-a")
+        self.assertFalse(self.service.prepare_local_recipe_retry(caller, "recipe-1", 3).allowed)
+        self.assertTrue(self.service.prepare_local_recipe_retry(caller, "recipe-1", 2).allowed)
+        self.assertFalse(self.service.prepare_local_recipe_retry(caller, "recipe-1", 2).allowed)
+        self.assertTrue(self.service.prepare_local_recipe_retry(caller, "recipe-1", 3).allowed)
+        self.assertEqual(self.registry.budget("tenant-a", "ollama").calls_remaining, 0)
+        self.assertEqual(self.resource.table.items[("EXEC#recipe-1", "CALL#2")]["state"], "RESERVED")
+        self.assertEqual(self.resource.table.items[("EXEC#recipe-1", "CALL#3")]["attempt"], 3)
+        shape = get_session().get_service_model("dynamodb").operation_model("TransactWriteItems").input_shape
+        validate_parameters({"TransactItems": self.client.calls[-1],
+                             "ClientRequestToken": "11111111-1111-1111-1111-111111111111"}, shape)
+
+    def test_retry_requires_active_authorization_and_atomic_limit(self):
+        self.recipe_execution()
+        caller = Caller("business-api", "tenant-a")
+        self.assertFalse(self.service.prepare_local_recipe_retry(Caller("business-api", "tenant-b"),
+                                                                "recipe-1", 2).allowed)
+        model = self.resource.table.items[("MODEL#synthetic-tier1", "META")]
+        model["state"] = "INACTIVE"
+        model["version"] += 1
+        self.assertFalse(self.service.prepare_local_recipe_retry(caller, "recipe-1", 2).allowed)
+        model["state"] = "ACTIVE"
+        model["version"] += 1
+        tenant = self.resource.table.items[("LIMIT#2026-11#TENANT#tenant-a", "META")]
+        self.client.before_commit = lambda: tenant.update({"calls_remaining": 0, "version": tenant["version"] + 1})
+        self.assertFalse(self.service.prepare_local_recipe_retry(caller, "recipe-1", 2).allowed)
+        self.assertNotIn(("EXEC#recipe-1", "CALL#2"), self.resource.table.items)
+
+    def test_local_recipe_executes_retries_and_stores_only_validated_result(self):
+        self.recipe_execution()
+        # Use a fresh pending execution; recipe_execution already reserved recipe-1.
+        self.registry.create_execution(Execution("recipe-2", "tenant-a", Feature.RECIPE_CORRECTION,
+                                                  "synthetic-tier1", None, "SYNTHETIC", Decimal("0")))
+        self.resource.table.items[("LIMIT#2026-11#TENANT#tenant-a", "META")]["calls_remaining"] = 3
+        class FakeOllama:
+            calls = 0
+            async def structured_chat(self, model, messages, schema):
+                self.calls += 1
+                text = "invalid secret" if self.calls < 3 else '{"temperature_c":170,"duration_seconds":300}'
+                return OllamaResult(text, 1, 1)
+        model = FakeOllama()
+        outcome = asyncio.run(self.service.execute_local_recipe(Caller("business-api", "tenant-a"), "recipe-2",
+            evidence=Evidence("COMPLETE", "PASSED", True, False), baseline=TonkatsuBaseline("STANDARD", 300),
+            context={"menu": "synthetic"}, ollama=model))
+        self.assertEqual((outcome.state, model.calls), ("SUCCEEDED", 3))
+        self.assertIn('"status":"NEEDS_REVIEW"', outcome.response_text)
+        self.assertNotIn("invalid secret", str(self.resource.table.items))
+        self.assertEqual(self.registry.budget("tenant-a", "ollama").calls_remaining, 0)
+
+    def test_recipe_tier_and_missing_evidence_do_not_invoke_model(self):
+        self.registry.create_execution(Execution("recipe-3", "tenant-a", Feature.RECIPE_CORRECTION,
+                                                  "local-model", None, "SYNTHETIC", Decimal("0")))
+        class NeverOllama:
+            async def structured_chat(self, *args):
+                raise AssertionError("model must not be called")
+        args = dict(baseline=TonkatsuBaseline("STANDARD", 300), context={}, ollama=NeverOllama())
+        caller = Caller("business-api", "tenant-a")
+        denied = asyncio.run(self.service.execute_local_recipe(caller, "recipe-3",
+            evidence=Evidence("COMPLETE", "PASSED", True, False), **args))
+        self.assertEqual((denied.state, denied.error_code), ("DENIED", "TIER_NOT_ALLOWED"))
+        missing = asyncio.run(self.service.execute_local_recipe(caller, "recipe-3",
+            evidence=Evidence("UNKNOWN", "NOT_MEASURED", None, None), **args))
+        self.assertEqual(missing.state, "INDETERMINATE")
+        self.assertEqual(self.registry.execution_state("recipe-3"), "PENDING")
+
+    def test_general_execution_paths_cannot_bypass_recipe_output_guard(self):
+        self.registry.create_execution(Execution("recipe-guard", "tenant-a", Feature.RECIPE_CORRECTION,
+                                                  "local-model", None, "SYNTHETIC", Decimal("0")))
+        caller = Caller("business-api", "tenant-a")
+        result = asyncio.run(self.service.execute_local(caller, "recipe-guard", "prompt", None))
+        self.assertEqual((result.state, result.error_code), ("DENIED", "STRUCTURED_RECIPE_REQUIRED"))
+        external = GatewayService(self.registry, vault=object(), provider=object())
+        result = asyncio.run(external.execute_external(caller, "recipe-guard", "prompt"))
+        self.assertEqual((result.state, result.error_code), ("DENIED", "STRUCTURED_RECIPE_REQUIRED"))
+        self.assertEqual(self.registry.execution_state("recipe-guard"), "PENDING")
+
+    def test_retry_limit_and_safety_rejection_never_return_raw_output(self):
+        self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
+                                         True, NOW, NOW))
+        self.registry.local_models.add("synthetic-tier1")
+        class FakeOllama:
+            def __init__(self, output): self.output, self.calls = output, 0
+            async def structured_chat(self, *args):
+                self.calls += 1
+                return OllamaResult(self.output, 1, 1)
+        caller = Caller("business-api", "tenant-a")
+        args = dict(evidence=Evidence("COMPLETE", "PASSED", True, False),
+                    baseline=TonkatsuBaseline("STANDARD", 300), context={})
+        for execution_id, raw, expected in (("limited", "secret-invalid", "LIMIT_ACTION_REQUIRED"),
+                ("unsafe", '{"temperature_c":300,"duration_seconds":300}', "LIMIT_CHECK_FAILED")):
+            self.registry.create_execution(Execution(execution_id, "tenant-a", Feature.RECIPE_CORRECTION,
+                                                       "synthetic-tier1", None, "SYNTHETIC", Decimal("0")))
+            tenant = self.resource.table.items[("LIMIT#2026-11#TENANT#tenant-a", "META")]
+            tenant["calls_remaining"] = 1
+            model = FakeOllama(raw)
+            outcome = asyncio.run(self.service.execute_local_recipe(caller, execution_id, ollama=model, **args))
+            self.assertEqual((outcome.state, outcome.error_code, model.calls), ("FAILED", expected, 1))
+            self.assertIsNone(outcome.response_text)
+            self.assertNotIn(raw, str(self.registry.execution_result(execution_id)))
 
     def test_trial_limit_concurrent_creation_never_resets_an_existing_limit(self):
         def create(_):
