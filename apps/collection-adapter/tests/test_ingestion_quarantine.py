@@ -77,3 +77,45 @@ class QuarantineTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
                 cli.main()
         self.assertEqual(calls, [])
+
+class MqttQuarantineTests(unittest.TestCase):
+    def test_raw_bytes_are_preserved_and_each_delivery_has_distinct_id(self):
+        class S3:
+            def __init__(self): self.objects = []
+            def put_object(self, **request): self.objects.append(request)
+        class Table:
+            def __init__(self): self.items = []
+            def put_item(self, **request): self.items.append(request["Item"])
+        sink = IngestionQuarantine.__new__(IngestionQuarantine)
+        sink.s3, sink.table, sink.bucket = S3(), Table(), "private"
+        args = {"topic": "foodtech/synthetic/test", "client_id": "foodtech-collector-test",
+                "reason": "UNSUPPORTED_ENCODING", "missing": []}
+        first = sink.preserve_mqtt(b'\xff\xfe\x80', **args)
+        second = sink.preserve_mqtt(b'\xff\xfe\x80', **args)
+        self.assertNotEqual(first, second)
+        self.assertEqual(sink.s3.objects[0]["Body"], b'\xff\xfe\x80')
+        self.assertEqual(sink.table.items[0]["ingestion_event_id"], first)
+        self.assertEqual(sink.table.items[0]["ingestion_failure_reason_code"], "UNSUPPORTED_ENCODING")
+        self.assertNotIn("event_id", sink.table.items[0])
+
+    def test_ack_follows_successful_preservation_only(self):
+        from foodtech_collection_adapter.mqtt import TOPIC, accept_message
+        calls = []
+        class Client:
+            def ack(self, mid, qos): calls.append("ack"); return 0
+        class Sink:
+            def preserve_mqtt(self, payload, **kwargs):
+                calls.append(("preserve", payload, kwargs["reason"]))
+        class Ingestor:
+            def ingest(self, raw): raise AssertionError("quarantined data entered normal pipeline")
+        message = SimpleNamespace(topic=TOPIC, qos=1, retain=False, payload=b'\xff', mid=9)
+        self.assertIsNone(accept_message(Client(), message, Ingestor(), Sink(), "foodtech-collector-test"))
+        self.assertEqual(calls, [("preserve", b'\xff', "UNSUPPORTED_ENCODING"), "ack"])
+        calls.clear()
+        with patch.object(Sink, "preserve_mqtt", side_effect=RuntimeError("storage unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
+                accept_message(Client(), message, Ingestor(), Sink(), "foodtech-collector-test")
+        self.assertEqual(calls, [])
+        with self.assertRaisesRegex(ValueError, "bucket"):
+            accept_message(Client(), message, Ingestor(), None, "foodtech-collector-test")
+        self.assertEqual(calls, [])

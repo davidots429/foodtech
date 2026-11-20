@@ -14,8 +14,10 @@ internal static class MqttMock
     private const string Topic = "foodtech/synthetic/mockprofile-300-a-001/observations";
     private const string Publisher = "foodtech-internal-mock";
 
-    public static async Task Run(string path, string certificatePath, int port)
+    public static async Task Run(string path, string certificatePath, int port, string? fault)
     {
+        if (fault is not (null or "invalid-utf8" or "invalid-json"))
+            throw new ArgumentException("Unsupported MQTT fault scenario.");
         if (port is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         var user = Environment.GetEnvironmentVariable("FOODTECH_MQTT_USER");
         var password = Environment.GetEnvironmentVariable("FOODTECH_MQTT_PASSWORD");
@@ -69,7 +71,10 @@ internal static class MqttMock
                     await Task.Delay(250);
                     for (var index = 0; index < records.Length; index++)
                     {
-                        var message = new MqttApplicationMessageBuilder().WithTopic(Topic).WithPayload(records[index])
+                        var payload = index == 0 && fault == "invalid-utf8" ? new byte[] { 0xff, 0xfe, 0x80 } :
+                            index == 0 && fault == "invalid-json" ? Encoding.UTF8.GetBytes("{\"incomplete\":") :
+                            Encoding.UTF8.GetBytes(records[index]);
+                        var message = new MqttApplicationMessageBuilder().WithTopic(Topic).WithPayload(payload)
                             .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build();
                         await server.InjectApplicationMessage(new InjectedMqttApplicationMessage(message) { SenderClientId = Publisher });
                         if (index + 1 < records.Length) await Task.Delay(TimeSpan.FromSeconds(5));
