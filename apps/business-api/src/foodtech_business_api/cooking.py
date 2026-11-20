@@ -568,6 +568,7 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                      "source_process_conditions_normal": False,
                      "source_safety_samples_valid": False,
                      "source_validation_identity_matches": False,
+                     "source_relative_duration_covers_cooking": False,
                      "source_process_span_covers_cooking": False}
     source_table = os.getenv("FOODTECH_DATA_TABLE", "")
     if process_linked and context_matches_job and source_table and second <= max(
@@ -611,7 +612,8 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
         "activation_allowed": False,
         "remaining_verification": ["SENSOR_AND_CALIBRATION_IDENTITY",
                                    "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",
-                                   "PROCESS_CONDITION_PROFILE_IDENTITY"],
+                                   "PROCESS_CONDITION_PROFILE_IDENTITY",
+                                   "SOURCE_TIMELINE_ALIGNMENT"],
     }
 
 

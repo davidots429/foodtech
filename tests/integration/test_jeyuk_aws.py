@@ -126,7 +126,9 @@ class JeyukAwsTests(unittest.TestCase):
                     "process_assessment_status": result["process_status"]}
                 assessments = [table.items[(pk, f"ASSESSMENT#{index:06d}")] for index in range(1, seconds + 1)]
                 recorded_raw = [table.items[(pk, f"RAW#{index:06d}")] for index in range(1, seconds + 1)]
-                self.assertTrue(all(audit_source_records(job, assessments, recorded_raw).values()))
+                checks = audit_source_records(job, assessments, recorded_raw)
+                self.assertTrue(all(value for key, value in checks.items() if key != "source_process_span_covers_cooking"))
+                self.assertFalse(checks["source_process_span_covers_cooking"])
 
     def test_safety_hold_is_persisted_with_process_state(self):
         with tempfile.TemporaryDirectory() as directory:

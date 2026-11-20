@@ -72,13 +72,17 @@ class JeyukSourceEvidenceTests(unittest.TestCase):
         for size, count in (("MEDIUM", 920), ("LARGE", 1680)):
             with self.subTest(size=size):
                 job, assessments, raws = fixture(count, size=size)
-                self.assertTrue(all(audit_source_records(job, assessments, raws).values()))
+                checks = audit_source_records(job, assessments, raws)
+                self.assertTrue(all(value for key, value in checks.items() if key != "source_process_span_covers_cooking"))
+                self.assertFalse(checks["source_process_span_covers_cooking"])
                 job["jeyuk_size_profile"] = "SMALL"
                 self.assertFalse(audit_source_records(job, assessments, raws)["source_records_match_binding"])
 
     def test_complete_source_range_matches_without_activating_validation(self):
         job, assessments, raws = fixture()
-        self.assertTrue(all(audit_source_records(job, assessments, raws).values()))
+        checks = audit_source_records(job, assessments, raws)
+        self.assertTrue(all(value for key, value in checks.items() if key != "source_process_span_covers_cooking"))
+        self.assertFalse(checks["source_process_span_covers_cooking"])
 
     def test_gap_and_wrong_batch_fail_closed(self):
         job, assessments, raws = fixture()
@@ -113,6 +117,7 @@ class JeyukSourceEvidenceTests(unittest.TestCase):
         self.assertFalse(checked["source_process_conditions_normal"])
         self.assertFalse(checked["source_safety_samples_valid"])
         self.assertFalse(checked["source_process_span_covers_cooking"])
+        self.assertFalse(checked["source_relative_duration_covers_cooking"])
 
 
 if __name__ == "__main__":

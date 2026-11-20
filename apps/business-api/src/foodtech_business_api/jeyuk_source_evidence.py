@@ -57,6 +57,7 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
               "source_process_conditions_normal": False,
               "source_safety_samples_valid": False,
               "source_validation_identity_matches": False,
+              "source_relative_duration_covers_cooking": False,
               "source_process_span_covers_cooking": False}
     if not contiguous:
         return result
@@ -145,7 +146,9 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
         all(isinstance(value, str) and value for value in expected_identity.values()) and
         all(sample.validation_identity == expected_identity for sample in samples))
     duration = job.get("actual_cooking_seconds")
-    result["source_process_span_covers_cooking"] = (
+    result["source_relative_duration_covers_cooking"] = (
         type(duration) is int and duration > 0 and last_second >= duration and
         process.get("rule_version") == PROCESS_RULE_VERSION)
+    # These synthetic samples contain relative seconds only. Their actual
+    # alignment with the job's placement and lift times is not established.
     return result
