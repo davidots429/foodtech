@@ -49,6 +49,20 @@ class JeyukFeedTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.json()["jeyuk_feed_safety_aligned"])
         self.assertFalse(self.store.items[(pk, "ASSESSMENT#CURRENT")]["usable"])
 
+    async def test_legacy_unverified_safety_is_not_displayed_as_usable(self):
+        created = await self.client.post("/api/customer/cooking-jobs", headers=self.headers, json={
+            "planned_portions": 2, "recipe_version": "synthetic-v1", "equipment_profile": "jeyuk-small",
+            "actual_load_kg": "1.8"})
+        job = created.json(); pk = cooking._pk(self.subject, job["job_id"])
+        self.store.items[(pk, "META")].update(safety_status="PASSED", safety_version=1, evaluation_blocked=False)
+        self.store.items[(pk, "ASSESSMENT#CURRENT")] = {"version": 1, "usable": True, "safety_version": 1}
+        snapshot = (await self.client.get(f"/api/customer/cooking-jobs/{job['job_id']}")).json()
+        self.assertEqual(snapshot["job"]["safety_status"], "INCOMPLETE")
+        self.assertTrue(snapshot["job"]["evaluation_blocked"])
+        self.assertFalse(snapshot["current_assessment"]["usable"])
+        self.assertEqual(snapshot["current_assessment"]["blocked_reason"], "JEYUK_FEED_SAFETY_UNVERIFIED")
+        self.assertEqual(self.store.items[(pk, "META")]["safety_status"], "PASSED")
+
     async def test_discharge_uses_bound_raw_feed_timeline(self):
         created = await self.client.post("/api/customer/cooking-jobs", headers=self.headers, json={
             "planned_portions": 2, "recipe_version": "synthetic-v1", "equipment_profile": "jeyuk-small",

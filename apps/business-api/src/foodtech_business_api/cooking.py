@@ -96,6 +96,10 @@ async def _read(request: Request, job_id: str, *, write: bool = False):
     return session, store, pk, meta, pointer
 
 
+def _jeyuk_feed_safety_current(job: dict) -> bool:
+    return job.get("menu") != "JEYUK" or job.get("jeyuk_feed_safety_aligned") is True
+
+
 async def _commit(store, pk: str, previous: dict, meta: dict,
                   assessment: dict | None = None, pointer: dict | None = None,
                   event: dict | None = None):
@@ -607,7 +611,8 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
         "manual_discharge_passed": (job.get("discharge_check_status") == "PASSED" and
                                     int(job.get("discharge_check_version", 0)) > 0 and
                                     len(job.get("discharge_check") or []) == 3),
-        "current_safety_passed": job.get("safety_status") == "PASSED" and not job.get("evaluation_blocked"),
+        "current_safety_passed": (job.get("safety_status") == "PASSED" and
+                                  not job.get("evaluation_blocked") and _jeyuk_feed_safety_current(job)),
         **source_checks,
     }
     latest, _ = await _store_call(store, store.read, pk)
@@ -639,6 +644,11 @@ async def get_job(job_id: str, request: Request, response: Response,
                   process_view: Literal["LATEST_RESTATED", "AS_PROCESSED"] = "LATEST_RESTATED") -> dict:
     response.headers["Cache-Control"] = "no-store"
     _, store, pk, meta, pointer = await _read(request, job_id)
+    if not _jeyuk_feed_safety_current(meta):
+        meta = {**meta, "safety_status": "INCOMPLETE" if meta.get("safety_status") == "PASSED" else meta["safety_status"],
+                "evaluation_blocked": True}
+        if pointer and pointer.get("usable"):
+            pointer = {**pointer, "usable": False, "blocked_reason": "JEYUK_FEED_SAFETY_UNVERIFIED"}
     derived = (await _store_call(store, store.latest_process_result, pk)
                if process_view == "LATEST_RESTATED" else None)
     process = ({"view": "LATEST_RESTATED", "status": derived["process_assessment_status"],
