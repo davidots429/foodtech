@@ -165,7 +165,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["meal"]["status"], "MODE_TRANSITION")
         self.assertEqual(snapshot["rice"]["process_status"], "NOT_MEASURED")
         self.assertEqual(len(snapshot["events"]), 4)
-        samples = [{"second": second, "chamber_celsius": "100", "humidity_percent": "98"}
+        samples = [{"second": second, "chamber_celsius": "100", "humidity_percent": "98", "door": "CLOSED"}
                    for second in range(1, 1801)]
         process = await self.client.post(path + "/rice-process", headers=headers,
             json={"expected_version": 5, "humidity_source": "MEASURED", "samples": samples})

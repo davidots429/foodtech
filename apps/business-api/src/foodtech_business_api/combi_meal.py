@@ -110,6 +110,7 @@ class RiceProcessSample(BaseModel):
     second: int = Field(ge=1, le=2000, strict=True)
     chamber_celsius: Decimal = Field(ge=Decimal("-50"), le=Decimal("350"), max_digits=6, decimal_places=2)
     humidity_percent: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+    door: Literal["OPEN", "CLOSED"] | None = None
 
 
 class RiceProcessEvidence(BaseModel):
@@ -592,7 +593,8 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
                 raise ValueError("humidity source changes during the cooking interval")
             assessment = assess_rice_process([
                 RiceSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
-                           Decimal(item["measuredHumidityPercent"]) if item["measuredHumidityPercent"] is not None else None)
+                           Decimal(item["measuredHumidityPercent"]) if item["measuredHumidityPercent"] is not None else None,
+                           item["doorState"])
                 for item in selected], len(selected), step["time_status"], sources.pop())
         elif phase == "mackerel":
             assessment = assess_mackerel_process([

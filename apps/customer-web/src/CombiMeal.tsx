@@ -11,7 +11,8 @@ type Meal = {
     water_ratio_status: string; effective_water_ratio: string;
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
-    monitored_process_assessment?: { status: string; humidity_value_source: string; reason_codes: string[] } };
+    monitored_process_assessment?: { status: string; humidity_value_source: string; reason_codes: string[];
+      door_assessment?: { status: string; door_open_seconds?: number } } };
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
     humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null };
   mackerel: { job_id: string; status: string; safety_status: string; food_unloaded_at?: string;
@@ -181,7 +182,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     const samples = Array.from({ length: duration }, (_, index) => ({ second: index + 1,
-      chamber_celsius: "100", humidity_percent: humiditySupported ? "98" : null }));
+      chamber_celsius: "100", humidity_percent: humiditySupported ? "98" : null, door: "CLOSED" }));
     try {
       await api(path + "/rice-process", csrf, { expected_version: meal.meal.version,
         humidity_source: humiditySupported ? "MEASURED" : "NOT_SUPPORTED", samples });
@@ -244,12 +245,13 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       {meal.rice.time_status && <p>밥 프로그램 시간 {meal.rice.program_cooking_duration}초 · 시간 판정 {meal.rice.time_status}
         {meal.rice.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.rice.thermal_exposure_duration}초</>}</p>}
       {meal.rice.thermal_exposure_duration !== undefined && !meal.rice.monitored_process_assessment && <div>
-        <p>밥 조리 구간의 100°C 합성 표본으로 온도와 습도를 확인합니다.</p>
+        <p>밥 조리 구간의 100°C·문 닫힘 합성 표본으로 온도·습도와 문 상태를 확인합니다.</p>
         {meal.meal.source && <button type="button" disabled={busy} onClick={() => assessSource("rice")}>연결된 밥 원표본 판정</button>}{" "}
         <button type="button" disabled={busy} onClick={() => simulateRiceProcess(true)}>습도 지원 합성 표본</button>{" "}
         <button type="button" disabled={busy} onClick={() => simulateRiceProcess(false)}>습도 미지원 합성 표본</button></div>}
-      {meal.rice.monitored_process_assessment && <p>밥 온도·습도·시간 부분 판정: {meal.rice.monitored_process_assessment.status}
+      {meal.rice.monitored_process_assessment && <p>밥 온도·습도·문·시간 부분 판정: {meal.rice.monitored_process_assessment.status}
         {" "}· 습도 출처 {meal.rice.monitored_process_assessment.humidity_value_source}
+        {" "}· 문 상태 {meal.rice.monitored_process_assessment.door_assessment?.status ?? "NOT_MEASURED"}
         {meal.rice.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.rice.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
       {meal.mackerel.time_status && <p>고등어 프로그램 시간 {meal.mackerel.program_cooking_duration}초 · 시간 판정 {meal.mackerel.time_status}
         {meal.mackerel.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.mackerel.thermal_exposure_duration}초</>}</p>}

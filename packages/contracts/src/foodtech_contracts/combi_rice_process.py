@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
+from .combi_door import assess as assess_door
 
 
 @dataclass(frozen=True)
@@ -10,6 +11,7 @@ class Sample:
     second: int
     chamber_celsius: Decimal
     humidity_percent: Decimal | None
+    door: str | None = None
 
 
 def assess(samples: list[Sample], duration: int, time_status: str,
@@ -18,6 +20,13 @@ def assess(samples: list[Sample], duration: int, time_status: str,
         raise ValueError("one sample per second for the entire cooking duration is required")
     if humidity_source not in ("MEASURED", "CONTROLLER_ESTIMATE", "NOT_SUPPORTED"):
         raise ValueError("invalid humidity source")
+    doors = [sample.door for sample in samples]
+    if all(door is None for door in doors):
+        door = {"status": "NOT_MEASURED"}
+    elif any(door is None for door in doors):
+        raise ValueError("door observations must cover the complete interval")
+    else:
+        door = assess_door(doors)
     low_run = high_run = low_total = high_total = 0
     humidity_warning_run = humidity_failure_run = 0
     failures, warnings = set(), set()
@@ -69,9 +78,14 @@ def assess(samples: list[Sample], duration: int, time_status: str,
         raise ValueError("invalid rice time status")
     if suspects:
         warnings.add("SENSOR_ANOMALY_SUSPECTED")
-    status = ("FAILED" if failures else "INSUFFICIENT_DATA" if humidity_source == "NOT_SUPPORTED" else
+    if door.get("reason_code") == "DOOR_OPEN_FAILURE":
+        failures.add("DOOR_OPEN_FAILURE")
+    elif door.get("reason_code") == "DOOR_OPEN_WARNING":
+        warnings.add("DOOR_OPEN_WARNING")
+    status = ("FAILED" if failures else "INSUFFICIENT_DATA" if humidity_source == "NOT_SUPPORTED" or
+              door["status"] in ("INSUFFICIENT_DATA", "NOT_MEASURED") else
               "WARNING" if warnings else "NORMAL")
     return {"status": status, "reason_codes": sorted(failures | warnings),
             "humidity_value_source": humidity_source, "anomaly_suspected_seconds": suspects,
             "low_temperature_total_seconds": low_total, "high_temperature_total_seconds": high_total,
-            "sample_count": len(samples)}
+            "sample_count": len(samples), "door_assessment": door}
