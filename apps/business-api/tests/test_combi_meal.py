@@ -97,6 +97,42 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(path + "/source-live")).json()["state"], "COMPLETED")
         self.assertEqual((await self.client.post(path + "/source-live", json={**batch, "expected_cursor": 3}, headers=headers)).status_code, 409)
 
+    async def test_live_five_second_windows_across_fragments_and_phases(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        meta = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()["meal"]
+        meal_id = meta["meal_batch_id"]
+        path = "/api/customer/combi-meals/" + meal_id
+        records = []
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for phase, job, temperatures in (("RICE", meta["rice_cooking_job_id"], [97, 98, 100, 102, 103]),
+                                         ("TRANSITION", meta["mode_transition_id"], [214, 215, 220, 225, 226])):
+            for phase_second, temperature in enumerate(temperatures, 1):
+                seq = len(records) + 1
+                at = (start + timedelta(seconds=seq-1)).isoformat()
+                records.append(json.dumps({"eventId": f"{meal_id}-{seq:06d}", "mealBatchId": meal_id,
+                    "cookingJobId": job, "deviceId": "combi-1", "mockInstanceId": "mockprofile-120-a-001",
+                    "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": seq,
+                    "schemaVersion": "synthetic-combi-v1", "programVersion": "v1", "provenance": "SYNTHETIC",
+                    "dataQuality": "VALID", "phase": phase, "phaseSecond": phase_second,
+                    "chamberCelsius": temperature, "climateSetpointPercent": 100, "measuredHumidityPercent": 98,
+                    "humidityValueSource": "MEASURED", "fanLevel": 4, "doorState": "CLOSED"}))
+        for cursor, end in ((0, 2), (2, 5), (5, 7), (7, 10)):
+            result = await self.client.post(path + "/source-live", headers=headers,
+                json={"device_id": "combi-1", "expected_cursor": cursor, "records": records[cursor:end]})
+            self.assertEqual(result.status_code, 200, result.text)
+            live = (await self.client.get(path + "/source-live")).json()
+            window = live["latest_window"]
+            if end == 2:
+                self.assertIsNone(window)
+            elif end in (5, 7):
+                self.assertEqual(window["phase"], "RICE")
+                self.assertEqual((window["minimum_celsius"], window["maximum_celsius"],
+                                  window["average_celsius"], window["outside_target_seconds"]), ("97", "103", "100", 2))
+            else:
+                self.assertEqual(window["phase"], "TRANSITION")
+                self.assertEqual((window["first_phase_second"], window["last_phase_second"],
+                                  window["average_celsius"], window["outside_target_seconds"]), (1, 5, "220", 2))
+
     async def test_source_import_binds_and_pages_without_advancing_cooking(self):
         headers = {"X-CSRF-Token": "csrf"}
         created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
