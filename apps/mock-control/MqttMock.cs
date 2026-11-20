@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
+using Microsoft.VisualBasic.FileIO;
 using MQTTnet;
 using MQTTnet.Formatter;
 using MQTTnet.Protocol;
@@ -17,7 +18,7 @@ internal static class MqttMock
 
     public static async Task Run(string path, string certificatePath, int port, string? fault)
     {
-        if (fault is not (null or "invalid-utf8" or "invalid-json" or "invalid-xml"))
+        if (fault is not (null or "invalid-utf8" or "invalid-json" or "invalid-xml" or "invalid-csv"))
             throw new ArgumentException("Unsupported MQTT fault scenario.");
         if (port is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         var user = Environment.GetEnvironmentVariable("FOODTECH_MQTT_USER");
@@ -30,18 +31,36 @@ internal static class MqttMock
         var instance = root.GetProperty("instanceId").GetString();
         var profile = root.GetProperty("profileId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            profile is not ("mockprofile-300" or "mockprofile-301") ||
+            profile is not ("mockprofile-300" or "mockprofile-301" or "mockprofile-302") ||
             instance is not ("mockprofile-300-a-001" or "mockprofile-300-b-001" or "mockprofile-300-c-001" or
-                             "mockprofile-301-a-001" or "mockprofile-301-b-001" or "mockprofile-301-c-001") ||
+                             "mockprofile-301-a-001" or "mockprofile-301-b-001" or "mockprofile-301-c-001" or
+                             "mockprofile-302-a-001" or "mockprofile-302-b-001" or "mockprofile-302-c-001") ||
             !instance.StartsWith(profile + "-", StringComparison.Ordinal))
             throw new InvalidDataException("Only the approved synthetic MQTT profile is supported.");
         var topic = $"foodtech/synthetic/{instance}/observations";
         var b = instance.EndsWith("-b-001", StringComparison.Ordinal);
         var c = instance.EndsWith("-c-001", StringComparison.Ordinal);
         var xml = profile == "mockprofile-301";
-        if ((xml && fault == "invalid-json") || (!xml && fault == "invalid-xml"))
+        var csv = profile == "mockprofile-302";
+        if ((fault == "invalid-json" && (xml || csv)) || (fault == "invalid-xml" && !xml) ||
+            (fault == "invalid-csv" && !csv))
             throw new ArgumentException("Fault does not match the source format.");
         var records = root.GetProperty("records").EnumerateArray().Select((item, index) => {
+            if (csv) {
+                var raw = item.GetString() ?? throw new InvalidDataException("Invalid CSV fixture.");
+                using var parser = new TextFieldParser(new StringReader(raw)) { TextFieldType = FieldType.Delimited, HasFieldsEnclosedInQuotes = true };
+                parser.SetDelimiters(",");
+                var header = parser.ReadFields() ?? throw new InvalidDataException("Missing CSV header.");
+                var fields = parser.ReadFields() ?? throw new InvalidDataException("Missing CSV row.");
+                if (header.Length != fields.Length || header.Distinct().Count() != header.Length || !parser.EndOfData)
+                    throw new InvalidDataException("Invalid CSV structure.");
+                var cells = header.Zip(fields).ToDictionary(pair => pair.First, pair => pair.Second);
+                if (!cells.TryGetValue(b ? "source_id" : c ? "SrcId" : "sourceId", out var source) || source != "synthetic-mqtt-csv" ||
+                    !cells.TryGetValue(b ? "device_id" : c ? "DeviceId" : "deviceId", out var device) || device != instance ||
+                    !cells.TryGetValue(b ? "sequence_number" : c ? "SeqNo" : "sequenceNumber", out var seq) || seq != (index + 1).ToString())
+                    throw new InvalidDataException("Invalid synthetic MQTT CSV identity or sequence.");
+                return raw;
+            }
             if (xml) {
                 var raw = item.GetString() ?? throw new InvalidDataException("Invalid XML fixture.");
                 using var reader = XmlReader.Create(new StringReader(raw), new XmlReaderSettings {
@@ -96,6 +115,7 @@ internal static class MqttMock
                         var payload = index == 0 && fault == "invalid-utf8" ? new byte[] { 0xff, 0xfe, 0x80 } :
                             index == 0 && fault == "invalid-json" ? Encoding.UTF8.GetBytes("{\"incomplete\":") :
                             index == 0 && fault == "invalid-xml" ? Encoding.UTF8.GetBytes("<record><broken>") :
+                            index == 0 && fault == "invalid-csv" ? Encoding.UTF8.GetBytes(records[index].Insert(records[index].IndexOf('\n') + 1, "=")) :
                             Encoding.UTF8.GetBytes(records[index]);
                         var message = new MqttApplicationMessageBuilder().WithTopic(topic).WithPayload(payload)
                             .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build();

@@ -16,7 +16,8 @@ from .aws_flow import DynamoOrderedIngestor
 from .ingestion_quarantine import IngestionQuarantine, failure as ingestion_failure
 
 INSTANCES = ("mockprofile-300-a-001", "mockprofile-300-b-001", "mockprofile-300-c-001",
-             "mockprofile-301-a-001", "mockprofile-301-b-001", "mockprofile-301-c-001")
+             "mockprofile-301-a-001", "mockprofile-301-b-001", "mockprofile-301-c-001",
+             "mockprofile-302-a-001", "mockprofile-302-b-001", "mockprofile-302-c-001")
 TOPIC = "foodtech/synthetic/mockprofile-300-a-001/observations"
 
 
@@ -32,13 +33,14 @@ def accept_message(client, message, ingestor, quarantine, client_id, instance=IN
         raise ValueError("unexpected MQTT message contract")
     record = None
     xml = instance.startswith("mockprofile-301-")
+    csv_source = instance.startswith("mockprofile-302-")
     try:
         raw = message.payload.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         raw = None
         invalid = ("UNSUPPORTED_ENCODING", [])
     else:
-        if xml:
+        if xml or csv_source:
             try:
                 record = decode_record(raw)
                 invalid = None
@@ -51,11 +53,11 @@ def accept_message(client, message, ingestor, quarantine, client_id, instance=IN
             raise ValueError("ingestion quarantine bucket is required for malformed input")
         quarantine.preserve_mqtt(bytes(message.payload), topic=message.topic, client_id=client_id,
                                  reason=invalid[0], missing=invalid[1],
-                                 profile_id="mockprofile-301" if xml else "mockprofile-300")
+                                 profile_id="mockprofile-302" if csv_source else "mockprofile-301" if xml else "mockprofile-300")
         stream = None
     else:
         record = record if record is not None else decode_record(raw)
-        if record["sourceId"] != ("synthetic-mqtt-xml" if xml else "synthetic-mqtt") or record["deviceId"] != instance:
+        if record["sourceId"] != ("synthetic-mqtt-csv" if csv_source else "synthetic-mqtt-xml" if xml else "synthetic-mqtt") or record["deviceId"] != instance:
             raise ValueError("unexpected synthetic source")
         ingestor.ingest(raw)
         stream = stream_key(record)

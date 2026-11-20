@@ -1,0 +1,19 @@
+{
+  "provenance": "SYNTHETIC",
+  "columns": [
+    "SchVer",
+    "SrcId",
+    "DeviceId",
+    "BatchId",
+    "RecId",
+    "SeqNo",
+    "Timestamp",
+    "Status",
+    "Readings_TempC",
+    "Readings_SpeedLvl",
+    "Readings_ElapsedMin",
+    "Alarm",
+    "Err",
+    "Extension_Firmware"
+  ]
+}
