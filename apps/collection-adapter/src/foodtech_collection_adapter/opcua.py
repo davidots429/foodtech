@@ -2,7 +2,9 @@
 
 import argparse
 import asyncio
+import hashlib
 import ipaddress
+import json
 import os
 import socket
 from datetime import datetime, timezone
@@ -42,17 +44,42 @@ def validate_server_certificate(endpoint: str, certificate: str) -> None:
         raise ValueError("server certificate hostname does not match endpoint")
 
 
+def validate_history(value: str, device_id: str, seen: dict[int, str], batch: str | None):
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 2_000_000:
+        raise ValueError("invalid synthetic OPC UA recovery buffer")
+    records = json.loads(value)
+    if not isinstance(records, list) or not 1 <= len(records) <= 5000:
+        raise ValueError("invalid synthetic OPC UA recovery buffer")
+    parsed = []
+    for number, raw in enumerate(records, 1):
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > 2048:
+            raise ValueError("invalid synthetic OPC UA record")
+        record = decode_record(raw)
+        if (record["sourceId"] != "synthetic-opcua" or record["deviceId"] != device_id or
+                record["sequenceNumber"] != number):
+            raise ValueError("unexpected synthetic OPC UA source or sequence")
+        if batch is None:
+            batch = record["batchId"]
+        if record["batchId"] != batch:
+            raise ValueError("OPC UA recovery buffer changed batch")
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        if number in seen and seen[number] != digest:
+            raise ValueError("OPC UA source rewrote a previously seen record")
+        parsed.append((number, raw, record, digest))
+    return parsed, batch
+
+
 async def collect(endpoint: str, client_certificate: str, client_key: str, server_certificate: str,
                   ingestor, *, count: int, timeout_seconds: int) -> int:
     if not 1 <= count <= 5000 or timeout_seconds < 1:
         raise ValueError("invalid collection limits")
     validate_server_certificate(endpoint, server_certificate)
-    client = Client(endpoint)
+    client = Client(endpoint, auto_reconnect=True, reconnect_max_delay=2, reconnect_request_timeout=3)
     client.application_uri = "urn:foodtech:opcua:collector"
     await client.set_security(SecurityPolicyBasic256Sha256, certificate=client_certificate, private_key=client_key,
                               server_certificate=server_certificate, mode=ua.MessageSecurityMode.SignAndEncrypt)
-    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=128)
-    overflow = asyncio.Event()
+    changed = asyncio.Event()
+    invalid = asyncio.Event()
 
     class Handler:
         def datachange_notification(self, _node, value, data):
@@ -60,17 +87,15 @@ async def collect(endpoint: str, client_certificate: str, client_key: str, serve
             if status.value == ua.StatusCodes.BadWaitingForInitialData:
                 return
             if status.is_bad():
-                overflow.set()
+                invalid.set()
             elif isinstance(value, str) and value:
-                try:
-                    queue.put_nowait(value)
-                except asyncio.QueueFull:
-                    overflow.set()
+                changed.set()
 
     async with client:
         index = await client.get_namespace_index(NAMESPACE)
         device = await client.nodes.objects.get_child([f"{index}:SyntheticDevice"])
         snapshot = await device.get_child([f"{index}:RecordSnapshot"])
+        history = await device.get_child([f"{index}:AvailableSnapshots"])
         device_id = await (await device.get_child([f"{index}:DeviceId"])).read_value()
         if device_id != "mockprofile-203-a-001":
             raise ValueError("unexpected synthetic OPC UA device")
@@ -80,26 +105,48 @@ async def collect(endpoint: str, client_certificate: str, client_key: str, serve
             deadline = asyncio.get_running_loop().time() + timeout_seconds
             accepted = 0
             streams: set[str] = set()
+            seen: dict[int, str] = {}
+            expected_batch: str | None = None
             while accepted < count:
-                if overflow.is_set():
-                    raise RuntimeError("OPC UA notification was lost or invalid")
+                if invalid.is_set():
+                    raise RuntimeError("OPC UA notification reported invalid data")
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     raise TimeoutError("OPC UA collection deadline reached")
                 try:
-                    raw = await asyncio.wait_for(queue.get(), timeout=min(1, remaining))
+                    await asyncio.wait_for(changed.wait(), timeout=min(1, remaining))
                 except TimeoutError:
-                    for stream in streams:
-                        await asyncio.to_thread(ingestor.drain, stream)
+                    pass
+                changed.clear()
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError("OPC UA collection deadline reached")
+                try:
+                    values = await asyncio.wait_for(history.read_value(), timeout=min(4, remaining))
+                except ua.UaStatusCodeError as exc:
+                    if exc.code not in (ua.StatusCodes.BadSessionIdInvalid, ua.StatusCodes.BadSessionClosed,
+                                        ua.StatusCodes.BadSecureChannelClosed, ua.StatusCodes.BadConnectionClosed,
+                                        ua.StatusCodes.BadCommunicationError, ua.StatusCodes.BadServerHalted,
+                                        ua.StatusCodes.BadWaitingForInitialData):
+                        raise
+                    await asyncio.sleep(min(.25, max(0, deadline - asyncio.get_running_loop().time())))
                     continue
-                record = decode_record(raw)
-                if record["sourceId"] != "synthetic-opcua" or record["deviceId"] != device_id:
-                    raise ValueError("unexpected synthetic OPC UA source")
-                await asyncio.to_thread(ingestor.ingest, raw)
-                streams.add(stream_key(record))
-                accepted += 1
-            if overflow.is_set():
-                raise RuntimeError("OPC UA notification was lost or invalid")
+                except (ConnectionError, OSError, TimeoutError):
+                    await asyncio.sleep(min(.25, max(0, deadline - asyncio.get_running_loop().time())))
+                    continue
+                parsed, expected_batch = validate_history(values, device_id, seen, expected_batch)
+                for number, raw, record, digest in parsed:
+                    if number not in seen:
+                        await asyncio.to_thread(ingestor.ingest, raw)
+                        seen[number] = digest
+                        streams.add(stream_key(record))
+                        accepted += 1
+                        if accepted == count:
+                            break
+                for stream in streams:
+                    await asyncio.to_thread(ingestor.drain, stream)
+            if invalid.is_set():
+                raise RuntimeError("OPC UA notification reported invalid data")
             return accepted
         finally:
             await subscription.delete()

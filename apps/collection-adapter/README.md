@@ -28,5 +28,7 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 
 `python -m foodtech_collection_adapter.opcua --count 3 --timeout 30`은 명시적으로 신뢰한 클라이언트 인증서·개인키와 고정된 서버 인증서를 사용해 UA-TCP `Basic256Sha256/SignAndEncrypt`로 연결한다. `FOODTECH_OPCUA_ENDPOINT`, `FOODTECH_OPCUA_CLIENT_CERT`(PEM), `FOODTECH_OPCUA_CLIENT_KEY`(PEM), `FOODTECH_OPCUA_SERVER_CERT`(DER), `FOODTECH_DATA_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`을 설정한다. 서버 인증서의 유효기간·애플리케이션 URI·호스트와 고정 인증서의 일치를 확인한다. Browse·Read로 합성 장비를 확인한 뒤 `RecordSnapshot`을 Subscription으로 받아 원표본을 기존 Resequencer·FIFO 흐름으로 전달한다. 표준화 매핑 버전은 `mockprofile-203-a-map-v1`이다.
 
-현재는 vendor-a 단일 합성 인스턴스의 첫 연결 경로다. UA 클라이언트가 Publish 응답을 자동 확인하므로 저장 실패·프로세스 종료에서 손실 없는 재전송은 보장하지 않는다. 재연결·Republish·Subscription 상태 복구, 실제 AWS 저장과 부하·나머지 프로파일은 후속 구현·검증이다. 인증서의 발급·교체·폐기와 서버 개인키 보호는 개발용 임시 시험과 별도로 마련해야 한다.
+현재는 vendor-a 단일 합성 인스턴스의 연결 경로다. UA 클라이언트가 Publish 응답을 자동 확인하므로 수집기는 이를 저장 완료 증거로 사용하지 않는다. 알림과 주기적 `AvailableSnapshots` 조회를 이용해 이미 발생한 전체 합성 원표본을 순번·배치·내용 해시로 대조하고 아직 저장하지 않은 항목을 처리한다. 저장 실패 후 새 수집 실행은 처음부터 다시 읽으며 기존 항목의 중복 여부는 기존 품질 파이프라인에서 판정한다. 실행 중 서버 재시작 시 SDK 재연결 후 같은 fixture를 재생해 누락된 항목을 복구한다. 같은 실행에서 이미 본 순번의 내용이 달라지거나 중간 순번이 없으면 오류로 중단한다.
+
+로컬 시험은 부분 저장 실패 뒤 재실행과 서버 프로세스 종료·재시작 후 세 합성 원표본을 확인한다. 이는 합성 Mock이 원본 fixture를 보존하고 동일 인증서로 복귀하는 조건에서의 복구이며, 일반 OPC UA 서버의 이력·UA Republish·장애 시 정확히 한 번 처리를 보장하지 않는다. 장기 장애, 서버 원본의 유실·변경, 실제 AWS 저장, 부하·나머지 프로파일과 인증서 발급·교체·폐기 절차는 후속 구현·검증이다.
 

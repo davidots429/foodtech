@@ -34,6 +34,8 @@ internal static class OpcUaMock
             return record.Clone();
         }).ToArray();
         if (records.Length is < 1 or > 5000) throw new InvalidDataException("Invalid fixture length.");
+        if (System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(records.Select(record => record.GetRawText()))) > 2_000_000)
+            throw new InvalidDataException("Fixture exceeds the synthetic recovery size limit.");
         var clock = new Stopwatch();
         JsonElement Current() => records[Math.Min((int)(clock.ElapsedMilliseconds / 5000), records.Length - 1)];
         var builder = Host.CreateApplicationBuilder();
@@ -48,6 +50,7 @@ internal static class OpcUaMock
             options.IncludeSignAndEncryptPolicies = true;
             options.RejectSHA1Certificates = true;
             options.MinCertificateKeySize = 2048;
+            options.MaxStringLength = 2_500_000;
         }).AddNodeManager("urn:foodtech:synthetic:opcua:203:a:v1", nodes => {
             var device = nodes.AddFolder("SyntheticDevice").Node;
             nodes.AddVariable<string>("SchemaVersion", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("schemaVersion").GetString()!);
@@ -65,6 +68,10 @@ internal static class OpcUaMock
             nodes.AddVariable<string>("RecordSnapshot", device.NodeId)
                 .OnFirstSubscriber((_, _, _) => { clock.Start(); return ValueTask.CompletedTask; })
                 .PollWhileMonitored(TimeSpan.FromMilliseconds(250), _ => Current().GetRawText());
+            nodes.AddVariable<string>("AvailableSnapshots", device.NodeId)
+                .PollEvery(TimeSpan.FromSeconds(1), () => JsonSerializer.Serialize(
+                    records.Take(Math.Min((int)(clock.ElapsedMilliseconds / 5000) + 1, records.Length))
+                        .Select(record => record.GetRawText())));
         });
         using var host = builder.Build();
         await host.StartAsync();
