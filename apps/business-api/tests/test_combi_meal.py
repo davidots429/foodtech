@@ -77,6 +77,10 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.json(), {"next_cursor": 1, "duplicate": False})
         duplicate = await self.client.post(path + "/source-live", json=batch, headers=headers)
         self.assertEqual(duplicate.json(), {"next_cursor": 1, "duplicate": True})
+        events = await self.client.get(path + "/source-live/events")
+        self.assertEqual(events.headers["cache-control"], "no-store")
+        self.assertEqual([item["code"] for item in events.json()["events"]], ["PHASE_STARTED"])
+        self.assertEqual(events.json()["history_from_sequence"], 1)
         snapshot = await self.client.get(path + "/source-live/records")
         self.assertEqual(snapshot.headers["cache-control"], "no-store")
         self.assertEqual(snapshot.json(), {"count": 1, "device_id": "combi-1", "records": records[:1]})
@@ -95,6 +99,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path + "/source-live")).status_code, 404)
         self.assertEqual((await self.client.get(path + "/source-live/records")).status_code, 404)
+        self.assertEqual((await self.client.get(path + "/source-live/events")).status_code, 404)
         self.subject = "customer-one"
         completion = {"expected_version": 1, "device_id": "combi-1", "records": records}
         self.assertEqual((await self.client.post(path + "/source-observations", json=completion, headers=headers)).status_code, 409)
@@ -103,6 +108,8 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         monitor = (await self.client.get(path + "/source-live")).json()["mackerel_monitor"]
         self.assertEqual((monitor["last_second"], monitor["complete_from_start"]), (1, True))
         self.assertEqual(monitor["failure_codes"], [])
+        history = (await self.client.get(path + "/source-live/events")).json()
+        self.assertEqual([item["phase"] for item in history["events"]], ["MACKEREL", "TRANSITION", "RICE"])
         altered = list(records); altered[0] = json.dumps(changed)
         self.assertEqual((await self.client.post(path + "/source-observations", json={**completion, "records": altered}, headers=headers)).status_code, 409)
         response = await self.client.post(path + "/source-observations", json=completion, headers=headers)
@@ -147,6 +154,33 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(window["phase"], "TRANSITION")
                 self.assertEqual((window["first_phase_second"], window["last_phase_second"],
                                   window["average_celsius"], window["outside_target_seconds"]), (1, 5, "220", 2))
+
+    async def test_live_event_history_paginates_and_preserves_legacy_boundary(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        meta = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()["meal"]
+        meal_id = meta["meal_batch_id"]; path = "/api/customer/combi-meals/" + meal_id
+        records = []
+        for seq in range(1, 31):
+            at = (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seq - 1)).isoformat()
+            records.append(json.dumps({"eventId": f"{meal_id}-{seq:06d}", "mealBatchId": meal_id,
+                "cookingJobId": meta["rice_cooking_job_id"], "deviceId": "combi-1", "mockInstanceId": "mockprofile-120-a-001",
+                "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": seq,
+                "schemaVersion": "synthetic-combi-v1", "programVersion": "v1", "provenance": "SYNTHETIC",
+                "dataQuality": "VALID", "phase": "RICE", "phaseSecond": seq, "chamberCelsius": 100,
+                "climateSetpointPercent": 100, "measuredHumidityPercent": 98, "humidityValueSource": "MEASURED",
+                "fanLevel": 4, "doorState": "OPEN" if seq % 2 == 0 else "CLOSED"}))
+        for start in range(0, 30, 5):
+            result = await self.client.post(path + "/source-live", headers=headers,
+                json={"device_id": "combi-1", "expected_cursor": start, "records": records[start:start+5]})
+            self.assertEqual(result.status_code, 200, result.text)
+        first = (await self.client.get(path + "/source-live/events")).json()
+        second = (await self.client.get(path + "/source-live/events?cursor=25")).json()
+        self.assertEqual((len(first["events"]), first["next_cursor"], len(second["events"]), second["next_cursor"]),
+                         (25, 25, 5, None))
+        self.assertEqual([item["sequence"] for item in first["events"] + second["events"]], list(range(30, 0, -1)))
+        live_pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal_id}#LIVE"
+        self.store.items[(live_pk, "META")]["event_history_from_sequence"] = 6
+        self.assertEqual((await self.client.get(path + "/source-live/events")).json()["history_from_sequence"], 6)
 
     async def test_source_import_binds_and_pages_without_advancing_cooking(self):
         headers = {"X-CSRF-Token": "csrf"}

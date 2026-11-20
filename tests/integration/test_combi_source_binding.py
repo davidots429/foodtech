@@ -178,6 +178,9 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                             self.assertIsNone(final_live["transition_monitor"]["ready_observed_at_second"])
                             self.assertEqual(final_live["mackerel_monitor"]["last_second"], 5)
                             self.assertEqual(final_live["mackerel_monitor"]["failure_codes"], [])
+                            history = (await api.get(live_path + "/events")).json()
+                            self.assertEqual([event["phase"] for event in history["events"] if event["code"] == "PHASE_STARTED"],
+                                             ["MACKEREL", "TRANSITION", "RICE"])
                         finally:
                             mock.close()
                         self.assertEqual(result["phase_counts"], {"RICE": 5, "TRANSITION": 5, "MACKEREL": 5})

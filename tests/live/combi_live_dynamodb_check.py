@@ -115,6 +115,13 @@ async def run_scenario(store, subject, created_partitions):
             fish = (await client.get(path + "/source-live")).json()["mackerel_monitor"]
             assert fish["recovered_at_second"] == 31 and fish["last_second"] == 61
             assert "LOW_TEMPERATURE_PROCESS_FAILURE" in fish["failure_codes"]
+            history = await client.get(path + "/source-live/events")
+            assert history.status_code == 200 and history.headers["cache-control"] == "no-store"
+            events = history.json()["events"]
+            assert history.json()["history_from_sequence"] == 1
+            assert any(event["phase"] == "RICE" and event["code"] == "LOW_TEMPERATURE_PROCESS_FAILURE" for event in events)
+            assert any(event["code"] == "TRANSITION_READY_OBSERVED" for event in events)
+            assert any(event["phase"] == "MACKEREL" and event["code"] == "LOW_TEMPERATURE_PROCESS_FAILURE" for event in events)
             snapshot = await client.get(path + "/source-live/records")
             assert snapshot.status_code == 200 and snapshot.json()["records"] == records
             completion = await client.post(path + "/source-observations", headers=headers, json={
@@ -134,6 +141,7 @@ async def run_scenario(store, subject, created_partitions):
                     "low_temperature_failure_detected": True, "resume_snapshot_records": len(snapshot.json()["records"]),
                     "mackerel_recovered_second": fish["recovered_at_second"],
                     "mackerel_low_failure_detected": True, "transition_ready_second": transition["ready_observed_at_second"],
+                    "recorded_event_count": len(events),
                     "final_record_count": len(records)}
 
 
