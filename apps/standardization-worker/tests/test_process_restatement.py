@@ -54,8 +54,10 @@ class ProcessRestatementTests(unittest.TestCase):
 
     def test_replay_preserves_unfilled_sequence_gap(self):
         result = replay_process([self.sample("first", 1, 0),
-                                 self.sample("third", 3, 5)], self.job())
+                                 self.sample("third", 3, 5),
+                                 self.sample("fourth", 4, 10)], self.job())
         self.assertTrue(result["process_assessment"]["data_gap"])
+        self.assertTrue(result["has_unfilled_gap"])
         self.assertEqual(result["process_assessment_status"], "WARNING")
 
     def test_process_writes_immutable_result_and_request_without_meta_update(self):

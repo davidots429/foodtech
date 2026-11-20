@@ -3,7 +3,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-RULE_VERSION = "tonkatsu-temperature-v1"
+RULE_VERSION = "tonkatsu-temperature-v2"
 SAMPLE_INTERVAL_SECONDS = 5
 
 
@@ -27,6 +27,11 @@ def advance(previous: dict | None, normalized: dict, *, ingestion_event_id: str,
     temperature = Decimal(normalized["CHAMBER_TEMPERATURE"]["value"])
     gap = "DATA_GAP" in finding_codes or "LATE_AFTER_GAP" in finding_codes or \
         bool(last_at and _seconds(last_at, at) > SAMPLE_INTERVAL_SECONDS)
+    has_gap = before.get("data_gap") is True or gap
+    # Older state may already have forgotten a gap; only a full replay can
+    # establish complete history for an existing legacy job.
+    history_verified = not before or (before.get("gap_history_verified") is True and
+                                      type(before.get("data_gap")) is bool)
     low = temperature < 160
     high = temperature > 180
     below_normal = temperature < 165
@@ -56,13 +61,14 @@ def advance(previous: dict | None, normalized: dict, *, ingestion_event_id: str,
     else:
         temperature_status = "NORMAL"
     failed = before.get("status") == "FAILED" or low_failed or high_failed
-    status = "FAILED" if failed else "WARNING" if temperature_status != "NORMAL" or gap else "NORMAL"
+    status = "FAILED" if failed else "WARNING" if temperature_status != "NORMAL" or has_gap or not history_verified else "NORMAL"
     return {
         "rule_version": RULE_VERSION, "status": status, "temperature_status": temperature_status,
         "last_event_time": at, "last_ingestion_event_id": ingestion_event_id,
         "last_temperature_celsius": str(temperature), "low_since": low_since,
         "high_since": high_since, "recovery_since": recovery_since,
-        "low_accumulated_seconds": low_accumulated, "data_gap": gap,
+        "low_accumulated_seconds": low_accumulated, "data_gap": has_gap,
+        "gap_history_verified": history_verified,
         "failure_reason": before.get("failure_reason") or (
             "LOW_TEMPERATURE_DURATION" if low_failed else "HIGH_TEMPERATURE_DURATION" if high_failed else None),
     }

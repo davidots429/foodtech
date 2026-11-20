@@ -10,6 +10,8 @@ SQS FIFO의 원본 참조를 받아 DynamoDB 원본을 강하게 읽고, 원천 
 
 첫 품질 규칙은 절대영도보다 낮은 온도의 `HARD_LIMIT_EXCEEDED` 격리와 순번 결손·지연 도착 경고다. 정상 레코드만 표준 결과를 갖고, 격리 레코드도 원본 이벤트·불변 평가·Finding을 남긴다. 격리 참조는 별도 FIFO Standardization DLQ로 보낸다. 같은 업무 키의 다른 내용은 원본을 보존하고 `DUPLICATE_KEY_CONFLICT` Finding을 남긴다.
 
+돈까스 공정의 `tonkatsu-temperature-v2`는 수집 중 한 번 관찰한 결손을 이후 정상 표본에서도 유지한다. 결손 직후 연속 온도 타이머는 새 구간으로 시작한다. 이전 v1 기록에서 이어지는 작업은 과거 결손 이력을 확인할 수 없으므로 `gap_history_verified=false`와 공정 경고로 유지한다. 원본 재계산은 별도 파생 결과를 만들며 기존 작업 이력을 고치지 않는다. v2의 이력 검증은 최초 관찰 이전이나 마지막 관찰 이후의 누락까지 보증하지 않는다.
+
 실제 C# Mock HTTPS/OAuth 응답의 역순·격리 실저장은 `AWS_PROFILE=foodtech .venv/bin/python tests/live/mock_quality_dynamodb_check.py`로 확인한다. .NET 10 Mock을 Release로 빌드하고 `dotnet`을 PATH에 둬야 한다. 스크립트는 공유 개발용 FIFO 큐 두 개가 비어 있을 때만 시작하며, 고유 합성 배치를 만든 뒤 원본·순번·품질·DLQ 결과를 확인하고 시험 항목을 삭제한다. 2026-11-15 개발용 DynamoDB·SQS에서 도착 순서 `1, 3, 2`가 `1, 2, 3`으로 복원됐고 품질은 `VALID, VALID, QUARANTINED`, 격리 사유는 `HARD_LIMIT_EXCEEDED`, DLQ 참조는 1건이었다. 합성 항목 정리도 확인했다. 이는 로컬 Mock·Worker가 개발용 저장소를 사용한 검증이며 배포된 Task 역할·운영 부하 검증은 별도다.
 
 환경 변수는 `FOODTECH_DATA_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`, `FOODTECH_STANDARDIZATION_DLQ_URL`이다. 이번 테이블은 최소 시험용 물리 배치이며 전체 승인 ERD의 테이블 정의를 대체하지 않는다. 데이터별 soft limit, 재처리 승인 절차, 집계 파생 버전과 운영 보존기간은 이후 계약이다.

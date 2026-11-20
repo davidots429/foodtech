@@ -77,6 +77,18 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "another-customer"
         self.assertEqual((await self.client.get(path + "/time-monitor")).status_code, 404)
 
+    async def test_completion_does_not_clear_unknown_legacy_gap_history(self):
+        job = await self.create()
+        for event in ("PREHEAT_COMPLETED", "COOKING_STARTED"):
+            job = await self.transition(job, event)
+        pk = cooking._pk(self.subject, job["job_id"])
+        meta = self.store.items[(pk, "META")]
+        meta.update({"process_assessment": {"data_gap": False, "rule_version": "tonkatsu-temperature-v1"},
+                     "process_temperature_status": "NORMAL", "process_assessment_status": "WARNING"})
+        completed = await self.transition(job, "COOKING_COMPLETED")
+        self.assertEqual(completed["process_time_status"], "NORMAL")
+        self.assertEqual(completed["process_assessment_status"], "WARNING")
+
     async def test_owned_job_list_is_paginated_and_isolated(self):
         jobs = [await self.create() for _ in range(3)]
         first = await self.client.get("/api/customer/cooking-jobs", params={"limit": 2})
