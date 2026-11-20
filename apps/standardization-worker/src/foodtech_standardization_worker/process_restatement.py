@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import boto3
 import rfc8785
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.collection_evidence import matches_snapshot
@@ -200,11 +200,27 @@ class DynamoProcessRestatement:
         if request["status"] == "COMPLETED":
             self._refresh_dependents(job_pk)
             return "ALREADY_COMPLETED"
+        if request["status"] == "STALE" and request.get("reason") == "CUSTOMER_REFRESH":
+            return "REQUEST_STALE"
         if request["status"] != "PENDING":
             return "REQUEST_NOT_PENDING"
         job = self.cooking.get_item(Key={"pk": job_pk, "sk": "META"},
                                     ConsistentRead=True).get("Item")
-        if not job or job.get("source_binding") is None:
+        if not job:
+            return "JOB_NOT_BOUND"
+        if request.get("reason") == "CUSTOMER_REFRESH" and \
+                int(request.get("job_version_at_detection", -1)) != int(job["version"]):
+            try:
+                self.cooking.update_item(Key=request_key, UpdateExpression="SET #status = :stale",
+                    ConditionExpression=Attr("status").eq("PENDING"), ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={":stale": "STALE"})
+            except self.cooking.meta.client.exceptions.ConditionalCheckFailedException:
+                current = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")
+                if not current or current.get("status") not in {"STALE", "COMPLETED"}:
+                    raise
+                return "REQUEST_STALE" if current["status"] == "STALE" else "ALREADY_COMPLETED"
+            return "REQUEST_STALE"
+        if job.get("source_binding") is None:
             return "JOB_NOT_BOUND"
         stream_pk = request.get("source_stream_pk")
         if not stream_pk:
@@ -214,7 +230,7 @@ class DynamoProcessRestatement:
         requests = self._query(job_pk, "RESTATEMENT#REQUEST#")
         selected = [item for item in requests if item["status"] == "COMPLETED" or item["sk"] == request["sk"]]
         sources = {(item["source_assessment_pk"], item.get("source_assessment_sk", "ASSESSMENT#v1"))
-                   for item in selected}
+                   for item in selected if item.get("source_assessment_pk")}
         events = self._query(job_pk, "EVENT#PROCESS#")
         sources.update((item["source_assessment_pk"], "ASSESSMENT#v1") for item in events)
         source_revision = self._source_revision(stream_pk)
@@ -223,7 +239,7 @@ class DynamoProcessRestatement:
         matching = sorted(item["sk"] for item in receipts if matches_snapshot(item, stream_pk, raw))
         receipt_sk = matching[0] if matching else None
         raw_ids = {item["ingestion_event_id"] for item in raw}
-        if ingestion_event_id not in raw_ids:
+        if request.get("reason") != "CUSTOMER_REFRESH" and ingestion_event_id not in raw_ids:
             raise RuntimeError("restatement trigger raw source is not ready")
         sources.update((f"EVENT#{item['ingestion_event_id']}", "ASSESSMENT#v1") for item in raw)
         if len(sources) > MAX_RESTATEMENT_SAMPLES:
