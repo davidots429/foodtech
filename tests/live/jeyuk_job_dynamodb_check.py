@@ -31,9 +31,9 @@ FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 async def run_check(*, safety: bool = False, size: str = "small", timeline: bool = False,
-                    full: bool = False) -> int:
+                    full: bool = False, feed_safety: bool = False) -> int:
     if size not in {"small", "medium", "large"} or (not safety and (size != "small" or timeline or full)) or \
-            (full and not timeline):
+            (full and not timeline) or (feed_safety and (not safety or not timeline or size != "small")):
         raise ValueError("medium and large require the safety scenario")
     if os.getenv("AWS_PROFILE") != "foodtech":
         raise SystemExit("Use AWS_PROFILE=foodtech for the development account.")
@@ -91,8 +91,13 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                         "process_condition_version": "v1"})
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "PREHEAT_COMPLETED"})
-                duration = {"small": 480, "medium": 900, "large": 1500}[size] if full else 61
+                duration = {"small": 480, "medium": 900, "large": 1500}[size] if full or feed_safety else 61
                 placed_at = datetime.now(timezone.utc) - (timedelta(seconds=duration + 10) if timeline else timedelta())
+                if feed_safety:
+                    for ingredient, mass in (("meat", "1.0"), ("vegetable", "0.5"), ("sauce", "0.3")):
+                        job = await post(client, path + f"/jeyuk-feeds/{ingredient}", {
+                            "expected_version": job["version"], "started_at": placed_at.isoformat(),
+                            "completed_at": placed_at.isoformat(), "mass_kg": mass}, 201)
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "COOKING_STARTED",
                     "actual_placed_at": placed_at.isoformat()})
@@ -135,14 +140,35 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                             (final["status"], final["auto_safety_status"], final["evaluation_blocked"]) !=
                             ("RUNNING", "PASSED", True)):
                         raise AssertionError("post-addition sixty-second safety hold was not recorded")
-                    if full:
-                        if len(raws) != duration or final["process_assessment"]["second"] != duration:
+                    if full or feed_safety:
+                        if full and (len(raws) != duration or final["process_assessment"]["second"] != duration):
                             raise AssertionError("the complete synthetic cooking stream was not processed")
                         final = await post(client, path + "/transitions", {
                             "expected_version": final["version"], "event": "COOKING_COMPLETED",
                             "actual_lifted_at": (placed_at + timedelta(seconds=duration)).isoformat()})
                         if final["status"] != "COMPLETED" or final["process_time_status"] != "NORMAL":
                             raise AssertionError("the full synthetic cooking job was not completed normally")
+                    if feed_safety:
+                        lifted = placed_at + timedelta(seconds=duration)
+                        probes = [{"phase": phase, "probe_id": f"probe-{index}",
+                                   "meat_sample_id": f"sample-{index}", "thickest_or_clumped_part": True,
+                                   "sampled_at": (lifted + timedelta(seconds=index)).isoformat(),
+                                   "calibration_status": "OK", "celsius": "75"}
+                                  for index, phase in enumerate(("EARLY", "MIDDLE", "LATE"), 1)]
+                        final = await post(client, path + "/safety/discharge-check", {
+                            "expected_version": final["version"], "kind": "INITIAL", "samples": probes})
+                        if final["safety_status"] != "PASSED" or final.get("jeyuk_feed_safety_aligned") is not True:
+                            raise AssertionError("bound feed timing did not pass the safety check")
+                        final = await post(client, path + "/jeyuk-feeds/sauce", {
+                            "expected_version": final["version"], "started_at": placed_at.isoformat(),
+                            "completed_at": (placed_at + timedelta(seconds=2)).isoformat(),
+                            "mass_kg": "0.3", "reason": "synthetic mismatch"}, 201)
+                        if final["safety_status"] != "INCOMPLETE" or not final["evaluation_blocked"]:
+                            raise AssertionError("feed correction did not invalidate safety")
+                        final = await post(client, path + "/safety/discharge-check", {
+                            "expected_version": final["version"], "kind": "REVALIDATION", "samples": probes})
+                        if final["safety_status"] != "INCOMPLETE" or final["jeyuk_feed_safety_aligned"]:
+                            raise AssertionError("mismatched final feed must not pass safety")
                     evidence_response = await client.get(path + "/validation-evidence")
                     if evidence_response.status_code != 200:
                         raise AssertionError(f"source evidence read failed: {evidence_response.text}")
@@ -157,7 +183,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                         if observed != placed_at + timedelta(seconds=61) or \
                                 evidence["checks"]["source_process_span_covers_cooking"] != full:
                             raise AssertionError("stored synthetic time or cooking timeline assessment is incorrect")
-                    if evidence["activation_allowed"] or evidence["checks"]["job_completed"] != full:
+                    if evidence["activation_allowed"] or evidence["checks"]["job_completed"] != (full or feed_safety):
                         raise AssertionError("the synthetic job must not activate validation")
                 elif (processed[4]["job_result"] != "WARNING" or
                       processed[29]["job_result"] != "FAILED" or
@@ -167,7 +193,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                 if worker.process(references[-1])["job_result"] != "REPLAYED":
                     raise AssertionError("replayed assessment changed the bound job")
                 print(json.dumps({"processed": len(processed), "scenario": "SAFETY" if safety else "PROCESS", "size": size, "timeline": timeline, "full": full,
-                                  "job_status": final["status"],
+                                  "feed_safety": feed_safety, "job_status": final["status"],
                                   "auto_safety_status": final["auto_safety_status"],
                                   "replay": "REPLAYED"}), flush=True)
                 return 0
@@ -199,8 +225,10 @@ def main() -> int:
     parser.add_argument("--size", choices=("small", "medium", "large"), default="small")
     parser.add_argument("--timeline", action="store_true")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--feed-safety", action="store_true")
     args = parser.parse_args()
-    return asyncio.run(run_check(safety=args.safety, size=args.size, timeline=args.timeline, full=args.full))
+    return asyncio.run(run_check(safety=args.safety, size=args.size, timeline=args.timeline, full=args.full,
+                                 feed_safety=args.feed_safety))
 
 
 if __name__ == "__main__":
