@@ -91,3 +91,23 @@ class OpcUaRecoveryTests(unittest.TestCase):
                 opcua_json.collect("url", "id", "secret", "ca", Ingestor(), count=2,
                                    timeout_seconds=1, quarantine=Sink())
         self.assertEqual(calls, ["preserved", "closed"])
+
+    def test_json_reconnect_waits_for_history_to_catch_up(self):
+        fixture = json.loads((ROOT / "fixtures/mockprofile-200-a-001.json").read_text())
+        records = [json.dumps(record) for record in fixture["records"]]
+        calls = []
+        class Client:
+            def __init__(self, *args): self.snapshots = iter([records[:2], records[:1], records])
+            def get(self, path): return {"nodes": ["DeviceId", "AvailableSnapshots"]}
+            def read(self, node): return fixture["instanceId"] if node == "DeviceId" else next(self.snapshots)
+            def close(self): calls.append("closed")
+        class Ingestor:
+            def ingest(self, raw): calls.append(json.loads(raw)["sequenceNumber"])
+            def drain(self, stream): pass
+        class Sink:
+            def preserve_opcua_history(self, *args, **kwargs): raise AssertionError("valid prefix quarantined")
+        with patch.object(opcua_json, "UaJsonClient", Client), patch.object(opcua_json.time, "sleep"):
+            result = opcua_json.collect("url", "id", "secret", "ca", Ingestor(), count=3,
+                                        timeout_seconds=5, quarantine=Sink())
+        self.assertEqual(result, 3)
+        self.assertEqual(calls, [1, 2, 3, "closed"])

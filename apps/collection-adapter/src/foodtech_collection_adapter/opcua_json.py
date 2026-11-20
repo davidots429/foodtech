@@ -84,11 +84,11 @@ def collect(base_url: str, client_id: str, client_secret: str, ca_file: str, ing
             except httpx.TransportError:
                 time.sleep(min(.25, max(0, deadline - time.monotonic())))
                 continue
-            if not isinstance(values, list) or (seen and len(values) < max(seen)):
+            if not isinstance(values, list):
                 if quarantine is not None:
                     quarantine.preserve_opcua_history(json.dumps(values, ensure_ascii=False).encode("utf-8"),
                         instance_id=device, profile_id="mockprofile-200")
-                raise ValueError("synthetic source history moved backwards")
+                raise ValueError("invalid synthetic source history")
             parsed, batch = validate_or_quarantine(json.dumps(values, ensure_ascii=False), device, seen, batch,
                 source_id="synthetic-opcua-json", profile_id="mockprofile-200", quarantine=quarantine)
             for number, raw, record, digest in parsed:
