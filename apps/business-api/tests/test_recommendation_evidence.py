@@ -90,6 +90,22 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.store.items[(self.pk, "META")]["version"] = 8
         self.assertIsNone((await self.client.get(path)).json()["recorded"]["temperature_sample_summary"])
 
+    async def test_preplacement_observation_does_not_claim_recency_or_return_private_fields(self):
+        result = self.store.items[(self.pk, "RESTATEMENT#RESULT#test")]
+        result["preplacement_temperature_observation"] = {"status": "OBSERVED", "sample_celsius": "168",
+            "age_before_placement_us": 5000000, "quality_status": "WARNING", "private_note": "private-value"}
+        path = f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence"
+        response = await self.client.get(path)
+        value = response.json()
+        self.assertEqual(value["recorded"]["preplacement_temperature_observation"]["sample_celsius"], "168")
+        self.assertIn("PREPLACEMENT_RECENCY_NOT_ASSESSED", value["unverified_categories"])
+        self.assertIn("PREPLACEMENT_TEMPERATURE_FLAGGED", value["unverified_categories"])
+        self.assertNotIn("private-value", response.text)
+        self.store.items[(self.pk, "META")]["version"] = 8
+        value = (await self.client.get(path)).json()
+        self.assertIsNone(value["recorded"]["preplacement_temperature_observation"])
+        self.assertIn("PREPLACEMENT_TEMPERATURE_UNAVAILABLE", value["unverified_categories"])
+
     async def test_collection_receipt_reports_snapshot_match_without_claiming_completeness(self):
         derived = self.store.items[(self.pk, "RESTATEMENT#RESULT#test")]
         derived["collection_evidence"] = {"receipt_sk": "COLLECTION#RECEIPT#test", "raw_snapshot_matches": True}

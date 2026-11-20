@@ -14,6 +14,7 @@ from foodtech_contracts import stream_binding_key
 from foodtech_contracts.collection_evidence import matches_snapshot
 from foodtech_contracts.tonkatsu_process import process_status
 from foodtech_contracts.tonkatsu_observation_summary import VERSION as SUMMARY_VERSION, summarize
+from foodtech_contracts.tonkatsu_preload_observation import VERSION as PRELOAD_VERSION, observe as observe_preload
 
 from .process_rules import RULE_VERSION, advance
 
@@ -247,6 +248,7 @@ class DynamoProcessRestatement:
         if len(sources) > MAX_RESTATEMENT_SAMPLES:
             raise ValueError("restatement sample limit exceeded")
         assessments = []
+        raw_assessments = []
         excluded = []
         for pk, sk in sorted(sources):
             item = self.data.get_item(Key={"pk": pk, "sk": sk}, ConsistentRead=True).get("Item")
@@ -254,12 +256,15 @@ class DynamoProcessRestatement:
                 raise RuntimeError(f"restatement source assessment is not ready: {pk}/{sk}")
             if item.get("source_pk") != stream_pk:
                 raise ValueError(f"restatement source stream mismatch: {pk}/{sk}")
+            if item.get("ingestion_event_id") in raw_ids:
+                raw_assessments.append(item)
             reason = self._eligible(item, job)
             if reason:
                 excluded.append({"ingestion_event_id": item["ingestion_event_id"], "reason": reason})
             else:
                 assessments.append(item)
         derived = replay_process(assessments, job)
+        preload = observe_preload(raw_assessments, job)
         if {item["ingestion_event_id"] for item in self._stream_sources(stream_pk)} != raw_ids or \
                 self._source_revision(stream_pk) != source_revision:
             return "SOURCE_CHANGED_RETRY"
@@ -269,6 +274,7 @@ class DynamoProcessRestatement:
         manifest = {"request_sk": request["sk"], "job_version": int(job["version"]),
                     "rule_version": RULE_VERSION, "coverage_version": COVERAGE_VERSION,
                     "temperature_summary_version": SUMMARY_VERSION,
+                    "preplacement_observation_version": PRELOAD_VERSION,
                     "collection_receipt_sk": receipt_sk,
                     "source_revision": source_revision,
                     "source_assessment_keys": [f"{pk}/{sk}" for pk, sk in sorted(sources)],
@@ -283,6 +289,7 @@ class DynamoProcessRestatement:
                   "source_stream_pk": stream_pk, "source_raw_count": len(raw),
                   "source_revision": source_revision,
                   "collection_evidence": {"receipt_sk": receipt_sk, "raw_snapshot_matches": bool(receipt_sk)},
+                  "preplacement_temperature_observation": preload,
                   "source_assessment_keys": manifest["source_assessment_keys"],
                   "excluded_sources": excluded, "input_hash": digest,
                   "created_at": completed_at, **derived}
