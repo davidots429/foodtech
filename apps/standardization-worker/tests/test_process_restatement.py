@@ -115,8 +115,16 @@ class ProcessRestatementTests(unittest.TestCase):
         processor._refresh_dependents = Mock()
         processor._query = lambda _pk, prefix: ([request] if prefix.startswith("RESTATEMENT") else
                                                    [{"source_assessment_pk": "EVENT#first"}])
-        processor._stream_sources = lambda _pk: [
-            {"ingestion_event_id": event_id} for event_id in ("first", "late", "after-terminal")]
+        import hashlib
+        source_pk = stream_binding_key(**self.binding)
+        raws = [{"ingestion_event_id": event_id, "pk": source_pk, "provenance": "SYNTHETIC", "raw": event_id}
+                for event_id in ("first", "late", "after-terminal")]
+        receipt = {"sk": "COLLECTION#RECEIPT#1", "stream_pk": source_pk,
+                   "receipt_version": "synthetic-rest-collection-receipt-v1", "provenance": "SYNTHETIC",
+                   "profile_id": "mockprofile-100", "starting_cursor": 0, "ending_cursor": 3,
+                   "record_count": 3, "raw_sha256": [hashlib.sha256(row["raw"].encode()).hexdigest() for row in raws]}
+        processor._stream_sources = lambda _pk: raws
+        processor._collection_receipts = lambda _pk: [receipt]
         self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
         operations = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
         self.assertEqual(len(operations), 4)
@@ -124,6 +132,7 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(operations[1]["Put"]["Item"]["status"]["S"], "DERIVED_ONLY")
         self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "3")
         self.assertEqual(operations[1]["Put"]["Item"]["observation_coverage"]["M"]["sample_count"]["N"], "3")
+        self.assertTrue(operations[1]["Put"]["Item"]["collection_evidence"]["M"]["raw_snapshot_matches"]["BOOL"])
         original_key = operations[1]["Put"]["Item"]["sk"]["S"]
         self.assertEqual(len(operations[1]["Put"]["Item"]["included_ingestion_event_ids"]["L"]), 3)
         self.assertEqual(operations[2]["Put"]["Item"]["status"]["S"], "COMPLETED")
@@ -179,6 +188,7 @@ class ProcessRestatementTests(unittest.TestCase):
         processor._query = lambda _pk, prefix: [request] if prefix.startswith("RESTATEMENT") else []
         processor._stream_sources = lambda _pk: [
             {"ingestion_event_id": "late"}, {"ingestion_event_id": "unstandardized"}]
+        processor._collection_receipts = lambda _pk: []
         with self.assertRaisesRegex(RuntimeError, "not ready"):
             processor.process("JOB#1", "late")
         client.transact_write_items.assert_not_called()

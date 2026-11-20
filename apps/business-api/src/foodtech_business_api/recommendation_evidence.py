@@ -22,6 +22,9 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
     process_detail = process.get("process_assessment") or {}
     stale = bool(derived and derived.get("job_version_at_derivation") != job.get("version"))
     raw_coverage = derived.get("observation_coverage") if derived else None
+    receipt = derived.get("collection_evidence") if derived else None
+    receipt_match = bool(isinstance(receipt, dict) and receipt.get("raw_snapshot_matches") is True and
+                         isinstance(receipt.get("receipt_sk"), str) and not stale)
     coverage = ({key: raw_coverage.get(key) for key in ("version", "first_sample_at", "last_sample_at",
                 "sample_count", "before_first_us", "after_last_us", "internal_gap_detected")}
                 if isinstance(raw_coverage, dict) else None)
@@ -94,6 +97,7 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
             "process_view": "LATEST_RESTATED" if derived else "AS_PROCESSED",
             "process_result_version": derived.get("sk") if derived else None,
             "process_stale": stale, "observation_coverage": coverage,
+            "collection_snapshot_matches_receipt": receipt_match,
             "recorded": fields, "unverified_categories": missing,
             "completeness": completeness["status"], "completeness_reasons": completeness["reasons"],
             "completeness_rule_version": completeness["rule_version"], "recommendation_execution_available": False}

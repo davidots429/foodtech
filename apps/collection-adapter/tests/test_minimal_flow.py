@@ -175,7 +175,9 @@ class MinimalFlowTests(unittest.TestCase):
                 "X-Provenance": "SYNTHETIC", "X-Next-Cursor": "2"})
         client = httpx.Client(base_url="https://localhost", transport=httpx.MockTransport(handler))
         poller = RestMockClient("https://localhost", "id", "secret", "test-ca", client)
-        self.assertEqual(poller.poll().records, (b"\xff\xfe", "{}"))
+        result = poller.poll()
+        self.assertEqual(result.records, (b"\xff\xfe", "{}"))
+        self.assertFalse(result.completion_explicit)
         with self.assertRaisesRegex(ValueError, "cursor does not match"):
             poller.poll(1)
         poller.close()
@@ -191,13 +193,14 @@ class MinimalFlowTests(unittest.TestCase):
                 raise httpx.RemoteProtocolError("connection terminated")
             return httpx.Response(200, text="\n".join(records) + "\n", headers={
                 "X-Contract-Version": "1.0", "X-Profile-ID": "mockprofile-100",
-                "X-Provenance": "SYNTHETIC", "X-Next-Cursor": "3",
+                "X-Provenance": "SYNTHETIC", "X-Next-Cursor": "3", "X-Stream-Complete": "true",
             })
         client = httpx.Client(base_url="https://localhost", transport=httpx.MockTransport(handler))
         poller = RestMockClient("https://localhost", "id", "secret", "test-ca", client)
         result = poller.poll(0)
         self.assertEqual(result.records, tuple(records))
         self.assertEqual(result.next_cursor, 3)
+        self.assertTrue(result.completion_explicit)
         self.assertEqual(calls["records"], 2)
         poller.close()
 

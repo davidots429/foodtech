@@ -14,6 +14,7 @@ from .aws_flow import DynamoOrderedIngestor
 from .jeyuk_aws import DynamoJeyukIngestor
 from .rest import RestMockClient
 from .ingestion_quarantine import IngestionQuarantine, failure
+from foodtech_contracts.collection_evidence import CompletionTracker
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -70,6 +71,7 @@ def main() -> int:
                    "vendor-b#" if args.instance == "mockprofile-100-b-001" else "vendor-c#") + args.cursor_key)
     try:
         cursor, streams = ingestor.cursor_state(cursor_key)
+        completion = CompletionTracker(cursor, args.profile, args.instance)
         for index in range(args.polls):
             result = client.poll(cursor)
             released = []
@@ -88,6 +90,7 @@ def main() -> int:
                 else:
                     invalid = failure(raw)
                 if invalid is not None:
+                    completion.reject()
                     bucket = os.getenv("FOODTECH_INGESTION_DLQ_BUCKET")
                     if not bucket:
                         raise ValueError("ingestion quarantine bucket is required for malformed input")
@@ -99,12 +102,17 @@ def main() -> int:
                 record = record if record is not None else decode_record(raw)
                 if record["deviceId"] != args.instance:
                     raise ValueError("unexpected REST Mock device")
+                completion.record(raw, record)
                 streams.add(stream_key(record))
                 released.extend(ingestor.ingest(raw))
             for stream in sorted(streams):
                 released.extend(ingestor.drain(stream))
             ingestor.save_cursor(result.next_cursor, streams, cursor_key)
             cursor = result.next_cursor
+            receipt = completion.finish(next_cursor=cursor, complete=result.complete,
+                                        completion_explicit=result.completion_explicit)
+            if receipt is not None:
+                ingestor.save_completion_receipt(receipt, cursor_key)
             print(f"poll={index + 1} received={len(result.records)} released={len(released)} cursor={cursor}")
             if index + 1 < args.polls:
                 time.sleep(args.interval)

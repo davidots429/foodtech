@@ -48,13 +48,14 @@ class VendorBIntegrationTests(unittest.TestCase):
                         if httpx.get(base + "/health", verify=str(cert), timeout=.3).status_code == 200: break
                     except httpx.TransportError: time.sleep(.1)
                 else: self.fail("Mock did not start")
-                calls = {"records": [], "cursors": []}
+                calls = {"records": [], "cursors": [], "receipts": []}
                 class Ingestor:
                     def __init__(self, *args): pass
                     def cursor_state(self, key): calls["key"] = key; return 0, set()
                     def ingest(self, raw): calls["records"].append(raw); return []
                     def drain(self, stream): return []
                     def save_cursor(self, cursor, streams, key): calls["cursors"].append((cursor, key))
+                    def save_completion_receipt(self, receipt, key): calls["receipts"].append((receipt, key))
                 config = {"FOODTECH_MOCK_BASE_URL": base, "FOODTECH_MOCK_CA_FILE": str(cert),
                           "FOODTECH_MOCK_CLIENT_ID": "test-client", "FOODTECH_MOCK_CLIENT_SECRET": "test-secret",
                           "FOODTECH_DATA_TABLE": "test", "FOODTECH_ORDERED_QUEUE_URL": "test"}
@@ -63,6 +64,8 @@ class VendorBIntegrationTests(unittest.TestCase):
                     self.assertEqual(cli.main(), 0)
                 self.assertEqual(calls["key"], "vendor-b#default")
                 self.assertEqual(calls["cursors"], [(3, "vendor-b#default")])
+                self.assertEqual(calls["receipts"][0][0]["record_count"], 3)
+                self.assertEqual(calls["receipts"][0][1], "vendor-b#default")
                 self.assertEqual([decode_record(raw)["sequenceNumber"] for raw in calls["records"]], [1, 3, 2])
                 engine, released = Resequencer(), []
                 for i, raw in enumerate(calls["records"]):

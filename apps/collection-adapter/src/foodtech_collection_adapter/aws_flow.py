@@ -3,6 +3,7 @@
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -42,6 +43,13 @@ class DynamoOrderedIngestor:
             ExpressionAttributeNames={"#cursor": "cursor", "#streams": "streams"},
             ExpressionAttributeValues={":cursor": cursor, ":streams": sorted(streams or set())},
         )
+
+    def save_completion_receipt(self, receipt: dict, cursor_key: str) -> None:
+        """Preserve an observed terminal snapshot; downstream must independently verify it."""
+        self.table.put_item(Item={"pk": receipt["stream_pk"], "sk": f"COLLECTION#RECEIPT#{uuid.uuid4()}",
+                                  **receipt, "cursor_key": cursor_key,
+                                  "recorded_at": datetime.now(timezone.utc).isoformat()},
+                            ConditionExpression=Attr("pk").not_exists())
 
     def ingest(self, raw: str, now: float | None = None) -> list[Received]:
         record = decode_record(raw)

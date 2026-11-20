@@ -1,5 +1,7 @@
 # 첫 수집 어댑터
 
+`mockprofile-100`을 커서 0부터 단일 실행에서 수집하고 서버가 종료를 명시하면, 한 스트림의 원본 바이트별 SHA-256과 건수·종료 커서를 불변 수집 기록으로 남긴다. 재시작된 수집, 여러 스트림, 원본 격리 또는 1,000건을 넘는 경우에는 기록을 생성하지 않는다. 이 기록은 수집기가 관찰한 종료 스냅샷일 뿐 품질 통과나 표준화 완료를 뜻하지 않는다. 2026-11-21 개발 DynamoDB에서 합성 기록·원본 대조와 정리를 확인했다. `AWS_PROFILE=foodtech .venv/bin/python tests/live/collection_receipt_dynamodb_check.py`로 재실행한다.
+
 합성 Mock의 HTTPS REST/JSONL을 OAuth 2.0 Client Credentials로 한 번 또는 지정 횟수만큼 조회한다. 원본과 순번 대기 항목을 DynamoDB에 보존한 뒤 `Source + Device + Batch`별 5초 복원 결과를 SQS FIFO에 전송한다. 같은 전송 호출의 재시도는 같은 `ingestion_event_id`를 사용하고, 별도 수신은 새 ID를 갖는다.
 
 필요한 환경 변수는 `FOODTECH_MOCK_BASE_URL`, `FOODTECH_MOCK_CLIENT_ID`, `FOODTECH_MOCK_CLIENT_SECRET`, `FOODTECH_MOCK_CA_FILE`, `FOODTECH_DATA_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`이다. AWS 자격증명은 표준 프로필 또는 실행 역할로 전달한다. `python -m foodtech_collection_adapter --polls 1`로 실행한다.
