@@ -10,7 +10,7 @@ import boto3
 
 from foodtech_ai_gateway import downgrade_flow
 from foodtech_ai_gateway.downgrade_flow import DowngradeError, DowngradeFlow, NOTICE_VERSION
-from foodtech_ai_gateway.policy import Caller, Execution, Feature, GatewayPolicy, Model, Tier
+from foodtech_ai_gateway.policy import Caller, Execution, Feature, GatewayPolicy, Model, Tier, UNCONFIGURED_TIER1
 from foodtech_ai_gateway.registry import DynamoRegistry
 
 TABLE = "foodtech-ai-execution-registry-dev"
@@ -67,6 +67,17 @@ def main():
             except DowngradeError:
                 pass
             assert registry.budget(tenant, "ollama").calls_remaining == 3
+            unconfigured_parent = str(uuid4())
+            registry.create_execution(Execution(unconfigured_parent, tenant, Feature.RECIPE_CORRECTION,
+                UNCONFIGURED_TIER1, None, "SYNTHETIC", Decimal("0"), job_id=job_id, job_version=7))
+            mark("EXEC", unconfigured_parent)
+            unconfigured_quote = flow.preview(tenant, unconfigured_parent)
+            mark("QUOTE", unconfigured_quote["quote_id"])
+            mark("CONSENT", unconfigured_quote["quote_id"])
+            mark("EXEC", unconfigured_quote["execution_id"])
+            unconfigured_child = flow.confirm(tenant, unconfigured_quote["quote_id"], NOTICE_VERSION, True)
+            assert registry.execution(unconfigured_child).job_id == job_id
+            assert GatewayPolicy(registry).authorize(Caller("business-api", tenant), unconfigured_child).allowed
     finally:
         for key in reversed(keys): table.delete_item(Key=key)
         if any(table.get_item(Key=key, ConsistentRead=True).get("Item") for key in keys):

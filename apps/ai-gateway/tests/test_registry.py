@@ -89,6 +89,10 @@ class AtomicClient:
                 continue
             spec = action.get("Update") or action["ConditionCheck"]
             key = self._decode(spec["Key"])
+            if spec.get("ConditionExpression") == "attribute_not_exists(pk)":
+                if (key["pk"], key["sk"]) in self.table.items:
+                    raise TransactionCanceledException()
+                continue
             values = self._decode(spec["ExpressionAttributeValues"])
             item = self.table.items.get((key["pk"], key["sk"]))
             if not item or item["version"] != values[":v"]:
