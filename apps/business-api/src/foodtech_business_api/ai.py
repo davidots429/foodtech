@@ -2,6 +2,8 @@
 
 import os
 import ssl
+import json
+from uuid import UUID
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -39,6 +41,10 @@ class ChatRequest(BaseModel):
         ):
             raise ValueError("chat messages must alternate and end with a user question")
         return self
+
+
+class CookingChatRequest(ChatRequest):
+    job_id: UUID
 
 
 class ExternalPreviewRequest(BaseModel):
@@ -116,6 +122,32 @@ async def local_chat(request: Request, body: ChatRequest) -> dict:
     if sum(len(message.content) for message in body.messages) > 3400:
         raise HTTPException(422, "대화가 너무 깁니다. 이전 대화를 지우고 다시 질문해 주세요.")
     return await _invoke_local(session.subject, messages=[message.model_dump() for message in body.messages])
+
+
+@router.post("/cooking-chat")
+async def cooking_chat(request: Request, body: CookingChatRequest) -> dict:
+    from .cooking import _read, _store_call
+    session, store, pk, job, pointer = await _read(request, str(body.job_id), write=True)
+    derived = await _store_call(store, store.latest_process_result, pk)
+    process = derived["process_assessment_status"] if derived else job.get("process_assessment_status")
+    quality_usable = bool(pointer and pointer.get("usable") and not job.get("evaluation_blocked", True) and
+                          job.get("safety_status") == "PASSED" and
+                          pointer.get("safety_version") == job.get("safety_version"))
+    # A fixed allowlist avoids sending ownership IDs, raw observations, or user-authored notes.
+    context = {"provenance": "SYNTHETIC", "menu": job.get("menu"), "job_status": job.get("status"),
+               "safety_status": job.get("safety_status"), "process_status": process,
+               "process_view": "LATEST_RESTATED" if derived else "AS_PROCESSED",
+               "derived_job_version_changed": bool(derived and int(job["version"]) != int(derived["job_version_at_derivation"])),
+               "time_status": job.get("process_time_status"), "cooking_seconds": job.get("actual_cooking_seconds"),
+               "quality_passed": pointer.get("quality_passed") if quality_usable else None,
+               "job_version": int(job["version"])}
+    messages = [message.model_dump() for message in body.messages]
+    messages[-1]["content"] = json.dumps({"question": messages[-1]["content"], "synthetic_job_context": context},
+                                          ensure_ascii=False, separators=(",", ":"))
+    if len(messages[-1]["content"]) > 2000 or sum(len(message["content"]) for message in messages) > 4000:
+        raise HTTPException(422, "대화가 너무 깁니다. 이전 대화를 지우고 다시 질문해 주세요.")
+    result = await _invoke_local(session.subject, messages=messages)
+    return {**result, "context_job_version": context["job_version"], "context_process_view": context["process_view"]}
 
 
 @router.post("/external/preview", status_code=201)

@@ -14,6 +14,8 @@ from foodtech_ai_gateway.policy import Model, Tier
 from foodtech_ai_gateway.registry import DynamoRegistry
 from foodtech_ai_gateway.service import GatewayService
 from foodtech_business_api import ai as business_ai
+from foodtech_business_api import cooking as business_cooking
+from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app as business_app
 from test_registry import AtomicClient, MemoryResource
 
@@ -204,6 +206,40 @@ class ExecutionFlowTests(unittest.IsolatedAsyncioTestCase):
                 exhausted = await client.post("/api/customer/ai/chat", json=body)
                 self.assertEqual(exhausted.status_code, 429)
                 self.assertEqual(exhausted.json()["detail"], "AI_USAGE_LIMIT_UNAVAILABLE")
+
+    async def test_owned_cooking_context_reaches_local_chat_with_separate_system_role(self):
+        from uuid import uuid4
+        job_id = str(uuid4())
+        store = MemoryCookingStore()
+        pk = business_cooking._pk("customer-1", job_id)
+        store.items[(pk, "META")] = {"pk": pk, "sk": "META", "version": 1, "menu": "JEYUK",
+            "status": "RUNNING", "safety_status": "NOT_MEASURED", "evaluation_blocked": True,
+            "process_assessment_status": "WARNING", "process_time_status": "NOT_MEASURED"}
+        async def ollama_handler(request):
+            self.assertEqual(request.url.path, "/api/chat")
+            messages = json.loads(request.content)["messages"]
+            self.assertEqual([m["role"] for m in messages], ["system", "user"])
+            content = json.loads(messages[1]["content"])
+            self.assertEqual(content["synthetic_job_context"]["process_status"], "WARNING")
+            self.assertIsNone(content["synthetic_job_context"]["quality_passed"])
+            return httpx.Response(200, json={"done": True, "message": {"role": "assistant", "content": "확인 필요"}})
+        app.state.ollama_client = OllamaClient(transport=httpx.MockTransport(ollama_handler))
+        async def session(request, surface):
+            return SimpleNamespace(subject="customer-1", csrf="test-csrf")
+        def gateway_client(ca, cert, key):
+            return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway.local")
+        with patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false"}), \
+             patch.object(business_cooking, "_session", session), \
+             patch.object(business_cooking, "get_cooking_store", return_value=store), \
+             patch.object(business_ai, "_gateway_settings", lambda: ("https://gateway.local", "ca", "cert", "key")), \
+             patch.object(business_ai, "_client", gateway_client):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=business_app),
+                                         base_url="http://business.local") as client:
+                response = await client.post("/api/customer/ai/cooking-chat", headers={"X-CSRF-Token": "test-csrf"},
+                    json={"job_id": job_id, "messages": [{"role": "user", "content": "현재 상태는?"}]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["response_text"], "확인 필요")
+        self.assertEqual(self.registry.execution_result(response.json()["execution_id"])["state"], "SUCCEEDED")
 
 
 if __name__ == "__main__":

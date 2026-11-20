@@ -6,6 +6,7 @@ import {
 } from "./cookingApi";
 import { AssessmentAggregate } from "./AssessmentAggregate";
 import { CookingTimeMonitor } from "./CookingTimeMonitor";
+import { LocalChat } from "./LocalChat";
 
 type Props = { csrf: string };
 type ScoreForm = Record<ScoreKey, number | "">;
@@ -742,6 +743,7 @@ export function CookingWorkspace({ csrf }: Props) {
               {" "}· 시간 판정 {timeLabels[job.process_time_status ?? "NOT_MEASURED"] ?? "미판정"}</p>
             {["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) && <CookingTimeMonitor jobId={job.job_id} />}
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
+            <LocalChat key={job.job_id} csrf={csrf} jobId={job.job_id} />
             {job.source_binding ? <p className="small">연결된 합성 수집 배치: <code>{job.source_binding.batch_id}</code> · 온도 판정 {temperatureLabels[job.process_temperature_status] ?? job.process_temperature_status}</p>
               : <div className="binding-box"><p className="small">Mock의 <code>synthetic-rest / {job.menu === "JEYUK" ? "mockprofile-110-a-001" : "mockprofile-100-a-001"}</code> 배치를 조리 시작 전에 연결해야 자동 공정판정이 실행됩니다.</p>
                 <div className="field-row"><label className="grow">합성 배치 ID

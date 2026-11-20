@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
-type Message = { role: "user" | "assistant"; content: string };
-type Outcome = { execution_id: string; state: string; response_text: string | null; error_code: string | null };
+type Message = { role: "user" | "assistant"; content: string; contextVersion?: number; contextView?: string };
+type Outcome = { execution_id: string; state: string; response_text: string | null; error_code: string | null;
+  context_job_version?: number; context_process_view?: string };
 
-export function LocalChat({ csrf }: { csrf: string }) {
+export function LocalChat({ csrf, jobId }: { csrf: string; jobId?: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState("");
@@ -21,13 +22,14 @@ export function LocalChat({ csrf }: { csrf: string }) {
     setPending(question);
     setDraft("");
     setError("");
-    const context = [...messages.slice(-4), { role: "user" as const, content: question }];
+    const context = [...messages.slice(-4).map(({ role, content }) => ({ role, content })),
+      { role: "user" as const, content: question }];
     while (context.length > 1 && JSON.stringify(context).length > 3400) context.splice(0, 2);
     try {
-      const response = await fetch("/api/customer/ai/chat", {
+      const response = await fetch(jobId ? "/api/customer/ai/cooking-chat" : "/api/customer/ai/chat", {
         method: "POST", credentials: "same-origin", cache: "no-store",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-        body: JSON.stringify({ messages: context }),
+        body: JSON.stringify(jobId ? { job_id: jobId, messages: context } : { messages: context }),
       });
       if (!response.ok) {
         const errorBody = await response.json().catch(() => ({})) as { detail?: unknown };
@@ -52,7 +54,8 @@ export function LocalChat({ csrf }: { csrf: string }) {
           "답변을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.");
       }
       setMessages(previous => [...previous, { role: "user", content: question },
-        { role: "assistant", content: outcome.response_text! }]);
+        { role: "assistant", content: outcome.response_text!, contextVersion: outcome.context_job_version,
+          contextView: outcome.context_process_view }]);
     } catch (failure) {
       setDraft(question);
       setError(failure instanceof Error ? failure.message : "답변을 받지 못했습니다.");
@@ -62,24 +65,26 @@ export function LocalChat({ csrf }: { csrf: string }) {
     }
   }
 
-  return <section className="chat" aria-labelledby="local-chat-title">
-    <div className="section-heading"><h2 id="local-chat-title">조리 상담 챗봇</h2>
+  return <section className="chat" aria-label={jobId ? "현재 조리작업 상담" : "조리 상담 챗봇"}>
+    <div className="section-heading"><h2>{jobId ? "현재 작업 상담" : "조리 상담 챗봇"}</h2>
       <span className="tag">로컬 AI</span></div>
     <p className="small">화면의 대화 내역은 새로고침하면 사라집니다. 최근 대화는 답변 생성을 위해 전송되며, 생성된 답변은 실행 결과로 저장됩니다.</p>
     <p className="small">답변은 운영자 검토용 권고입니다. 장비 설정을 자동 변경하지 않으며 안전 이상은 현장에서 확인해야 합니다.</p>
+    {jobId && <p className="small">질문할 때 이 작업의 합성 공정·안전·평가 상태와 버전을 로컬 AI에 전달합니다. 답변은 판정이나 검증된 설정 권고가 아니며 이후 작업 상태가 바뀔 수 있습니다.</p>}
     <div className="chat-messages" role="log" aria-label="챗봇 대화" aria-live="polite">
       {messages.length === 0 && !pending && <p className="muted">예: 합성 돈까스 작업에서 온도 경고를 어떻게 확인하나요?</p>}
       {messages.map((message, index) => <div className={`chat-message ${message.role}`} key={index}>
         <strong>{message.role === "user" ? "나" : "조리 상담"}</strong>
         <p>{message.content}</p>
+        {message.contextVersion !== undefined && <small>조회한 작업 v{message.contextVersion} · {message.contextView === "LATEST_RESTATED" ? "최신 파생 공정 판정" : "최초 처리 공정 판정"}</small>}
       </div>)}
       {pending && <><div className="chat-message user"><strong>나</strong><p>{pending}</p></div>
         <p className="muted" role="status">답변을 생성하고 있습니다…</p></>}
       <div ref={end} />
     </div>
     <form className="chat-form" onSubmit={send}>
-      <label htmlFor="chat-question">질문
-        <textarea id="chat-question" value={draft} onChange={event => setDraft(event.target.value)}
+      <label>질문
+        <textarea value={draft} onChange={event => setDraft(event.target.value)}
           maxLength={1000} rows={3} disabled={!!pending} placeholder="조리 데이터나 권고에 대해 질문하세요." />
       </label>
       <div className="actions"><button type="submit" disabled={!!pending || !draft.trim()}>질문 보내기</button>
