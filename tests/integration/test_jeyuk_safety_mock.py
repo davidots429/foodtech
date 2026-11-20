@@ -20,6 +20,40 @@ DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class JeyukSafetyMockTests(unittest.TestCase):
+    def test_delayed_addition_preserves_samples_and_moves_safety_hold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = ROOT / "fixtures/jeyuk-small-full-v1.json"
+            bound = Path(directory) / "bound.json"
+            original_output = Path(directory) / "original.jsonl"
+            output = Path(directory) / "delayed.jsonl"
+            start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            command = ["dotnet", str(DLL), "bind-jeyuk", "--fixture", str(fixture), "--output", str(bound),
+                       "--fixture-id", "jeyuk-delayed-test", "--start-at", start.isoformat(),
+                       "--last-addition-second", "120"]
+            subprocess.run(command, check=True, capture_output=True)
+            self.assertNotIn("checkpoints", json.loads(bound.read_text()))
+            for source, target in ((fixture, original_output), (bound, output)):
+                subprocess.run(["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(source), "--output", str(target)],
+                               check=True, capture_output=True)
+            before = [decode_jeyuk_mock_sample(line) for line in original_output.read_text().splitlines()]
+            after = [decode_jeyuk_mock_sample(line) for line in output.read_text().splitlines()]
+            self.assertEqual(len(after), 480)
+            self.assertEqual([sample.second for sample in after if sample.last_ingredient_addition_completed], [120])
+            self.assertEqual([(x.surface_celsius, x.actual_rpm, x.mixture_celsius) for x in before],
+                             [(x.surface_celsius, x.actual_rpm, x.mixture_celsius) for x in after])
+            self.assertTrue(all(sample.observed_at == start + timedelta(seconds=sample.second) for sample in after))
+            monitor = JeyukSafetyMonitor()
+            readings = {s.second: monitor.observe(s.second, mixture_celsius=s.mixture_celsius,
+                calibration_status=s.calibration_status, safety_sensor_position=s.safety_sensor_position,
+                last_ingredient_addition_completed=s.last_ingredient_addition_completed) for s in after}
+            self.assertEqual((readings[119].status, readings[179].hold_seconds, readings[180].status),
+                             ("PENDING", 59, "PASSED"))
+            for invalid in ("0", "481", "1.5"):
+                bad = Path(directory) / f"invalid-{invalid}.json"
+                args = command.copy(); args[args.index(str(bound))] = str(bad); args[-1] = invalid
+                self.assertNotEqual(subprocess.run(args, capture_output=True).returncode, 0)
+                self.assertFalse(bad.exists())
+
     def test_bound_fixture_generates_a_timestamp_for_every_second(self):
         with tempfile.TemporaryDirectory() as directory:
             bound = Path(directory) / "bound.json"
