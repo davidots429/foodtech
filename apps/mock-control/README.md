@@ -85,3 +85,5 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 `serve-opcua`는 `fixtures/mockprofile-203-b-001.json`과 `fixtures/mockprofile-203-c-001.json`도 지원한다. vendor별 합성 namespace와 읽기 전용 Node를 제공하며 온도는 섭씨로 표현하고 출력 비율·속도 단계·RPM Node는 서로 구분한다. 이 Node는 프로젝트 합성 정보모델이다. 실수 Node는 IEEE 754 값이며 정확한 원천 값과 변환 검증은 원본 이력을 기준으로 한다.
 
 합성 기본 XML 원천은 `serve --fixture fixtures/mockprofile-101-a-001.json --cert <PFX> --port <포트>`로 실행한다. 각 인증된 GET은 커서 위치의 `application/xml` 문서 한 건과 다음 커서를 반환한다. 원천 계약은 `packages/contracts/src/foodtech_contracts/mockprofile-101-a-v1.xsd`이며 실제 제조사 사양이 아니다.
+
+같은 `serve` 명령은 `fixtures/mockprofile-101-b-001.json`과 `fixtures/mockprofile-101-c-001.json`도 제공한다. 각 XML 표현은 별도 XSD로 검증하며 합성 데이터다.

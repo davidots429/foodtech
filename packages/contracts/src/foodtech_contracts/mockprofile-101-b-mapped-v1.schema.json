@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://foodtech.example/contracts/mockprofile-101-b-v1.schema.json",
+  "title": "Synthetic vendor-b flat REST XML mapped record",
+  "type": "object",
+  "required": ["schema_version", "source_id", "device_id", "batch_id", "record_id", "sequence_number", "event_time_ms", "device_status", "temperature_f", "output_percent", "elapsed_ms"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "source_id": {"const": "synthetic-rest-xml"},
+    "device_id": {"const": "mockprofile-101-b-001"},
+    "batch_id": {"type": "string", "pattern": "^batch-b-[A-Za-z0-9-]+$"},
+    "record_id": {"type": "string", "pattern": "^rec-b-[A-Za-z0-9-]+$"},
+    "sequence_number": {"type": "integer", "minimum": 1, "maximum": 1000000000},
+    "event_time_ms": {"type": "integer", "minimum": 0, "maximum": 253402300799999},
+    "device_status": {"enum": [0, 1]},
+    "temperature_f": {"type": "number", "minimum": -1000, "maximum": 1000},
+    "output_percent": {"type": "number", "minimum": 0, "maximum": 100},
+    "elapsed_ms": {"type": "integer", "minimum": 0},
+    "ext_firmware_version": {"type": "string"}
+  },
+  "additionalProperties": true
+}

@@ -45,7 +45,7 @@ if (!jeyuk && !combi && !xml && (root.GetProperty("provenance").GetString() != "
     root.GetProperty("instanceId").GetString() is not ("mockprofile-100-a-001" or "mockprofile-100-b-001" or "mockprofile-100-c-001")))
     throw new InvalidDataException("Only approved synthetic profiles are supported.");
 if (xml && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            root.GetProperty("instanceId").GetString() != "mockprofile-101-a-001"))
+            root.GetProperty("instanceId").GetString() is not ("mockprofile-101-a-001" or "mockprofile-101-b-001" or "mockprofile-101-c-001")))
     throw new InvalidDataException("Only approved synthetic XML is supported.");
 if ((jeyuk || combi || xml) && (args.Length == 0 || args[0] != "serve"))
     throw new ArgumentException("Use the matching simulation command or serve for this fixture.");
