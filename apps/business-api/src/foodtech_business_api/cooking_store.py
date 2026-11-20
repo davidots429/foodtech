@@ -52,6 +52,9 @@ class CookingStore(Protocol):
     def read_meal(self, pk: str) -> list[dict]: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None: ...
+    def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
+                           event: dict, chunks: list[dict]) -> None: ...
+    def read_meal_source_chunk(self, pk: str, index: int) -> dict | None: ...
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
@@ -112,6 +115,24 @@ class MemoryCookingStore:
                 raise Conflict
             for row in (meta, step, event):
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
+
+    def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
+                           event: dict, chunks: list[dict]) -> None:
+        source_pk = pk + "#SOURCE"
+        with self.lock:
+            current = self.items.get((pk, "META"))
+            if (not current or current["version"] != expected_version or (pk, event["sk"]) in self.items or
+                    any((source_pk, row["sk"]) in self.items for row in chunks)):
+                raise Conflict
+            self.items[(pk, "META")] = {"pk": pk, **meta}
+            self.items[(pk, event["sk"])] = {"pk": pk, **event}
+            for row in chunks:
+                self.items[(source_pk, row["sk"])] = {"pk": source_pk, **row}
+
+    def read_meal_source_chunk(self, pk: str, index: int) -> dict | None:
+        with self.lock:
+            row = self.items.get((pk + "#SOURCE", f"RAW#{index:04d}"))
+            return row.copy() if row else None
 
     def read(self, pk: str) -> tuple[dict | None, dict | None]:
         with self.lock:
@@ -417,6 +438,31 @@ class DynamoCookingStore:
                    for reason in exc.response.get("CancellationReasons", [])):
                 raise Conflict from exc
             raise
+
+    def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
+                           event: dict, chunks: list[dict]) -> None:
+        operations = [
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
+                     "ConditionExpression": "#v = :expected", "ExpressionAttributeNames": {"#v": "version"},
+                     "ExpressionAttributeValues": {":expected": {"N": str(expected_version)}}}},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **event}),
+                     "ConditionExpression": "attribute_not_exists(pk)"}},
+        ]
+        operations.extend({"Put": {"TableName": self.table.name,
+                                   "Item": self._item({"pk": pk + "#SOURCE", **row}),
+                                   "ConditionExpression": "attribute_not_exists(pk)"}} for row in chunks)
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
+                raise Conflict from exc
+            raise
+
+    def read_meal_source_chunk(self, pk: str, index: int) -> dict | None:
+        row = self.table.get_item(Key={"pk": pk + "#SOURCE", "sk": f"RAW#{index:04d}"},
+                                  ConsistentRead=True).get("Item")
+        return _api_numbers(row)
 
     def read(self, pk: str) -> tuple[dict | None, dict | None]:
         meta = self.table.get_item(Key={"pk": pk, "sk": "META"}, ConsistentRead=True).get("Item")

@@ -2,7 +2,8 @@ import { useRef, useState } from "react";
 import { api } from "./cookingApi";
 
 type Meal = {
-  meal: { meal_batch_id: string; status: string; equipment_size: string; version: number };
+  meal: { meal_batch_id: string; status: string; equipment_size: string; version: number;
+    source?: { device_id: string; record_count: number; raw_sha256: string } };
   rice: { job_id: string; water_ratio_status: string; effective_water_ratio: string;
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
@@ -48,6 +49,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [observedAt, setObservedAt] = useState("");
+  const [sourceDevice, setSourceDevice] = useState("synthetic-combi-medium");
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
   const requestActive = useRef(false);
 
   async function create() {
@@ -60,9 +63,41 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         dry_rice_kg: dry, drained_rice_kg: drained, added_water_kg: water,
         pan_tare_kg: panTare, rack_tare_kg: rackTare,
       });
-      setMeal(result); setLookup(result.meal.meal_batch_id);
+      setMeal(result); setLookup(result.meal.meal_batch_id); setSourceFile(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "배치를 생성하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
+  }
+  async function importSource() {
+    if (!meal || !sourceFile || requestActive.current) return;
+    if (sourceFile.size > 2_500_000) { setError("합성 원천 파일은 2.5MB 이하이어야 합니다."); return; }
+    requestActive.current = true; setBusy(true); setError("");
+    const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
+    try {
+      const lines = (await sourceFile.text()).split(/\r?\n/).filter(line => line.length > 0);
+      await api(path + "/source-observations", csrf, { expected_version: meal.meal.version,
+        device_id: sourceDevice, records: lines });
+      setMeal(await api<Meal>(path)); setSourceFile(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "합성 원천 자료를 연결하지 못했습니다."); }
+    finally { requestActive.current = false; setBusy(false); }
+  }
+  function downloadMockFixture() {
+    if (!meal) return;
+    const segment = (seconds: number, chamber: string, climate: string, humidity: string | null,
+      source: string, fan: number) => ({ seconds, chamberCelsius: chamber, climateSetpointPercent: climate,
+      measuredHumidityPercent: humidity, humidityValueSource: source, fanLevel: fan, doorState: "CLOSED" });
+    const fixture = { provenance: "SYNTHETIC", profileId: "mockprofile-120", mockInstanceId: "mockprofile-120-a-001",
+      mealBatchId: meal.meal.meal_batch_id, deviceId: sourceDevice, generatorVersion: "combi-generator-v1", seed: 2026,
+      logicalStartAt: new Date(Date.now() - 2_701_000).toISOString(), phases: [
+        { phase: "RICE", cookingJobId: meal.rice.job_id, programVersion: "rice-steam-v1",
+          segments: [segment(1800, "100", "100", "98", "MEASURED", 4)] },
+        { phase: "TRANSITION", cookingJobId: meal.transition.transition_id, programVersion: "dry-transition-v1",
+          segments: [segment(180, "220", "10", null, "NOT_SUPPORTED", 3)] },
+        { phase: "MACKEREL", cookingJobId: meal.mackerel.job_id, programVersion: "mackerel-dry-v1",
+          segments: [segment(720, "220", "10", "10", "MEASURED", 3)] },
+      ] };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(fixture, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = "combi-meal-fixture.json";
+    link.click(); URL.revokeObjectURL(url);
   }
   async function open() {
     if (requestActive.current) return;
@@ -171,6 +206,12 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       <p>밥: 유효 수분비 {meal.rice.effective_water_ratio} · {meal.rice.water_ratio_status === "NORMAL" ? "권장 범위" : "권장 범위 밖"} · 목표 추가 물 {meal.rice.target_added_water_kg ?? "계산 불가"} kg</p>
       <p>내용물·팬 {meal.rice.payload_kg} kg · 랙 포함 {meal.rice.gross_kg} kg</p>
       <p>밥 작업 <code>{meal.rice.job_id}</code> → 모드 전환 <code>{meal.transition.transition_id}</code> → 고등어 작업 <code>{meal.mackerel.job_id}</code></p>
+      {meal.meal.source ? <p>연결된 합성 Mock: {meal.meal.source.device_id} · 원표본 {meal.meal.source.record_count}건 · SHA-256 <code>{meal.meal.source.raw_sha256}</code></p>
+        : meal.meal.status === "PREPARING_RICE" && <div><p>별도 Mock에서 위 식사·작업 ID로 생성한 JSONL 원표본을 조리 시작 전에 연결할 수 있습니다. 판정은 이후 단계에서 수행합니다.</p>
+          <label>합성 장비 ID<input value={sourceDevice} maxLength={80} onChange={event => setSourceDevice(event.target.value)} /></label>
+          <button type="button" className="secondary" disabled={busy || !sourceDevice} onClick={downloadMockFixture}>이 배치용 Mock fixture 받기</button>
+          <label>Mock 원표본 JSONL<input type="file" accept=".jsonl,.ndjson,application/x-ndjson" onChange={event => setSourceFile(event.target.files?.[0] ?? null)} /></label>
+          <button type="button" disabled={busy || !sourceFile || !sourceDevice} onClick={importSource}>합성 원천 자료 연결</button></div>}
       {meal.rice.time_status && <p>밥 프로그램 시간 {meal.rice.program_cooking_duration}초 · 시간 판정 {meal.rice.time_status}
         {meal.rice.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.rice.thermal_exposure_duration}초</>}</p>}
       {meal.rice.thermal_exposure_duration !== undefined && !meal.rice.monitored_process_assessment && <div>

@@ -1,5 +1,6 @@
 import os
 import unittest
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -51,6 +52,51 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(path)).json(), result)
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path)).status_code, 404)
+
+    async def test_source_import_binds_and_pages_without_advancing_cooking(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        meta = created["meal"]
+        meal_id = meta["meal_batch_id"]
+        path = "/api/customer/combi-meals/" + meal_id
+        phases = [("RICE", meta["rice_cooking_job_id"], 103),
+                  ("TRANSITION", meta["mode_transition_id"], 1),
+                  ("MACKEREL", meta["mackerel_cooking_job_id"], 1)]
+        records = []
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for phase, job_id, count in phases:
+            for phase_second in range(1, count + 1):
+                seq = len(records) + 1
+                at = (start + timedelta(seconds=seq - 1)).isoformat()
+                records.append(json.dumps({"eventId": f"{meal_id}-{seq:06d}", "mealBatchId": meal_id,
+                    "cookingJobId": job_id, "deviceId": "combi-1", "mockInstanceId": "mockprofile-120-a-001",
+                    "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": seq,
+                    "schemaVersion": "synthetic-combi-v1", "programVersion": "v1", "provenance": "SYNTHETIC",
+                    "dataQuality": "VALID", "phase": phase, "phaseSecond": phase_second,
+                    "chamberCelsius": 100, "climateSetpointPercent": 100, "measuredHumidityPercent": 98,
+                    "humidityValueSource": "MEASURED", "fanLevel": 4, "doorState": "CLOSED"}))
+        body = {"expected_version": 1, "device_id": "combi-1", "records": records}
+        wrong = [*records]
+        changed = json.loads(wrong[1]); changed["cookingJobId"] = "foreign"; wrong[1] = json.dumps(changed)
+        rejected = await self.client.post(path + "/source-observations", headers=headers,
+                                          json={**body, "records": wrong})
+        self.assertEqual(rejected.status_code, 422)
+        self.assertFalse(any(item_pk.endswith("#SOURCE") for item_pk, _ in self.store.items))
+        self.assertEqual((await self.client.post(path + "/source-observations", json=body)).status_code, 403)
+        imported = await self.client.post(path + "/source-observations", headers=headers, json=body)
+        self.assertEqual(imported.status_code, 201, imported.text)
+        self.assertEqual(imported.json()["meal"]["source"]["phase_counts"],
+                         {"RICE": 103, "TRANSITION": 1, "MACKEREL": 1})
+        self.assertEqual(imported.json()["meal"]["status"], "PREPARING_RICE")
+        first = (await self.client.get(path + "/source-observations")).json()
+        second = (await self.client.get(path + "/source-observations?cursor=1")).json()
+        self.assertEqual((len(first["records"]), first["next_cursor"], len(second["records"]), second["next_cursor"]),
+                         (100, 1, 5, None))
+        self.assertEqual(first["records"] + second["records"], records)
+        self.assertEqual((await self.client.post(path + "/source-observations", headers=headers,
+                         json={**body, "expected_version": 2})).status_code, 409)
+        self.subject = "customer-two"
+        self.assertEqual((await self.client.get(path + "/source-observations")).status_code, 404)
 
     async def test_load_rejection_and_water_warning(self):
         headers = {"X-CSRF-Token": "csrf"}

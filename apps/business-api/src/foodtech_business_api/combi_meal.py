@@ -2,16 +2,18 @@
 
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
+import hashlib
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
 from foodtech_contracts.combi_transition import TransitionSample, assess_transition
 from foodtech_contracts.combi_mackerel_process import Sample, assess as assess_mackerel_process
 from foodtech_contracts.combi_rice_process import Sample as RiceSample, assess as assess_rice_process
+from foodtech_contracts.combi_stream import CombiStreamValidator
 
 from .cooking import _context, _now, _store_call
 from .cooking_store import Conflict
@@ -117,8 +119,79 @@ class RiceProcessEvidence(BaseModel):
     samples: list[RiceProcessSample] = Field(min_length=1, max_length=2000)
 
 
+class CombiSourceImport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    device_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    records: list[str] = Field(min_length=3, max_length=5000)
+
+
 def _pk(subject: str, meal_id: str) -> str:
     return f"SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}"
+
+
+@router.post("/{meal_id}/source-observations", status_code=201)
+async def import_combi_source(meal_id: UUID, request: Request, body: CombiSourceImport) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: row for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version or old["status"] != "PREPARING_RICE" or old.get("source"):
+        raise HTTPException(409, "원천 자료는 준비 중인 배치에 한 번만 연결할 수 있습니다.")
+    encoded = [line.encode("utf-8") for line in body.records]
+    if any(len(line) > 2048 for line in encoded) or sum(len(line) + 1 for line in encoded) > 2_500_000:
+        raise HTTPException(413, "합성 원천 자료의 크기 제한을 초과했습니다.")
+    jobs = {"RICE": old["rice_cooking_job_id"], "TRANSITION": old["mode_transition_id"],
+            "MACKEREL": old["mackerel_cooking_job_id"]}
+    validator = CombiStreamValidator(str(meal_id), body.device_id, jobs)
+    counts = {key: 0 for key in jobs}
+    try:
+        for line in body.records:
+            item = validator.accept(line)
+            counts[item["phase"]] += 1
+    except (ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(422, "원천 표본이 배치 계약과 일치하지 않습니다.") from exc
+    if any(count == 0 for count in counts.values()):
+        raise HTTPException(422, "밥·모드 전환·고등어 표본이 모두 필요합니다.")
+    digest = hashlib.sha256(b"\n".join(encoded) + b"\n").hexdigest()
+    chunks = [{"sk": f"RAW#{offset // 100:04d}", "first_sequence": offset + 1,
+               "records": body.records[offset:offset + 100]} for offset in range(0, len(body.records), 100)]
+    version = int(old["version"]) + 1
+    now = _now()
+    meta = {key: value for key, value in old.items() if key != "pk"}
+    meta.update(version=version, updated_at=now,
+                source={"device_id": body.device_id, "profile_id": "mockprofile-120", "provenance": "SYNTHETIC",
+                        "record_count": len(body.records), "phase_counts": counts,
+                        "raw_sha256": digest, "imported_at": now})
+    event = {"sk": f"EVENT#{version:012d}", "event": "COMBI_SOURCE_IMPORTED",
+             "from_status": old["status"], "to_status": old["status"],
+             "observed_at": now, "recorded_at": now, "actor": session.subject,
+             "source_sha256": digest, "record_count": len(body.records)}
+    try:
+        await _store_call(store, store.attach_meal_source, pk, body.expected_version, meta, event, chunks)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "event": event}
+
+
+@router.get("/{meal_id}/source-observations")
+async def get_combi_source(meal_id: UUID, request: Request, cursor: int = Query(0, ge=0, le=49)) -> dict:
+    session, store = await _context(request)
+    pk = _pk(session.subject, str(meal_id))
+    meta, _ = await _store_call(store, store.read, pk)
+    if not meta or not meta.get("source"):
+        raise HTTPException(404, "연결된 원천 자료가 없습니다.")
+    count = int(meta["source"]["record_count"])
+    if cursor * 100 >= count:
+        raise HTTPException(404, "원천 자료 페이지가 없습니다.")
+    row = await _store_call(store, store.read_meal_source_chunk, pk, cursor)
+    if not row:
+        raise HTTPException(503, "연결된 원천 자료를 읽을 수 없습니다.")
+    return {"records": row["records"], "first_sequence": int(row["first_sequence"]),
+            "next_cursor": cursor + 1 if (cursor + 1) * 100 < count else None,
+            "raw_sha256": meta["source"]["raw_sha256"]}
 
 
 @router.post("", status_code=201)
