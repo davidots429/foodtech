@@ -111,6 +111,8 @@ def main() -> None:
         assert len(result["included_ingestion_event_ids"]) == 3
         assert result["source_raw_count"] == 3
         assert result["source_revision"] == 3
+        assert result["temperature_sample_summary"]["minimum_sample_celsius"] == "170"
+        assert result["temperature_sample_summary"]["sample_count"] == 3
         assert read_source_revision(DATA_TABLE, stream_pk) == 3
         assert result["collection_evidence"]["raw_snapshot_matches"] is True
         assert result["observation_coverage"]["before_first_us"] == 2_000_000
@@ -126,6 +128,7 @@ def main() -> None:
         with patch.object(recommendation_evidence, "_read", read_job):
             evidence = asyncio.run(recommendation_evidence.read_evidence(None, "test"))
             assert evidence["source_revision_status"] == "MATCHED_AT_READ"
+            assert evidence["recorded"]["temperature_sample_summary"]["minimum_sample_celsius"] == "170"
         followup_id = f"synthetic-restatement-{run_id}-followup"
         followup = {"pk": f"EVENT#{followup_id}", "sk": "ASSESSMENT#v1",
                     "source_pk": stream_pk, "ingestion_event_id": followup_id,

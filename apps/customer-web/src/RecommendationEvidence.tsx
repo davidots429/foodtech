@@ -4,7 +4,11 @@ import { api, jobPath } from "./cookingApi";
 type Evidence = {
   job_version: number; process_view: "AS_PROCESSED" | "LATEST_RESTATED"; process_stale: boolean;
   recorded: { menu: string | null; recipe_version: string | null; safety_status: string | null; process_status: string | null;
-    job_status: string | null; cooking_seconds: number | null; quality: { score_percent: string | null } | null };
+    job_status: string | null; cooking_seconds: number | null; quality: { score_percent: string | null } | null;
+    temperature_sample_summary: { sample_count: number; minimum_sample_celsius: string;
+      maximum_sample_celsius: string; below_160_between_qualifying_samples_us: number;
+      above_180_between_qualifying_samples_us: number; longest_above_180_sample_span_us: number;
+      last_sampled_recovery: { span_us: number; onset_bracketed_by_samples: boolean } | null } | null };
   unverified_categories: string[];
   completeness: "INSUFFICIENT" | "NOT_ASSESSED";
   completeness_reasons: string[];
@@ -118,6 +122,18 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}
         {" "}· 품질평가 {value.recorded.quality?.score_percent == null ? "현재 유효 평가 없음" : `${value.recorded.quality.score_percent}점`}</p>
       {value.process_stale && <p className="warning">공정 재계산 이후 작업이 변경되어 다시 확인해야 합니다.</p>}
+      {value.recorded.temperature_sample_summary && <div>
+        <p>조리 중 관찰 표본 {value.recorded.temperature_sample_summary.sample_count}개 ·
+          표본 최저 {value.recorded.temperature_sample_summary.minimum_sample_celsius}°C ·
+          표본 최고 {value.recorded.temperature_sample_summary.maximum_sample_celsius}°C</p>
+        <p>160°C 미만 연속 표본 사이 합계 {value.recorded.temperature_sample_summary.below_160_between_qualifying_samples_us / 1_000_000}초 ·
+          180°C 초과 연속 표본 사이 합계 {value.recorded.temperature_sample_summary.above_180_between_qualifying_samples_us / 1_000_000}초</p>
+        {value.recorded.temperature_sample_summary.last_sampled_recovery && <p>마지막 저온 표본부터 정상 범위 표본까지
+          {" "}{value.recorded.temperature_sample_summary.last_sampled_recovery.span_us / 1_000_000}초 ·
+          {value.recorded.temperature_sample_summary.last_sampled_recovery.onset_bracketed_by_samples ?
+            " 저온 진입 전 표본 있음" : " 저온 진입 전 표본 없음"}</p>}
+        <p className="small">표본 사이의 실제 온도와 투입 직전 온도는 확인하지 못했습니다.</p>
+      </div>}
       {value.collection_snapshot_matches_receipt && <p>저장된 수집 원본 스냅샷이 수집 종료 기록과 일치합니다.
         전체 원천 완전성과 이후 추가 데이터는 별도로 확인해야 합니다.</p>}
       {value.source_revision_status === "MATCHED_AT_READ" && <p>조회 시점의 수집 버전이 공정 재계산 버전과 일치합니다.

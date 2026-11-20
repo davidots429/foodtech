@@ -76,6 +76,20 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CURRENT_QUALITY_ASSESSMENT", value["unverified_categories"])
         self.assertIn("CURRENT_PROCESS_DERIVATION", value["unverified_categories"])
 
+    async def test_observation_summary_is_allowlisted_and_omitted_when_stale(self):
+        result = self.store.items[(self.pk, "RESTATEMENT#RESULT#test")]
+        result["temperature_sample_summary"] = {"version": "v1", "basis": "POINT_SAMPLES_ONLY",
+            "sample_count": 2, "minimum_sample_celsius": "165", "maximum_sample_celsius": "180",
+            "private_note": "never-return-this", "last_sampled_recovery": {
+                "span_us": 5000000, "onset_bracketed_by_samples": True, "private_note": "also-private"}}
+        path = f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence"
+        response = await self.client.get(path)
+        self.assertEqual(response.json()["recorded"]["temperature_sample_summary"]["minimum_sample_celsius"], "165")
+        self.assertNotIn("never-return-this", response.text)
+        self.assertNotIn("also-private", response.text)
+        self.store.items[(self.pk, "META")]["version"] = 8
+        self.assertIsNone((await self.client.get(path)).json()["recorded"]["temperature_sample_summary"])
+
     async def test_collection_receipt_reports_snapshot_match_without_claiming_completeness(self):
         derived = self.store.items[(self.pk, "RESTATEMENT#RESULT#test")]
         derived["collection_evidence"] = {"receipt_sk": "COLLECTION#RECEIPT#test", "raw_snapshot_matches": True}
