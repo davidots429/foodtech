@@ -130,3 +130,76 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ready.json()["step"]["mackerel_load_allowed"])
         self.assertEqual(ready.json()["step"]["ready_at_second"], 30)
         self.assertEqual((await self.client.get(path)).json()["mackerel"]["safety_status"], "NOT_MEASURED")
+
+    async def test_mackerel_workflow_and_safety_sample_gate(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        path = "/api/customer/combi-meals/" + created["meal"]["meal_batch_id"]
+        start = datetime.now(timezone.utc) - timedelta(seconds=3100)
+        for version, event, offset in ((1, "RICE_STARTED", 0), (2, "RICE_PROGRAM_COMPLETED", 1800),
+                                       (3, "RICE_UNLOADED", 1810), (4, "MODE_TRANSITION_STARTED", 1820)):
+            response = await self.client.post(path + "/events", headers=headers,
+                json={"expected_version": version, "event": event,
+                      "observed_at": (start + timedelta(seconds=offset)).isoformat()})
+            self.assertEqual(response.status_code, 200, response.text)
+        products = [{"product_id": f"fish-{n}", "rack_id": "rack-1", "shelf": n,
+                     "pan_id": f"pan-{n}", "mass_kg": "0.13", "thickness_cm": "1.5"}
+                    for n in (1, 2, 3)]
+        early = await self.client.post(path + "/events", headers=headers,
+            json={"expected_version": 5, "event": "MACKEREL_STARTED",
+                  "observed_at": (start + timedelta(seconds=1850)).isoformat(), "products": products})
+        self.assertEqual(early.status_code, 409)
+        samples = [{"second": i, "chamber_celsius": "220", "climate_setpoint_percent": "10",
+                    "door_closed": True, "critical_alarm": False, "humidity_percent": "10"} for i in range(1, 31)]
+        ready = await self.client.post(path + "/transition-evidence", headers=headers,
+            json={"expected_version": 5, "humidity_supported": True, "vent_supported": False, "samples": samples})
+        self.assertEqual(ready.status_code, 200, ready.text)
+        for version, event, offset in ((6, "MACKEREL_STARTED", 1850),
+                                       (7, "MACKEREL_PROGRAM_COMPLETED", 2570),
+                                       (8, "MACKEREL_UNLOADED", 2600)):
+            response = await self.client.post(path + "/events", headers=headers,
+                json={"expected_version": version, "event": event,
+                      "observed_at": (start + timedelta(seconds=offset)).isoformat(),
+                      **({"products": products} if event == "MACKEREL_STARTED" else {})})
+            self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["step"]["thermal_exposure_duration"], 750)
+        probes = [{"probe_id": f"probe-{n}", "product_id": f"fish-{n}", "calibration_status": "OK",
+                   "readings": [{"second": i, "celsius": "75"} for i in range(60)]} for n in (1, 2, 3)]
+        body = {"expected_version": 9, "measured_at": (start + timedelta(seconds=2600)).isoformat(),
+                "probes": probes}
+        incomplete = await self.client.post(path + "/mackerel-safety", headers=headers,
+                                            json={**body, "probes": probes[:2]})
+        self.assertEqual(incomplete.json()["step"]["safety_status"], "ASSESSMENT_INCOMPLETE")
+        result = await self.client.post(path + "/mackerel-safety", headers=headers,
+                                        json={**body, "expected_version": 10})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["step"]["safety_status"], "PASSED")
+        self.assertEqual(result.json()["step"]["batch_representative_core_temperature"], "75")
+        self.assertEqual(result.json()["step"]["process_status"], "NOT_MEASURED")
+        self.assertEqual((await self.client.post(path + "/mackerel-safety", headers=headers,
+                         json={**body, "expected_version": 11})).status_code, 409)
+
+    async def test_low_temperature_failure_and_expired_probe_incomplete(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        meal = created["meal"]
+        path = "/api/customer/combi-meals/" + meal["meal_batch_id"]
+        pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal['meal_batch_id']}"
+        unloaded = datetime.now(timezone.utc) - timedelta(seconds=120)
+        self.store.items[(pk, "META")]["status"] = "MACKEREL_UNLOADED"
+        fish = self.store.items[(pk, f"JOB#MACKEREL#{meal['mackerel_cooking_job_id']}")]
+        fish.update(food_unloaded_at=unloaded.isoformat(), products=[
+            {"product_id": f"fish-{n}", "rack_id": "rack-1", "shelf": n, "pan_id": f"pan-{n}",
+             "mass_kg": "0.13", "thickness_cm": "1.5"} for n in (1, 2, 3)])
+        probes = [{"probe_id": f"probe-{n}", "product_id": f"fish-{n}", "calibration_status": "OK",
+                   "readings": [{"second": i, "celsius": "75"} for i in range(60)]} for n in (1, 2, 3)]
+        probes[0]["calibration_status"] = "EXPIRED"
+        body = {"expected_version": 1, "measured_at": unloaded.isoformat(), "probes": probes}
+        incomplete = await self.client.post(path + "/mackerel-safety", headers=headers, json=body)
+        self.assertEqual(incomplete.json()["step"]["safety_status"], "ASSESSMENT_INCOMPLETE")
+        probes[0]["calibration_status"] = "OK"
+        probes[1]["readings"][23]["celsius"] = "74.9"
+        failed = await self.client.post(path + "/mackerel-safety", headers=headers,
+                                        json={**body, "expected_version": 2, "probes": probes})
+        self.assertEqual(failed.json()["step"]["safety_status"], "FAILED")
+        self.assertEqual(failed.json()["meal"]["status"], "MACKEREL_SAFETY_FAILED")
