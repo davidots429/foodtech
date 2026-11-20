@@ -19,7 +19,14 @@ internal static class CombiSimulation
         if (Path.GetFullPath(outputPath) == Path.GetFullPath(aggregatePath))
             throw new ArgumentException("Raw and aggregate outputs must be separate files.");
         using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
-        var root = fixture.RootElement;
+        var result = Generate(fixture.RootElement);
+        File.WriteAllLines(outputPath, result.Raw, new UTF8Encoding(false));
+        File.WriteAllLines(aggregatePath, result.Aggregates, new UTF8Encoding(false));
+        Console.WriteLine(JsonSerializer.Serialize(result.Metadata));
+    }
+
+    public static (string[] Raw, string[] Aggregates, object Metadata) Generate(JsonElement root)
+    {
         if (String(root, "provenance") != "SYNTHETIC" || String(root, "profileId") != "mockprofile-120")
             throw new InvalidDataException("Only the synthetic combi profile is supported.");
         var meal = Id(root, "mealBatchId");
@@ -91,10 +98,11 @@ internal static class CombiSimulation
             outsideTargetSeconds = group.Count(x => x.Phase == "RICE" ? x.ChamberCelsius < 98 || x.ChamberCelsius > 102 :
                 x.ChamberCelsius < 215 || x.ChamberCelsius > 225), provenance = "SYNTHETIC"
         }).ToArray();
-        File.WriteAllLines(outputPath, raw.Select(row => JsonSerializer.Serialize(row, JsonOptions)), new UTF8Encoding(false));
-        File.WriteAllLines(aggregatePath, aggregates.Select(row => JsonSerializer.Serialize(row, JsonOptions)), new UTF8Encoding(false));
-        Console.WriteLine(JsonSerializer.Serialize(new { mealBatchId = meal, generatorVersion = generator, seed,
-            logicalStartAt = start, provenance = "SYNTHETIC", rawCount = raw.Count, aggregateCount = aggregates.Length }));
+        return (raw.Select(row => JsonSerializer.Serialize(row, JsonOptions)).ToArray(),
+                aggregates.Select(row => JsonSerializer.Serialize(row, JsonOptions)).ToArray(),
+                new { mealBatchId = meal, generatorVersion = generator, seed,
+                      logicalStartAt = start, provenance = "SYNTHETIC", rawCount = raw.Count,
+                      aggregateCount = aggregates.Length });
     }
 
     private static string String(JsonElement element, string name) =>
