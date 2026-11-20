@@ -81,6 +81,8 @@ async def _recipe_job(request: Request, body: RecipeJobRequest):
         raise HTTPException(409, "합성 조리 기록만 요청할 수 있습니다.")
     if evidence["completeness"] == "INSUFFICIENT":
         raise HTTPException(409, "필수 조리 근거가 부족합니다.")
+    if evidence.get("process_stale") or evidence.get("source_revision_status") in {"CHANGED", "INCONSISTENT"}:
+        raise HTTPException(409, "원천 자료가 변경되었거나 연결이 맞지 않습니다. 공정 근거를 다시 확인해 주세요.")
     return session
 
 

@@ -13,6 +13,7 @@ from foodtech_contracts import stream_binding_key
 from foodtech_contracts.collection_evidence import CompletionTracker
 from foodtech_collection_adapter.aws_flow import DynamoOrderedIngestor
 from foodtech_business_api.cooking_store import DynamoCookingStore
+from foodtech_business_api.source_revision import _read as read_source_revision
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 from foodtech_standardization_worker.process_restatement import DynamoProcessRestatement
 
@@ -108,6 +109,7 @@ def main() -> None:
         assert len(result["included_ingestion_event_ids"]) == 3
         assert result["source_raw_count"] == 3
         assert result["source_revision"] == 3
+        assert read_source_revision(DATA_TABLE, stream_pk) == 3
         assert result["collection_evidence"]["raw_snapshot_matches"] is True
         assert result["observation_coverage"]["before_first_us"] == 2_000_000
         assert result["observation_coverage"]["after_last_us"] == 10_000_000
@@ -144,6 +146,7 @@ def main() -> None:
         assert len(next_result["included_ingestion_event_ids"]) == 4
         assert next_result["collection_evidence"]["raw_snapshot_matches"] is False
         assert next_result["source_revision"] == 4
+        assert read_source_revision(DATA_TABLE, stream_pk) == 4
         assert next_result["observation_coverage"]["after_last_us"] == 5_000_000
         assert cooking.get_item(Key={"pk": job_pk, "sk": result["sk"]},
                                 ConsistentRead=True)["Item"] == result
