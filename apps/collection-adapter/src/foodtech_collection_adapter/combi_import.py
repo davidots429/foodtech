@@ -43,7 +43,8 @@ async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str
     deadline = time.monotonic() + timeout_seconds
     records, counts, cursor, size = [], {key: 0 for key in jobs}, 0, 0
     while True:
-        result = await asyncio.to_thread(mock.poll, cursor)
+        result = await asyncio.to_thread(mock.poll, cursor, wait_seconds=4) if publish_live else \
+                 await asyncio.to_thread(mock.poll, cursor)
         if result.next_cursor != cursor + len(result.records):
             raise ValueError("Mock cursor does not match returned records")
         if not result.records:
@@ -51,7 +52,7 @@ async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError("Mock stream did not complete before the deadline")
-            await asyncio.sleep(min(5, max(0, deadline - time.monotonic())))
+            await asyncio.sleep(min(0.1 if publish_live else 5, max(0, deadline - time.monotonic())))
             continue
         pending = []
         for line in result.records:

@@ -39,15 +39,15 @@ class RestMockClient:
             raise ValueError("invalid token response")
         self.token = body["access_token"]
 
-    def poll(self, cursor: int = 0) -> PollResult:
-        if cursor < 0:
+    def poll(self, cursor: int = 0, *, wait_seconds: int = 0) -> PollResult:
+        if cursor < 0 or type(wait_seconds) is not int or not 0 <= wait_seconds <= 4:
             raise ValueError("invalid cursor")
         if self.token is None:
             self._authorize()
         for attempt in range(2):
             try:
                 response = self.client.get(
-                    "/v1/records", params={"cursor": cursor},
+                    "/v1/records", params={"cursor": cursor, **({"wait": wait_seconds} if wait_seconds else {})},
                     headers={"Authorization": f"Bearer {self.token}"},
                 )
                 if response.status_code == 401 and attempt == 0:

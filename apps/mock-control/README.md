@@ -47,7 +47,7 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
   --aggregates /tmp/combi-5s.jsonl
 ```
 
-정상 중형 fixture는 밥 1,800초, 습도 미지원 건열 전환 180초, 고등어 720초를 순서대로 재현한다. 동일 fixture로 기존 `serve` 명령을 실행하면 인증된 HTTPS GET으로 `mockprofile-120` 원표본을 제공한다. 수집 클라이언트는 해당 프로파일 헤더를 확인하고 별도 검증기는 명시된 식사 배치·장비·세 작업 ID와 순번·단계·1초 시각을 확인한다. 기본 모드는 전체 원표본을 즉시 반환한다. `serve`에 `--realtime`을 추가하면 Mock 시작부터 실제 경과시간 5초마다 완성된 5개 1초 원표본을 공개하며 cursor로 재조회할 수 있다. 시각 필드는 fixture의 논리 시각이고 실제 장비 측정시각이 아니다. 중간의 빈 응답은 `X-Stream-Complete: false`로 구분한다. 수집기 `--live`를 사용하면 고객 화면에서 수집 중 최근 표본을 조회할 수 있고, 최종 원본 연결은 수집 완료 후 이뤄진다. AWS 실검증 및 다른 크기·장애 fixture는 후속 작업이다. 판정은 플랫폼에서 수행하며 실제 제조사 규격이나 식품 안전을 주장하지 않는다.
+정상 중형 fixture는 밥 1,800초, 습도 미지원 건열 전환 180초, 고등어 720초를 순서대로 재현한다. 동일 fixture로 기존 `serve` 명령을 실행하면 인증된 HTTPS GET으로 `mockprofile-120` 원표본을 제공한다. 수집 클라이언트는 해당 프로파일 헤더를 확인하고 별도 검증기는 명시된 식사 배치·장비·세 작업 ID와 순번·단계·1초 시각을 확인한다. 기본 모드는 전체 원표본을 즉시 반환한다. `serve`에 `--realtime`을 추가하면 Mock 시작부터 일반 원표본은 5초마다 공개하고, 단계·문·치명 알람 변화와 환기 이벤트가 발생하면 그 시점까지의 원표본을 앞당겨 공개한다. cursor로 원본 순서를 유지해 재조회할 수 있다. 시각 필드는 fixture의 논리 시각이고 실제 장비 측정시각이 아니다. 중간의 빈 응답은 `X-Stream-Complete: false`로 구분한다. 수집기 `--live`를 사용하면 고객 화면에서 수집 중 최근 표본을 조회할 수 있고, 최종 원본 연결은 수집 완료 후 이뤄진다. AWS 실검증 및 다른 크기·장애 fixture는 후속 작업이다. 판정은 플랫폼에서 수행하며 실제 제조사 규격이나 식품 안전을 주장하지 않는다.
 
 ## 합성 MQTT Mock
 
@@ -89,3 +89,5 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 같은 `serve` 명령은 `fixtures/mockprofile-101-b-001.json`과 `fixtures/mockprofile-101-c-001.json`도 제공한다. 각 XML 표현은 별도 XSD로 검증하며 합성 데이터다.
 
 `serve-mqtt`는 `fixtures/mockprofile-301-{a,b,c}-001.json` 합성 XML도 지원한다. 인스턴스별 Topic에 XML을 전송하며 `--fault invalid-xml`로 오류를 재현할 수 있다. 실제 제조사 사양은 아니다.
+
+실시간 수집기는 최대 4초의 HTTPS 대기 요청으로 변화가 발생하면 다음 일반 묶음 전에도 수신한다. 이는 합성 Mock의 단계·문·치명 알람·환기 이벤트에 대한 로컬 경로이며, 네트워크 지연이나 고객 화면의 5초 새로고침까지 즉시성을 보장하지 않는다. 수집 후 계산되는 별도 공정 실패 이벤트의 즉시 전달은 후속 검증 대상이다.

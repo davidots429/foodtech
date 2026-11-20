@@ -154,7 +154,7 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                             for _ in range(30):
                                 await asyncio.sleep(.5)
                                 live = (await api.get(live_path)).json()
-                                if live["count"]:
+                                if live["count"] >= 5:
                                     break
                             self.assertEqual(live["state"], "COLLECTING")
                             self.assertEqual(live["latest"]["phase"], "RICE")

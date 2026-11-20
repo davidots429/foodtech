@@ -106,6 +106,31 @@ var disconnected = false;
 var realtime = options.ContainsKey("realtime");
 if (realtime && !combi) throw new ArgumentException("Real-time replay is only supported for the combi profile.");
 var replayClock = Stopwatch.StartNew();
+// The prefix array permits replay from any cursor without skipping preceding samples.
+var priorityThrough = new int[recordLines.Length + 1];
+if (realtime)
+{
+    string? previousPhase = null, previousDoor = null;
+    bool? previousAlarm = null;
+    for (var i = 0; i < recordLines.Length; i++)
+    {
+        using var parsed = JsonDocument.Parse(recordLines[i]);
+        var observation = parsed.RootElement;
+        var phase = observation.GetProperty("phase").GetString();
+        var door = observation.GetProperty("doorState").GetString();
+        var alarm = observation.GetProperty("criticalAlarm").GetBoolean();
+        var ventEvent = observation.GetProperty("ventEvent").ValueKind != JsonValueKind.Null;
+        var priority = i == 0 || phase != previousPhase || door != previousDoor || alarm != previousAlarm || ventEvent;
+        priorityThrough[i + 1] = priority ? i + 1 : priorityThrough[i];
+        previousPhase = phase; previousDoor = door; previousAlarm = alarm;
+    }
+}
+int AvailableRecords()
+{
+    if (!realtime) return recordLines.Length;
+    var elapsed = Math.Min(recordLines.Length, (int)replayClock.Elapsed.TotalSeconds);
+    return Math.Max(elapsed / 5 * 5, priorityThrough[elapsed]);
+}
 var fault = options.GetValueOrDefault("fault");
 if (fault is not (null or "invalid-utf8") || (fault is not null && profileId != "mockprofile-100"))
     throw new ArgumentException("Unsupported REST fault scenario.");
@@ -123,12 +148,13 @@ app.MapPost("/oauth2/token", async (HttpContext context) =>
     return Results.Json(new { access_token = accessToken, token_type = "Bearer", expires_in = 300 });
 });
 
-app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
+app.MapGet("/v1/records", async (HttpContext context, int? cursor, int? wait) =>
 {
     var bearer = context.Request.Headers.Authorization.ToString();
     if (tokenExpires <= DateTimeOffset.UtcNow || !FixedEquals(bearer, "Bearer " + accessToken))
         return Results.Unauthorized();
     if (cursor is < 0 || cursor > recordLines.Length) return Results.BadRequest(new { error = "invalid_cursor" });
+    if (wait is < 0 or > 4) return Results.BadRequest(new { error = "invalid_wait" });
     if (disconnectOnce && !disconnected)
     {
         disconnected = true;
@@ -136,10 +162,17 @@ app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
         return Results.Empty;
     }
     var start = cursor ?? 0;
-    // Reveal only complete five-second source windows; the cursor permits replay after disconnect.
-    var available = realtime ? Math.Min(recordLines.Length, (int)(replayClock.Elapsed.TotalSeconds / 5) * 5)
-                             : recordLines.Length;
+    var available = AvailableRecords();
     if (start > available) return Results.Conflict(new { error = "cursor_not_yet_available" });
+    if (realtime && wait is > 0 && start == available && available < recordLines.Length)
+    {
+        var until = replayClock.Elapsed + TimeSpan.FromSeconds(wait.Value);
+        while (available == start && replayClock.Elapsed < until)
+        {
+            await Task.Delay(100, context.RequestAborted);
+            available = AvailableRecords();
+        }
+    }
     var end = xml ? Math.Min(start + 1, available) : available;
     context.Response.Headers["X-Stream-Complete"] = (end == recordLines.Length ? "true" : "false");
     context.Response.Headers["X-Contract-Version"] = "1.0";
