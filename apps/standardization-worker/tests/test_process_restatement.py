@@ -72,6 +72,41 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual((coverage["before_first_us"], coverage["after_last_us"]), (0, 0))
         self.assertTrue(coverage["internal_gap_detected"])
 
+    def test_temperature_summary_uses_only_observed_adjacent_samples(self):
+        values = (159, 158, 170, 181, 182, 179, 183)
+        samples = [self.sample(str(index), index + 1, index * 5, temp)
+                   for index, temp in enumerate(values)]
+        summary = replay_process(list(reversed(samples)), self.job())["temperature_sample_summary"]
+        self.assertEqual((summary["basis"], summary["scope"]), ("POINT_SAMPLES_ONLY", "COOKING_INTERVAL_ONLY"))
+        self.assertEqual((summary["minimum_sample_celsius"], summary["maximum_sample_celsius"]), ("158", "183"))
+        self.assertEqual(summary["below_160_between_qualifying_samples_us"], 5_000_000)
+        self.assertEqual(summary["above_180_between_qualifying_samples_us"], 5_000_000)
+        self.assertEqual(summary["longest_above_180_sample_span_us"], 5_000_000)
+        self.assertNotIn("pre_load_temperature", summary)
+        samples[4]["normalized"]["sequence_number"] = 6
+        samples[5]["normalized"]["sequence_number"] = 7
+        samples[6]["normalized"]["sequence_number"] = 8
+        broken = replay_process(samples, self.job())["temperature_sample_summary"]
+        self.assertEqual(broken["above_180_between_qualifying_samples_us"], 0)
+        first, second = self.sample("first", 1, 0, 181), self.sample("second", 2, 5, 182)
+        second["normalized"]["event_time"] = "2026-11-14T00:00:05.000001Z"
+        separated = replay_process([first, second], self.job())["temperature_sample_summary"]
+        self.assertEqual(separated["longest_above_180_sample_span_us"], 0)
+
+    def test_recovery_is_a_sampled_span_and_never_bridges_a_gap(self):
+        samples = [self.sample("a", 1, 0, 170), self.sample("b", 2, 5, 160),
+                   self.sample("c", 3, 10, 159), self.sample("d", 4, 15, 166)]
+        recovery = replay_process(samples, self.job())["temperature_sample_summary"]["last_sampled_recovery"]
+        self.assertEqual(recovery["span_us"], 10_000_000)
+        self.assertTrue(recovery["onset_bracketed_by_samples"])
+        no_previous = replay_process(samples[1:], self.job())["temperature_sample_summary"]["last_sampled_recovery"]
+        self.assertFalse(no_previous["onset_bracketed_by_samples"])
+        samples[2]["normalized"]["sequence_number"] = 4
+        samples[3]["normalized"]["sequence_number"] = 5
+        after_gap = replay_process(samples, self.job())["temperature_sample_summary"]["last_sampled_recovery"]
+        self.assertFalse(after_gap["onset_bracketed_by_samples"])
+        self.assertEqual(after_gap["span_us"], 5_000_000)
+
     def test_fractional_interval_over_five_seconds_is_a_gap(self):
         first, last = self.sample("first", 1, 0), self.sample("last", 2, 5)
         last["normalized"]["event_time"] = "2026-11-14T00:00:05.000001Z"
@@ -166,6 +201,10 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(next_pointer["Item"]["version"]["N"], "2")
         self.assertEqual(next_pointer["ExpressionAttributeValues"][":previous"]["N"], "1")
         with patch("foodtech_standardization_worker.process_restatement.COVERAGE_VERSION", "future-version"):
+            self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+        new_result = processor.client.transact_write_items.call_args.kwargs["TransactItems"][1]["Put"]["Item"]
+        self.assertNotEqual(new_result["sk"]["S"], original_key)
+        with patch("foodtech_standardization_worker.process_restatement.SUMMARY_VERSION", "future-summary"):
             self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
         new_result = processor.client.transact_write_items.call_args.kwargs["TransactItems"][1]["Put"]["Item"]
         self.assertNotEqual(new_result["sk"]["S"], original_key)

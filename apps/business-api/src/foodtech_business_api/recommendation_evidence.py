@@ -44,6 +44,18 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
               "job_status": job.get("status"), "safety_status": job.get("safety_status"),
               "process_status": process.get("process_assessment_status"),
               "process_rule_version": process_detail.get("rule_version"), "quality": quality}
+    summary = derived.get("temperature_sample_summary") if derived else None
+    fields["temperature_sample_summary"] = ({key: summary.get(key) for key in
+        ("version", "basis", "scope", "sample_count", "warning_sample_count", "first_sample_celsius",
+         "minimum_sample_celsius", "maximum_sample_celsius", "last_sample_celsius",
+         "below_160_between_qualifying_samples_us", "above_180_between_qualifying_samples_us",
+         "longest_above_180_sample_span_us")}
+         if isinstance(summary, dict) and not stale else None)
+    if fields["temperature_sample_summary"] is not None:
+        recovery = summary.get("last_sampled_recovery")
+        fields["temperature_sample_summary"]["last_sampled_recovery"] = ({key: recovery.get(key) for key in
+            ("first_below_at", "first_in_range_at", "span_us", "onset_bracketed_by_samples")}
+            if isinstance(recovery, dict) else None)
     recorded_batch = job.get("tonkatsu_batch")
     fields["tonkatsu_batch"] = ({key: recorded_batch.get(key) for key in
         ("rule_version", "mode", "product_weights_g", "product_count", "total_mass_kg",

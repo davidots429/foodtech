@@ -13,6 +13,7 @@ from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.collection_evidence import matches_snapshot
 from foodtech_contracts.tonkatsu_process import process_status
+from foodtech_contracts.tonkatsu_observation_summary import VERSION as SUMMARY_VERSION, summarize
 
 from .process_rules import RULE_VERSION, advance
 
@@ -83,7 +84,8 @@ def replay_process(assessments: list[dict], job: dict) -> dict:
         job.get("process_time_status", "NOT_MEASURED"), data_gap=has_gap)
     return {"process_assessment": state, "process_assessment_status": status,
             "has_unfilled_gap": has_gap, "rule_version": RULE_VERSION,
-            "observation_coverage": coverage, "included_ingestion_event_ids": included}
+            "observation_coverage": coverage, "temperature_sample_summary": summarize(ordered),
+            "included_ingestion_event_ids": included}
 
 
 class DynamoProcessRestatement:
@@ -266,6 +268,7 @@ class DynamoProcessRestatement:
         pointer_version = int(previous_pointer["version"]) + 1 if previous_pointer else 1
         manifest = {"request_sk": request["sk"], "job_version": int(job["version"]),
                     "rule_version": RULE_VERSION, "coverage_version": COVERAGE_VERSION,
+                    "temperature_summary_version": SUMMARY_VERSION,
                     "collection_receipt_sk": receipt_sk,
                     "source_revision": source_revision,
                     "source_assessment_keys": [f"{pk}/{sk}" for pk, sk in sorted(sources)],
