@@ -162,6 +162,8 @@
 
 기존 `tests/live/jeyuk_assessment_dynamodb_check.py`는 평가 저장과 포인터 전이만 검증하도록 투입·원천 일치 확인을 대체한다. 이 스크립트의 성공은 투입·원천 일치 또는 안전 판정의 실 AWS 검증을 뜻하지 않는다.
 
+투입·원천 일치 확인 도입 전의 제육볶음 안전 합격 기록은 원본을 수정하지 않는다. 해당 작업 조회는 확인 전 안전 상태를 미완료로 표시하고 현재 평가를 차단하며, 새 비교·집계에서 제외한다. 이전에 포함된 비교·집계 결과의 상태는 `STALE`로 표시한다. 현재 안전 확인을 다시 통과해도 이전 평가는 자동 복원하지 않는다.
+
 2026-11-21 개발용 DynamoDB·SQS에서 C# Mock의 61개 합성 안전 표본과 개별 투입 기록을 연결해 안전 합격, 투입 시각 정정 후 합격 취소, 불일치 상태 재검증 차단과 시험 데이터 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/jeyuk_job_dynamodb_check.py --safety --timeline --feed-safety`. 이 시험은 전체 480초 원천 표본 범위를 검증하지 않는다.
 
 제육볶음 완료 품질평가는 같은 `/assessments` API의 `jeyuk-common-v1` 척도를 사용한다. 7개 공통 5점 항목에 제육볶음 관찰 설명을 붙이고 모두 점수와 관찰 근거를 요구한다. 운영자가 `QUALITY_PASSED` 또는 `QUALITY_FAILED`를 선택하며 실패에는 승인된 메뉴 품질 사유코드 하나 이상이 필요하다. 점수 기준에 미달한 `QUALITY_PASSED`는 거부한다. 1.8kg 합성 권장 배치의 50% 이하를 `PARTIAL`, 50% 초과~100%를 `REFERENCE`, 100% 초과~3.0kg 정격 이내를 `OVER_RECOMMENDED`로 기록한다. 평가 결과·사유·실제 적재량·인분과 안전 버전은 수정·재평가마다 새 불변 버전으로 저장되고 현재 포인터를 원자적으로 전환한다. 2026-11-15 개발용 DynamoDB에서 합성 제육볶음 작업의 최초 평가·안전 차단·재검증·재평가·현재 포인터 전환을 확인하고 시험 항목을 정리했다. 재실행 명령은 `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev uv run --no-sync python tests/live/jeyuk_assessment_dynamodb_check.py`다. 제육볶음 집계와 레시피 버전 개선 확정은 별도 범위다.

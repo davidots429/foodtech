@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
-from .cooking import SCORE_ITEMS, _context, _pk, _read, _store_call
+from .cooking import SCORE_ITEMS, _context, _jeyuk_feed_safety_current, _pk, _read, _store_call
 from .cooking_store import Conflict
 
 router = APIRouter(prefix="/api/customer/cooking-jobs", tags=["assessment-comparison"])
@@ -23,6 +23,7 @@ class ComparisonRequest(BaseModel):
 
 def _usable(meta: dict, pointer: dict | None) -> bool:
     return bool(meta["status"] == "COMPLETED" and meta["safety_status"] == "PASSED" and
+                _jeyuk_feed_safety_current(meta) and
                 not meta["evaluation_blocked"] and pointer and pointer["usable"] and
                 int(pointer["safety_version"]) == int(meta["safety_version"]))
 

@@ -215,7 +215,7 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         for job_id, band in ((self.baseline_id, "REFERENCE"),
                              (self.candidate_id, "OVER_RECOMMENDED")):
             pk = cooking._pk(self.subject, job_id)
-            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile="jeyuk-small")
+            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile="jeyuk-small", jeyuk_feed_safety_aligned=True)
             self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
                 menu="JEYUK", equipment_profile="jeyuk-small",
                 scale_version="jeyuk-common-v1", load_band=band,
@@ -228,6 +228,12 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.json()["improvement_status"], "OBSERVED")
 
         baseline_pk = cooking._pk(self.subject, self.baseline_id)
+        self.store.items[(baseline_pk, "META")].pop("jeyuk_feed_safety_aligned")
+        self.assertEqual((await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+            headers={"X-CSRF-Token": "test-csrf"})).status_code, 409)
+        status = await self.client.get(self._path() + "/" + result.json()["comparison_id"] + "/status")
+        self.assertEqual(status.json()["status"], "STALE")
+        self.store.items[(baseline_pk, "META")]["jeyuk_feed_safety_aligned"] = True
         self.store.items[(baseline_pk, "ASSESSMENT#REV#000000000001")]["load_band"] = "PARTIAL"
         rejected = await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
                                           headers={"X-CSRF-Token": "test-csrf"})
@@ -236,7 +242,7 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
     async def test_jeyuk_comparison_requires_matching_scale_and_current_safety(self):
         for job_id in (self.baseline_id, self.candidate_id):
             pk = cooking._pk(self.subject, job_id)
-            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile="jeyuk-small")
+            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile="jeyuk-small", jeyuk_feed_safety_aligned=True)
             self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
                 menu="JEYUK", equipment_profile="jeyuk-small", scale_version="jeyuk-common-v1")
         candidate_pk = cooking._pk(self.subject, self.candidate_id)

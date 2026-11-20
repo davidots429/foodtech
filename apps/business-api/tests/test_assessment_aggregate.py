@@ -184,7 +184,7 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         for job_id in (self.first_id, self.second_id):
             pk = cooking._pk(self.subject, job_id)
             self.store.items[(pk, "META")].update(
-                menu="JEYUK", equipment_profile="jeyuk-small")
+                menu="JEYUK", equipment_profile="jeyuk-small", jeyuk_feed_safety_aligned=True)
             self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
                 menu="JEYUK", equipment_profile="jeyuk-small",
                 scale_version="jeyuk-common-v1", load_band="OVER_RECOMMENDED")
@@ -204,6 +204,16 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed.status_code, 201, refreshed.text)
         self.assertEqual(refreshed.json()["result_id"], result["result_id"])
 
+        first_pk = cooking._pk(self.subject, self.first_id)
+        self.store.items[(first_pk, "META")].pop("jeyuk_feed_safety_aligned")
+        status = await self.client.get(group_path + f"/results/{result['result_id']}/status")
+        self.assertEqual(status.json()["status"], "STALE")
+        excluded = await self.client.post("/api/customer/assessment-aggregates", json=body,
+                                          headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(excluded.json()["sample_count"], 0)
+        self.assertIn("JEYUK_FEED_SAFETY_UNVERIFIED", [row["reason"] for row in excluded.json()["excluded"]])
+        self.store.items[(first_pk, "META")]["jeyuk_feed_safety_aligned"] = True
+
         second_pk = cooking._pk(self.subject, self.second_id)
         self.store.items[(second_pk, "META")].update(version=4, safety_status="PASSED",
                                                       evaluation_blocked=False)
@@ -220,7 +230,7 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
         first_pk = cooking._pk(self.subject, self.first_id)
         second_pk = cooking._pk(self.subject, self.second_id)
         for pk, size in ((first_pk, "medium"), (second_pk, "large")):
-            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile=f"jeyuk-{size}")
+            self.store.items[(pk, "META")].update(menu="JEYUK", equipment_profile=f"jeyuk-{size}", jeyuk_feed_safety_aligned=True)
             self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
                 menu="JEYUK", equipment_profile=f"jeyuk-{size}", scale_version="jeyuk-common-v1")
         body = {**self._body(), "menu": "JEYUK", "equipment_profile": "jeyuk-medium"}

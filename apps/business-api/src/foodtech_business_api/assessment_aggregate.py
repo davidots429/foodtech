@@ -11,7 +11,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .cooking import SCORE_ITEMS, _context, _pk, _read, _store_call
+from .cooking import SCORE_ITEMS, _context, _jeyuk_feed_safety_current, _pk, _read, _store_call
 from .cooking_store import Conflict
 
 router = APIRouter(prefix="/api/customer/assessment-aggregates", tags=["assessment-aggregate"])
@@ -73,6 +73,8 @@ def _reason(meta: dict, pointer: dict | None, assessment: dict | None,
         return "JOB_NOT_COMPLETED"
     if meta["safety_status"] != "PASSED":
         return "SAFETY_NOT_PASSED"
+    if not _jeyuk_feed_safety_current(meta):
+        return "JEYUK_FEED_SAFETY_UNVERIFIED"
     if meta["evaluation_blocked"]:
         return "EVALUATION_BLOCKED"
     if not pointer:
@@ -296,7 +298,8 @@ async def aggregate_status(group_id: str, result_id: str, request: Request) -> d
         job_pk = _pk(session.subject, job_id)
         meta, pointer = await _store_call(store, store.read, job_pk)
         process_pointer = await _store_call(store, store.process_pointer, job_pk)
-        if not meta or int(meta["version"]) != int(reference["job_version"]) or \
+        if not meta or (reference.get("included") and not _jeyuk_feed_safety_current(meta)) or \
+                int(meta["version"]) != int(reference["job_version"]) or \
                 int(meta["safety_version"]) != int(reference["safety_version"]) or \
                 (int(pointer["version"]) if pointer else None) != reference["assessment_version"] or \
                 ("job_status" in reference and meta["status"] != reference["job_status"]) or \

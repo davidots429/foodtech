@@ -36,6 +36,7 @@ const reasonLabels: Record<string, string> = {
   DIMENSION_MISMATCH: "메뉴·장비·레시피 버전 불일치",
   JOB_NOT_COMPLETED: "조리작업 미완료",
   SAFETY_NOT_PASSED: "안전 통과 아님",
+  JEYUK_FEED_SAFETY_UNVERIFIED: "재료 투입과 안전 표본 일치 미확인",
   EVALUATION_BLOCKED: "평가 사용 차단",
   NO_CURRENT_ASSESSMENT: "현재 평가 없음",
   CURRENT_ASSESSMENT_BLOCKED: "현재 평가 사용 불가",

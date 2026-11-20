@@ -142,7 +142,7 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
                     actual_cooking_seconds=61, process_time_status="NORMAL",
                     discharge_check_version=1, discharge_check=[{"phase": phase} for phase in
                                                                   ("EARLY", "MIDDLE", "LATE")],
-                    safety_status="PASSED", evaluation_blocked=False,
+                    safety_status="PASSED", evaluation_blocked=False, jeyuk_feed_safety_aligned=True,
                     process_assessment={"second": 61, "status": "NORMAL",
                                         "source_assessment_pk": "JEYUK#jeyuk-evidence-a",
                                         "source_assessment_sk": "ASSESSMENT#000061",

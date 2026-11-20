@@ -944,7 +944,7 @@ export function CookingWorkspace({ csrf }: Props) {
             {job.evaluation_status === "INTERRUPTED" && <p className="warning">안전 이상으로 평가가 중단되었습니다. 종합점수는 미산출이며 신고 당시 입력한 점수·관찰값은 안전 이력에 보존됩니다.</p>}
             {!canAssess && <p className="warning">작업 완료와 안전 통과가 확인되기 전에는 평가를 완료할 수 없습니다. 과거 품질 합격은 현재 제공 허가가 아닙니다.</p>}
             {current && <p className={current.usable ? "small" : "warning"}>
-              현재 평가 포인터 v{current.version}: {current.usable ? "사용 가능" : `사용 차단 (${current.blocked_reason ?? "안전 확인 필요"})`}
+              현재 평가 포인터 v{current.version}: {current.usable ? "사용 가능" : `사용 차단 (${current.blocked_reason === "JEYUK_FEED_SAFETY_UNVERIFIED" ? "재료 투입과 안전 표본 일치 미확인" : current.blocked_reason ?? "안전 확인 필요"})`}
             </p>}
             <div className="score-grid">
               {scoreItems.map(({ key, label, help }) => <div className="score-row" key={key}>
