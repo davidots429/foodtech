@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import os
+import time
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -13,7 +14,7 @@ from .rest import RestMockClient
 
 
 async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str,
-                      device_id: str, csrf: str) -> dict:
+                      device_id: str, csrf: str, *, timeout_seconds: float = 5100) -> dict:
     """Read a complete Mock stream and submit it using the caller's customer session."""
     meal_id = str(UUID(meal_id))
     path = f"/api/customer/combi-meals/{meal_id}"
@@ -25,13 +26,21 @@ async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str
     jobs = {"RICE": meal["rice_cooking_job_id"], "TRANSITION": meal["mode_transition_id"],
             "MACKEREL": meal["mackerel_cooking_job_id"]}
     validator = CombiStreamValidator(meal_id, device_id, jobs)
+    if timeout_seconds <= 0:
+        raise ValueError("invalid stream timeout")
+    deadline = time.monotonic() + timeout_seconds
     records, counts, cursor, size = [], {key: 0 for key in jobs}, 0, 0
     while True:
         result = await asyncio.to_thread(mock.poll, cursor)
         if result.next_cursor != cursor + len(result.records):
             raise ValueError("Mock cursor does not match returned records")
         if not result.records:
-            break
+            if result.complete:
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Mock stream did not complete before the deadline")
+            await asyncio.sleep(min(5, max(0, deadline - time.monotonic())))
+            continue
         for line in result.records:
             length = len(line.encode("utf-8"))
             size += length + 1
