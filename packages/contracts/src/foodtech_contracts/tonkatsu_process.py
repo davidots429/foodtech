@@ -3,6 +3,7 @@
 from decimal import Decimal
 
 RULE_VERSION = "tonkatsu-thickness-time-v1"
+TEMPERATURE_RULE_VERSION = "tonkatsu-temperature-v3"
 
 TIME_BANDS = {
     "THIN": (150, 165, 195, 210, 240),

@@ -89,6 +89,17 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed["process_time_status"], "NORMAL")
         self.assertEqual(completed["process_assessment_status"], "WARNING")
 
+    async def test_completion_treats_previous_rule_history_as_unknown(self):
+        job = await self.create()
+        for event in ("PREHEAT_COMPLETED", "COOKING_STARTED"):
+            job = await self.transition(job, event)
+        meta = self.store.items[(cooking._pk(self.subject, job["job_id"]), "META")]
+        meta.update({"process_assessment": {"data_gap": False, "gap_history_verified": True,
+                                            "rule_version": "tonkatsu-temperature-v2"},
+                     "process_temperature_status": "NORMAL", "process_assessment_status": "NORMAL"})
+        completed = await self.transition(job, "COOKING_COMPLETED")
+        self.assertEqual(completed["process_assessment_status"], "WARNING")
+
     async def test_owned_job_list_is_paginated_and_isolated(self):
         jobs = [await self.create() for _ in range(3)]
         first = await self.client.get("/api/customer/cooking-jobs", params={"limit": 2})

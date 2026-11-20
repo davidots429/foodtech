@@ -14,7 +14,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.cooking_live_time import observe as observe_live_time
-from foodtech_contracts.tonkatsu_process import RULE_VERSION, cooking_time_status, process_status, thickness_profile
+from foodtech_contracts.tonkatsu_process import (RULE_VERSION, TEMPERATURE_RULE_VERSION,
+                                                 cooking_time_status, process_status, thickness_profile)
 from foodtech_contracts.jeyuk_process import (RULE_VERSION as JEYUK_RULE_VERSION,
                                               cooking_time_status as jeyuk_cooking_time_status,
                                               load_status as jeyuk_load_status)
@@ -553,7 +554,8 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
         else:
             assessment = old.get("process_assessment")
             gap_or_unknown = ((assessment.get("data_gap") is not False or
-                               assessment.get("gap_history_verified") is not True)
+                               assessment.get("gap_history_verified") is not True or
+                               assessment.get("rule_version") != TEMPERATURE_RULE_VERSION)
                               if isinstance(assessment, dict) else
                               old.get("process_temperature_status", "NOT_MEASURED") != "NOT_MEASURED")
             meta["process_assessment_status"] = process_status(

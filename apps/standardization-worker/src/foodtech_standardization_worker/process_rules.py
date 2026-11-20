@@ -1,9 +1,10 @@
 """First approved synthetic fryer temperature rules over ordered, valid samples."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
+from foodtech_contracts.tonkatsu_process import TEMPERATURE_RULE_VERSION
 
-RULE_VERSION = "tonkatsu-temperature-v2"
+RULE_VERSION = TEMPERATURE_RULE_VERSION
 SAMPLE_INTERVAL_SECONDS = 5
 
 
@@ -12,6 +13,11 @@ def _seconds(start: str | None, end: str) -> int:
         return 0
     return int((datetime.fromisoformat(end.replace("Z", "+00:00")) -
                 datetime.fromisoformat(start.replace("Z", "+00:00"))).total_seconds())
+
+
+def _exceeds_sample_interval(start: str, end: str) -> bool:
+    return (datetime.fromisoformat(end.replace("Z", "+00:00")) -
+            datetime.fromisoformat(start.replace("Z", "+00:00"))) > timedelta(seconds=SAMPLE_INTERVAL_SECONDS)
 
 
 def advance(previous: dict | None, normalized: dict, *, ingestion_event_id: str,
@@ -26,11 +32,12 @@ def advance(previous: dict | None, normalized: dict, *, ingestion_event_id: str,
         return None
     temperature = Decimal(normalized["CHAMBER_TEMPERATURE"]["value"])
     gap = "DATA_GAP" in finding_codes or "LATE_AFTER_GAP" in finding_codes or \
-        bool(last_at and _seconds(last_at, at) > SAMPLE_INTERVAL_SECONDS)
+        bool(last_at and _exceeds_sample_interval(last_at, at))
     has_gap = before.get("data_gap") is True or gap
     # Older state may already have forgotten a gap; only a full replay can
     # establish complete history for an existing legacy job.
-    history_verified = not before or (before.get("gap_history_verified") is True and
+    history_verified = not before or (before.get("rule_version") == RULE_VERSION and
+                                      before.get("gap_history_verified") is True and
                                       type(before.get("data_gap")) is bool)
     low = temperature < 160
     high = temperature > 180

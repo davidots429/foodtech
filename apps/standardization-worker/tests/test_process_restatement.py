@@ -72,6 +72,12 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual((coverage["before_first_us"], coverage["after_last_us"]), (0, 0))
         self.assertTrue(coverage["internal_gap_detected"])
 
+    def test_fractional_interval_over_five_seconds_is_a_gap(self):
+        first, last = self.sample("first", 1, 0), self.sample("last", 2, 5)
+        last["normalized"]["event_time"] = "2026-11-14T00:00:05.000001Z"
+        coverage = replay_process([first, last], self.job())["observation_coverage"]
+        self.assertTrue(coverage["internal_gap_detected"])
+
     def test_reversed_cooking_interval_is_rejected(self):
         job = {**self.job(), "actual_placed_at": "2026-11-14T00:00:10Z",
                "actual_lifted_at": "2026-11-14T00:00:00Z"}
