@@ -27,6 +27,11 @@ export type CookingJob = {
   actual_load_kg?: string | null;
   tonkatsu_batch?: { rule_version: string; mode: "REFERENCE" | "PARTIAL"; product_weights_g: number[];
     product_count: number; total_mass_kg: string; rated_capacity_kg: string; load_percent: string } | null;
+  tonkatsu_batch_version?: number;
+  tonkatsu_initial_context?: { batch_version: number; status: string; ingredient_temperature_c: string | null;
+    temperature_observed_at: string | null; storage_state: "CHILLED" | "FROZEN" | "OTHER" | "UNKNOWN";
+    oil_capacity_l: string | null; oil_batches_since_change: number | null; oil_cooked_mass_kg: string | null;
+    oil_changed_at: string | null } | null;
   auto_safety_status?: "NOT_MEASURED" | "PENDING" | "PASSED" | "ASSESSMENT_INCOMPLETE";
   mixture_hold_seconds?: number;
   discharge_check_version?: number;

@@ -40,6 +40,17 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
     fields["tonkatsu_batch"] = ({key: recorded_batch.get(key) for key in
         ("rule_version", "mode", "product_weights_g", "product_count", "total_mass_kg",
          "rated_capacity_kg", "load_percent")} if isinstance(recorded_batch, dict) else None)
+    raw_initial = job.get("tonkatsu_initial_context")
+    initial_current = bool(isinstance(raw_initial, dict) and
+                           raw_initial.get("batch_version") == job.get("tonkatsu_batch_version") and
+                           raw_initial.get("schema_version") == "tonkatsu-initial-context-v1" and
+                           raw_initial.get("provenance") == "SYNTHETIC" and
+                           raw_initial.get("status") == "DECLARED_UNVERIFIED")
+    initial = ({key: raw_initial.get(key) for key in ("schema_version", "provenance", "status", "batch_version",
+                "product_classification", "ingredient_temperature_c", "temperature_observed_at", "storage_state",
+                "oil_capacity_l", "oil_batches_since_change", "oil_cooked_mass_kg", "oil_changed_at")}
+               if initial_current else None)
+    fields["tonkatsu_initial_context"] = initial
     missing = []
     if job.get("provenance") != "SYNTHETIC" or job.get("menu") not in {"TONKATSU", "JEYUK"}:
         missing.append("SUPPORTED_SYNTHETIC_JOB")
@@ -61,9 +72,19 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
     if job.get("menu") == "TONKATSU":
         if not job.get("thickness_profile"):
             missing.append("THICKNESS_PROFILE")
-        # These approved input categories do not yet have a complete, trusted
-        # per-job contract; do not invent values from the current process state.
-        missing.extend(["INGREDIENT_INITIAL_STATE", "FRYER_AND_BATCH_BASELINE", "COMPARABLE_PREVIOUS_JOB"])
+        if raw_initial and not initial_current:
+            missing.append("INITIAL_CONTEXT_STALE")
+        if initial_current:
+            missing.append("INITIAL_CONTEXT_DECLARED_UNVERIFIED")
+        if not initial or initial.get("ingredient_temperature_c") is None or \
+                not initial.get("temperature_observed_at") or initial.get("storage_state") not in {"CHILLED", "FROZEN", "OTHER"}:
+            missing.append("INGREDIENT_INITIAL_STATE")
+        if initial and initial.get("storage_state") in {"FROZEN", "OTHER"}:
+            missing.append("STORAGE_OUTSIDE_SCENARIO")
+        if not recorded_batch or not initial or any(initial.get(name) is None for name in
+                ("oil_capacity_l", "oil_batches_since_change", "oil_cooked_mass_kg")):
+            missing.append("FRYER_AND_BATCH_BASELINE")
+        missing.append("COMPARABLE_PREVIOUS_JOB")
     elif job.get("menu") == "JEYUK":
         missing.extend(["TARGET_SETTINGS_AND_INTERVALS", "PREVIOUS_JAM_OR_OVERLOAD", "COMPARABLE_PREVIOUS_JOB"])
     return {"job_id": job["job_id"], "job_version": job["version"],
