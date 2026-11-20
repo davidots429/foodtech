@@ -20,8 +20,12 @@ UA_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-203-a-v
 UA_VALIDATOR = jsonschema.Draft202012Validator(UA_SCHEMA, format_checker=jsonschema.FormatChecker())
 
 
+UA_JSON_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-200-a-v1.schema.json").read_text())
+UA_JSON_VALIDATOR = jsonschema.Draft202012Validator(UA_JSON_SCHEMA, format_checker=jsonschema.FormatChecker())
+
+
 def _validate(record: dict) -> None:
-    validator = {"mockprofile-300-a-001": MQTT_VALIDATOR, "mockprofile-203-a-001": UA_VALIDATOR}.get(
+    validator = {"mockprofile-300-a-001": MQTT_VALIDATOR, "mockprofile-203-a-001": UA_VALIDATOR, "mockprofile-200-a-001": UA_JSON_VALIDATOR}.get(
         record.get("deviceId"), VALIDATOR)
     validator.validate(record)
 

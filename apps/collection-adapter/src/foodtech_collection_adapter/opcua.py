@@ -44,7 +44,8 @@ def validate_server_certificate(endpoint: str, certificate: str) -> None:
         raise ValueError("server certificate hostname does not match endpoint")
 
 
-def validate_history(value: str, device_id: str, seen: dict[int, str], batch: str | None):
+def validate_history(value: str, device_id: str, seen: dict[int, str], batch: str | None,
+                     *, source_id: str = "synthetic-opcua"):
     if not isinstance(value, str) or len(value.encode("utf-8")) > 2_000_000:
         raise ValueError("invalid synthetic OPC UA recovery buffer")
     records = json.loads(value)
@@ -55,7 +56,7 @@ def validate_history(value: str, device_id: str, seen: dict[int, str], batch: st
         if not isinstance(raw, str) or len(raw.encode("utf-8")) > 2048:
             raise ValueError("invalid synthetic OPC UA record")
         record = decode_record(raw)
-        if (record["sourceId"] != "synthetic-opcua" or record["deviceId"] != device_id or
+        if (record["sourceId"] != source_id or record["deviceId"] != device_id or
                 record["sequenceNumber"] != number):
             raise ValueError("unexpected synthetic OPC UA source or sequence")
         if batch is None:

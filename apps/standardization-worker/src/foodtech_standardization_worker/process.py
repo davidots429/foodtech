@@ -91,5 +91,6 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         },
         correction_rule_id="FT-MAP-VENDOR-A-1",
         mapping_version={"mockprofile-300-a-001": "mockprofile-300-a-map-v1",
-                         "mockprofile-203-a-001": "mockprofile-203-a-map-v1"}.get(record["deviceId"], MAPPING_VERSION),
+                         "mockprofile-203-a-001": "mockprofile-203-a-map-v1",
+                         "mockprofile-200-a-001": "mockprofile-200-a-map-v1"}.get(record["deviceId"], MAPPING_VERSION),
     )
