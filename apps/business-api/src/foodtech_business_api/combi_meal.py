@@ -6,7 +6,7 @@ import hashlib
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
@@ -187,6 +187,42 @@ async def get_combi_live(meal_id: UUID, request: Request) -> dict:
             "rice_monitor": state.get("rice_monitor"), "mackerel_monitor": state.get("mackerel_monitor"),
             "transition_monitor": state.get("transition_monitor"),
             "updated_at": state["updated_at"], "provenance": "SYNTHETIC"}
+
+
+@router.get("/{meal_id}/source-live/records")
+async def get_combi_live_records(meal_id: UUID, request: Request, response: Response) -> dict:
+    """Return one bounded, verified snapshot for resuming a customer-owned synthetic stream."""
+    session, store = await _context(request)
+    pk = _pk(session.subject, str(meal_id))
+    meal, _ = await _store_call(store, store.read, pk)
+    if not meal:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    state = await _store_call(store, store.read_meal_live, pk)
+    response.headers["Cache-Control"] = "no-store"
+    if not state:
+        return {"count": 0, "device_id": None, "records": []}
+    count = int(state["count"])
+    if not 1 <= count <= 5000:
+        raise HTTPException(503, "수집 중 원천 자료의 상태가 올바르지 않습니다.")
+    chunks = await _store_call(store, store.read_meal_live_chunks, pk)
+    records, size = [], 0
+    for chunk in chunks:
+        if len(records) == count:
+            break  # A later append is outside this snapshot.
+        part = chunk.get("records")
+        if (chunk.get("sk") != f"CHUNK#{len(records):06d}" or chunk.get("device_id") != state["device_id"] or
+                not isinstance(part, list) or not 1 <= len(part) <= 5 or
+                len(records) + len(part) > count or any(not isinstance(line, str) for line in part)):
+            raise HTTPException(503, "수집 중 원천 자료를 검증하지 못했습니다.")
+        encoded = [line.encode("utf-8") for line in part]
+        size += sum(len(line) + 1 for line in encoded)
+        digest = hashlib.sha256(b"\n".join(encoded) + b"\n").hexdigest()
+        if any(len(line) > 2048 for line in encoded) or size > 2_500_000 or digest != chunk.get("sha256"):
+            raise HTTPException(503, "수집 중 원천 자료를 검증하지 못했습니다.")
+        records.extend(part)
+    if len(records) != count or size != int(state["byte_count"]):
+        raise HTTPException(503, "수집 중 원천 자료가 불완전합니다.")
+    return {"count": count, "device_id": state["device_id"], "records": records}
 
 
 @router.post("/{meal_id}/source-live")

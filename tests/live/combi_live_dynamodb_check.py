@@ -95,6 +95,9 @@ async def run_scenario(store, subject, created_partitions):
             current_subject = subject
             live = await client.get(path + "/source-live")
             assert live.json()["count"] == 1 and live.json()["state"] == "COLLECTING"
+            snapshot = await client.get(path + "/source-live/records")
+            assert snapshot.status_code == 200 and snapshot.json()["records"] == records[:1]
+            assert snapshot.headers["cache-control"] == "no-store"
             monitor = live.json()["rice_monitor"]
             assert monitor["last_second"] == 1 and monitor["complete_from_start"]
             assert monitor["failure_codes"] == [] and monitor["low_total"] == 1
@@ -112,6 +115,8 @@ async def run_scenario(store, subject, created_partitions):
             fish = (await client.get(path + "/source-live")).json()["mackerel_monitor"]
             assert fish["recovered_at_second"] == 31 and fish["last_second"] == 61
             assert "LOW_TEMPERATURE_PROCESS_FAILURE" in fish["failure_codes"]
+            snapshot = await client.get(path + "/source-live/records")
+            assert snapshot.status_code == 200 and snapshot.json()["records"] == records
             completion = await client.post(path + "/source-observations", headers=headers, json={
                 "expected_version": 1, "device_id": "synthetic-combi-validation", "records": records})
             assert completion.status_code == 201, completion.text
@@ -126,7 +131,8 @@ async def run_scenario(store, subject, created_partitions):
             assert saved_records == records
             return {"competing_appends": statuses, "idempotent_replay": True,
                     "customer_isolation": isolated.status_code, "rice_monitor_second": monitor["last_second"],
-                    "low_temperature_failure_detected": True, "mackerel_recovered_second": fish["recovered_at_second"],
+                    "low_temperature_failure_detected": True, "resume_snapshot_records": len(snapshot.json()["records"]),
+                    "mackerel_recovered_second": fish["recovered_at_second"],
                     "mackerel_low_failure_detected": True, "transition_ready_second": transition["ready_observed_at_second"],
                     "final_record_count": len(records)}
 

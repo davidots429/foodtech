@@ -77,6 +77,15 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.json(), {"next_cursor": 1, "duplicate": False})
         duplicate = await self.client.post(path + "/source-live", json=batch, headers=headers)
         self.assertEqual(duplicate.json(), {"next_cursor": 1, "duplicate": True})
+        snapshot = await self.client.get(path + "/source-live/records")
+        self.assertEqual(snapshot.headers["cache-control"], "no-store")
+        self.assertEqual(snapshot.json(), {"count": 1, "device_id": "combi-1", "records": records[:1]})
+        live_pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal_id}#LIVE"
+        chunk = self.store.items[(live_pk, "CHUNK#000000")]
+        original = chunk["records"][0]
+        chunk["records"][0] = original + " "
+        self.assertEqual((await self.client.get(path + "/source-live/records")).status_code, 503)
+        chunk["records"][0] = original
         changed = json.loads(records[0]); changed["chamberCelsius"] = 99
         self.assertEqual((await self.client.post(path + "/source-live", json={**batch, "records": [json.dumps(changed)]}, headers=headers)).status_code, 409)
         gap = {**batch, "expected_cursor": 2, "records": records[2:]}
@@ -85,6 +94,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((status["state"], status["count"], status["latest"]["phase"]), ("COLLECTING", 1, "RICE"))
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path + "/source-live")).status_code, 404)
+        self.assertEqual((await self.client.get(path + "/source-live/records")).status_code, 404)
         self.subject = "customer-one"
         completion = {"expected_version": 1, "device_id": "combi-1", "records": records}
         self.assertEqual((await self.client.post(path + "/source-observations", json=completion, headers=headers)).status_code, 409)
