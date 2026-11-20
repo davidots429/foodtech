@@ -19,7 +19,7 @@ def main() -> int:
     parser.add_argument("--cursor-key", default="default", help="separate cursor for each Mock fixture")
     parser.add_argument("--profile", choices=("mockprofile-100", "mockprofile-110"),
                         default="mockprofile-100")
-    parser.add_argument("--instance", choices=("mockprofile-100-a-001", "mockprofile-100-b-001"),
+    parser.add_argument("--instance", choices=("mockprofile-100-a-001", "mockprofile-100-b-001", "mockprofile-100-c-001"),
                         default="mockprofile-100-a-001")
     args = parser.parse_args()
     if args.polls < 1 or args.interval < 0:
@@ -60,7 +60,8 @@ def main() -> int:
             client.close()
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
     quarantine = None
-    cursor_key = args.cursor_key if args.instance == "mockprofile-100-a-001" else "vendor-b#" + args.cursor_key
+    cursor_key = (args.cursor_key if args.instance == "mockprofile-100-a-001" else
+                  ("vendor-b#" if args.instance == "mockprofile-100-b-001" else "vendor-c#") + args.cursor_key)
     try:
         cursor, streams = ingestor.cursor_state(cursor_key)
         for index in range(args.polls):

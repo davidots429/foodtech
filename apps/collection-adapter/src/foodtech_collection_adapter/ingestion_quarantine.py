@@ -29,7 +29,12 @@ def failure(raw: str | bytes) -> tuple[str, list[str]] | None:
         return "SCHEMA_VIOLATION", []
     if not isinstance(value, dict):
         return "SCHEMA_VIOLATION", []
-    if (value.get("device_id") == "mockprofile-100-b-001" or
+    if value.get("DeviceId") == "mockprofile-100-c-001" or ("deviceId" not in value and "SchVer" in value):
+        value = {"sourceId": value.get("SrcId"), "deviceId": value.get("DeviceId"),
+                 "batchId": value.get("BatchId"), "schemaVersion": value.get("SchVer"),
+                 "sequenceNumber": value.get("SeqNo"), "recordId": value.get("RecId"),
+                 "eventTime": value.get("Timestamp")}
+    elif (value.get("device_id") == "mockprofile-100-b-001" or
             ("deviceId" not in value and any(key in value for key in ("schema_version", "source_id", "device_id")))):
         value = {"sourceId": value.get("source_id"), "deviceId": value.get("device_id"),
                  "batchId": value.get("batch_id"), "schemaVersion": value.get("schema_version"),

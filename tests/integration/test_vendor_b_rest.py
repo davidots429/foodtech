@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import httpx
 from foodtech_collection_adapter import __main__ as cli
+from foodtech_collection_adapter.resequence import Received, Resequencer
 from foodtech_contracts import decode_record
 from foodtech_standardization_worker.process import assess
 
@@ -63,6 +64,14 @@ class VendorBIntegrationTests(unittest.TestCase):
                 self.assertEqual(calls["key"], "vendor-b#default")
                 self.assertEqual(calls["cursors"], [(3, "vendor-b#default")])
                 self.assertEqual([decode_record(raw)["sequenceNumber"] for raw in calls["records"]], [1, 3, 2])
+                engine, released = Resequencer(), []
+                for i, raw in enumerate(calls["records"]):
+                    record = decode_record(raw)
+                    released.extend(engine.accept(Received(str(i), raw, record["sourceId"], record["deviceId"],
+                        record["batchId"], record["sequenceNumber"], float(i)), float(i)))
+                self.assertEqual([item.sequence_number for item in released], [1, 2, 3])
+                self.assertEqual([assess(item.ingestion_event_id, item.raw).quality_status for item in released],
+                                 ["VALID", "VALID", "QUARANTINED"])
                 results = [assess(str(i), raw) for i, raw in enumerate(calls["records"])]
                 self.assertEqual([item.quality_status for item in results], ["VALID", "QUARANTINED", "VALID"])
                 self.assertEqual(results[0].normalized["OUTPUT_PERCENT"]["value"], "60")
