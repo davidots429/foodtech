@@ -20,6 +20,7 @@ from .aws_flow import DynamoOrderedIngestor
 
 NAMESPACE = "urn:foodtech:synthetic:opcua:203:a:v1"
 SERVER_URI = "urn:localhost:foodtech:synthetic-ua"
+INSTANCES = ("mockprofile-203-a-001", "mockprofile-203-b-001", "mockprofile-203-c-001")
 
 
 def validate_server_certificate(endpoint: str, certificate: str) -> None:
@@ -71,8 +72,8 @@ def validate_history(value: str, device_id: str, seen: dict[int, str], batch: st
 
 
 async def collect(endpoint: str, client_certificate: str, client_key: str, server_certificate: str,
-                  ingestor, *, count: int, timeout_seconds: int) -> int:
-    if not 1 <= count <= 5000 or timeout_seconds < 1:
+                  ingestor, *, count: int, timeout_seconds: int, instance: str = INSTANCES[0]) -> int:
+    if instance not in INSTANCES or not 1 <= count <= 5000 or timeout_seconds < 1:
         raise ValueError("invalid collection limits")
     validate_server_certificate(endpoint, server_certificate)
     client = Client(endpoint, auto_reconnect=True, reconnect_max_delay=2, reconnect_request_timeout=3)
@@ -93,12 +94,13 @@ async def collect(endpoint: str, client_certificate: str, client_key: str, serve
                 changed.set()
 
     async with client:
-        index = await client.get_namespace_index(NAMESPACE)
+        vendor = instance.split("-")[2]
+        index = await client.get_namespace_index(f"urn:foodtech:synthetic:opcua:203:{vendor}:v1")
         device = await client.nodes.objects.get_child([f"{index}:SyntheticDevice"])
         snapshot = await device.get_child([f"{index}:RecordSnapshot"])
         history = await device.get_child([f"{index}:AvailableSnapshots"])
         device_id = await (await device.get_child([f"{index}:DeviceId"])).read_value()
-        if device_id != "mockprofile-203-a-001":
+        if device_id != instance:
             raise ValueError("unexpected synthetic OPC UA device")
         subscription = await client.create_subscription(500, Handler())
         try:
@@ -157,11 +159,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Collect a synthetic OPC UA Binary source")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--instance", choices=INSTANCES, default=INSTANCES[0])
     args = parser.parse_args()
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
     accepted = asyncio.run(collect(os.environ["FOODTECH_OPCUA_ENDPOINT"], os.environ["FOODTECH_OPCUA_CLIENT_CERT"],
         os.environ["FOODTECH_OPCUA_CLIENT_KEY"], os.environ["FOODTECH_OPCUA_SERVER_CERT"], ingestor,
-        count=args.count, timeout_seconds=args.timeout))
+        count=args.count, timeout_seconds=args.timeout, instance=args.instance))
     print(f"accepted={accepted} provenance=SYNTHETIC")
 
 

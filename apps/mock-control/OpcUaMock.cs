@@ -12,25 +12,53 @@ internal static class OpcUaMock
             throw new ArgumentException("A valid port and absolute PKI directory are required.");
         using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
         var root = fixture.RootElement;
+        var instance = root.GetProperty("instanceId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
             root.GetProperty("profileId").GetString() != "mockprofile-203" ||
-            root.GetProperty("instanceId").GetString() != "mockprofile-203-a-001")
+            instance is not ("mockprofile-203-a-001" or "mockprofile-203-b-001" or "mockprofile-203-c-001"))
             throw new InvalidDataException("Only the synthetic UA Binary profile is supported.");
+        var b = instance == "mockprofile-203-b-001";
+        var c = instance == "mockprofile-203-c-001";
+        string Field(string a, string snake, string pascal) => b ? snake : c ? pascal : a;
         var records = root.GetProperty("records").EnumerateArray().Select((record, index) => {
-            if (record.GetProperty("sourceId").GetString() != "synthetic-opcua" ||
-                record.GetProperty("deviceId").GetString() != "mockprofile-203-a-001" ||
-                record.GetProperty("schemaVersion").GetString() != "1.0" ||
-                record.GetProperty("sequenceNumber").GetInt32() != index + 1)
+            if (record.GetProperty(Field("sourceId", "source_id", "SrcId")).GetString() != "synthetic-opcua" ||
+                record.GetProperty(Field("deviceId", "device_id", "DeviceId")).GetString() != instance ||
+                record.GetProperty(Field("schemaVersion", "schema_version", "SchVer")).GetString() != "1.0" ||
+                record.GetProperty(Field("sequenceNumber", "sequence_number", "SeqNo")).GetInt32() != index + 1)
                 throw new InvalidDataException("Invalid synthetic OPC UA identity or sequence.");
-            foreach (var name in new[] { "batchId", "recordId", "eventTime", "deviceStatus" })
+            foreach (var name in new[] { Field("batchId", "batch_id", "BatchId"), Field("recordId", "record_id", "RecId") })
                 if (string.IsNullOrWhiteSpace(record.GetProperty(name).GetString()))
                     throw new InvalidDataException("Missing synthetic OPC UA value.");
-            var measurements = record.GetProperty("measurements");
-            _ = measurements.GetProperty("temperatureCelsius").GetDouble();
-            _ = measurements.GetProperty("speedRpm").GetInt32();
-            _ = measurements.GetProperty("elapsedSeconds").GetInt32();
-            if (string.IsNullOrWhiteSpace(record.GetProperty("extensions").GetProperty("firmwareVersion").GetString()))
-                throw new InvalidDataException("Missing synthetic OPC UA firmware version.");
+            if (b) {
+                var timestampMs = record.GetProperty("event_time_ms").GetInt64();
+                var temperature = record.GetProperty("temperature_f").GetDecimal();
+                var output = record.GetProperty("output_percent").GetDecimal();
+                var state = record.GetProperty("device_status").GetInt32();
+                var elapsed = record.GetProperty("elapsed_ms").GetInt64();
+                if (timestampMs is < 0 or > 253402300799999 || temperature is < -1000 or > 1000 ||
+                    (temperature - 32) * 50 % 9 != 0 || output is < 0 or > 100 ||
+                    state is not (0 or 1) || elapsed < 0)
+                    throw new InvalidDataException("Invalid synthetic vendor-b value.");
+            } else if (c) {
+                var timestamp = record.GetProperty("Timestamp").GetString();
+                var data = record.GetProperty("Readings");
+                var temperature = data.GetProperty("TempC").GetDecimal();
+                var level = data.GetProperty("SpeedLvl").GetInt32();
+                var elapsed = data.GetProperty("ElapsedMin").GetDecimal();
+                if (timestamp is null || !DateTimeOffset.TryParse(timestamp, out _) ||
+                    !System.Text.RegularExpressions.Regex.IsMatch(timestamp, @"(Z|[+-]\d{2}:\d{2})$") ||
+                    temperature is < -500 or > 500 || level is < 0 or > 10 || elapsed is < 0 or > 1000000 ||
+                    record.GetProperty("Status").GetString() is not ("RUN" or "STP") ||
+                    record.GetProperty("Alarm").GetString() is not ("Y" or "N"))
+                    throw new InvalidDataException("Invalid synthetic vendor-c value.");
+            } else {
+                var data = record.GetProperty("measurements");
+                _ = data.GetProperty("temperatureCelsius").GetDouble();
+                _ = data.GetProperty("speedRpm").GetInt32();
+                _ = data.GetProperty("elapsedSeconds").GetInt32();
+                if (string.IsNullOrWhiteSpace(record.GetProperty("extensions").GetProperty("firmwareVersion").GetString()))
+                    throw new InvalidDataException("Missing synthetic OPC UA firmware version.");
+            }
             return record.Clone();
         }).ToArray();
         if (records.Length is < 1 or > 5000) throw new InvalidDataException("Invalid fixture length.");
@@ -51,20 +79,35 @@ internal static class OpcUaMock
             options.RejectSHA1Certificates = true;
             options.MinCertificateKeySize = 2048;
             options.MaxStringLength = 2_500_000;
-        }).AddNodeManager("urn:foodtech:synthetic:opcua:203:a:v1", nodes => {
+        }).AddNodeManager($"urn:foodtech:synthetic:opcua:203:{(b ? "b" : c ? "c" : "a")}:v1", nodes => {
             var device = nodes.AddFolder("SyntheticDevice").Node;
-            nodes.AddVariable<string>("SchemaVersion", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("schemaVersion").GetString()!);
-            nodes.AddVariable<string>("SourceId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("sourceId").GetString()!);
-            nodes.AddVariable<string>("DeviceId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("deviceId").GetString()!);
-            nodes.AddVariable<string>("BatchId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("batchId").GetString()!);
-            nodes.AddVariable<string>("RecordId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("recordId").GetString()!);
-            nodes.AddVariable<int>("Sequence", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("sequenceNumber").GetInt32());
-            nodes.AddVariable<string>("EventTime", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("eventTime").GetString()!);
-            nodes.AddVariable<string>("DeviceStatus", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("deviceStatus").GetString()!);
-            nodes.AddVariable<double>("TemperatureCelsius", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("measurements").GetProperty("temperatureCelsius").GetDouble());
-            nodes.AddVariable<int>("SpeedRpm", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("measurements").GetProperty("speedRpm").GetInt32());
-            nodes.AddVariable<int>("ElapsedSeconds", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("measurements").GetProperty("elapsedSeconds").GetInt32());
-            nodes.AddVariable<string>("FirmwareVersion", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("extensions").GetProperty("firmwareVersion").GetString()!);
+            nodes.AddVariable<string>("SchemaVersion", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty(Field("schemaVersion", "schema_version", "SchVer")).GetString()!);
+            nodes.AddVariable<string>("SourceId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty(Field("sourceId", "source_id", "SrcId")).GetString()!);
+            nodes.AddVariable<string>("DeviceId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty(Field("deviceId", "device_id", "DeviceId")).GetString()!);
+            nodes.AddVariable<string>("BatchId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty(Field("batchId", "batch_id", "BatchId")).GetString()!);
+            nodes.AddVariable<string>("RecordId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty(Field("recordId", "record_id", "RecId")).GetString()!);
+            nodes.AddVariable<int>("Sequence", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty(Field("sequenceNumber", "sequence_number", "SeqNo")).GetInt32());
+            nodes.AddVariable<string>("EventTime", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => b ?
+                DateTimeOffset.FromUnixTimeMilliseconds(Current().GetProperty("event_time_ms").GetInt64()).ToString("O") :
+                Current().GetProperty(c ? "Timestamp" : "eventTime").GetString()!);
+            nodes.AddVariable<string>("DeviceStatus", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => b ?
+                (Current().GetProperty("device_status").GetInt32() == 1 ? "running" : "stopped") : c ?
+                (Current().GetProperty("Status").GetString() == "RUN" ? "running" : "stopped") : Current().GetProperty("deviceStatus").GetString()!);
+            nodes.AddVariable<double>("TemperatureCelsius", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => b ?
+                (Current().GetProperty("temperature_f").GetDouble() - 32) * 5 / 9 : c ?
+                Current().GetProperty("Readings").GetProperty("TempC").GetDouble() :
+                Current().GetProperty("measurements").GetProperty("temperatureCelsius").GetDouble());
+            if (b) {
+                nodes.AddVariable<double>("OutputPercent", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("output_percent").GetDouble());
+                nodes.AddVariable<double>("ElapsedSeconds", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("elapsed_ms").GetDouble() / 1000);
+            } else if (c) {
+                nodes.AddVariable<int>("SpeedLevel", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("Readings").GetProperty("SpeedLvl").GetInt32());
+                nodes.AddVariable<double>("ElapsedSeconds", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("Readings").GetProperty("ElapsedMin").GetDouble() * 60);
+            } else {
+                nodes.AddVariable<int>("SpeedRpm", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("measurements").GetProperty("speedRpm").GetInt32());
+                nodes.AddVariable<int>("ElapsedSeconds", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("measurements").GetProperty("elapsedSeconds").GetInt32());
+                nodes.AddVariable<string>("FirmwareVersion", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty("extensions").GetProperty("firmwareVersion").GetString()!);
+            }
             nodes.AddVariable<string>("RecordSnapshot", device.NodeId)
                 .OnFirstSubscriber((_, _, _) => { clock.Start(); return ValueTask.CompletedTask; })
                 .PollWhileMonitored(TimeSpan.FromMilliseconds(250), _ => Current().GetRawText());
