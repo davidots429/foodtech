@@ -79,6 +79,9 @@ class JeyukSourceEvidenceTests(unittest.TestCase):
             sample["observedAt"] = (start + timedelta(seconds=index)).isoformat()
             row["raw"] = json.dumps(sample)
         self.assertTrue(audit_source_records(job, assessments, raws)["source_process_span_covers_cooking"])
+        job["actual_lifted_at"] = None
+        self.assertFalse(audit_source_records(job, assessments, raws)["source_process_span_covers_cooking"])
+        job["actual_lifted_at"] = (start + timedelta(seconds=61)).isoformat()
         job["actual_placed_at"] = (start + timedelta(seconds=1)).isoformat()
         job["actual_lifted_at"] = (start + timedelta(seconds=62)).isoformat()
         self.assertFalse(audit_source_records(job, assessments, raws)["source_process_span_covers_cooking"])

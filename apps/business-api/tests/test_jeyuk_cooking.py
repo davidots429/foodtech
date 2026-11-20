@@ -178,6 +178,22 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revoked["status"], "INCOMPLETE")
         self.assertIn("current_safety_passed", revoked["missing_checks"])
 
+    async def test_validation_evidence_rejects_a_job_changed_during_read(self):
+        job = await self.create()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}/validation-evidence"
+        read = self.store.read
+        calls = 0
+        def changing(pk):
+            nonlocal calls
+            calls += 1
+            meta, pointer = read(pk)
+            if calls == 2:
+                meta["version"] += 1
+            return meta, pointer
+        with patch.object(self.store, "read", side_effect=changing):
+            result = await self.client.get(path)
+        self.assertEqual(result.status_code, 409)
+
     async def test_profile_load_and_menu_are_separate_from_fryer(self):
         job = await self.create()
         self.assertEqual((job["menu"], job["jeyuk_size_profile"], job["process_load_status"]),

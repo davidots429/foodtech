@@ -159,6 +159,6 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
             int((lifted - placed).total_seconds()) == duration and
             all(sample.observed_at == placed + timedelta(seconds=index)
                 for index, sample in enumerate(samples, 1)) and samples[-1].observed_at >= lifted)
-    except (KeyError, ValueError, TypeError, OverflowError):
+    except (AttributeError, KeyError, ValueError, TypeError, OverflowError):
         pass
     return result
