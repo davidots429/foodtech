@@ -5,8 +5,10 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -87,6 +89,37 @@ class UaJsonTests(unittest.TestCase):
                 self.assertGreaterEqual(ingestor.times[2] - ingestor.times[1], 4.0)
                 self.assertEqual([item.quality_status for item in ingestor.results], ["VALID", "VALID", "QUARANTINED"])
                 self.assertTrue(all(item.mapping_version == "mockprofile-200-a-map-v1" for item in ingestor.results))
+
+                # Restart before collection, then again after two saved records. The
+                # new server starts its history at one and invalidates old tokens.
+                server.terminate(); server.wait(timeout=5)
+                def start_server():
+                    return subprocess.Popen(["dotnet", str(DLL), "serve-ua-json", "--fixture", str(FIXTURE),
+                        "--cert", str(pfx), "--port", str(port)], env=env,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                def wait_healthy(process):
+                    for _ in range(100):
+                        if process.poll() is not None: self.fail("Mock exited during restart")
+                        try:
+                            if httpx.get(base + "/health", verify=str(cert), timeout=.3).status_code == 200: return
+                        except httpx.TransportError: pass
+                        time.sleep(.1)
+                    self.fail("Mock did not restart")
+                server = start_server(); wait_healthy(server)
+                second_saved = threading.Event()
+                class RestartIngestor(Ingestor):
+                    def ingest(self, raw):
+                        super().ingest(raw)
+                        if len(self.records) == 2: second_saved.set()
+                restarting = RestartIngestor()
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(collect, base, "test-user", "test-secret", str(cert), restarting,
+                                         count=3, timeout_seconds=60)
+                    self.assertTrue(second_saved.wait(15), "second record was not received")
+                    server.terminate(); server.wait(timeout=5)
+                    server = start_server(); wait_healthy(server)
+                    self.assertEqual(future.result(timeout=60), 3)
+                self.assertEqual([json.loads(raw)["sequenceNumber"] for raw in restarting.records], [1, 2, 3])
             finally:
                 server.terminate()
                 server.wait(timeout=5)
