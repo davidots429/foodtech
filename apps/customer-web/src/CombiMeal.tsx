@@ -3,6 +3,8 @@ import { api } from "./cookingApi";
 import { CombiQuality } from "./CombiQuality";
 
 type FanObservation = { status: string; target_level: number; deviation_seconds: number; missing_seconds: number };
+type ProbeSummary = { probe_id: string; product_id: string; rack_id: string; shelf: number; pan_id: string;
+  status: string; full_interval_min_celsius: string | null; longest_75c_hold_seconds: number | null };
 type Meal = {
   meal: { meal_batch_id: string; status: string; equipment_size: string; version: number;
     source?: { device_id: string; record_count: number; raw_sha256: string; first_observed_at?: string;
@@ -21,6 +23,7 @@ type Meal = {
     quality_current?: { version: number; quality_status: string; score_percent: string; quality_target: boolean };
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     batch_representative_core_temperature?: string | null;
+    safety_probe_summaries?: ProbeSummary[];
     monitored_process_assessment?: { status: string; recovered_at_second: number | null;
       door_open_seconds: number; reason_codes: string[]; fan_observation?: FanObservation };
     products?: { product_id: string }[] };
@@ -313,6 +316,12 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {" "}· 목표 3 · 다른 단계 {meal.mackerel.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.mackerel.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
       {meal.mackerel.safety_status !== "NOT_MEASURED" && <p>고등어 합성 안전 표본: {meal.mackerel.safety_status}
         {meal.mackerel.batch_representative_core_temperature && <> · 최저 {meal.mackerel.batch_representative_core_temperature}°C</>}</p>}
+      {!!meal.mackerel.safety_probe_summaries?.length && <div><p>각 탐침의 60초 측정 결과 (표본 선정과 배치 안전 판정은 별도)</p>
+        <ul>{meal.mackerel.safety_probe_summaries.map(probe => <li key={probe.probe_id}>
+          {probe.probe_id} · {probe.product_id} · {probe.rack_id} / {probe.shelf}단 / {probe.pan_id} · {probe.status}
+          {" "}· 60초 최저 {probe.full_interval_min_celsius === null ? "미확인" : `${probe.full_interval_min_celsius}°C`}
+          {" "}· 75°C 연속 유지 {probe.longest_75c_hold_seconds === null ? "미확인" : `${probe.longest_75c_hold_seconds}초`}
+        </li>)}</ul></div>}
       {meal.events?.filter(event => event.event === "MACKEREL_CORE_CHECK").slice(-1)[0]?.selection_issues?.length ?
         <p role="alert">표본 선정 확인 필요: {meal.events.filter(event => event.event === "MACKEREL_CORE_CHECK").slice(-1)[0].selection_issues?.join(", ")}</p> : null}
       {(["rice", "mackerel"] as const).map(menu => <CombiQuality key={`${meal.meal.meal_batch_id}-${menu}`}

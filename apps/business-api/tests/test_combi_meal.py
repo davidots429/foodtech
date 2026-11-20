@@ -311,11 +311,16 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         body = {"expected_version": 1, "measured_at": unloaded.isoformat(), "probes": probes}
         incomplete = await self.client.post(path + "/mackerel-safety", headers=headers, json=body)
         self.assertEqual(incomplete.json()["step"]["safety_status"], "ASSESSMENT_INCOMPLETE")
+        self.assertEqual(incomplete.json()["event"]["probe_summaries"][0]["status"], "ASSESSMENT_INCOMPLETE")
+        self.assertIsNone(incomplete.json()["event"]["probe_summaries"][0]["longest_75c_hold_seconds"])
         probes[0]["calibration_status"] = "OK"
         probes[1]["readings"][23]["celsius"] = "74.9"
         failed = await self.client.post(path + "/mackerel-safety", headers=headers,
                                         json={**body, "expected_version": 2, "probes": probes})
         self.assertEqual(failed.json()["step"]["safety_status"], "FAILED")
+        failed_probe = failed.json()["event"]["probe_summaries"][1]
+        self.assertEqual((failed_probe["status"], failed_probe["full_interval_min_celsius"],
+                          failed_probe["longest_75c_hold_seconds"]), ("FAILED", "74.9", 36))
         self.assertEqual(failed.json()["meal"]["status"], "MACKEREL_SAFETY_FAILED")
         reheat = {"expected_version": 3, "started_at": (unloaded + timedelta(seconds=61)).isoformat(),
                   "unloaded_at": (unloaded + timedelta(seconds=120)).isoformat(), "reason": "안전 실패 후 추가 가열"}
@@ -325,6 +330,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         created_segment = await self.client.post(path + "/mackerel-reheat", headers=headers, json=reheat)
         self.assertEqual(created_segment.status_code, 201, created_segment.text)
         self.assertEqual(created_segment.json()["step"]["safety_status"], "RECHECK_REQUIRED")
+        self.assertEqual(created_segment.json()["step"]["safety_probe_summaries"], [])
         self.assertEqual(created_segment.json()["step"]["latest_reheat"]["previous_safety_version"], 2)
         self.assertEqual((await self.client.post(path + "/mackerel-reheat", headers=headers, json=reheat)).status_code, 409)
         probes[1]["readings"][23]["celsius"] = "75"
@@ -341,6 +347,8 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event["event"] for event in events],
                          ["MACKEREL_CORE_CHECK", "MACKEREL_CORE_CHECK", "MACKEREL_REHEATED", "MACKEREL_CORE_CHECK"])
         self.assertEqual(events[1]["safety_status"], "FAILED")
+        self.assertEqual(events[1]["probe_summaries"][1]["full_interval_min_celsius"], "74.9")
+        self.assertEqual(events[3]["probe_summaries"][1]["longest_75c_hold_seconds"], 60)
         self.assertEqual(events[1]["safety_version"], events[2]["segment"]["previous_safety_version"])
         self.assertEqual(events[3]["reheat_segment_id"], events[2]["segment"]["segment_id"])
 
