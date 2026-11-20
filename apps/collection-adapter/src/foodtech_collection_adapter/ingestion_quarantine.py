@@ -108,3 +108,29 @@ class IngestionQuarantine:
             "qos": 1, "provenance": "SYNTHETIC",
         }, ConditionExpression="attribute_not_exists(pk)")
         return event_id
+
+    def preserve_opcua_history(self, payload: bytes, *, instance_id: str, profile_id: str) -> str:
+        """Preserve a rejected synthetic recovery value before stopping collection."""
+        if profile_id not in {"mockprofile-200", "mockprofile-203"} or \
+                instance_id not in {f"{profile_id}-{vendor}-001" for vendor in "abc"}:
+            raise ValueError("unsupported synthetic OPC UA source")
+        if not isinstance(payload, bytes) or len(payload) > MAX_PAYLOAD_BYTES:
+            raise ValueError("OPC UA recovery value exceeds quarantine limit")
+        digest = hashlib.sha256(payload).hexdigest()
+        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"foodtech:opcua:{instance_id}:{digest}"))
+        object_key = f"ingestion/OPCUA/{profile_id}/{event_id}/{digest}.bin"
+        self.s3.put_object(Bucket=self.bucket, Key=object_key, Body=payload,
+                           ContentType="application/octet-stream", ServerSideEncryption="AES256")
+        item = {"pk": f"INGESTION_DLQ#{event_id}", "sk": "MANIFEST", "ingestion_event_id": event_id,
+                "object_key": object_key, "bucket": self.bucket, "sha256": digest,
+                "ingestion_failure_reason_code": "INVALID_SOURCE_HISTORY", "protocol": "OPCUA",
+                "profile_id": profile_id, "instance_id": instance_id, "node": "AvailableSnapshots",
+                "received_at": datetime.now(timezone.utc).isoformat(), "provenance": "SYNTHETIC"}
+        try:
+            self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
+        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+            existing = self.table.get_item(Key={"pk": item["pk"], "sk": "MANIFEST"}, ConsistentRead=True).get("Item")
+            if not existing or any(existing.get(key) != item[key] for key in
+                ("object_key", "bucket", "sha256", "ingestion_failure_reason_code", "instance_id", "profile_id")):
+                raise ValueError("conflicting OPC UA quarantine manifest")
+        return event_id
