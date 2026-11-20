@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
 from foodtech_contracts.combi_transition import TransitionSample, assess_transition
 from foodtech_contracts.combi_mackerel_process import Sample, assess as assess_mackerel_process
+from foodtech_contracts.combi_rice_process import Sample as RiceSample, assess as assess_rice_process
 
 from .cooking import _context, _now, _store_call
 from .cooking_store import Conflict
@@ -100,6 +101,20 @@ class MackerelProcessEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
     samples: list[MackerelProcessSample] = Field(min_length=1, max_length=900)
+
+
+class RiceProcessSample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    second: int = Field(ge=1, le=2000, strict=True)
+    chamber_celsius: Decimal = Field(ge=Decimal("-50"), le=Decimal("350"), max_digits=6, decimal_places=2)
+    humidity_percent: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
+
+
+class RiceProcessEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    humidity_source: Literal["MEASURED", "CONTROLLER_ESTIMATE", "NOT_SUPPORTED"]
+    samples: list[RiceProcessSample] = Field(min_length=1, max_length=2000)
 
 
 def _pk(subject: str, meal_id: str) -> str:
@@ -379,6 +394,41 @@ async def record_mackerel_process(meal_id: UUID, request: Request, body: Mackere
                "monitored_process_samples": [item.model_dump(mode="json") for item in body.samples]}
     meta = {**old, "version": version, "updated_at": _now()}
     event = {"sk": f"EVENT#{version:012d}", "event": "MACKEREL_PROCESS_ASSESSED",
+             "from_status": old["status"], "to_status": old["status"],
+             "observed_at": step["program_completed_at"], "recorded_at": _now(),
+             "actor": session.subject, "assessment": assessment}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}
+
+
+@router.post("/{meal_id}/rice-process")
+async def record_rice_process(meal_id: UUID, request: Request, body: RiceProcessEvidence) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {key: value for key, value in row.items() if key != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.")
+    step = rows.get(f"JOB#RICE#{old['rice_cooking_job_id']}")
+    if not step or step.get("status") != "UNLOADED" or step.get("monitored_process_assessment"):
+        raise HTTPException(409, "인양된 밥 작업의 아직 기록되지 않은 공정 표본이 필요합니다.")
+    try:
+        assessment = assess_rice_process([RiceSample(**item.model_dump()) for item in body.samples],
+                                         int(step["program_cooking_duration"]), step["time_status"],
+                                         body.humidity_source)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    version = int(old["version"]) + 1
+    updated = {**step, "monitored_process_assessment": assessment,
+               "monitored_process_samples": [item.model_dump(mode="json") for item in body.samples]}
+    meta = {**old, "version": version, "updated_at": _now()}
+    event = {"sk": f"EVENT#{version:012d}", "event": "RICE_PROCESS_ASSESSED",
              "from_status": old["status"], "to_status": old["status"],
              "observed_at": step["program_completed_at"], "recorded_at": _now(),
              "actor": session.subject, "assessment": assessment}

@@ -96,8 +96,16 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["meal"]["status"], "MODE_TRANSITION")
         self.assertEqual(snapshot["rice"]["process_status"], "NOT_MEASURED")
         self.assertEqual(len(snapshot["events"]), 4)
+        samples = [{"second": second, "chamber_celsius": "100", "humidity_percent": "98"}
+                   for second in range(1, 1801)]
+        process = await self.client.post(path + "/rice-process", headers=headers,
+            json={"expected_version": 5, "humidity_source": "MEASURED", "samples": samples})
+        self.assertEqual(process.status_code, 200, process.text)
+        self.assertEqual(process.json()["step"]["monitored_process_assessment"]["status"], "NORMAL")
+        self.assertEqual(process.json()["meal"]["status"], "MODE_TRANSITION")
+        self.assertEqual(process.json()["step"]["process_status"], "NOT_MEASURED")
         self.subject = "customer-two"
-        self.assertEqual((await send("RICE_STARTED", 5, start)).status_code, 404)
+        self.assertEqual((await send("RICE_STARTED", 6, start)).status_code, 404)
 
     async def test_mode_evidence_gates_fish_and_preserves_prior_samples(self):
         headers = {"X-CSRF-Token": "csrf"}
