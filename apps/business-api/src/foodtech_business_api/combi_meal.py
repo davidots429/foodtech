@@ -1,13 +1,14 @@
 """Synthetic rice and mackerel meal batches with separate linked work records."""
 
 from decimal import Decimal
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from foodtech_contracts.combi_cooking import oven_load, rice_water
+from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
 
 from .cooking import _context, _now, _store_call
 from .cooking_store import Conflict
@@ -25,6 +26,13 @@ class CreateMeal(BaseModel):
     added_water_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
     pan_tare_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
     rack_tare_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
+
+
+class MealEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    event: Literal["RICE_STARTED", "RICE_PROGRAM_COMPLETED", "RICE_UNLOADED", "MODE_TRANSITION_STARTED"]
+    observed_at: datetime
 
 
 def _pk(subject: str, meal_id: str) -> str:
@@ -93,4 +101,69 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
             f"JOB#MACKEREL#{meta['mackerel_cooking_job_id']}")
     if any(key not in rows for key in keys):
         raise HTTPException(503, "식사 배치의 연결된 작업을 불러올 수 없습니다.")
-    return {"meal": meta, "rice": rows[keys[0]], "transition": rows[keys[1]], "mackerel": rows[keys[2]]}
+    events = [rows[key] for key in sorted(rows) if key.startswith("EVENT#")]
+    result = {"meal": meta, "rice": rows[keys[0]], "transition": rows[keys[1]], "mackerel": rows[keys[2]]}
+    if events:
+        result["events"] = events
+    return result
+
+
+@router.post("/{meal_id}/events")
+async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {k: v for k, v in row.items() if k != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.")
+    if body.observed_at.tzinfo is None or body.observed_at.utcoffset() is None:
+        raise HTTPException(422, "관찰시각에 시간대가 필요합니다.")
+    observed = body.observed_at.astimezone(timezone.utc)
+    if observed > datetime.now(timezone.utc):
+        raise HTTPException(422, "관찰시각은 현재보다 미래일 수 없습니다.")
+    previous = old.get("last_observed_at")
+    if previous and observed < datetime.fromisoformat(previous.replace("Z", "+00:00")):
+        raise HTTPException(422, "관찰시각은 이전 단계 이후여야 합니다.")
+    routes = {
+        ("PREPARING_RICE", "RICE_STARTED"): ("RICE_COOKING", "RICE"),
+        ("RICE_COOKING", "RICE_PROGRAM_COMPLETED"): ("RICE_AWAITING_UNLOAD", "RICE"),
+        ("RICE_AWAITING_UNLOAD", "RICE_UNLOADED"): ("RICE_UNLOADED", "RICE"),
+        ("RICE_UNLOADED", "MODE_TRANSITION_STARTED"): ("MODE_TRANSITION", "TRANSITION"),
+    }
+    route = routes.get((old["status"], body.event))
+    if not route:
+        raise HTTPException(409, "현재 단계에서는 이 사건을 기록할 수 없습니다.")
+    next_status, target = route
+    step_key = (f"JOB#RICE#{old['rice_cooking_job_id']}" if target == "RICE" else
+                f"TRANSITION#{old['mode_transition_id']}")
+    step = rows.get(step_key)
+    if not step:
+        raise HTTPException(503, "연결된 작업을 찾을 수 없습니다.")
+    at = observed.isoformat().replace("+00:00", "Z")
+    updated = {**step}
+    if body.event == "RICE_STARTED":
+        updated.update(status="RUNNING", active_cooking_started_at=at)
+    elif body.event == "RICE_PROGRAM_COMPLETED":
+        start = datetime.fromisoformat(step["active_cooking_started_at"].replace("Z", "+00:00"))
+        seconds = int((observed - start).total_seconds())
+        updated.update(status="AWAITING_UNLOAD", program_completed_at=at,
+                       program_cooking_duration=seconds, time_status=cooking_time_status("RICE", seconds))
+    elif body.event == "RICE_UNLOADED":
+        start = datetime.fromisoformat(step["active_cooking_started_at"].replace("Z", "+00:00"))
+        completed = datetime.fromisoformat(step["program_completed_at"].replace("Z", "+00:00"))
+        _, exposure = cooking_durations(start, completed, observed)
+        updated.update(status="UNLOADED", food_unloaded_at=at, thermal_exposure_duration=exposure)
+    else:
+        updated.update(status="IN_PROGRESS", started_at=at, mackerel_load_allowed=False)
+    version = int(old["version"]) + 1
+    meta = {**old, "status": next_status, "version": version, "last_observed_at": at, "updated_at": _now()}
+    event = {"sk": f"EVENT#{version:012d}", "event": body.event, "from_status": old["status"],
+             "to_status": next_status, "observed_at": at, "recorded_at": _now(), "actor": session.subject}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}

@@ -2,12 +2,23 @@ import { useRef, useState } from "react";
 import { api } from "./cookingApi";
 
 type Meal = {
-  meal: { meal_batch_id: string; status: string; equipment_size: string };
+  meal: { meal_batch_id: string; status: string; equipment_size: string; version: number };
   rice: { job_id: string; water_ratio_status: string; effective_water_ratio: string;
-    target_added_water_kg: string | null; payload_kg: string; gross_kg: string };
+    target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
+    time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number };
   transition: { transition_id: string; mackerel_load_allowed: boolean };
   mackerel: { job_id: string; safety_status: string };
+  events?: { event: string; observed_at: string }[];
 };
+
+const mealSteps: Record<string, { event: string; label: string }> = {
+  PREPARING_RICE: { event: "RICE_STARTED", label: "밥 조리 시작 기록" },
+  RICE_COOKING: { event: "RICE_PROGRAM_COMPLETED", label: "밥 프로그램 완료 기록" },
+  RICE_AWAITING_UNLOAD: { event: "RICE_UNLOADED", label: "밥 인양 기록" },
+  RICE_UNLOADED: { event: "MODE_TRANSITION_STARTED", label: "건열 전환 시작 기록" },
+};
+const mealLabels: Record<string, string> = { PREPARING_RICE: "밥 준비", RICE_COOKING: "밥 조리 중",
+  RICE_AWAITING_UNLOAD: "밥 인양 대기", RICE_UNLOADED: "밥 인양 완료", MODE_TRANSITION: "건열 전환 중" };
 
 export function CombiMeal({ csrf }: { csrf: string }) {
   const [size, setSize] = useState("MEDIUM_FIXED_RACK_10");
@@ -22,6 +33,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
   const [lookup, setLookup] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [observedAt, setObservedAt] = useState("");
   const requestActive = useRef(false);
 
   async function create() {
@@ -46,6 +58,19 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     catch (cause) { setError(cause instanceof Error ? cause.message : "배치를 찾지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
+  async function recordStep() {
+    if (!meal || !mealSteps[meal.meal.status] || requestActive.current) return;
+    const observed = new Date(observedAt);
+    if (!observedAt || Number.isNaN(observed.getTime())) { setError("단계의 합성 관찰시각을 입력해 주세요."); return; }
+    requestActive.current = true; setBusy(true); setError("");
+    const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
+    try {
+      await api(path + "/events", csrf, { expected_version: meal.meal.version,
+        event: mealSteps[meal.meal.status].event, observed_at: observed.toISOString() });
+      setMeal(await api<Meal>(path)); setObservedAt("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "단계를 기록하지 못했습니다."); }
+    finally { requestActive.current = false; setBusy(false); }
+  }
   return <section><h2>밥·고등어 합성 식사 배치</h2>
     <p>밥을 인양한 뒤 오븐을 건열로 전환하고 고등어를 조리하는 시연입니다. 장비를 제어하지 않습니다.</p>
     <div className="field-grid">
@@ -65,11 +90,17 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     <div className="field-row"><label>식사 배치 ID<input value={lookup} onChange={event => setLookup(event.target.value)} /></label>
       <button type="button" className="secondary" onClick={open} disabled={busy || !lookup.trim()}>배치 불러오기</button></div>
     {error && <p role="alert" className="error">{error}</p>}
-    {meal && <div className="card" aria-live="polite"><p>식사 배치 <code>{meal.meal.meal_batch_id}</code> · 밥 준비 대기</p>
+    {meal && <div className="card" aria-live="polite"><p>식사 배치 <code>{meal.meal.meal_batch_id}</code> · {mealLabels[meal.meal.status] ?? meal.meal.status}</p>
       <p>밥: 유효 수분비 {meal.rice.effective_water_ratio} · {meal.rice.water_ratio_status === "NORMAL" ? "권장 범위" : "권장 범위 밖"} · 목표 추가 물 {meal.rice.target_added_water_kg ?? "계산 불가"} kg</p>
       <p>내용물·팬 {meal.rice.payload_kg} kg · 랙 포함 {meal.rice.gross_kg} kg</p>
       <p>밥 작업 <code>{meal.rice.job_id}</code> → 모드 전환 <code>{meal.transition.transition_id}</code> → 고등어 작업 <code>{meal.mackerel.job_id}</code></p>
-      <p>고등어 투입은 전환 검증 전까지 허용되지 않습니다. 조리·안전·품질 판정은 아직 기록되지 않았습니다.</p>
+      {meal.rice.time_status && <p>밥 프로그램 시간 {meal.rice.program_cooking_duration}초 · 시간 판정 {meal.rice.time_status}
+        {meal.rice.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.rice.thermal_exposure_duration}초</>}</p>}
+      {mealSteps[meal.meal.status] && <div className="field-row"><label>합성 관찰시각
+        <input type="datetime-local" step="1" value={observedAt} onChange={event => setObservedAt(event.target.value)} /></label>
+        <button type="button" disabled={busy} onClick={recordStep}>{mealSteps[meal.meal.status].label}</button></div>}
+      <p>고등어 투입은 전환 검증 전까지 허용되지 않습니다. 시간 판정은 전체 공정·안전 판정과 별도입니다.</p>
+      {meal.events && <ul>{meal.events.map((event, index) => <li key={index}>{event.event} · {new Date(event.observed_at).toLocaleString()}</li>)}</ul>}
     </div>}
   </section>;
 }
