@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CookingWorkspace } from "./CookingWorkspace";
+import { CombiMeal } from "./CombiMeal";
 import { CredentialEnrollment } from "./CredentialEnrollment";
 import { ExternalAiTrial } from "./ExternalAiTrial";
 import { LocalChat } from "./LocalChat";
@@ -102,6 +103,7 @@ function App() {
         <p className="small">조리 상담은 로컬 AI로 실행되며 결과는 검토 후 활용합니다.</p></section>
       <LocalChat csrf={session.csrf} />
       <CookingWorkspace csrf={session.csrf} />
+      <CombiMeal csrf={session.csrf} />
       <CredentialEnrollment csrf={session.csrf} onRegistered={setCredentialId} />
       <ExternalAiTrial csrf={session.csrf} credentialId={credentialId}
         onCredentialIdChange={setCredentialId} />

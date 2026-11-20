@@ -48,6 +48,8 @@ def _api_numbers(value):
 
 
 class CookingStore(Protocol):
+    def create_meal(self, pk: str, records: list[dict]) -> None: ...
+    def read_meal(self, pk: str) -> list[dict]: ...
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
@@ -87,6 +89,17 @@ class MemoryCookingStore:
     def __init__(self) -> None:
         self.items: dict[tuple[str, str], dict] = {}
         self.lock = threading.RLock()
+
+    def create_meal(self, pk: str, records: list[dict]) -> None:
+        with self.lock:
+            if any((pk, row["sk"]) in self.items for row in records):
+                raise Conflict
+            for row in records:
+                self.items[(pk, row["sk"])] = {"pk": pk, **row}
+
+    def read_meal(self, pk: str) -> list[dict]:
+        with self.lock:
+            return [item.copy() for (item_pk, _), item in sorted(self.items.items()) if item_pk == pk]
 
     def read(self, pk: str) -> tuple[dict | None, dict | None]:
         with self.lock:
@@ -346,6 +359,32 @@ class DynamoCookingStore:
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
+
+    def create_meal(self, pk: str, records: list[dict]) -> None:
+        operations = [{"Put": {"TableName": self.table.name,
+                                "Item": self._item({"pk": pk, **row}),
+                                "ConditionExpression": "attribute_not_exists(pk)"}}
+                      for row in records]
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
+                raise Conflict from exc
+            raise
+
+    def read_meal(self, pk: str) -> list[dict]:
+        rows = []
+        start = None
+        while True:
+            args = {"KeyConditionExpression": Key("pk").eq(pk), "ConsistentRead": True}
+            if start:
+                args["ExclusiveStartKey"] = start
+            page = self.table.query(**args)
+            rows.extend(page.get("Items", []))
+            start = page.get("LastEvaluatedKey")
+            if not start:
+                return _api_numbers(rows)
 
     def read(self, pk: str) -> tuple[dict | None, dict | None]:
         meta = self.table.get_item(Key={"pk": pk, "sk": "META"}, ConsistentRead=True).get("Item")
