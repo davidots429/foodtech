@@ -37,3 +37,13 @@ class CombiStreamTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.validator.accept(json.dumps({**observation(), **changes}))
         self.assertEqual(self.validator.accept(json.dumps(observation()))["sequence"], 1)
+
+    def test_v2_requires_explicit_alarm_and_vent_and_cannot_mix_versions(self):
+        v2 = {**observation(), "schemaVersion": "synthetic-combi-v2",
+              "criticalAlarm": False, "ventSupported": False, "ventEvent": None}
+        invalid = {**v2, "criticalAlarm": None}
+        with self.assertRaises(ValueError):
+            self.validator.accept(json.dumps(invalid))
+        self.assertEqual(self.validator.accept(json.dumps(v2))["schemaVersion"], "synthetic-combi-v2")
+        with self.assertRaises(ValueError):
+            self.validator.accept(json.dumps(observation(2, second=2)))

@@ -522,7 +522,7 @@ class SourceAssessment(BaseModel):
 
 
 @router.post("/{meal_id}/source-assessment/{phase}")
-async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "mackerel"],
+async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition", "mackerel"],
                               request: Request, body: SourceAssessment) -> dict:
     session, store = await _context(request, write=True)
     pk = _pk(session.subject, str(meal_id))
@@ -536,10 +536,14 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "mackerel"],
     source = old.get("source")
     if not source:
         raise HTTPException(409, "연결된 합성 원표본이 필요합니다.")
-    kind = "RICE" if phase == "rice" else "MACKEREL"
-    job_id = old["rice_cooking_job_id"] if phase == "rice" else old["mackerel_cooking_job_id"]
-    step = rows.get(f"JOB#{kind}#{job_id}")
-    if not step or step.get("status") != "UNLOADED" or step.get("monitored_process_assessment"):
+    kind = {"rice": "RICE", "transition": "TRANSITION", "mackerel": "MACKEREL"}[phase]
+    job_id = {"rice": old["rice_cooking_job_id"], "transition": old["mode_transition_id"],
+                        "mackerel": old["mackerel_cooking_job_id"]}[phase]
+    step = rows.get(f"TRANSITION#{job_id}" if phase == "transition" else f"JOB#{kind}#{job_id}")
+    if phase == "transition":
+        if not step or step.get("status") != "IN_PROGRESS" or step.get("samples") or old["status"] != "MODE_TRANSITION":
+            raise HTTPException(409, "표본이 없는 진행 중인 전환에서만 원천 판정을 적용할 수 있습니다.")
+    elif not step or step.get("status") != "UNLOADED" or step.get("monitored_process_assessment"):
         raise HTTPException(409, "인양 후 아직 공정 판정이 없는 작업에만 적용할 수 있습니다.")
     jobs = {"RICE": old["rice_cooking_job_id"], "TRANSITION": old["mode_transition_id"],
             "MACKEREL": old["mackerel_cooking_job_id"]}
@@ -559,10 +563,13 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "mackerel"],
         digest = hashlib.sha256(b"\n".join(line.encode("utf-8") for line in records) + b"\n").hexdigest()
         if len(records) != total or digest != source["raw_sha256"] or not selected:
             raise ValueError("source integrity check failed")
-        started = datetime.fromisoformat(step["active_cooking_started_at"].replace("Z", "+00:00"))
+        started = datetime.fromisoformat(step["started_at" if phase == "transition" else
+                                           "active_cooking_started_at"].replace("Z", "+00:00"))
         first = datetime.fromisoformat(selected[0]["occurredAt"].replace("Z", "+00:00"))
-        if started != first or int(step["program_cooking_duration"]) != len(selected):
+        if started != first or (phase != "transition" and int(step["program_cooking_duration"]) != len(selected)):
             raise ValueError("source time span differs from the recorded cooking interval")
+        if phase == "transition" and started + timedelta(seconds=len(selected)) > datetime.now(timezone.utc):
+            raise ValueError("transition samples have not yet elapsed")
         if phase == "rice":
             sources = {item["humidityValueSource"] for item in selected}
             if len(sources) != 1:
@@ -571,21 +578,58 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "mackerel"],
                 RiceSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
                            Decimal(item["measuredHumidityPercent"]) if item["measuredHumidityPercent"] is not None else None)
                 for item in selected], len(selected), step["time_status"], sources.pop())
-        else:
+        elif phase == "mackerel":
             assessment = assess_mackerel_process([
                 Sample(item["phaseSecond"], Decimal(item["chamberCelsius"]), item["doorState"])
                 for item in selected], len(selected), step["time_status"])
+        else:
+            if any(item["schemaVersion"] != "synthetic-combi-v2" for item in selected):
+                raise ValueError("alarm and vent observations are required")
+            humidity_sources = {item["humidityValueSource"] for item in selected}
+            vent_modes = {item["ventSupported"] for item in selected}
+            if len(humidity_sources) != 1 or len(vent_modes) != 1:
+                raise ValueError("sensor capabilities changed during transition")
+            humidity_source = humidity_sources.pop()
+            if humidity_source not in {"MEASURED", "NOT_SUPPORTED"}:
+                raise ValueError("transition humidity requires actual measurement or an unsupported flag")
+            humidity_supported, vent_supported = humidity_source == "MEASURED", vent_modes.pop()
+            transition_samples = [{"second": item["phaseSecond"],
+                                   "chamber_celsius": str(item["chamberCelsius"]),
+                                   "climate_setpoint_percent": str(item["climateSetpointPercent"]),
+                                   "door_closed": item["doorState"] == "CLOSED",
+                                   "critical_alarm": item["criticalAlarm"],
+                                   "humidity_percent": str(item["measuredHumidityPercent"])
+                                   if item["measuredHumidityPercent"] is not None else None,
+                                   "vent_event": item["ventEvent"]} for item in selected]
+            assessment = assess_transition([
+                TransitionSample(second=item["second"], chamber_celsius=Decimal(item["chamber_celsius"]),
+                                 climate_setpoint_percent=Decimal(item["climate_setpoint_percent"]),
+                                 door_closed=item["door_closed"], critical_alarm=item["critical_alarm"],
+                                 humidity_percent=Decimal(item["humidity_percent"])
+                                 if item["humidity_percent"] is not None else None,
+                                 vent_event=item["vent_event"]) for item in transition_samples],
+                humidity_supported=humidity_supported, vent_supported=vent_supported)
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(422, "원표본의 무결성이나 조리 시간 범위를 확인할 수 없습니다.") from exc
     version = int(old["version"]) + 1
-    updated = {**step, "monitored_process_assessment": assessment,
-               "monitored_process_source": {"raw_sha256": digest, "phase": kind,
-                                            "first_sequence": selected[0]["sequence"],
-                                            "last_sequence": selected[-1]["sequence"]}}
-    meta = {**old, "version": version, "updated_at": _now()}
+    lineage = {"raw_sha256": digest, "phase": kind, "first_sequence": selected[0]["sequence"],
+               "last_sequence": selected[-1]["sequence"]}
+    next_status = old["status"]
+    observed_at = step.get("program_completed_at")
+    if phase == "transition":
+        observed_at = (started + timedelta(seconds=len(selected))).isoformat().replace("+00:00", "Z")
+        next_status = {"DRY_HEAT_READY": "MACKEREL_READY", "MODE_TRANSITION_TIMEOUT": "TRANSITION_TIMEOUT"}.get(
+            assessment["status"], "MODE_TRANSITION")
+        updated = {**step, **assessment, "humidity_supported": humidity_supported, "vent_supported": vent_supported,
+                   "samples": transition_samples, "observed_through": observed_at, "source": lineage}
+    else:
+        updated = {**step, "monitored_process_assessment": assessment, "monitored_process_source": lineage}
+    meta = {**old, "status": next_status, "version": version, "updated_at": _now()}
+    if phase == "transition":
+        meta["last_observed_at"] = observed_at
     event = {"sk": f"EVENT#{version:012d}", "event": f"{kind}_SOURCE_ASSESSED",
-             "from_status": old["status"], "to_status": old["status"],
-             "observed_at": step["program_completed_at"], "recorded_at": _now(),
+             "from_status": old["status"], "to_status": next_status,
+             "observed_at": observed_at, "recorded_at": _now(),
              "actor": session.subject, "assessment": assessment, "source_sha256": digest}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)

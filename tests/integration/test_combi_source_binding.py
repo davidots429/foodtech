@@ -91,16 +91,12 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                     "expected_version": 6, "event": "MODE_TRANSITION_STARTED",
                     "observed_at": (started_at + timedelta(seconds=1800)).isoformat()})
                 self.assertEqual(transition_started.status_code, 200, transition_started.text)
-                # The source contract does not yet include critical alarm or vent capability.
-                # Explicit separate synthetic observations are used for the transition gate.
-                transition_samples = [{"second": i, "chamber_celsius": "220",
-                                       "climate_setpoint_percent": "10", "door_closed": True,
-                                       "critical_alarm": False, "humidity_percent": None}
-                                      for i in range(1, 181)]
-                ready = await client.post(path + "/transition-evidence", headers=headers, json={
-                    "expected_version": 7, "humidity_supported": False, "vent_supported": False,
-                    "samples": transition_samples})
+                ready = await client.post(path + "/source-assessment/transition", headers=headers,
+                                          json={"expected_version": 7})
                 self.assertEqual(ready.status_code, 200, ready.text)
+                self.assertEqual((ready.json()["step"]["status"],
+                                  ready.json()["step"]["humidity_verification_status"]),
+                                 ("DRY_HEAT_READY", "NOT_SUPPORTED"))
                 products = [{"product_id": f"fish-{n}", "rack_id": "rack-1", "shelf": n,
                              "pan_id": f"pan-{n}", "mass_kg": "0.13", "thickness_cm": "1.5"}
                             for n in (1, 2, 3)]

@@ -39,6 +39,8 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-jeyuk \
 
 `simulate-combi`는 하나의 합성 식사 배치에 서로 다른 밥·전환·고등어 작업 ID를 지정하고, 각 단계의 온도·기후 설정·습도 출처·팬·문을 1초 원표본과 5초 온도 요약으로 출력한다. 원표본에는 고정 논리 시작시각, 사건 ID, 발생·수신시각, 전체 순번, 단계별 초, 스키마·프로그램 버전과 `SYNTHETIC` 출처가 들어간다. 요약에는 현재·최소·최대·평균 온도와 목표 구간 이탈 초가 들어간다. 생성기 버전과 seed는 실행 결과에 기록하며 현재 정상 fixture는 난수를 사용하지 않는다.
 
+`synthetic-combi-v2`는 각 구간에 치명 알람·환기 플랩 지원 여부와 선택적 열림·닫힘 사건을 명시한다. 사건이 있는 구간은 1초여야 하며 지원하지 않는 플랩의 사건은 거부한다. v1 원표본은 플랫폼이 계속 읽지만 전환 원천 판정에 필요한 이 필드가 없으므로 자동 준비 판정에 사용하지 않는다.
+
 ```bash
 dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
   --fixture fixtures/combi-normal-medium-v1.json --output /tmp/combi-raw.jsonl \
