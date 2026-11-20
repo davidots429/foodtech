@@ -264,6 +264,78 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
             json={**body, "equipment_profile": "synthetic-fryer"})
         self.assertEqual(legacy.status_code, 422)
 
+    async def test_initial_context_is_versioned_bound_to_batch_and_scoped(self):
+        created = await self.client.post("/api/customer/cooking-jobs", headers=CSRF, json={
+            "planned_portions": 2, "recipe_version": "recipe-v1", "thickness_cm": "1.20",
+            "equipment_profile": "synthetic-fryer-approved-v2"})
+        job = created.json()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        batch = {"expected_version": job["version"], "mode": "REFERENCE", "product_weights_g": [160] * 15}
+        job = (await self.client.post(path + "/tonkatsu-batch", headers=CSRF, json=batch)).json()
+        observed = datetime.now(timezone.utc) - timedelta(seconds=330)
+        body = {"expected_version": job["version"], "ingredient_temperature_c": "4.25",
+                "temperature_observed_at": observed.isoformat(), "storage_state": "CHILLED",
+                "oil_capacity_l": "15.00", "oil_batches_since_change": 0,
+                "oil_cooked_mass_kg": "0", "oil_changed_at": (observed - timedelta(hours=1)).isoformat()}
+        self.assertEqual((await self.client.post(path + "/tonkatsu-initial-context", json=body)).status_code, 403)
+        recorded = await self.client.post(path + "/tonkatsu-initial-context", headers=CSRF, json=body)
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+        job = recorded.json()
+        self.assertEqual(job["tonkatsu_initial_context"]["status"], "DECLARED_UNVERIFIED")
+        self.assertEqual(job["tonkatsu_initial_context"]["oil_batches_since_change"], 0)
+        evidence = (await self.client.get(path + "/recommendation-evidence")).json()
+        self.assertEqual(evidence["recorded"]["tonkatsu_initial_context"]["ingredient_temperature_c"], "4.25")
+        self.assertNotIn("INGREDIENT_INITIAL_STATE", evidence["unverified_categories"])
+        self.assertNotIn("FRYER_AND_BATCH_BASELINE", evidence["unverified_categories"])
+        self.assertIn("INITIAL_CONTEXT_DECLARED_UNVERIFIED", evidence["unverified_categories"])
+        self.assertEqual(evidence["completeness"], "NOT_ASSESSED")
+        frozen = await self.client.post(path + "/tonkatsu-initial-context", headers=CSRF,
+            json={**body, "expected_version": job["version"], "storage_state": "FROZEN"})
+        self.assertEqual(frozen.status_code, 200, frozen.text)
+        job = frozen.json()
+        frozen_evidence = (await self.client.get(path + "/recommendation-evidence")).json()
+        self.assertIn("STORAGE_OUTSIDE_SCENARIO", frozen_evidence["unverified_categories"])
+        events = (await self.client.get(path + "/events")).json()
+        initial_events = [event for event in events if event["domain"] == "TONKATSU_INITIAL_CONTEXT"]
+        self.assertEqual([event["context"]["storage_state"] for event in initial_events], ["CHILLED", "FROZEN"])
+        changed = await self.client.post(path + "/tonkatsu-batch", headers=CSRF,
+            json={**batch, "expected_version": job["version"]})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        evidence = (await self.client.get(path + "/recommendation-evidence")).json()
+        self.assertIsNone(evidence["recorded"]["tonkatsu_initial_context"])
+        self.assertIn("INITIAL_CONTEXT_STALE", evidence["unverified_categories"])
+        self.subject = "customer-2"
+        self.assertEqual((await self.client.post(path + "/tonkatsu-initial-context", headers=CSRF,
+                                                 json={**body, "expected_version": changed.json()["version"]})).status_code, 404)
+
+    async def test_initial_context_checks_time_and_never_changes_started_job(self):
+        created = await self.client.post("/api/customer/cooking-jobs", headers=CSRF, json={
+            "planned_portions": 2, "recipe_version": "recipe-v1", "thickness_cm": "1.20",
+            "equipment_profile": "synthetic-fryer-approved-v2"})
+        job = created.json()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        job = (await self.client.post(path + "/tonkatsu-batch", headers=CSRF, json={"expected_version": job["version"],
+            "mode": "PARTIAL", "product_weights_g": [160, 160]})).json()
+        endpoint = path + "/tonkatsu-initial-context"
+        self.assertEqual((await self.client.post(endpoint, headers=CSRF,
+            json={"expected_version": job["version"], "ingredient_temperature_c": "4"})).status_code, 422)
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        self.assertEqual((await self.client.post(endpoint, headers=CSRF,
+            json={"expected_version": job["version"], "oil_changed_at": future})).status_code, 422)
+        observed = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        recorded = await self.client.post(endpoint, headers=CSRF,
+            json={"expected_version": job["version"], "ingredient_temperature_c": "4", "temperature_observed_at": observed})
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+        ready = await self.transition(recorded.json(), "PREHEAT_COMPLETED")
+        started = await self.client.post(path + "/transitions", headers=CSRF, json={"event": "COOKING_STARTED",
+            "expected_version": ready["version"], "actual_placed_at": (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()})
+        self.assertEqual(started.status_code, 422)
+        started = await self.client.post(path + "/transitions", headers=CSRF, json={"event": "COOKING_STARTED",
+            "expected_version": ready["version"], "actual_placed_at": datetime.now(timezone.utc).isoformat()})
+        self.assertEqual(started.status_code, 200, started.text)
+        self.assertEqual((await self.client.post(endpoint, headers=CSRF,
+            json={"expected_version": started.json()["version"], "storage_state": "CHILLED"})).status_code, 409)
+
     async def test_core_check_rejects_values_outside_synthetic_input_range(self):
         job = await self.create()
         for event in ("PREHEAT_COMPLETED", "COOKING_STARTED", "COOKING_COMPLETED"):

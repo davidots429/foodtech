@@ -166,6 +166,18 @@ class TonkatsuBatchInput(StrictModel):
     product_weights_g: list[StrictInt] = Field(min_length=1, max_length=18)
 
 
+class TonkatsuInitialInput(StrictModel):
+    expected_version: int = Field(ge=1)
+    ingredient_temperature_c: Decimal | None = Field(default=None, ge=Decimal("-273.15"),
+                                                       le=Decimal("300"), max_digits=6, decimal_places=2)
+    temperature_observed_at: datetime | None = None
+    storage_state: Literal["CHILLED", "FROZEN", "OTHER", "UNKNOWN"] = "UNKNOWN"
+    oil_capacity_l: Decimal | None = Field(default=None, gt=0, max_digits=7, decimal_places=2)
+    oil_batches_since_change: StrictInt | None = Field(default=None, ge=0, le=1000000)
+    oil_cooked_mass_kg: Decimal | None = Field(default=None, ge=0, max_digits=9, decimal_places=3)
+    oil_changed_at: datetime | None = None
+
+
 class Transition(StrictModel):
     event: Literal["PREHEAT_COMPLETED", "PREHEAT_CONDITION_LOST", "COOKING_STARTED",
                    "COOKING_PAUSED", "COOKING_RESUMED", "COOKING_COMPLETED", "COOKING_CANCELED"]
@@ -343,6 +355,46 @@ async def record_tonkatsu_batch(job_id: str, request: Request, body: TonkatsuBat
     event = {"sk": f"EVENT#TONKATSU_BATCH#{version:012d}", "domain": "TONKATSU_BATCH",
              "trigger": "TONKATSU_BATCH_RECORDED", "batch": value,
              "actor_subject": session.subject, "occurred_at": now}
+    await _commit(store, pk, old, meta, event=event)
+    return meta
+
+
+@router.post("/{job_id}/tonkatsu-initial-context")
+async def record_tonkatsu_initial_context(job_id: str, request: Request, body: TonkatsuInitialInput) -> dict:
+    session, store, pk, old, _ = await _read(request, job_id, write=True)
+    if int(old["version"]) != body.expected_version:
+        raise _conflict()
+    if old.get("equipment_profile") != "synthetic-fryer-approved-v2" or old.get("provenance") != "SYNTHETIC":
+        raise HTTPException(422, "승인된 합성 돈까스 프로파일에서만 기록할 수 있습니다.")
+    if old["status"] not in {"PENDING", "READY"} or not old.get("tonkatsu_batch"):
+        raise HTTPException(409, "조리 시작 전 배치를 먼저 기록해 주세요.")
+    if (body.ingredient_temperature_c is None) != (body.temperature_observed_at is None):
+        raise HTTPException(422, "초기 온도와 관찰 시각은 함께 입력해야 합니다.")
+    if body.storage_state == "UNKNOWN" and all(value is None for value in (
+            body.ingredient_temperature_c, body.oil_capacity_l, body.oil_batches_since_change,
+            body.oil_cooked_mass_kg, body.oil_changed_at)):
+        raise HTTPException(422, "기록할 합성 값을 하나 이상 입력해 주세요.")
+    now = datetime.now(timezone.utc)
+    for value in (body.temperature_observed_at, body.oil_changed_at):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None or value.astimezone(timezone.utc) > now):
+            raise HTTPException(422, "합성 관찰 시각에는 시간대가 필요하며 미래일 수 없습니다.")
+    value = {"schema_version": "tonkatsu-initial-context-v1", "provenance": "SYNTHETIC",
+             "status": "DECLARED_UNVERIFIED", "batch_version": int(old["tonkatsu_batch_version"]),
+             "product_classification": "NON_MINCED_PORK_LOIN_RAW",
+             "ingredient_temperature_c": str(body.ingredient_temperature_c) if body.ingredient_temperature_c is not None else None,
+             "temperature_observed_at": body.temperature_observed_at.astimezone(timezone.utc).isoformat() if body.temperature_observed_at else None,
+             "storage_state": body.storage_state,
+             "oil_capacity_l": str(body.oil_capacity_l) if body.oil_capacity_l is not None else None,
+             "oil_batches_since_change": body.oil_batches_since_change,
+             "oil_cooked_mass_kg": str(body.oil_cooked_mass_kg) if body.oil_cooked_mass_kg is not None else None,
+             "oil_changed_at": body.oil_changed_at.astimezone(timezone.utc).isoformat() if body.oil_changed_at else None}
+    version = int(old.get("tonkatsu_initial_context_version", 0)) + 1
+    timestamp = now.isoformat().replace("+00:00", "Z")
+    meta = {**old, "tonkatsu_initial_context": value, "tonkatsu_initial_context_version": version,
+            "version": int(old["version"]) + 1, "updated_at": timestamp}
+    event = {"sk": f"EVENT#TONKATSU_INITIAL_CONTEXT#{version:012d}", "domain": "TONKATSU_INITIAL_CONTEXT",
+             "trigger": "TONKATSU_INITIAL_CONTEXT_RECORDED", "context": value,
+             "actor_subject": session.subject, "occurred_at": timestamp}
     await _commit(store, pk, old, meta, event=event)
     return meta
 
@@ -561,6 +613,11 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
         placed_at = body.actual_placed_at.astimezone(timezone.utc)
         if placed_at > now:
             raise HTTPException(422, "투입시각은 현재보다 미래일 수 없습니다.")
+        initial = old.get("tonkatsu_initial_context") or {}
+        if initial.get("batch_version") == old.get("tonkatsu_batch_version") and initial:
+            for field in ("temperature_observed_at", "oil_changed_at"):
+                if initial.get(field) and datetime.fromisoformat(initial[field].replace("Z", "+00:00")) > placed_at:
+                    raise HTTPException(422, "초기 온도 관찰과 기름 교체 시각은 투입 이전이어야 합니다.")
     elif body.event == "COOKING_COMPLETED":
         if body.actual_lifted_at is None or body.actual_placed_at is not None or \
                 body.actual_lifted_at.tzinfo is None:

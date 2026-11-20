@@ -43,6 +43,18 @@ async def main():
                 job = await checked_post(client, path + "/tonkatsu-batch", {"expected_version": job["version"],
                     "mode": "REFERENCE", "product_weights_g": [160] * 15})
                 assert job["tonkatsu_batch"]["load_percent"] == "60.00"
+                job = await checked_post(client, path + "/tonkatsu-initial-context", {
+                    "expected_version": job["version"], "ingredient_temperature_c": "4.25",
+                    "temperature_observed_at": (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat(),
+                    "storage_state": "CHILLED", "oil_capacity_l": "15", "oil_batches_since_change": 0,
+                    "oil_cooked_mass_kg": "0", "oil_changed_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()})
+                assert job["tonkatsu_initial_context"]["status"] == "DECLARED_UNVERIFIED"
+                evidence_response = await client.get(path + "/recommendation-evidence")
+                evidence_response.raise_for_status()
+                evidence = evidence_response.json()
+                assert evidence["recorded"]["tonkatsu_initial_context"]["ingredient_temperature_c"] == "4.25"
+                assert "FRYER_AND_BATCH_BASELINE" not in evidence["unverified_categories"]
+                assert "INITIAL_CONTEXT_DECLARED_UNVERIFIED" in evidence["unverified_categories"]
                 placed = datetime.now(timezone.utc) - timedelta(seconds=300)
                 for event in ("PREHEAT_COMPLETED", "COOKING_STARTED", "COOKING_COMPLETED"):
                     timing = ({"actual_placed_at": placed.isoformat()} if event == "COOKING_STARTED" else
