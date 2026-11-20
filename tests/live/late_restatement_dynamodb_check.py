@@ -54,6 +54,7 @@ def main() -> None:
     stream_pk = stream_binding_key(**binding)
     job = {"pk": job_pk, "sk": "META", "job_id": "test", "version": 7,
            "status": "COMPLETED", "source_binding": binding,
+           "actual_placed_at": "2026-11-13T23:59:58Z", "actual_lifted_at": "2026-11-14T00:00:20Z",
            "process_assessment_status": "WARNING", "process_thickness_status": "NORMAL",
            "process_time_status": "NORMAL"}
     request_sk = f"RESTATEMENT#REQUEST#synthetic-restatement-{run_id}-late"
@@ -93,6 +94,9 @@ def main() -> None:
         assert result["process_assessment"]["data_gap"] is False
         assert len(result["included_ingestion_event_ids"]) == 3
         assert result["source_raw_count"] == 3
+        assert result["observation_coverage"]["before_first_us"] == 2_000_000
+        assert result["observation_coverage"]["after_last_us"] == 10_000_000
+        assert result["observation_coverage"]["internal_gap_detected"] is False
         assert result["scope"] == "STANDARDIZED_STREAM_SNAPSHOT"
         latest = cooking.get_item(Key={"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"},
                                   ConsistentRead=True)["Item"]
@@ -120,6 +124,7 @@ def main() -> None:
                                   ConsistentRead=True)["Item"]
         assert latest["version"] == 2 and latest["result_sk"] == next_result["sk"]
         assert len(next_result["included_ingestion_event_ids"]) == 4
+        assert next_result["observation_coverage"]["after_last_us"] == 5_000_000
         assert cooking.get_item(Key={"pk": job_pk, "sk": result["sk"]},
                                 ConsistentRead=True)["Item"] == result
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"}, ConsistentRead=True)["Item"] == job

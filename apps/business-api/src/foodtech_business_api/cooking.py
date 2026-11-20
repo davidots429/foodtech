@@ -461,12 +461,14 @@ async def get_job(job_id: str, request: Request,
                if process_view == "LATEST_RESTATED" else None)
     process = ({"view": "LATEST_RESTATED", "status": derived["process_assessment_status"],
                 "assessment": derived["process_assessment"], "result_sk": derived["sk"],
+                "observation_coverage": derived.get("observation_coverage"),
                 "created_at": derived["created_at"],
                 "job_version_at_derivation": derived["job_version_at_derivation"],
                 "job_version_changed": int(meta["version"]) != int(derived["job_version_at_derivation"])}
                if derived else
                {"view": "AS_PROCESSED", "status": meta["process_assessment_status"],
                 "assessment": meta.get("process_assessment"), "result_sk": None,
+                "observation_coverage": None,
                 "created_at": None, "job_version_at_derivation": None,
                 "job_version_changed": False})
     return {"job": meta, "current_assessment": pointer, "process_assessment_view": process}

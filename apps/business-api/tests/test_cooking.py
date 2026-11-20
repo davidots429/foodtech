@@ -130,6 +130,9 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.store.items[(pk, result_sk)] = {
             "pk": pk, "sk": result_sk, "status": "DERIVED_ONLY",
             "process_assessment_status": "NORMAL", "process_assessment": {"data_gap": False},
+            "observation_coverage": {"version": "observed-cooking-span-v1", "sample_count": 2,
+                "before_first_us": 1000000, "after_last_us": 0, "internal_gap_detected": False,
+                "first_sample_at": "2026-11-14T00:00:01Z", "last_sample_at": "2026-11-14T00:00:06Z"},
             "job_version_at_derivation": job["version"], "created_at": "2026-11-14T00:00:00Z"}
         self.store.items[(pk, "PROCESS#LATEST_RESTATED")] = {
             "pk": pk, "sk": "PROCESS#LATEST_RESTATED", "version": 1, "result_sk": result_sk}
@@ -138,11 +141,18 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(latest.status_code, 200, latest.text)
         self.assertEqual(latest.json()["process_assessment_view"]["status"], "NORMAL")
         self.assertEqual(latest.json()["process_assessment_view"]["view"], "LATEST_RESTATED")
+        self.assertEqual(latest.json()["process_assessment_view"]["observation_coverage"]["before_first_us"], 1000000)
         self.assertEqual(latest.json()["job"]["process_assessment_status"], job["process_assessment_status"])
         original = await self.client.get(path, params={"process_view": "AS_PROCESSED"})
         self.assertEqual(original.json()["process_assessment_view"]["view"], "AS_PROCESSED")
+        self.assertIsNone(original.json()["process_assessment_view"]["observation_coverage"])
         self.assertEqual(original.json()["process_assessment_view"]["status"], job["process_assessment_status"])
         self.assertEqual((await self.client.get(path, params={"process_view": "bad"})).status_code, 422)
+        self.store.items[(pk, result_sk)].pop("observation_coverage")
+        older = await self.client.get(path)
+        self.assertIsNone(older.json()["process_assessment_view"]["observation_coverage"])
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(path)).status_code, 404)
 
     async def transition(self, job, event, reason=None):
         body = {"event": event, "expected_version": job["version"], "reason": reason}

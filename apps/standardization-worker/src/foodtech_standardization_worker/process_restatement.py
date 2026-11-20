@@ -16,6 +16,7 @@ from foodtech_contracts.tonkatsu_process import process_status
 from .process_rules import RULE_VERSION, advance
 
 MAX_RESTATEMENT_SAMPLES = 1000
+COVERAGE_VERSION = "observed-cooking-span-v1"
 
 
 def replay_process(assessments: list[dict], job: dict) -> dict:
@@ -30,6 +31,8 @@ def replay_process(assessments: list[dict], job: dict) -> dict:
 
     placed = instant(job["actual_placed_at"]) if job.get("actual_placed_at") else None
     lifted = instant(job["actual_lifted_at"]) if job.get("actual_lifted_at") else None
+    if placed and lifted and lifted < placed:
+        raise ValueError("cooking interval is reversed")
     if any(not isinstance(item.get("normalized"), dict) for item in assessments):
         raise ValueError("restatement source has no normalized process sample")
     ordered = sorted(assessments, key=lambda item: (
@@ -63,12 +66,23 @@ def replay_process(assessments: list[dict], job: dict) -> dict:
         last_sequence = sequence
     if not included:
         raise ValueError("restatement requires at least one process sample")
+    first = instant(ordered[0]["normalized"]["event_time"])
+    last = instant(ordered[-1]["normalized"]["event_time"])
+
+    def micros(delta):
+        return (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+
+    coverage = {"version": COVERAGE_VERSION, "first_sample_at": first.isoformat(),
+                "last_sample_at": last.isoformat(), "sample_count": len(included),
+                "before_first_us": micros(first - placed) if placed else None,
+                "after_last_us": micros(lifted - last) if lifted else None,
+                "internal_gap_detected": has_gap}
     status = "FAILED" if state["status"] == "FAILED" else process_status(
         state["temperature_status"], job.get("process_thickness_status", "NOT_MEASURED"),
         job.get("process_time_status", "NOT_MEASURED"), data_gap=has_gap)
     return {"process_assessment": state, "process_assessment_status": status,
             "has_unfilled_gap": has_gap, "rule_version": RULE_VERSION,
-            "included_ingestion_event_ids": included}
+            "observation_coverage": coverage, "included_ingestion_event_ids": included}
 
 
 class DynamoProcessRestatement:
@@ -210,6 +224,7 @@ class DynamoProcessRestatement:
         previous_pointer = self.cooking.get_item(Key=pointer_key, ConsistentRead=True).get("Item")
         pointer_version = int(previous_pointer["version"]) + 1 if previous_pointer else 1
         manifest = {"request_sk": request["sk"], "job_version": int(job["version"]),
+                    "rule_version": RULE_VERSION, "coverage_version": COVERAGE_VERSION,
                     "source_assessment_keys": [f"{pk}/{sk}" for pk, sk in sorted(sources)],
                     "excluded": excluded}
         digest = hashlib.sha256(rfc8785.dumps(manifest)).hexdigest()

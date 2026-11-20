@@ -52,6 +52,32 @@ class ProcessRestatementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside the cooking interval"):
             replay_process([self.sample("late", 2, 5, late=True)], job)
 
+    def test_observation_span_reports_exact_unobserved_edges_and_missing_bounds(self):
+        job = {**self.job(), "actual_placed_at": "2026-11-14T00:00:00.250000Z",
+               "actual_lifted_at": "2026-11-14T00:00:12.750000Z"}
+        result = replay_process([self.sample("first", 1, 5), self.sample("last", 2, 10)], job)
+        coverage = result["observation_coverage"]
+        self.assertEqual((coverage["before_first_us"], coverage["after_last_us"]), (4750000, 2750000))
+        self.assertEqual(coverage["sample_count"], 2)
+        self.assertFalse(coverage["internal_gap_detected"])
+        unknown = replay_process([self.sample("first", 1, 5)], self.job())["observation_coverage"]
+        self.assertIsNone(unknown["before_first_us"])
+        self.assertIsNone(unknown["after_last_us"])
+
+    def test_observation_span_reports_internal_gap_independently_of_edges(self):
+        job = {**self.job(), "actual_placed_at": "2026-11-14T00:00:00Z",
+               "actual_lifted_at": "2026-11-14T00:00:10Z"}
+        result = replay_process([self.sample("first", 1, 0), self.sample("last", 3, 10)], job)
+        coverage = result["observation_coverage"]
+        self.assertEqual((coverage["before_first_us"], coverage["after_last_us"]), (0, 0))
+        self.assertTrue(coverage["internal_gap_detected"])
+
+    def test_reversed_cooking_interval_is_rejected(self):
+        job = {**self.job(), "actual_placed_at": "2026-11-14T00:00:10Z",
+               "actual_lifted_at": "2026-11-14T00:00:00Z"}
+        with self.assertRaisesRegex(ValueError, "reversed"):
+            replay_process([self.sample("first", 1, 5)], job)
+
     def test_replay_preserves_unfilled_sequence_gap(self):
         result = replay_process([self.sample("first", 1, 0),
                                  self.sample("third", 3, 5),
@@ -91,6 +117,8 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(operations[0]["ConditionCheck"]["Key"]["sk"]["S"], "META")
         self.assertEqual(operations[1]["Put"]["Item"]["status"]["S"], "DERIVED_ONLY")
         self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "3")
+        self.assertEqual(operations[1]["Put"]["Item"]["observation_coverage"]["M"]["sample_count"]["N"], "3")
+        original_key = operations[1]["Put"]["Item"]["sk"]["S"]
         self.assertEqual(len(operations[1]["Put"]["Item"]["included_ingestion_event_ids"]["L"]), 3)
         self.assertEqual(operations[2]["Put"]["Item"]["status"]["S"], "COMPLETED")
         self.assertEqual(operations[3]["Put"]["Item"]["sk"]["S"], "PROCESS#LATEST_RESTATED")
@@ -106,6 +134,10 @@ class ProcessRestatementTests(unittest.TestCase):
         next_pointer = processor.client.transact_write_items.call_args.kwargs["TransactItems"][3]["Put"]
         self.assertEqual(next_pointer["Item"]["version"]["N"], "2")
         self.assertEqual(next_pointer["ExpressionAttributeValues"][":previous"]["N"], "1")
+        with patch("foodtech_standardization_worker.process_restatement.COVERAGE_VERSION", "future-version"):
+            self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+        new_result = processor.client.transact_write_items.call_args.kwargs["TransactItems"][1]["Put"]["Item"]
+        self.assertNotEqual(new_result["sk"]["S"], original_key)
 
     def test_completed_request_retries_aggregate_refresh(self):
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)

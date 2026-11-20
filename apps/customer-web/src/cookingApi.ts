@@ -122,6 +122,9 @@ export type ProcessAssessmentView = {
   view: "AS_PROCESSED" | "LATEST_RESTATED";
   status: CookingJob["process_assessment_status"];
   assessment: Record<string, unknown> | null;
+  observation_coverage: { version: string; first_sample_at: string; last_sample_at: string;
+    sample_count: number; before_first_us: number | null; after_last_us: number | null;
+    internal_gap_detected: boolean } | null;
   result_sk: string | null;
   created_at: string | null;
   job_version_at_derivation: number | null;
