@@ -191,6 +191,79 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["safety_status"], "PASSED")
         return response.json()
 
+    async def test_approved_batch_uses_product_count_and_rated_capacity(self):
+        created = await self.client.post("/api/customer/cooking-jobs", headers=CSRF, json={
+            "planned_portions": 2, "recipe_version": "recipe-v1", "thickness_cm": "1.20",
+            "equipment_profile": "synthetic-fryer-approved-v2"})
+        self.assertEqual(created.status_code, 201, created.text)
+        job = created.json()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        ready = await self.transition(job, "PREHEAT_COMPLETED")
+        blocked = await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_STARTED", "expected_version": ready["version"],
+            "actual_placed_at": (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()})
+        self.assertEqual(blocked.status_code, 409)
+        job = ready
+        body = {"expected_version": job["version"], "mode": "REFERENCE", "product_weights_g": [160] * 15}
+        self.assertEqual((await self.client.post(path + "/tonkatsu-batch", json=body)).status_code, 403)
+        bad = await self.client.post(path + "/tonkatsu-batch", headers=CSRF,
+                                     json={**body, "product_weights_g": [160] * 16})
+        self.assertEqual(bad.status_code, 422)
+        recorded = await self.client.post(path + "/tonkatsu-batch", headers=CSRF, json=body)
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+        job = recorded.json()
+        self.assertEqual(job["tonkatsu_batch"]["total_mass_kg"], "2.4")
+        self.assertEqual(job["tonkatsu_batch"]["load_percent"], "60.00")
+        for event in ("COOKING_STARTED", "COOKING_COMPLETED"):
+            job = await self.transition(job, event)
+        incomplete = await self.client.post(path + "/safety/core-check", headers=CSRF,
+            json={"expected_version": job["version"], "probes": [probe(f"piece-{i}") for i in range(14)]})
+        self.assertEqual(incomplete.status_code, 422)
+        checked = await self.client.post(path + "/safety/core-check", headers=CSRF,
+            json={"expected_version": job["version"], "probes": [probe(f"piece-{i}") for i in range(15)]})
+        self.assertEqual(checked.status_code, 200, checked.text)
+        assessment = {**self.assessment_body(checked.json()), "actual_mass_kg": "2.4",
+                      "load_percent": "60", "load_band": "REFERENCE"}
+        scored = await self.client.post(path + "/assessments", headers=CSRF, json=assessment)
+        self.assertEqual(scored.status_code, 201, scored.text)
+        self.assertEqual(scored.json()["tonkatsu_batch_rule_version"], "tonkatsu-batch-v2")
+        self.assertEqual((await self.client.post(path + "/tonkatsu-batch", headers=CSRF,
+            json={**body, "expected_version": checked.json()["version"]})).status_code, 409)
+        latest = (await self.client.get(path)).json()["job"]
+        recooked = await self.client.post(path + "/recook", headers=CSRF,
+            json={"expected_version": latest["version"], "reason": "합성 재조리"})
+        self.assertEqual(recooked.status_code, 201, recooked.text)
+        self.assertEqual(recooked.json()["equipment_profile"], "synthetic-fryer-approved-v2")
+        self.assertNotIn("tonkatsu_batch", recooked.json())
+
+    async def test_batch_requires_owner_and_valid_weights(self):
+        created = await self.client.post("/api/customer/cooking-jobs", headers=CSRF, json={
+            "planned_portions": 2, "recipe_version": "recipe-v1", "thickness_cm": "1.20",
+            "equipment_profile": "synthetic-fryer-approved-v2"})
+        self.assertEqual(created.status_code, 201, created.text)
+        job = created.json()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}/tonkatsu-batch"
+        for weights in ([166] * 15, [160] * 14, [True] * 15):
+            response = await self.client.post(path, headers=CSRF,
+                json={"expected_version": job["version"], "mode": "REFERENCE", "product_weights_g": weights})
+            self.assertEqual(response.status_code, 422)
+        partial = await self.client.post(path, headers=CSRF,
+            json={"expected_version": job["version"], "mode": "PARTIAL", "product_weights_g": [160] * 2})
+        self.assertEqual(partial.status_code, 200, partial.text)
+        self.assertEqual(partial.json()["tonkatsu_batch"]["load_percent"], "8.00")
+        self.subject = "customer-2"
+        self.assertEqual((await self.client.post(path, headers=CSRF,
+            json={"expected_version": 2, "mode": "PARTIAL", "product_weights_g": [160] * 2})).status_code, 404)
+
+    async def test_approved_profile_supports_fifteen_portions_and_legacy_remains_limited(self):
+        body = {"planned_portions": 15, "recipe_version": "recipe-v1", "thickness_cm": "1.20"}
+        approved = await self.client.post("/api/customer/cooking-jobs", headers=CSRF,
+            json={**body, "equipment_profile": "synthetic-fryer-approved-v2"})
+        self.assertEqual(approved.status_code, 201, approved.text)
+        legacy = await self.client.post("/api/customer/cooking-jobs", headers=CSRF,
+            json={**body, "equipment_profile": "synthetic-fryer"})
+        self.assertEqual(legacy.status_code, 422)
+
     async def test_core_check_rejects_values_outside_synthetic_input_range(self):
         job = await self.create()
         for event in ("PREHEAT_COMPLETED", "COOKING_STARTED", "COOKING_COMPLETED"):

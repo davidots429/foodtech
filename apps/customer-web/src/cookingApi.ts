@@ -25,6 +25,8 @@ export type CookingJob = {
   planned_portions: number;
   thickness_cm?: string;
   actual_load_kg?: string | null;
+  tonkatsu_batch?: { rule_version: string; mode: "REFERENCE" | "PARTIAL"; product_weights_g: number[];
+    product_count: number; total_mass_kg: string; rated_capacity_kg: string; load_percent: string } | null;
   auto_safety_status?: "NOT_MEASURED" | "PENDING" | "PASSED" | "ASSESSMENT_INCOMPLETE";
   mixture_hold_seconds?: number;
   discharge_check_version?: number;

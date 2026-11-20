@@ -72,6 +72,17 @@ class AggregateTests(unittest.IsolatedAsyncioTestCase):
                 "period_end": (self.now + timedelta(days=1)).isoformat(),
                 "recipe_version": "recipe-v1", "load_band": "PARTIAL"}
 
+    async def test_approved_and_legacy_fryer_profiles_are_separate(self):
+        first = cooking._pk(self.subject, self.first_id)
+        self.store.items[(first, "META")]["equipment_profile"] = "synthetic-fryer-approved-v2"
+        self.store.items[(first, "ASSESSMENT#REV#000000000001")]["equipment_profile"] = "synthetic-fryer-approved-v2"
+        response = await self.client.post("/api/customer/assessment-aggregates",
+            headers={"X-CSRF-Token": "test-csrf"},
+            json={**self._body(), "equipment_profile": "synthetic-fryer-approved-v2"})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["sample_count"], 1)
+        self.assertEqual(response.json()["excluded"][0]["reason"], "DIMENSION_MISMATCH")
+
     async def test_exclusion_recalculation_and_immutable_history(self):
         body = self._body()
         self.assertEqual((await self.client.post("/api/customer/assessment-aggregates", json=body)).status_code, 403)

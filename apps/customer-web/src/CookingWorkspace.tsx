@@ -8,6 +8,7 @@ import { AssessmentAggregate } from "./AssessmentAggregate";
 import { CookingTimeMonitor } from "./CookingTimeMonitor";
 import { LocalChat } from "./LocalChat";
 import { RecommendationEvidence } from "./RecommendationEvidence";
+import { TonkatsuBatch } from "./TonkatsuBatch";
 
 type Props = { csrf: string };
 type ScoreForm = Record<ScoreKey, number | "">;
@@ -210,6 +211,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const activeRequest = useRef(false);
   const loadedJobId = useRef<string | null>(null);
   const loadedJobVersion = useRef<number | null>(null);
+  const probeCount = useRef<number | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [safetyReason, setSafetyReason] = useState("");
@@ -256,6 +258,7 @@ export function CookingWorkspace({ csrf }: Props) {
       const [snapshot, history, audit] = await Promise.all([
         api<JobSnapshot>(path), api<Assessment[]>(path + "/assessments"), api<JobEvent[]>(path + "/events"),
       ]);
+      const isNewJob = loadedJobId.current !== id;
       setJob(snapshot.job);
       setValidationEvidence(null);
       setValidationForm(Object.fromEntries(validationFields.map(([key]) =>
@@ -275,8 +278,6 @@ export function CookingWorkspace({ csrf }: Props) {
         setComparison(null);
         setComparisonFreshness(null);
         setComparisonChangedJobs([]);
-        setProbeTemps(Array(snapshot.job.planned_portions).fill("75.0"));
-        setProbeExpired(Array(snapshot.job.planned_portions).fill(false));
         setSimulateGap(false);
         setDischargeTemps(["75", "75", "75"]);
         setDischargeExpired([false, false, false]);
@@ -296,6 +297,12 @@ export function CookingWorkspace({ csrf }: Props) {
         setTransitionReason("");
         setManualStoppedAt(localDateTime(new Date()));
         loadedJobId.current = id;
+      }
+      const count = snapshot.job.tonkatsu_batch?.product_count ?? snapshot.job.planned_portions;
+      if (isNewJob || probeCount.current !== count) {
+        setProbeTemps(Array(count).fill("75.0"));
+        setProbeExpired(Array(count).fill(false));
+        probeCount.current = count;
       }
       loadedJobVersion.current = snapshot.job.version;
       window.history.replaceState(null, "", `#job=${encodeURIComponent(id)}`);
@@ -419,8 +426,9 @@ export function CookingWorkspace({ csrf }: Props) {
   }
 
   async function createJob() {
-    if (!Number.isInteger(plannedPortions) || plannedPortions < 1 || plannedPortions > 4 || !recipeVersion.trim()) {
-      setError("계획 인분은 1~4, 레시피 버전은 필수입니다."); return;
+    const legacyThin = createMenu === "TONKATSU" && Number(thicknessCm) < 0.5;
+    if (!Number.isInteger(plannedPortions) || plannedPortions < 1 || plannedPortions > (createMenu === "TONKATSU" && !legacyThin ? 18 : 4) || !recipeVersion.trim()) {
+      setError("계획 인분 범위와 레시피 버전을 확인해 주세요."); return;
     }
     if (createMenu === "TONKATSU" && (!thicknessCm || !Number.isFinite(Number(thicknessCm)) || Number(thicknessCm) <= 0 || Number(thicknessCm) > 2)) {
       setError("합성 제품의 최대 두께는 0 초과~2.00cm로 입력해 주세요. 2.00cm 초과는 프로파일에서 제외됩니다."); return;
@@ -431,7 +439,8 @@ export function CookingWorkspace({ csrf }: Props) {
     await action(
       () => api<CookingJob>("/api/customer/cooking-jobs", csrf, {
         planned_portions: plannedPortions, recipe_version: recipeVersion.trim(),
-        ...(createMenu === "TONKATSU" ? { thickness_cm: thicknessCm, equipment_profile: "synthetic-fryer" }
+        ...(createMenu === "TONKATSU" ? { thickness_cm: thicknessCm,
+          equipment_profile: legacyThin ? "synthetic-fryer" : "synthetic-fryer-approved-v2" }
           : { actual_load_kg: jeyukLoadKg, equipment_profile: "jeyuk-small" }),
       }),
       "합성 조리작업을 생성했습니다.", (created) => created.job_id,
@@ -519,7 +528,7 @@ export function CookingWorkspace({ csrf }: Props) {
   async function checkCore() {
     if (!job) return;
     const temps = probeTemps.map((value) => Number(value));
-    if (temps.length !== job.planned_portions || temps.some((value) => !Number.isFinite(value) || value < -273.15 || value > 300)) {
+    if (temps.length !== (job.tonkatsu_batch?.product_count ?? job.planned_portions) || temps.some((value) => !Number.isFinite(value) || value < -273.15 || value > 300)) {
       setError("각 제품의 합성 온도를 -273.15~300°C 범위로 입력해 주세요."); return;
     }
     const probes: Probe[] = temps.map((value, index) => ({
@@ -557,14 +566,14 @@ export function CookingWorkspace({ csrf }: Props) {
     if (!job) return;
     const values = Object.values(scores);
     const mass = Number(massKg);
-    const load = loadForMass(mass);
+    const load = job.tonkatsu_batch ? { percent: job.tonkatsu_batch.load_percent, band: job.tonkatsu_batch.mode } : loadForMass(mass);
     const currentVersion = current?.version ?? 0;
     if (values.some((value) => value === "") || scoreItems.some(({ key }) => !observations[key].trim())) {
       setError("7개 항목의 점수와 관찰 근거를 모두 입력해 주세요."); return;
     }
     if (job.menu === "TONKATSU" && !load) { setError("실제 투입량은 0.01~0.80 kg이며 소수 둘째 자리까지 입력해 주세요."); return; }
-    if (!Number.isInteger(actualPortions) || actualPortions < 1 || actualPortions > 4) {
-      setError("실제 인분은 1~4입니다."); return;
+    if (!Number.isInteger(actualPortions) || actualPortions < 1 || actualPortions > job.planned_portions) {
+      setError("실제 인분은 계획 인분을 넘을 수 없습니다."); return;
     }
     if (currentVersion > 0 && !assessmentReason.trim()) {
       setError("수정·재평가 사유를 입력해 주세요."); return;
@@ -582,7 +591,7 @@ export function CookingWorkspace({ csrf }: Props) {
       overall_satisfaction: overallSatisfaction ? Number(overallSatisfaction) : null,
       scale_version: job.menu === "JEYUK" ? "jeyuk-common-v1" : "tonkatsu-common-v1",
       planned_portions: job.planned_portions, actual_portions: actualPortions,
-      actual_mass_kg: job.menu === "JEYUK" ? job.actual_load_kg : massKg,
+      actual_mass_kg: job.menu === "JEYUK" ? job.actual_load_kg : job.tonkatsu_batch?.total_mass_kg ?? massKg,
       load_percent: job.menu === "JEYUK" ? jeyukPercent : load!.percent,
       load_band: job.menu === "JEYUK" ? jeyukBand : load!.band,
       ...(job.menu === "JEYUK" ? { quality_decision: jeyukQualityDecision,
@@ -674,7 +683,7 @@ export function CookingWorkspace({ csrf }: Props) {
 
   const scoreValues = Object.values(scores).filter((value): value is number => value !== "");
   const previewScore = scoreValues.length === 7 ? (scoreValues.reduce((sum, value) => sum + value, 0) / 35 * 100).toFixed(2) : null;
-  const load = loadForMass(Number(massKg));
+  const load = job?.tonkatsu_batch ? { percent: job.tonkatsu_batch.load_percent, band: job.tonkatsu_batch.mode } : loadForMass(Number(massKg));
   const canAssess = !!job && job.status === "COMPLETED" && job.safety_status === "PASSED" && !job.evaluation_blocked;
   const safetyLocked = !!job && ["SUSPECTED", "UNDER_REVIEW", "FAILED"].includes(job.safety_status);
   const availableTransitions = job ? transitions[job.status].filter(({ event }) => !safetyLocked || event === "COOKING_CANCELED") : [];
@@ -700,7 +709,7 @@ export function CookingWorkspace({ csrf }: Props) {
             }}>
               <option value="TONKATSU">돈까스</option><option value="JEYUK">제육볶음</option>
             </select></label>
-            <label>계획 인분 <input type="number" min="1" max="4" step="1" value={plannedPortions}
+            <label>계획 인분 <input type="number" min="1" max={createMenu === "TONKATSU" ? 18 : 4} step="1" value={plannedPortions}
               onChange={(event) => setPlannedPortions(Number(event.target.value))} /></label>
             <label>레시피 버전 <input maxLength={80} value={recipeVersion}
               onChange={(event) => setRecipeVersion(event.target.value)} /></label>
@@ -709,6 +718,8 @@ export function CookingWorkspace({ csrf }: Props) {
               : <label>합성 적재량(kg) <input type="number" min="0.01" max="3.0" step="0.01" value={jeyukLoadKg}
                 onChange={(event) => setJeyukLoadKg(event.target.value)} /></label>}
           </div>
+          {createMenu === "TONKATSU" && Number(thicknessCm) > 0 && Number(thicknessCm) < 0.5 &&
+            <p className="small">0.5cm 미만은 두께 경고이며, 제품 중량 기준이 없어 이전 소량 합성 fixture로 진행합니다.</p>}
           <button type="button" onClick={createJob} disabled={busy || loadingJob}>합성 조리작업 만들기</button>
           <div className="lookup-row"><label>기존 작업 ID
             <input value={lookupId} onChange={(event) => setLookupId(event.target.value)} placeholder="작업 UUID" />
@@ -752,6 +763,7 @@ export function CookingWorkspace({ csrf }: Props) {
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
             <LocalChat key={job.job_id} csrf={csrf} jobId={job.job_id} />
             <RecommendationEvidence key={`${job.job_id}-${job.version}`} jobId={job.job_id} />
+            {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuBatch key={job.job_id} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}
             {job.source_binding ? <p className="small">연결된 합성 수집 배치: <code>{job.source_binding.batch_id}</code> · 온도 판정 {temperatureLabels[job.process_temperature_status] ?? job.process_temperature_status}</p>
               : <div className="binding-box"><p className="small">Mock의 <code>synthetic-rest / {job.menu === "JEYUK" ? "mockprofile-110-a-001" : "mockprofile-100-a-001"}</code> 배치를 조리 시작 전에 연결해야 자동 공정판정이 실행됩니다.</p>
                 <div className="field-row"><label className="grow">합성 배치 ID
@@ -842,7 +854,7 @@ export function CookingWorkspace({ csrf }: Props) {
             <h4>합성 심부온도 표본</h4>
             <p className="small">제품마다 입력 온도로 0~60초의 1Hz 합성 표본 61개를 생성합니다. 실제 측정값으로 표시하지 않습니다. 전 제품의 유효 표본이 75°C 이상이어야 통과합니다.</p>
             <div className="probe-grid">
-              {Array.from({ length: job.planned_portions }, (_, index) => <div className="probe-card" key={index}>
+              {Array.from({ length: job.tonkatsu_batch?.product_count ?? job.planned_portions }, (_, index) => <div className="probe-card" key={index}>
                 <label>제품 {index + 1} 온도(°C)
                   <input type="number" step="0.1" value={probeTemps[index] ?? "75.0"}
                     onChange={(event) => setProbeTemps((old) => old.map((value, at) => at === index ? event.target.value : value))} />
@@ -900,15 +912,15 @@ export function CookingWorkspace({ csrf }: Props) {
               ? "안전 확인 중 · 종합점수 미산출"
               : previewScore ? `입력 점수 미리보기 ${previewScore}점 / 100점` : "7개 점수를 모두 선택하면 종합점수 미리보기가 표시됩니다."}</p>
             <div className="field-row">
-              <label>실제 인분 <input type="number" min="1" max="4" step="1" value={actualPortions}
+              <label>실제 인분 <input type="number" min="1" max={job.planned_portions} step="1" value={actualPortions}
                 onChange={(event) => setActualPortions(Number(event.target.value))} /></label>
-              <label>실제 투입량(kg) <input type="number" min="0.01" max="0.8" step="0.01" value={massKg}
+              <label>실제 투입량(kg) <input type="number" min="0.01" max={job.tonkatsu_batch ? "2.5" : "0.8"} step="0.001" value={job.tonkatsu_batch?.total_mass_kg ?? massKg} readOnly={!!job.tonkatsu_batch}
                 onChange={(event) => setMassKg(event.target.value)} placeholder="0.40" /></label>
               <label>전반적 만족도 <select value={overallSatisfaction} onChange={(event) => setOverallSatisfaction(event.target.value)}>
                 <option value="">선택 안 함</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}
               </select></label>
             </div>
-            {load && <p className="small">합성 기준 배치 0.8 kg 대비 적재율 {load.percent}% · {load.band === "PARTIAL" ? "부분 적재" : "기준 적재"}</p>}
+            {load && <p className="small">{job.tonkatsu_batch ? "합성 정격 4.0 kg" : "이전 합성 기준 배치 0.8 kg"} 대비 적재율 {load.percent}% · {load.band === "PARTIAL" ? "부분 적재" : "기준 적재"}</p>}
             {current && <div className="field-row">
               <label>평가 유형 <select value={assessmentKind} onChange={(event) => setAssessmentKind(event.target.value as "REVISION" | "REASSESSMENT")}>
                 <option value="REASSESSMENT">재평가</option><option value="REVISION">수정</option>
@@ -1028,7 +1040,7 @@ export function CookingWorkspace({ csrf }: Props) {
             </div>}
           </section>
 
-          <AssessmentAggregate csrf={csrf} currentJobId={job.job_id} menu={job.menu}
+          <AssessmentAggregate csrf={csrf} currentJobId={job.job_id} menu={job.menu} equipmentProfile={job.equipment_profile}
             recipeVersion={job.recipe_version}
             defaultLoadBand={assessments.find(item => item.version === current?.version)?.load_band}
             availableJobs={listedJobs} />

@@ -1,0 +1,14 @@
+{
+  "fixtureId": "tonkatsu-business-v2",
+  "provenance": "SYNTHETIC",
+  "equipmentProfile": "synthetic-fryer-approved-v2",
+  "ratedCapacityKg": "4.0",
+  "referenceBatchKg": {"minimum": "2.3", "target": "2.4", "maximum": "2.5"},
+  "profiles": [
+    {"name": "THIN", "maxProducts": 18, "targetGrams": 135, "toleranceGrams": 5},
+    {"name": "STANDARD", "maxProducts": 15, "targetGrams": 160, "toleranceGrams": 5},
+    {"name": "THICK", "maxProducts": 12, "targetGrams": 200, "toleranceGrams": 5}
+  ],
+  "referenceExample": {"profile": "STANDARD", "productWeightsGrams": [160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160], "massKg": "2.4", "ratedLoadPercent": "60"},
+  "partialExample": {"profile": "STANDARD", "productWeightsGrams": [160, 160], "massKg": "0.32", "ratedLoadPercent": "8"}
+}
