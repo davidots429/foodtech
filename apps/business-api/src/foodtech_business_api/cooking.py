@@ -475,6 +475,13 @@ async def get_job(job_id: str, request: Request,
     return {"job": meta, "current_assessment": pointer, "process_assessment_view": process}
 
 
+@router.get("/{job_id}/recommendation-evidence")
+async def recommendation_evidence(job_id: str, request: Request, response: Response) -> dict:
+    from .recommendation_evidence import read_evidence
+    response.headers["Cache-Control"] = "no-store"
+    return await read_evidence(request, job_id)
+
+
 @router.get("/{job_id}/time-monitor")
 async def get_time_monitor(job_id: str, request: Request, response: Response) -> dict:
     _, _, _, job, _ = await _read(request, job_id)
