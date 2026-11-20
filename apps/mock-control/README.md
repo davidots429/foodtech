@@ -22,7 +22,7 @@ dotnet run --project apps/mock-control/MockControl.csproj -- serve \
 
 첫 구현의 생성기 버전·seed·논리 시작 시각은 fixture에 고정되어 있다. `hash`는 이 프로파일의 제한된 필드 집합에 대한 C# 정규화·SHA-256 교차 검증 명령이다. 일반 JSON 정규화기는 아니다.
 
-`serve-ua-json`은 기본 장비 `mockprofile-200`과 볶음·교반 장비 `mockprofile-210`의 vendor-a/b/c 합성 fixture를 각각 제공한다. 두 계열은 응답 프로파일 식별자를 구분하며 읽기 전용 인증과 합성 이력 조회를 사용한다. 이는 프로젝트 전용 Session-less HTTPS 시험 계약이다.
+`serve-ua-json`은 기본 장비 `mockprofile-200`, 볶음·교반 장비 `mockprofile-210`, 콤비오븐 `mockprofile-220`의 vendor-a/b/c 합성 fixture를 각각 제공한다. 각 계열은 응답 프로파일 식별자를 구분하며 읽기 전용 인증과 합성 이력 조회를 사용한다. 이는 프로젝트 전용 Session-less HTTPS 시험 계약이다.
 
 CI의 `tests/integration/test_mock_protocol.py`는 빌드한 C# Mock을 임시 HTTPS 인증서로 실행하고, 잘못된 OAuth 자격증명·인증 없는 조회·쓰기 요청의 거부를 확인한다. 이어 실제 HTTPS 응답을 Python 수집 클라이언트로 읽어 연결 단절 후 재시도, 순번 `1, 3, 2`의 `1, 2, 3` 복원, Worker의 정상·격리 판정과 기대 오류 코드를 대조한다. 이 검사는 로컬 프로세스 간 계약 검증이며 DynamoDB·SQS를 거치는 실저장 검증은 별도다.
 

@@ -69,6 +69,22 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         ))
     quality = "QUARANTINED" if any(item.code == "HARD_LIMIT_EXCEEDED" for item in findings) else \
         "WARNING" if findings else "VALID"
+    combi_fields = {}
+    if canonical["device_id"] in {f"mockprofile-220-{vendor}-001" for vendor in "abc"}:
+        vendor = canonical["device_id"].split("-")[2]
+        extension = record["extensions"] if vendor != "c" else record["extensions"]["vendor_extension"]
+        climate, source, humidity, fan = {
+            "a": ("climateSetpointPercent", "humiditySource", "humidityPercent", "fanLevel"),
+            "b": ("ext_climate_setpoint_percent", "ext_humidity_source", "ext_humidity_percent", "ext_fan_level"),
+            "c": ("ClimateSetpointPct", "HumiditySource", "HumidityPct", "FanLevel"),
+        }[vendor]
+        humidity_source = extension[source]
+        combi_fields = {"CLIMATE_SETTING_PERCENT": {"value": format(Decimal(str(extension[climate])), "f"), "unit": "%"},
+                        "FAN_SPEED_LEVEL": {"value": extension[fan], "unit": None},
+                        "humidity_value_source": humidity_source}
+        if humidity_source != "NOT_SUPPORTED":
+            field = "RELATIVE_HUMIDITY" if humidity_source == "MEASURED" else "HUMIDITY_ESTIMATE_PERCENT"
+            combi_fields[field] = {"value": format(Decimal(str(extension[humidity])), "f"), "unit": "%RH"}
     normalized = {
         "source_id": canonical["source_id"],
         "device_id": canonical["device_id"],
@@ -84,6 +100,7 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
            {"SPEED_LEVEL": {"value": canonical["speed_level"], "unit": None}} if "speed_level" in canonical else
            {"ROTATIONAL_SPEED_RPM": {"value": canonical["speed_rpm"], "unit": "rpm"}}),
         "DURATION": {"value": canonical["elapsed_seconds"], "unit": "s"},
+        **combi_fields,
     } if quality != "QUARANTINED" else None
     return Assessment(
         ingestion_event_id=ingestion_event_id,
@@ -122,7 +139,10 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         },
         correction_rule_id=("FT-MAP-VENDOR-B-1" if "output_percent" in canonical else
                             "FT-MAP-VENDOR-C-1" if "speed_level" in canonical else "FT-MAP-VENDOR-A-1"),
-        mapping_version={"mockprofile-210-a-001": "mockprofile-210-a-map-v1",
+        mapping_version={"mockprofile-220-a-001": "mockprofile-220-a-map-v1",
+                         "mockprofile-220-b-001": "mockprofile-220-b-map-v1",
+                         "mockprofile-220-c-001": "mockprofile-220-c-map-v1",
+                         "mockprofile-210-a-001": "mockprofile-210-a-map-v1",
                          "mockprofile-210-b-001": "mockprofile-210-b-map-v1",
                          "mockprofile-210-c-001": "mockprofile-210-c-map-v1",
                          "mockprofile-302-a-001": "mockprofile-302-a-map-v1",

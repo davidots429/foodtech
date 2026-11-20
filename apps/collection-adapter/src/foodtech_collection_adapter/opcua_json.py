@@ -14,7 +14,7 @@ from .opcua import validate_or_quarantine
 from .ingestion_quarantine import IngestionQuarantine
 
 
-INSTANCES = tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("200", "210") for vendor in "abc")
+INSTANCES = tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("200", "210", "220") for vendor in "abc")
 
 
 class UaJsonClient:
@@ -22,7 +22,7 @@ class UaJsonClient:
         parsed = urlsplit(base_url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or not ca_file:
             raise ValueError("HTTPS endpoint and trusted CA required")
-        if profile_id not in {"mockprofile-200", "mockprofile-210"}:
+        if profile_id not in {"mockprofile-200", "mockprofile-210", "mockprofile-220"}:
             raise ValueError("unsupported synthetic profile")
         self.profile_id = profile_id
         self.client = httpx.Client(base_url=base_url, verify=ssl.create_default_context(cafile=ca_file), timeout=5, follow_redirects=False)
