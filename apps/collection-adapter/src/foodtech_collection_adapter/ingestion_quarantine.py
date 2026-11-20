@@ -111,7 +111,7 @@ class IngestionQuarantine:
 
     def preserve_opcua_history(self, payload: bytes, *, instance_id: str, profile_id: str) -> str:
         """Preserve a rejected synthetic recovery value before stopping collection."""
-        if profile_id not in {"mockprofile-200", "mockprofile-203"} or \
+        if profile_id not in {"mockprofile-200", "mockprofile-203", "mockprofile-210"} or \
                 instance_id not in {f"{profile_id}-{vendor}-001" for vendor in "abc"}:
             raise ValueError("unsupported synthetic OPC UA source")
         if not isinstance(payload, bytes) or len(payload) > MAX_PAYLOAD_BYTES:

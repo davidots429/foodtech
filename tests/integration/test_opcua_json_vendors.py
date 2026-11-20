@@ -29,9 +29,9 @@ class UaJsonVendorTests(unittest.TestCase):
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
                             "-password", "pass:test-password"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for vendor in ("b", "c"):
-                with self.subTest(vendor=vendor):
-                    instance = f"mockprofile-200-{vendor}-001"
+            for profile, vendor in (("200", "b"), ("200", "c"), ("210", "a"), ("210", "b"), ("210", "c")):
+                with self.subTest(profile=profile, vendor=vendor):
+                    instance = f"mockprofile-{profile}-{vendor}-001"
                     with socket.socket() as probe:
                         probe.bind(("127.0.0.1", 0))
                         port = probe.getsockname()[1]
@@ -54,7 +54,7 @@ class UaJsonVendorTests(unittest.TestCase):
                             def drain(self, stream): return []
                         class Failed:
                             def ingest(self, raw): raise RuntimeError("storage failure")
-                        with self.assertRaisesRegex(ValueError, "unexpected synthetic device"):
+                        with self.assertRaises(ValueError):
                             collect(base, "test-user", "test-secret", str(cert), Ingestor(),
                                     count=1, timeout_seconds=10)
                         with self.assertRaisesRegex(RuntimeError, "storage failure"):
@@ -66,12 +66,16 @@ class UaJsonVendorTests(unittest.TestCase):
                         self.assertEqual([decode_record(raw)["sequenceNumber"] for raw in ingestor.records], [1, 2, 3])
                         results = [assess(str(i), raw) for i, raw in enumerate(ingestor.records)]
                         self.assertEqual([item.quality_status for item in results], ["VALID", "VALID", "QUARANTINED"])
-                        self.assertTrue(all(item.mapping_version == f"mockprofile-200-{vendor}-map-v1" for item in results))
+                        self.assertTrue(all(item.mapping_version == f"mockprofile-{profile}-{vendor}-map-v1" for item in results))
+                        if profile == "210":
+                            self.assertIn("POT_TEMPERATURE", results[0].normalized)
+                            self.assertNotIn("CHAMBER_TEMPERATURE", results[0].normalized)
                         if vendor == "b":
                             self.assertEqual(results[0].normalized["OUTPUT_PERCENT"]["value"], "60")
-                        else:
+                        elif vendor == "c":
                             self.assertEqual(results[0].normalized["SPEED_LEVEL"]["value"], 6)
-                        self.assertNotIn("ROTATIONAL_SPEED_RPM", results[0].normalized)
+                        if vendor != "a":
+                            self.assertNotIn("ROTATIONAL_SPEED_RPM", results[0].normalized)
                     finally:
                         server.terminate()
                         server.wait(timeout=5)

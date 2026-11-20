@@ -77,6 +77,8 @@ MQTT 수집 명령의 `--instance mockprofile-300-b-001` 또는 `--instance mock
 
 합성 Session-less Browse/Read 수집 명령의 `--instance mockprofile-200-b-001` 또는 `mockprofile-200-c-001`로 vendor 원천을 선택할 수 있다. 읽은 인스턴스 식별자와 원천 Schema를 검사하고 저장 실패 후 합성 이력에서 재조회한다. vendor-b의 출력 비율과 vendor-c의 속도 단계는 RPM으로 바꾸지 않는다. 이는 프로젝트 전용 HTTPS 계약이며 OPC UA 표준 JSON 서비스나 실제 제조사 호환 구현이 아니다. AWS 실저장은 후속이다.
 
+볶음·교반 장비의 합성 Session-less Browse/Read 계열은 `--instance mockprofile-210-a-001`, `mockprofile-210-b-001`, `mockprofile-210-c-001`을 지원한다. 각 원천 스키마에서 합성 장비 유형을 확인하고, 온도는 `POT_TEMPERATURE`로 표준화한다. vendor-a의 RPM, vendor-b의 출력 비율, vendor-c의 속도 단계는 별도로 유지하며 서로 환산하지 않는다. 인증·순서 복구·원천 이력 위반 격리는 기존 프로젝트 전용 HTTPS 계약과 같다. 이 경로는 로컬 통합 검증 범위이며 실제 제조사 호환성이나 AWS 실저장 검증을 주장하지 않는다.
+
 OPC UA Binary 수집 명령의 `--instance mockprofile-203-b-001` 또는 `mockprofile-203-c-001`은 각각의 합성 namespace·장비 ID와 원천 Schema를 확인한다. SDK 인증서 신뢰·SignAndEncrypt·읽기 전용 Subscription과 합성 이력 재조회는 기존 인스턴스와 동일하다. vendor-b의 출력 비율과 vendor-c의 순서형 속도 단계는 RPM으로 환산하지 않는다. 원천 이력과 합성 Node는 프로젝트 시험 계약이며 실제 제조사 사양이나 UA 표준 이력 서비스라는 주장은 아니다. AWS 실저장은 후속이다.
 
 ### 합성 REST XML

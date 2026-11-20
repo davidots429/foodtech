@@ -17,12 +17,13 @@ internal static class UaJsonMock
         using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
         var root = fixture.RootElement;
         var instance = root.GetProperty("instanceId").GetString();
+        var profile = root.GetProperty("profileId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            root.GetProperty("profileId").GetString() != "mockprofile-200" ||
-            instance is not ("mockprofile-200-a-001" or "mockprofile-200-b-001" or "mockprofile-200-c-001"))
+            profile is not ("mockprofile-200" or "mockprofile-210") ||
+            instance is null || !new[] { $"{profile}-a-001", $"{profile}-b-001", $"{profile}-c-001" }.Contains(instance))
             throw new InvalidDataException("Only the approved synthetic fixture is supported.");
-        var b = instance == "mockprofile-200-b-001";
-        var c = instance == "mockprofile-200-c-001";
+        var b = instance == $"{profile}-b-001";
+        var c = instance == $"{profile}-c-001";
         var records = root.GetProperty("records").EnumerateArray().ToArray();
         if (records.Length is < 1 or > 5000 || records.Where((r, i) =>
             r.GetProperty(b ? "device_id" : c ? "DeviceId" : "deviceId").GetString() != instance ||
@@ -48,7 +49,7 @@ internal static class UaJsonMock
         void Headers(HttpContext ctx)
         {
             ctx.Response.Headers["X-Contract-Version"] = "1.0";
-            ctx.Response.Headers["X-Profile-ID"] = "mockprofile-200";
+            ctx.Response.Headers["X-Profile-ID"] = profile;
             ctx.Response.Headers["X-Provenance"] = "SYNTHETIC";
             ctx.Response.Headers.CacheControl = "no-store";
         }
