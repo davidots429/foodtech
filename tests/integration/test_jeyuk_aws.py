@@ -12,6 +12,8 @@ from boto3.dynamodb.types import TypeDeserializer
 
 from foodtech_collection_adapter.jeyuk_aws import DynamoJeyukIngestor
 from foodtech_standardization_worker.jeyuk_aws import DynamoJeyukProcessor
+from foodtech_business_api.jeyuk_source_evidence import audit_source_records
+from foodtech_contracts.jeyuk_process import RULE_VERSION, cooking_time_status
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +87,49 @@ class FakeDdb:
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class JeyukAwsTests(unittest.TestCase):
+    def test_full_medium_and_large_streams_persist_every_sample_and_safety_state(self):
+        for size, seconds in (("medium", 900), ("large", 1500)):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "samples.jsonl"
+                fixture = ROOT / f"fixtures/jeyuk-{size}-full-v1.json"
+                subprocess.run(["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(fixture),
+                                "--output", str(output)], check=True, capture_output=True)
+                raws = output.read_text().splitlines()
+                table, sqs = FakeTable(), FakeSqs()
+                ingestor = DynamoJeyukIngestor.__new__(DynamoJeyukIngestor)
+                ingestor.table, ingestor.sqs, ingestor.queue_url = table, sqs, "test.fifo"
+                worker = DynamoJeyukProcessor(table, FakeDdb(table))
+                for raw in raws:
+                    result = worker.process(ingestor.ingest(raw))
+                self.assertEqual(len(raws), seconds)
+                self.assertEqual((result["profile"], result["second"], result["process_status"],
+                                  result["auto_safety_status"]), (size.upper(), seconds, "NORMAL", "PASSED"))
+                self.assertEqual(len(sqs.messages), seconds)
+                pk = f"JEYUK#jeyuk-{size}-full-v1"
+                self.assertEqual(table.items[(pk, "STATE")]["last_second"], seconds)
+                source = json.loads(fixture.read_text())
+                identity = source["validationIdentity"]
+                context = {"actual_load_kg": source["actualLoadKg"],
+                    "ingredient_spec_id": identity["ingredientSpecId"], "ingredient_lot_id": identity["ingredientLotId"],
+                    "supplier_id": identity["supplierId"], "sensor_id": identity["sensorId"],
+                    "sensor_calibration_record_id": identity["sensorCalibrationRecordId"],
+                    "process_condition_profile_id": identity["processConditionProfileId"],
+                    "process_condition_version": identity["processConditionVersion"]}
+                job = {"source_binding": {"batch_id": source["fixtureId"]}, "jeyuk_size_profile": size.upper(),
+                    "equipment_profile": f"jeyuk-{size}", "validation_context": context,
+                    "process_assessment": {"second": seconds, "source_assessment_sk": f"ASSESSMENT#{seconds:06d}",
+                        "status": result["process_status"], "rule_version": RULE_VERSION},
+                    "auto_safety_status": result["auto_safety_status"],
+                    "mixture_hold_seconds": result["mixture_hold_seconds"],
+                    "safety_passed_at_second": result["safety_passed_at_second"],
+                    "actual_cooking_seconds": seconds, "process_time_status": cooking_time_status(size.upper(), seconds),
+                    "process_assessment_status": result["process_status"]}
+                assessments = [table.items[(pk, f"ASSESSMENT#{index:06d}")] for index in range(1, seconds + 1)]
+                recorded_raw = [table.items[(pk, f"RAW#{index:06d}")] for index in range(1, seconds + 1)]
+                checks = audit_source_records(job, assessments, recorded_raw)
+                self.assertTrue(all(value for key, value in checks.items() if key != "source_process_span_covers_cooking"))
+                self.assertFalse(checks["source_process_span_covers_cooking"])
+
     def test_safety_hold_is_persisted_with_process_state(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "safety.jsonl"

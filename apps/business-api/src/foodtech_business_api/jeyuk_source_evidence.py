@@ -6,11 +6,11 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
-from foodtech_contracts.jeyuk_process import ProcessMonitor, RULE_VERSION as PROCESS_RULE_VERSION
+from foodtech_contracts.jeyuk_process import ProcessMonitor, PROFILES, RULE_VERSION as PROCESS_RULE_VERSION
 from foodtech_contracts.jeyuk_safety import JeyukSafetyMonitor, RULE_VERSION as SAFETY_RULE_VERSION
 
 
-MAX_SECONDS = 600
+MAX_SECONDS = max(profile.time_bands[-1] for profile in PROFILES.values())
 
 
 def read_source_records(table_name: str, batch_id: str, last_second: int) -> tuple[list[dict], list[dict]]:
@@ -57,12 +57,16 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
               "source_process_conditions_normal": False,
               "source_safety_samples_valid": False,
               "source_validation_identity_matches": False,
+              "source_relative_duration_covers_cooking": False,
               "source_process_span_covers_cooking": False}
     if not contiguous:
         return result
+    size = job.get("jeyuk_size_profile")
+    if size not in PROFILES or job.get("equipment_profile") != f"jeyuk-{size.lower()}":
+        return result
     expected_load = Decimal(context["actual_load_kg"])
     samples = []
-    process_monitor = ProcessMonitor("SMALL", expected_load)
+    process_monitor = ProcessMonitor(size, expected_load)
     safety_monitor = JeyukSafetyMonitor()
     process_readings = []
     for index, (assessment, raw) in enumerate(zip(assessments, raws), 1):
@@ -77,11 +81,11 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
         except InvalidOperation:
             return result
         if (sample.fixture_id != binding["batch_id"] or sample.second != index or
-                sample.profile != "SMALL" or sample.actual_load_kg != expected_load or
+                sample.profile != size or sample.actual_load_kg != expected_load or
                 assessment.get("fixture_id") != binding["batch_id"] or
                 assessment.get("second") != index or
                 assessment.get("profile_id") != "mockprofile-110" or
-                assessment.get("profile") != "SMALL" or
+                assessment.get("profile") != size or
                 assessed_load != expected_load or assessment.get("provenance") != "SYNTHETIC"):
             return result
         if sample.mixture_celsius is None:
@@ -142,7 +146,9 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
         all(isinstance(value, str) and value for value in expected_identity.values()) and
         all(sample.validation_identity == expected_identity for sample in samples))
     duration = job.get("actual_cooking_seconds")
-    result["source_process_span_covers_cooking"] = (
+    result["source_relative_duration_covers_cooking"] = (
         type(duration) is int and duration > 0 and last_second >= duration and
         process.get("rule_version") == PROCESS_RULE_VERSION)
+    # These synthetic samples contain relative seconds only. Their actual
+    # alignment with the job's placement and lift times is not established.
     return result

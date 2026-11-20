@@ -29,14 +29,14 @@ class AggregateRequest(BaseModel):
     period_end: datetime
     recipe_version: str = Field(min_length=1, max_length=80)
     menu: Literal["TONKATSU", "JEYUK"] = "TONKATSU"
-    equipment_profile: Literal["synthetic-fryer", "synthetic-fryer-approved-v2", "jeyuk-small"] | None = None
+    equipment_profile: Literal["synthetic-fryer", "synthetic-fryer-approved-v2", "jeyuk-small", "jeyuk-medium", "jeyuk-large"] | None = None
     load_band: Literal["PARTIAL", "REFERENCE", "OVER_RECOMMENDED"]
 
 
 def _selection(body: AggregateRequest) -> dict:
     default_profile, scale, _ = PROFILES[body.menu]
     profile = body.equipment_profile or default_profile
-    if profile not in ({"synthetic-fryer", "synthetic-fryer-approved-v2"} if body.menu == "TONKATSU" else {"jeyuk-small"}):
+    if profile not in ({"synthetic-fryer", "synthetic-fryer-approved-v2"} if body.menu == "TONKATSU" else {"jeyuk-small", "jeyuk-medium", "jeyuk-large"}):
         raise HTTPException(422, "메뉴와 장비 프로파일이 일치하지 않습니다.")
     return {"job_ids": sorted(str(value) for value in body.job_ids),
             "period_start": body.period_start.astimezone(timezone.utc).isoformat(),

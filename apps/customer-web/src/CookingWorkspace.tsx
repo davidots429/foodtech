@@ -68,7 +68,8 @@ const validationCheckLabels: Record<string, string> = {
   source_process_conditions_normal: "원천 공정판정 전 구간 정상",
   source_safety_samples_valid: "원천 안전 표본의 교정·위치 확인",
   source_validation_identity_matches: "원천의 합성 원재료·센서·공정 ID 일치",
-  source_process_span_covers_cooking: "원천 기록이 전체 조리시간을 포함",
+  source_relative_duration_covers_cooking: "상대 표본 길이가 조리시간 이상",
+  source_process_span_covers_cooking: "원천 표본과 실제 조리구간의 시각 일치",
 };
 
 const jobLabels: Record<CookingJob["status"], string> = {
@@ -200,6 +201,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const [plannedPortions, setPlannedPortions] = useState(2);
   const [createMenu, setCreateMenu] = useState<"TONKATSU" | "JEYUK">("TONKATSU");
   const [jeyukLoadKg, setJeyukLoadKg] = useState("1.8");
+  const [jeyukSize, setJeyukSize] = useState<"small" | "medium" | "large">("small");
   const [recipeVersion, setRecipeVersion] = useState("synthetic-v1");
   const [thicknessCm, setThicknessCm] = useState("1.20");
   const [placedAt, setPlacedAt] = useState(() => localDateTime(new Date()));
@@ -431,21 +433,22 @@ export function CookingWorkspace({ csrf }: Props) {
 
   async function createJob() {
     const legacyThin = createMenu === "TONKATSU" && Number(thicknessCm) < 0.5;
-    if (!Number.isInteger(plannedPortions) || plannedPortions < 1 || plannedPortions > (createMenu === "TONKATSU" && !legacyThin ? 18 : 4) || !recipeVersion.trim()) {
+    if (!Number.isInteger(plannedPortions) || plannedPortions < 1 || plannedPortions > (createMenu === "TONKATSU" ? (legacyThin ? 4 : 18) : jeyukSize === "small" ? 4 : 1000) || !recipeVersion.trim()) {
       setError("계획 인분 범위와 레시피 버전을 확인해 주세요."); return;
     }
     if (createMenu === "TONKATSU" && (!thicknessCm || !Number.isFinite(Number(thicknessCm)) || Number(thicknessCm) <= 0 || Number(thicknessCm) > 2)) {
       setError("합성 제품의 최대 두께는 0 초과~2.00cm로 입력해 주세요. 2.00cm 초과는 프로파일에서 제외됩니다."); return;
     }
-    if (createMenu === "JEYUK" && (!jeyukLoadKg || !Number.isFinite(Number(jeyukLoadKg)) || Number(jeyukLoadKg) <= 0 || Number(jeyukLoadKg) > 3)) {
-      setError("제육볶음 합성 적재량은 0 초과~3.0kg입니다."); return;
+    const ratedKg = { small: 3, medium: 20, large: 100 }[jeyukSize];
+    if (createMenu === "JEYUK" && (!jeyukLoadKg || !Number.isFinite(Number(jeyukLoadKg)) || Number(jeyukLoadKg) <= 0 || Number(jeyukLoadKg) > ratedKg)) {
+      setError(`제육볶음 합성 적재량은 0 초과~${ratedKg}kg입니다.`); return;
     }
     await action(
       () => api<CookingJob>("/api/customer/cooking-jobs", csrf, {
         planned_portions: plannedPortions, recipe_version: recipeVersion.trim(),
         ...(createMenu === "TONKATSU" ? { thickness_cm: thicknessCm,
           equipment_profile: legacyThin ? "synthetic-fryer" : "synthetic-fryer-approved-v2" }
-          : { actual_load_kg: jeyukLoadKg, equipment_profile: "jeyuk-small" }),
+          : { actual_load_kg: jeyukLoadKg, equipment_profile: `jeyuk-${jeyukSize}` }),
       }),
       "합성 조리작업을 생성했습니다.", (created) => created.job_id,
     );
@@ -611,7 +614,8 @@ export function CookingWorkspace({ csrf }: Props) {
       setError("제육볶음 품질 실패 사유를 하나 이상 선택해 주세요."); return;
     }
     const jeyukMass = Number(job.actual_load_kg);
-    const jeyukPercent = Math.round(jeyukMass / 1.8 * 10000) / 100;
+    const referenceKg = ({ "jeyuk-small": 1.8, "jeyuk-medium": 12, "jeyuk-large": 60 } as Record<string, number>)[job.equipment_profile];
+    const jeyukPercent = Math.round(jeyukMass / referenceKg * 10000) / 100;
     const jeyukBand = jeyukPercent <= 50 ? "PARTIAL" : jeyukPercent <= 100 ? "REFERENCE" : "OVER_RECOMMENDED";
     const kind: AssessmentKind = currentVersion === 0 ? "INITIAL" : assessmentKind;
     await action(() => api<Assessment>(jobPath(job.job_id) + "/assessments", csrf, {
@@ -734,18 +738,23 @@ export function CookingWorkspace({ csrf }: Props) {
             <label>메뉴 <select value={createMenu} onChange={(event) => {
               const menu = event.target.value as "TONKATSU" | "JEYUK";
               setCreateMenu(menu);
-              setBatchId(menu === "JEYUK" ? "jeyuk-small-safety-v1" : "batch-a-001");
+              setBatchId(menu === "JEYUK" ? `jeyuk-${jeyukSize}-full-v1` : "batch-a-001");
             }}>
               <option value="TONKATSU">돈까스</option><option value="JEYUK">제육볶음</option>
             </select></label>
-            <label>계획 인분 <input type="number" min="1" max={createMenu === "TONKATSU" ? 18 : 4} step="1" value={plannedPortions}
+            <label>계획 인분 <input type="number" min="1" max={createMenu === "TONKATSU" ? 18 : jeyukSize === "small" ? 4 : 1000} step="1" value={plannedPortions}
               onChange={(event) => setPlannedPortions(Number(event.target.value))} /></label>
             <label>레시피 버전 <input maxLength={80} value={recipeVersion}
               onChange={(event) => setRecipeVersion(event.target.value)} /></label>
             {createMenu === "TONKATSU" ? <label>제품 최대 두께(cm) <input type="number" min="0.01" max="2.00" step="0.01" value={thicknessCm}
               onChange={(event) => setThicknessCm(event.target.value)} /></label>
-              : <label>합성 적재량(kg) <input type="number" min="0.01" max="3.0" step="0.01" value={jeyukLoadKg}
-                onChange={(event) => setJeyukLoadKg(event.target.value)} /></label>}
+              : <><label>합성 장비 규모 <select value={jeyukSize} onChange={(event) => {
+                  const size = event.target.value as "small" | "medium" | "large";
+                  setJeyukSize(size); setJeyukLoadKg({ small: "1.8", medium: "12", large: "60" }[size]);
+                  setBatchId(`jeyuk-${size}-full-v1`);
+                }}><option value="small">소형</option><option value="medium">중형</option><option value="large">대형</option></select></label>
+                <label>합성 적재량(kg) <input type="number" min="0.01" max={{ small: 3, medium: 20, large: 100 }[jeyukSize]} step="0.01" value={jeyukLoadKg}
+                  onChange={(event) => setJeyukLoadKg(event.target.value)} /></label></>}
           </div>
           {createMenu === "TONKATSU" && Number(thicknessCm) > 0 && Number(thicknessCm) < 0.5 &&
             <p className="small">0.5cm 미만은 두께 경고이며, 제품 중량 기준이 없어 이전 소량 합성 fixture로 진행합니다.</p>}
@@ -989,7 +998,7 @@ export function CookingWorkspace({ csrf }: Props) {
                 <option value="">선택 안 함</option>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}</option>)}
               </select></label>
             </div>
-            <p className="small">합성 소형 볶음기 권장량 1.8kg 대비 실제 {job.actual_load_kg}kg · 적재율 {Math.round(Number(job.actual_load_kg) / 1.8 * 10000) / 100}%</p>
+            <p className="small">합성 볶음기 권장량 {({ "jeyuk-small": 1.8, "jeyuk-medium": 12, "jeyuk-large": 60 } as Record<string, number>)[job.equipment_profile]}kg 대비 실제 {job.actual_load_kg}kg · 적재율 {Math.round(Number(job.actual_load_kg) / ({ "jeyuk-small": 1.8, "jeyuk-medium": 12, "jeyuk-large": 60 } as Record<string, number>)[job.equipment_profile] * 10000) / 100}%</p>
             {jeyukQualityDecision === "QUALITY_FAILED" && <fieldset><legend>품질 실패 사유</legend>
               <div className="probe-grid">{jeyukQualityReasons.map(([code, label]) => <label className="check-line" key={code}>
                 <input type="checkbox" checked={jeyukQualityReasonsSelected.includes(code)}

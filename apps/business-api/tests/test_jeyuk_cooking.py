@@ -198,6 +198,35 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.client.post("/api/customer/cooking-jobs", headers=CSRF,
                                                      json=body)).status_code, 422)
 
+    async def test_medium_and_large_jobs_use_their_own_load_and_assessment_baselines(self):
+        for size, mass, rated, portions in (("medium", "12", "20.01", 80), ("large", "60", "100.01", 300)):
+            with self.subTest(size=size):
+                body = {"planned_portions": portions, "recipe_version": "jeyuk-v1",
+                        "equipment_profile": f"jeyuk-{size}", "actual_load_kg": mass}
+                response = await self.client.post("/api/customer/cooking-jobs", headers=CSRF, json=body)
+                self.assertEqual(response.status_code, 201, response.text)
+                job = response.json()
+                self.assertEqual((job["jeyuk_size_profile"], job["process_load_status"]), (size.upper(), "NORMAL"))
+                self.assertEqual((await self.client.post("/api/customer/cooking-jobs", headers=CSRF,
+                    json={**body, "actual_load_kg": rated})).status_code, 422)
+                job = await self.bind(job, f"jeyuk-{size}-safety-v1")
+                pk = cooking._pk("jeyuk-customer", job["job_id"])
+                self.store.items[(pk, "META")].update(status="COMPLETED", safety_status="PASSED",
+                                                       evaluation_blocked=False)
+                assessment = {"expected_version": job["version"], "expected_current_version": 0,
+                    "kind": "INITIAL", "scores": {item: 4 for item in cooking.SCORE_ITEMS},
+                    "observations": {item: "합성 관찰" for item in cooking.SCORE_ITEMS},
+                    "scale_version": "jeyuk-common-v1", "planned_portions": portions,
+                    "actual_portions": portions, "actual_mass_kg": mass, "load_percent": "100",
+                    "load_band": "REFERENCE", "quality_decision": "QUALITY_PASSED"}
+                path = f"/api/customer/cooking-jobs/{job['job_id']}/assessments"
+                self.assertEqual((await self.client.post(path, headers=CSRF,
+                    json={**assessment, "load_percent": "50"})).status_code, 422)
+                result = await self.client.post(path, headers=CSRF, json=assessment)
+                self.assertEqual(result.status_code, 201, result.text)
+                self.assertEqual((result.json()["load_band"], result.json()["equipment_profile"]),
+                                 ("REFERENCE", f"jeyuk-{size}"))
+
     async def test_binding_and_completion_keep_jeyuk_contract(self):
         job = await self.create()
         path = f"/api/customer/cooking-jobs/{job['job_id']}"
