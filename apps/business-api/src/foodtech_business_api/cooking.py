@@ -179,7 +179,7 @@ class SafetyEvent(StrictModel):
 
 class CoreSample(StrictModel):
     at_second: int = Field(ge=0, le=60)
-    celsius: Decimal | None = None
+    celsius: Decimal | None = Field(default=None, ge=Decimal("-273.15"), le=Decimal("300"))
 
 
 class Probe(StrictModel):
