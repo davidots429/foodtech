@@ -54,6 +54,7 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         }
         self.store.items[(pk, "ASSESSMENT#CURRENT")] = {
             "version": 1, "usable": True, "safety_version": 1, "assessment_sk": assessment_sk,
+            "quality_passed": True, "score_percent": "60.00" if score == 3 else "80.00",
         }
         self.store.items[(pk, assessment_sk)] = {
             "sk": assessment_sk, "version": 1, "status": "COMPLETED",
@@ -61,6 +62,7 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
             "scores": {name: score for name in cooking.SCORE_ITEMS},
             "score_percent": "60.00" if score == 3 else "80.00",
             "quality_passed": True, "quality_target": score == 4,
+            "safety_version": 1,
             "scale_version": "tonkatsu-common-v1", "equipment_profile": equipment,
             "load_band": "PARTIAL", "actual_portions": 2, "actual_mass_kg": "0.40",
             "load_percent": "50.00",
@@ -103,12 +105,18 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         comparison = (await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
                       headers={"X-CSRF-Token": "test-csrf"})).json()
         path = f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence"
+        self.assertEqual((await self.client.get(path, params={"comparison_id": "invalid"})).status_code, 400)
+        self.assertEqual((await self.client.get(path, params={"comparison_id": "0" * 64})).status_code, 404)
         response = await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})
         self.assertEqual(response.status_code, 200, response.text)
         selected = response.json()["selected_comparison"]
         self.assertEqual((selected["baseline_job_id"], selected["baseline_score_percent"]), (self.baseline_id, "60.00"))
         self.assertFalse(selected["immediately_previous_verified"])
         self.assertIn("COMPARABLE_PREVIOUS_JOB", response.json()["unverified_categories"])
+        baseline_assessment = self.store.items[(baseline_pk, "ASSESSMENT#REV#000000000001")]
+        baseline_assessment["score_percent"] = "99.00"
+        self.assertEqual((await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})).status_code, 409)
+        baseline_assessment["score_percent"] = "60.00"
         self.store.items[(baseline_pk, "META")]["version"] += 1
         self.assertEqual((await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})).status_code, 409)
         self.subject = "another-customer"

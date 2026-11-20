@@ -150,6 +150,20 @@ def _instant(value):
         return None
 
 
+def _comparison_assessment(job: dict, pointer: dict, assessment: dict | None, record: dict, role: str) -> bool:
+    return bool(assessment and assessment.get("status") == "COMPLETED" and
+                assessment.get("sk") == pointer.get("assessment_sk") and
+                assessment.get("version") == pointer.get("version") and
+                assessment.get("safety_version") == job.get("safety_version") and
+                assessment.get("menu") == job.get("menu") and
+                assessment.get("equipment_profile") == job.get("equipment_profile") and
+                assessment.get("scale_version") == record.get("scale_version") and
+                type(assessment.get("quality_passed")) is bool and
+                assessment.get("quality_passed") == pointer.get("quality_passed") == record.get(f"{role}_quality_passed") and
+                assessment.get("score_percent") is not None and
+                assessment.get("score_percent") == pointer.get("score_percent") == record.get(f"{role}_score_percent"))
+
+
 async def read_evidence(request, job_id: str, comparison_id: str | None = None) -> dict:
     from fastapi import HTTPException
     session, store, pk, job, pointer = await _read(request, job_id)
@@ -175,14 +189,20 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
         baseline_pk = _pk(session.subject, baseline_id)
         baseline, baseline_pointer = await _store_call(store, store.read, baseline_pk)
         selected_pointer = await _store_call(store, store.current_comparison, pk, baseline_id)
+        baseline_assessment = (await _store_call(store, store.assessment, baseline_pk, baseline_pointer["version"])
+                               if baseline_pointer and type(baseline_pointer.get("version")) is int else None)
         if not selected_pointer or selected_pointer.get("comparison_id") != comparison_id or \
                 not _comparison_usable(job, pointer, selected, "candidate") or \
                 not _comparison_usable(baseline, baseline_pointer, selected, "baseline") or \
+                any(not isinstance(selected.get(key), str) or not selected[key] for key in
+                    ("menu", "equipment_profile", "scale_version")) or \
                 selected.get("provenance") != "SYNTHETIC" or job.get("provenance") != "SYNTHETIC" or \
                 not baseline or baseline.get("provenance") != "SYNTHETIC" or \
                 selected.get("menu") != job.get("menu") or baseline.get("menu") != job.get("menu") or \
                 selected.get("equipment_profile") != job.get("equipment_profile") or \
-                baseline.get("equipment_profile") != job.get("equipment_profile"):
+                baseline.get("equipment_profile") != job.get("equipment_profile") or \
+                not _comparison_assessment(job, pointer, assessment, selected, "candidate") or \
+                not _comparison_assessment(baseline, baseline_pointer, baseline_assessment, selected, "baseline"):
             raise HTTPException(409, "선택한 비교의 평가 또는 조리작업이 변경되었습니다.")
         baseline_end, candidate_end = _instant(baseline.get("actual_lifted_at")), _instant(job.get("actual_lifted_at"))
         try:
