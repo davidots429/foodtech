@@ -1,6 +1,7 @@
 """Read-only MQTT 5/TLS subscriber for the synthetic vendor-a Mock."""
 
 import argparse
+import hashlib
 import os
 import ssl
 import time
@@ -82,11 +83,17 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
     client.username_pw_set(username, password)
     client.tls_set_context(ssl.create_default_context(cafile=ca_file))
     received, streams, failure = [], set(), []
+    accepted_deliveries = set()
+    connected_once = False
 
     def on_connect(_client, _userdata, _flags, reason, _properties):
+        nonlocal connected_once
         if reason.is_failure:
             failure.append("MQTT authentication failed")
+        elif connected_once and not _flags.session_present:
+            failure.append("MQTT persistent session lost; collection completeness cannot be verified")
         else:
+            connected_once = True
             _client.subscribe(topic, qos=1)
 
     def on_subscribe(_client, _userdata, _mid, reasons, _properties):
@@ -98,7 +105,11 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
             stream = accept_message(_client, message, ingestor, quarantine, client_id, instance)
             if stream is not None:
                 streams.add(stream)
-            received.append(message.mid)
+            delivery = (message.mid, hashlib.sha256(message.payload).digest())
+            retransmission = bool(message.dup and delivery in accepted_deliveries)
+            accepted_deliveries.add(delivery)
+            if not retransmission:
+                received.append(message.mid)
         except Exception as exc:
             failure.append(f"MQTT message was not durably accepted ({type(exc).__name__})")
 
@@ -108,15 +119,34 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
     client.connect(host, port, keepalive=30, clean_start=False, properties=props)
     deadline = time.monotonic() + timeout_seconds
     next_drain = time.monotonic() + 1
+    next_reconnect = 0.0
+    disconnected = False
     try:
         while len(received) < count and not failure and time.monotonic() < deadline:
-            result = client.loop(timeout=0.5)
-            if result != mqtt.MQTT_ERR_SUCCESS:
-                failure.append("MQTT connection lost")
             if time.monotonic() >= next_drain:
                 for stream in streams:
                     ingestor.drain(stream)
                 next_drain = time.monotonic() + 1
+            if disconnected:
+                if time.monotonic() < next_reconnect:
+                    time.sleep(max(0, min(0.2, next_reconnect - time.monotonic())))
+                    continue
+                try:
+                    result = client.reconnect()
+                except OSError:
+                    next_reconnect = time.monotonic() + 1
+                    continue
+                if result != mqtt.MQTT_ERR_SUCCESS:
+                    next_reconnect = time.monotonic() + 1
+                    continue
+                disconnected = False
+            result = client.loop(timeout=0.5)
+            if result != mqtt.MQTT_ERR_SUCCESS:
+                if result in (mqtt.MQTT_ERR_CONN_LOST, mqtt.MQTT_ERR_NO_CONN):
+                    disconnected = True
+                    next_reconnect = time.monotonic() + 1
+                else:
+                    failure.append("MQTT connection failed")
         if failure:
             raise RuntimeError(failure[0])
         if len(received) != count:
