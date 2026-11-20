@@ -1,14 +1,15 @@
 """Synthetic rice and mackerel meal batches with separate linked work records."""
 
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
+from foodtech_contracts.combi_transition import TransitionSample, assess_transition
 
 from .cooking import _context, _now, _store_call
 from .cooking_store import Conflict
@@ -33,6 +34,25 @@ class MealEvent(BaseModel):
     expected_version: int = Field(ge=1)
     event: Literal["RICE_STARTED", "RICE_PROGRAM_COMPLETED", "RICE_UNLOADED", "MODE_TRANSITION_STARTED"]
     observed_at: datetime
+
+
+class TransitionObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    second: int = Field(ge=1, le=300, strict=True)
+    chamber_celsius: Decimal
+    climate_setpoint_percent: Decimal
+    door_closed: StrictBool
+    critical_alarm: StrictBool
+    humidity_percent: Decimal | None = None
+    vent_event: Literal["OPENED", "CLOSED"] | None = None
+
+
+class TransitionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    humidity_supported: StrictBool
+    vent_supported: StrictBool
+    samples: list[TransitionObservation] = Field(min_length=1, max_length=300)
 
 
 def _pk(subject: str, meal_id: str) -> str:
@@ -162,6 +182,53 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
     meta = {**old, "status": next_status, "version": version, "last_observed_at": at, "updated_at": _now()}
     event = {"sk": f"EVENT#{version:012d}", "event": body.event, "from_status": old["status"],
              "to_status": next_status, "observed_at": at, "recorded_at": _now(), "actor": session.subject}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}
+
+
+@router.post("/{meal_id}/transition-evidence")
+async def record_transition_evidence(meal_id: UUID, request: Request, body: TransitionEvidence) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {k: v for k, v in row.items() if k != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version or old["status"] != "MODE_TRANSITION":
+        raise HTTPException(409, "배치 상태가 변경되었거나 전환을 진행할 수 없습니다.")
+    step = rows.get(f"TRANSITION#{old['mode_transition_id']}")
+    if not step or step.get("status") != "IN_PROGRESS":
+        raise HTTPException(409, "진행 중인 전환이 없습니다.")
+    samples = [item.model_dump(mode="json") for item in body.samples]
+    previous = step.get("samples", [])
+    if (samples[:len(previous)] != previous or len(samples) <= len(previous) or
+            (previous and (step["humidity_supported"] != body.humidity_supported or
+                           step["vent_supported"] != body.vent_supported))):
+        raise HTTPException(409, "이미 기록한 표본이나 센서 지원 여부는 변경할 수 없습니다.")
+    started = datetime.fromisoformat(step["started_at"].replace("Z", "+00:00"))
+    observed = started + timedelta(seconds=len(samples))
+    if observed > datetime.now(timezone.utc):
+        raise HTTPException(422, "마지막 표본 시각은 현재보다 미래일 수 없습니다.")
+    try:
+        result = assess_transition([TransitionSample(**item.model_dump()) for item in body.samples],
+                                   humidity_supported=body.humidity_supported,
+                                   vent_supported=body.vent_supported)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    status = {"DRY_HEAT_READY": "MACKEREL_READY", "MODE_TRANSITION_TIMEOUT": "TRANSITION_TIMEOUT"}.get(
+        result["status"], "MODE_TRANSITION")
+    version = int(old["version"]) + 1
+    observed_at = observed.isoformat().replace("+00:00", "Z")
+    updated = {**step, **result, "humidity_supported": body.humidity_supported,
+               "vent_supported": body.vent_supported, "samples": samples, "observed_through": observed_at}
+    meta = {**old, "status": status, "version": version, "last_observed_at": observed_at, "updated_at": _now()}
+    event = {"sk": f"EVENT#{version:012d}", "event": "MODE_TRANSITION_ASSESSED",
+             "from_status": old["status"], "to_status": status, "observed_at": observed_at,
+             "recorded_at": _now(), "actor": session.subject, "assessment": result}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:

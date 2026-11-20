@@ -98,3 +98,35 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(snapshot["events"]), 4)
         self.subject = "customer-two"
         self.assertEqual((await send("RICE_STARTED", 5, start)).status_code, 404)
+
+    async def test_mode_evidence_gates_fish_and_preserves_prior_samples(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        path = "/api/customer/combi-meals/" + created["meal"]["meal_batch_id"]
+        start = datetime.now(timezone.utc) - timedelta(seconds=2200)
+        for version, event, offset in ((1, "RICE_STARTED", 0), (2, "RICE_PROGRAM_COMPLETED", 1800),
+                                       (3, "RICE_UNLOADED", 1810), (4, "MODE_TRANSITION_STARTED", 1820)):
+            response = await self.client.post(path + "/events", headers=headers,
+                json={"expected_version": version, "event": event,
+                      "observed_at": (start + timedelta(seconds=offset)).isoformat()})
+            self.assertEqual(response.status_code, 200, response.text)
+        samples = [{"second": i, "chamber_celsius": "220", "climate_setpoint_percent": "10",
+                    "door_closed": True, "critical_alarm": False, "humidity_percent": "10"}
+                   for i in range(1, 31)]
+        body = {"expected_version": 5, "humidity_supported": True, "vent_supported": False,
+                "samples": samples[:15]}
+        pending = await self.client.post(path + "/transition-evidence", headers=headers, json=body)
+        self.assertEqual(pending.status_code, 200, pending.text)
+        self.assertFalse(pending.json()["step"]["mackerel_load_allowed"])
+        changed = [dict(item) for item in samples]
+        changed[0]["chamber_celsius"] = "219"
+        rejected = await self.client.post(path + "/transition-evidence", headers=headers,
+                                          json={**body, "expected_version": 6, "samples": changed})
+        self.assertEqual(rejected.status_code, 409)
+        ready = await self.client.post(path + "/transition-evidence", headers=headers,
+                                       json={**body, "expected_version": 6, "samples": samples})
+        self.assertEqual(ready.status_code, 200, ready.text)
+        self.assertEqual(ready.json()["meal"]["status"], "MACKEREL_READY")
+        self.assertTrue(ready.json()["step"]["mackerel_load_allowed"])
+        self.assertEqual(ready.json()["step"]["ready_at_second"], 30)
+        self.assertEqual((await self.client.get(path)).json()["mackerel"]["safety_status"], "NOT_MEASURED")
