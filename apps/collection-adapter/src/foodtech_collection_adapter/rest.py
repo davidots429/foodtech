@@ -17,7 +17,7 @@ class RestMockClient:
                  client: httpx.Client | None = None, profile_id: str = "mockprofile-100"):
         if not base_url.startswith("https://") or not ca_file:
             raise ValueError("HTTPS and a trusted CA file are required")
-        if profile_id not in ("mockprofile-100", "mockprofile-110", "mockprofile-120"):
+        if profile_id not in ("mockprofile-100", "mockprofile-101", "mockprofile-110", "mockprofile-120"):
             raise ValueError("unsupported Mock profile")
         self.client = client or httpx.Client(base_url=base_url, verify=ca_file, timeout=5.0)
         self.authorization = "Basic " + base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
@@ -60,6 +60,20 @@ class RestMockClient:
                 next_cursor = int(response.headers["X-Next-Cursor"])
                 if next_cursor < cursor:
                     raise ValueError("cursor moved backwards")
+                if self.profile_id == "mockprofile-101":
+                    if response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/xml":
+                        raise ValueError("unexpected XML content type")
+                    if not response.content:
+                        if next_cursor != cursor:
+                            raise ValueError("Mock cursor does not match returned records")
+                        return PollResult((), next_cursor)
+                    if next_cursor != cursor + 1:
+                        raise ValueError("Mock cursor does not match returned records")
+                    try:
+                        record = response.content.decode("utf-8", errors="strict")
+                    except UnicodeDecodeError:
+                        record = response.content
+                    return PollResult((record,), next_cursor)
                 # Split on wire-level NDJSON separators before strict UTF-8 decoding.
                 # Invalid records retain their exact bytes for the ingestion quarantine.
                 parts = response.content.split(b"\n") if response.content else []

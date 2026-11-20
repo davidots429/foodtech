@@ -5,6 +5,9 @@ import os
 import sys
 import time
 
+import jsonschema
+from lxml import etree
+
 from foodtech_contracts import decode_record, stream_key
 
 from .aws_flow import DynamoOrderedIngestor
@@ -17,9 +20,9 @@ def main() -> int:
     parser.add_argument("--polls", type=int, default=1)
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--cursor-key", default="default", help="separate cursor for each Mock fixture")
-    parser.add_argument("--profile", choices=("mockprofile-100", "mockprofile-110"),
+    parser.add_argument("--profile", choices=("mockprofile-100", "mockprofile-101", "mockprofile-110"),
                         default="mockprofile-100")
-    parser.add_argument("--instance", choices=("mockprofile-100-a-001", "mockprofile-100-b-001", "mockprofile-100-c-001"),
+    parser.add_argument("--instance", choices=("mockprofile-100-a-001", "mockprofile-100-b-001", "mockprofile-100-c-001", "mockprofile-101-a-001"),
                         default="mockprofile-100-a-001")
     args = parser.parse_args()
     if args.polls < 1 or args.interval < 0:
@@ -33,9 +36,11 @@ def main() -> int:
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         parser.error("missing configuration: " + ", ".join(missing))
-    if args.profile != "mockprofile-100" and args.instance != "mockprofile-100-a-001":
-        parser.error("--instance applies only to the basic profile")
-    client_kwargs = {"profile_id": args.profile} if args.profile == "mockprofile-110" else {}
+    if ((args.profile == "mockprofile-101" and args.instance != "mockprofile-101-a-001") or
+        (args.profile == "mockprofile-100" and args.instance == "mockprofile-101-a-001") or
+        (args.profile == "mockprofile-110" and args.instance != "mockprofile-100-a-001")):
+        parser.error("instance does not match the requested profile")
+    client_kwargs = {"profile_id": args.profile} if args.profile != "mockprofile-100" else {}
     client = RestMockClient(
         os.environ["FOODTECH_MOCK_BASE_URL"], os.environ["FOODTECH_MOCK_CLIENT_ID"],
         os.environ["FOODTECH_MOCK_CLIENT_SECRET"], os.environ["FOODTECH_MOCK_CA_FILE"],
@@ -61,14 +66,27 @@ def main() -> int:
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
     quarantine = None
     cursor_key = (args.cursor_key if args.instance == "mockprofile-100-a-001" else
-                  ("vendor-b#" if args.instance == "mockprofile-100-b-001" else "vendor-c#") + args.cursor_key)
+                  ("xml-a#" if args.profile == "mockprofile-101" else
+                   "vendor-b#" if args.instance == "mockprofile-100-b-001" else "vendor-c#") + args.cursor_key)
     try:
         cursor, streams = ingestor.cursor_state(cursor_key)
         for index in range(args.polls):
             result = client.poll(cursor)
             released = []
             for offset, raw in enumerate(result.records):
-                invalid = failure(raw)
+                record = None
+                if args.profile == "mockprofile-101":
+                    try:
+                        if isinstance(raw, bytes):
+                            raw.decode("utf-8", errors="strict")
+                        record = decode_record(raw)
+                        invalid = None
+                    except UnicodeDecodeError:
+                        invalid = ("UNSUPPORTED_ENCODING", [])
+                    except (ValueError, etree.Error, jsonschema.ValidationError):
+                        invalid = ("SCHEMA_VIOLATION", [])
+                else:
+                    invalid = failure(raw)
                 if invalid is not None:
                     bucket = os.getenv("FOODTECH_INGESTION_DLQ_BUCKET")
                     if not bucket:
@@ -76,9 +94,9 @@ def main() -> int:
                     if quarantine is None:
                         quarantine = IngestionQuarantine(bucket, os.environ["FOODTECH_DATA_TABLE"])
                     quarantine.preserve(raw, cursor_key=cursor_key, position=cursor + offset,
-                                        reason=invalid[0], missing=invalid[1], instance_id=args.instance)
+                                        reason=invalid[0], missing=invalid[1], instance_id=args.instance, profile_id=args.profile)
                     continue
-                record = decode_record(raw)
+                record = record if record is not None else decode_record(raw)
                 if record["deviceId"] != args.instance:
                     raise ValueError("unexpected REST Mock device")
                 streams.add(stream_key(record))

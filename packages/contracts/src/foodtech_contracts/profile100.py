@@ -84,8 +84,13 @@ NORMALIZED_UA_BINARY_C["properties"]["deviceId"] = {"const": "mockprofile-203-c-
 NORMALIZED_UA_BINARY_C_VALIDATOR = jsonschema.Draft202012Validator(NORMALIZED_UA_BINARY_C, format_checker=jsonschema.FormatChecker())
 
 
+NORMALIZED_XML_A = json.loads(json.dumps(SCHEMA))
+NORMALIZED_XML_A["properties"]["deviceId"] = {"const": "mockprofile-101-a-001"}
+NORMALIZED_XML_A_VALIDATOR = jsonschema.Draft202012Validator(NORMALIZED_XML_A, format_checker=jsonschema.FormatChecker())
+
+
 def _validate(record: dict) -> None:
-    validator = {"mockprofile-203-b-001": NORMALIZED_UA_BINARY_B_VALIDATOR,
+    validator = {"mockprofile-101-a-001": NORMALIZED_XML_A_VALIDATOR, "mockprofile-203-b-001": NORMALIZED_UA_BINARY_B_VALIDATOR,
                  "mockprofile-203-c-001": NORMALIZED_UA_BINARY_C_VALIDATOR, "mockprofile-200-b-001": NORMALIZED_UA_JSON_B_VALIDATOR,
                  "mockprofile-200-c-001": NORMALIZED_UA_JSON_C_VALIDATOR, "mockprofile-300-b-001": NORMALIZED_MQTT_B_VALIDATOR,
                  "mockprofile-300-c-001": NORMALIZED_MQTT_C_VALIDATOR, "mockprofile-100-c-001": NORMALIZED_C_VALIDATOR, "mockprofile-100-b-001": NORMALIZED_B_VALIDATOR, "mockprofile-300-a-001": MQTT_VALIDATOR, "mockprofile-203-a-001": UA_VALIDATOR, "mockprofile-200-a-001": UA_JSON_VALIDATOR}.get(
@@ -104,7 +109,11 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
 
 def decode_record(raw: str | bytes) -> dict:
     """Preserve decimal precision and reject ambiguous duplicate JSON keys."""
-    record = json.loads(raw, parse_float=Decimal, object_pairs_hook=_unique_pairs)
+    if (raw.lstrip().startswith(b"<") if isinstance(raw, bytes) else raw.lstrip().startswith("<")):
+        from .xml101 import parse_record
+        record = parse_record(raw)
+    else:
+        record = json.loads(raw, parse_float=Decimal, object_pairs_hook=_unique_pairs)
     if not isinstance(record, dict):
         raise ValueError("record must be a JSON object")
     if record.get("deviceId") in {"mockprofile-100-c-001", "mockprofile-200-c-001", "mockprofile-203-c-001", "mockprofile-300-c-001"} and record.get("DeviceId") != record.get("deviceId"):

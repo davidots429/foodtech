@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record">
+    <xs:complexType><xs:sequence>
+      <xs:element name="schemaVersion" type="xs:string" fixed="1.0"/>
+      <xs:element name="sourceId" type="xs:string" fixed="synthetic-rest-xml"/>
+      <xs:element name="deviceId" type="xs:string" fixed="mockprofile-101-a-001"/>
+      <xs:element name="batchId" type="xs:string"/>
+      <xs:element name="recordId" type="xs:string"/>
+      <xs:element name="sequenceNumber" type="xs:positiveInteger"/>
+      <xs:element name="eventTime" type="xs:dateTime"/>
+      <xs:element name="deviceStatus"><xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="running"/><xs:enumeration value="stopped"/></xs:restriction></xs:simpleType></xs:element>
+      <xs:element name="measurements"><xs:complexType><xs:sequence>
+        <xs:element name="temperatureCelsius" type="xs:decimal"/>
+        <xs:element name="speedRpm" type="xs:nonNegativeInteger"/>
+        <xs:element name="elapsedSeconds" type="xs:nonNegativeInteger"/>
+      </xs:sequence></xs:complexType></xs:element>
+      <xs:element name="errorReason" type="xs:string"/>
+      <xs:element name="extensions"><xs:complexType><xs:sequence>
+        <xs:element name="firmwareVersion" type="xs:string"/>
+        <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
+      </xs:sequence></xs:complexType></xs:element>
+      <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>

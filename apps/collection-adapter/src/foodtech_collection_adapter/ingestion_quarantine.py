@@ -57,7 +57,7 @@ class IngestionQuarantine:
         self.bucket = bucket
 
     def preserve(self, raw: str | bytes, *, cursor_key: str, position: int, reason: str, missing: list[str],
-                 instance_id: str = "mockprofile-100-a-001") -> str:
+                 instance_id: str = "mockprofile-100-a-001", profile_id: str = "mockprofile-100") -> str:
         payload = raw if isinstance(raw, bytes) else raw.encode("utf-8")
         if len(payload) > MAX_PAYLOAD_BYTES:
             raise ValueError("payload exceeds quarantine limit; source cursor was not advanced")
@@ -65,16 +65,18 @@ class IngestionQuarantine:
         # A retry of the same source cursor and identical bytes uses the same record.
         identity = (f"foodtech:rest100:{cursor_key}:{position}:{digest}"
                     if instance_id == "mockprofile-100-a-001" else
-                    f"foodtech:rest100:{instance_id}:{cursor_key}:{position}:{digest}")
+                    f"foodtech:rest100:{instance_id}:{cursor_key}:{position}:{digest}"
+                    if profile_id == "mockprofile-100" else
+                    f"foodtech:{profile_id}:{instance_id}:{cursor_key}:{position}:{digest}")
         event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
-        object_key = f"ingestion/REST/mockprofile-100/{event_id}/{digest}.bin"
+        object_key = f"ingestion/REST/{profile_id}/{event_id}/{digest}.bin"
         self.s3.put_object(Bucket=self.bucket, Key=object_key, Body=payload,
                            ContentType="application/octet-stream", ServerSideEncryption="AES256")
         item = {"pk": f"INGESTION_DLQ#{event_id}", "sk": "MANIFEST", "ingestion_event_id": event_id,
                 "object_key": object_key, "bucket": self.bucket, "sha256": digest,
                 "ingestion_failure_reason_code": reason, "missing_components": missing,
                 "received_at": datetime.now(timezone.utc).isoformat(), "protocol": "REST",
-                "profile_id": "mockprofile-100", "instance_id": instance_id, "cursor_key": cursor_key, "source_position": position,
+                "profile_id": profile_id, "instance_id": instance_id, "cursor_key": cursor_key, "source_position": position,
                 "provenance": "SYNTHETIC"}
         try:
             self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
