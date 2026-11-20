@@ -16,6 +16,7 @@ type Meal = {
     water_ratio_status: string; effective_water_ratio: string;
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
+    monitored_process_source?: { raw_sha256: string; phase: string };
     monitored_process_assessment?: { status: string; humidity_value_source: string; reason_codes: string[];
       door_assessment?: { status: string; door_open_seconds?: number }; fan_observation?: FanObservation } };
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
@@ -245,12 +246,13 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "밥 공정 표본을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
-  async function assessSource(phase: "rice" | "transition" | "mackerel") {
+  async function assessSource(phase: "rice" | "transition" | "mackerel", reassessLegacyFan = false) {
     if (!meal || requestActive.current) return;
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     try {
-      await api(path + `/source-assessment/${phase}`, csrf, { expected_version: meal.meal.version });
+      await api(path + `/source-assessment/${phase}`, csrf, { expected_version: meal.meal.version,
+        reassess_legacy_fan: reassessLegacyFan });
       setMeal(await api<Meal>(path));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "원표본 판정을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
@@ -313,6 +315,10 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {meal.rice.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.rice.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
       {meal.rice.monitored_process_assessment?.fan_observation && <p>밥 팬 단계 관찰: {meal.rice.monitored_process_assessment.fan_observation.status}
         {" "}· 목표 4 · 다른 단계 {meal.rice.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.rice.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
+      {meal.meal.source && meal.rice.monitored_process_assessment && !("fan_observation" in meal.rice.monitored_process_assessment) &&
+       meal.rice.monitored_process_source?.raw_sha256 === meal.meal.source.raw_sha256 &&
+       <div><p className="small">이전 공정 판정에 팬 관찰이 없습니다. 보존된 원표본을 다시 확인한 뒤 안전 확인이 필요합니다.</p>
+         <button type="button" disabled={busy} onClick={() => assessSource("rice", true)}>밥 원표본 다시 판정</button></div>}
       {meal.mackerel.time_status && <p>고등어 프로그램 시간 {meal.mackerel.program_cooking_duration}초 · 시간 판정 {meal.mackerel.time_status}
         {meal.mackerel.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.mackerel.thermal_exposure_duration}초</>}</p>}
       {meal.meal.status === "MACKEREL_READY" && <div><p>합성 제품을 각 130g, 두께 1.5~2.0cm로 투입합니다.</p>

@@ -297,3 +297,31 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(fish.json()["step"]["monitored_process_assessment"]["status"], "NORMAL")
                 self.assertEqual(fish.json()["step"]["monitored_process_assessment"]["fan_observation"]["status"], "MATCHED")
                 self.assertEqual(fish.json()["step"]["safety_status"], "NOT_MEASURED")
+                meal_pk = f"SCOPE#USER#test-customer#COMBI_MEAL#{meal['meal_batch_id']}"
+                rice_key = (meal_pk, f"JOB#RICE#{meal['rice_cooking_job_id']}")
+                legacy = store.items[rice_key]
+                legacy["monitored_process_assessment"].pop("fan_observation")
+                legacy.update(safety_status="PASSED", safety_version=1,
+                              quality_current={"version": 1, "usable": True})
+                body = {"expected_version": 12, "reassess_legacy_fan": True}
+                self.assertEqual((await client.post(path + "/source-assessment/rice", headers=headers,
+                    json={**body, "expected_version": 11})).status_code, 409)
+                chunk["records"][0] = json.dumps(changed)
+                self.assertEqual((await client.post(path + "/source-assessment/rice", headers=headers,
+                    json=body)).status_code, 422)
+                chunk["records"][0] = original
+                recalculated = await client.post(path + "/source-assessment/rice", headers=headers, json=body)
+                self.assertEqual(recalculated.status_code, 200, recalculated.text)
+                result = recalculated.json()
+                self.assertEqual(result["event"]["event"], "RICE_SOURCE_REASSESSED")
+                self.assertNotIn("fan_observation", result["event"]["previous_assessment"])
+                self.assertEqual(result["step"]["monitored_process_assessment"]["fan_observation"]["status"], "MATCHED")
+                self.assertEqual(result["step"]["safety_status"], "INCOMPLETE")
+                self.assertFalse(result["step"]["quality_current"]["usable"])
+                self.assertEqual((await client.post(path + "/source-assessment/rice", headers=headers,
+                    json={"expected_version": 13, "reassess_legacy_fan": True})).status_code, 409)
+                confirmed = await client.post(path + "/rice-safety", headers=headers, json={
+                    "expected_version": 13, "observation": "NO_ANOMALY", "note": "합성 안전 확인"})
+                self.assertEqual(confirmed.status_code, 200, confirmed.text)
+                self.assertEqual(confirmed.json()["step"]["safety_status"], "PASSED")
+                self.assertFalse(confirmed.json()["step"]["quality_current"]["usable"])
