@@ -6,7 +6,7 @@ an authorization, a complete input assessment, or a safety decision.
 from decimal import Decimal, InvalidOperation
 from foodtech_contracts.tonkatsu_process import TIME_BANDS
 
-VERSION = "synthetic-recommendation-completeness-v1"
+VERSION = "synthetic-recommendation-completeness-v2"
 
 
 def _valid_core_series(job: dict) -> bool:
@@ -41,6 +41,31 @@ def _valid_core_series(job: dict) -> bool:
 
 
 def preliminary(job: dict, *, initial_context: dict | None, coverage: dict | None) -> dict:
+    if job.get("menu") == "JEYUK" and job.get("provenance") == "SYNTHETIC":
+        feeds = job.get("jeyuk_feeds") or {}
+        insufficient = []
+        partial_temperature = False
+        if not isinstance(feeds, dict) or set(feeds) != {"MEAT", "VEGETABLE", "SAUCE"}:
+            insufficient.append("JEYUK_FEEDS_MISSING")
+        else:
+            recorded = sum(isinstance(feed, dict) and feed.get("initial_temperature_c") is not None and
+                           bool(feed.get("temperature_observed_at")) for feed in feeds.values())
+            if recorded == 0:
+                insufficient.append("JEYUK_INITIAL_TEMPERATURE_MISSING")
+            partial_temperature = 0 < recorded < len(feeds)
+        if job.get("jeyuk_feed_mass_status") != "MATCHED":
+            insufficient.append("JEYUK_FEED_MASS_UNVERIFIED")
+        if job.get("jeyuk_feed_safety_aligned") is not True or job.get("safety_status") != "PASSED":
+            insufficient.append("JEYUK_FEED_SAFETY_UNVERIFIED")
+        if type(job.get("actual_cooking_seconds")) is not int or job["actual_cooking_seconds"] <= 0:
+            insufficient.append("COOKING_DURATION_MISSING")
+        unknown = ["SOURCE_COMPLETENESS_NOT_ASSESSED", "JEYUK_INITIAL_TEMPERATURE_SUITABILITY_NOT_ASSESSED"]
+        if partial_temperature:
+            unknown.append("JEYUK_INITIAL_TEMPERATURE_PARTIAL")
+        if coverage and coverage.get("internal_gap_detected") is True:
+            unknown.append("GAP_SEVERITY_NOT_ASSESSED")
+        return {"status": "INSUFFICIENT" if insufficient else "NOT_ASSESSED",
+                "reasons": insufficient + unknown, "rule_version": VERSION}
     if job.get("menu") != "TONKATSU" or job.get("provenance") != "SYNTHETIC":
         return {"status": "NOT_ASSESSED", "reasons": ["MENU_NOT_ASSESSED"], "rule_version": VERSION}
     insufficient = []

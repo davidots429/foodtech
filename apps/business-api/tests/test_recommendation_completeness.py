@@ -59,4 +59,16 @@ class CompletenessTests(unittest.TestCase):
         self.assertEqual(result["status"], "INSUFFICIENT")
         self.assertIn("INITIAL_TEMPERATURE_MISSING", result["reasons"])
         self.assertIn("COOKING_DURATION_MISSING", result["reasons"])
-        self.assertEqual(self.evaluate({"menu": "JEYUK", "provenance": "SYNTHETIC"})["status"], "NOT_ASSESSED")
+        self.assertEqual(self.evaluate({"menu": "JEYUK", "provenance": "SYNTHETIC"})["status"], "INSUFFICIENT")
+
+    def test_jeyuk_recorded_temperatures_do_not_claim_suitability(self):
+        feed = {"initial_temperature_c": "4", "temperature_observed_at": "2026-11-21T00:00:00Z"}
+        job = {"menu": "JEYUK", "provenance": "SYNTHETIC", "safety_status": "PASSED",
+               "jeyuk_feeds": {name: dict(feed) for name in ("MEAT", "VEGETABLE", "SAUCE")},
+               "jeyuk_feed_mass_status": "MATCHED", "jeyuk_feed_safety_aligned": True,
+               "actual_cooking_seconds": 480}
+        result = self.evaluate(job)
+        self.assertEqual(result["status"], "NOT_ASSESSED")
+        self.assertIn("JEYUK_INITIAL_TEMPERATURE_SUITABILITY_NOT_ASSESSED", result["reasons"])
+        job["jeyuk_feeds"]["SAUCE"]["temperature_observed_at"] = None
+        self.assertIn("JEYUK_INITIAL_TEMPERATURE_PARTIAL", self.evaluate(job)["reasons"])
