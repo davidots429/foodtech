@@ -635,8 +635,9 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
 
 
 @router.get("/{job_id}")
-async def get_job(job_id: str, request: Request,
+async def get_job(job_id: str, request: Request, response: Response,
                   process_view: Literal["LATEST_RESTATED", "AS_PROCESSED"] = "LATEST_RESTATED") -> dict:
+    response.headers["Cache-Control"] = "no-store"
     _, store, pk, meta, pointer = await _read(request, job_id)
     derived = (await _store_call(store, store.latest_process_result, pk)
                if process_view == "LATEST_RESTATED" else None)

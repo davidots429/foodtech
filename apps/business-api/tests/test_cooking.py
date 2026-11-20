@@ -210,6 +210,7 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         path = f"/api/customer/cooking-jobs/{job['job_id']}"
         latest = await self.client.get(path)
         self.assertEqual(latest.status_code, 200, latest.text)
+        self.assertEqual(latest.headers["cache-control"], "no-store")
         self.assertEqual(latest.json()["process_assessment_view"]["status"], "NORMAL")
         self.assertEqual(latest.json()["process_assessment_view"]["view"], "LATEST_RESTATED")
         self.assertEqual(latest.json()["process_assessment_view"]["observation_coverage"]["before_first_us"], 1000000)

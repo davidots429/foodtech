@@ -20,14 +20,18 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--polls", type=int, default=1)
     parser.add_argument("--interval", type=float, default=5.0)
+    parser.add_argument("--until-complete", action="store_true", help="poll Jeyuk until its explicit completion marker")
+    parser.add_argument("--max-runtime", type=int, default=1800, help="maximum seconds for --until-complete")
     parser.add_argument("--cursor-key", default="default", help="separate cursor for each Mock fixture")
     parser.add_argument("--profile", choices=("mockprofile-100", "mockprofile-101", "mockprofile-110"),
                         default="mockprofile-100")
     parser.add_argument("--instance", choices=("mockprofile-100-a-001", "mockprofile-100-b-001", "mockprofile-100-c-001", "mockprofile-101-a-001", "mockprofile-101-b-001", "mockprofile-101-c-001"),
                         default="mockprofile-100-a-001")
     args = parser.parse_args()
-    if args.polls < 1 or args.interval < 0:
+    if args.polls < 1 or args.interval < 0 or args.max_runtime < 1:
         parser.error("polls must be positive and interval must be nonnegative")
+    if args.until_complete and args.profile != "mockprofile-110":
+        parser.error("--until-complete requires the Jeyuk profile")
     if not args.cursor_key.replace("-", "").isalnum() or len(args.cursor_key) > 80:
         parser.error("cursor-key must contain only letters, digits or hyphens (max 80)")
     required = (
@@ -52,15 +56,23 @@ def main() -> int:
                                        os.environ["FOODTECH_ORDERED_QUEUE_URL"])
         try:
             cursor = ingestor.cursor(args.cursor_key)
-            for index in range(args.polls):
+            deadline = time.monotonic() + args.max_runtime
+            index = 0
+            while args.until_complete or index < args.polls:
+                if args.until_complete and time.monotonic() >= deadline:
+                    raise TimeoutError("Jeyuk collection deadline reached before explicit completion")
                 result = client.poll(cursor)
                 for raw in result.records:
                     ingestor.ingest(raw)
                 ingestor.save_cursor(result.next_cursor, args.cursor_key)
                 cursor = result.next_cursor
                 print(f"poll={index + 1} received={len(result.records)} cursor={cursor}")
-                if index + 1 < args.polls:
-                    time.sleep(args.interval)
+                index += 1
+                if args.until_complete and result.complete and result.completion_explicit:
+                    break
+                if args.until_complete or index < args.polls:
+                    delay = min(args.interval, max(0, deadline - time.monotonic())) if args.until_complete else args.interval
+                    time.sleep(delay)
             return 0
         finally:
             client.close()
