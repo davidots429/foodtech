@@ -56,8 +56,8 @@ function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-export function AssessmentAggregate({ csrf, currentJobId, menu, recipeVersion, defaultLoadBand, availableJobs }: {
-  csrf: string; currentJobId: string; menu: Menu; recipeVersion: string; defaultLoadBand?: LoadBand;
+export function AssessmentAggregate({ csrf, currentJobId, menu, equipmentProfile, recipeVersion, defaultLoadBand, availableJobs }: {
+  csrf: string; currentJobId: string; menu: Menu; equipmentProfile: string; recipeVersion: string; defaultLoadBand?: LoadBand;
   availableJobs: { job_id: string; menu?: Menu; created_at: string; recipe_version: string; planned_portions: number }[];
 }) {
   const today = new Date();
@@ -169,7 +169,7 @@ export function AssessmentAggregate({ csrf, currentJobId, menu, recipeVersion, d
     try {
       const next = await api<AggregateResult>("/api/customer/assessment-aggregates", csrf, {
         job_ids: ids, period_start: dayStart(startDate), period_end: dayStart(endDate, true),
-        menu, recipe_version: recipe.trim(), load_band: loadBand,
+        menu, equipment_profile: equipmentProfile, recipe_version: recipe.trim(), load_band: loadBand,
       });
       setResult(next); setGroupId(next.group_id); setResultId(next.result_id);
       setFreshness(null); setChangedJobIds([]);

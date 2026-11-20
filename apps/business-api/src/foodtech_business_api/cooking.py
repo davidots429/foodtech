@@ -16,6 +16,7 @@ from foodtech_contracts import stream_binding_key
 from foodtech_contracts.cooking_live_time import observe as observe_live_time
 from foodtech_contracts.tonkatsu_process import (RULE_VERSION, TEMPERATURE_RULE_VERSION,
                                                  cooking_time_status, process_status, thickness_profile)
+from foodtech_contracts.tonkatsu_batch import batch as approved_tonkatsu_batch, RATED_KG
 from foodtech_contracts.jeyuk_process import (RULE_VERSION as JEYUK_RULE_VERSION,
                                               cooking_time_status as jeyuk_cooking_time_status,
                                               load_status as jeyuk_load_status)
@@ -132,7 +133,7 @@ class StrictModel(BaseModel):
 
 
 class NewJob(StrictModel):
-    planned_portions: int = Field(gt=0, le=4)
+    planned_portions: int = Field(gt=0, le=18)
     recipe_version: str = Field(min_length=1, max_length=80)
     thickness_cm: Decimal | None = Field(default=None, gt=0, max_digits=4, decimal_places=2)
     actual_load_kg: Decimal | None = Field(default=None, gt=0, max_digits=5, decimal_places=2)
@@ -157,6 +158,12 @@ class JeyukValidationContext(StrictModel):
     sensor_calibration_record_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
     process_condition_profile_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
     process_condition_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+
+
+class TonkatsuBatchInput(StrictModel):
+    expected_version: int = Field(ge=1)
+    mode: Literal["REFERENCE", "PARTIAL"]
+    product_weights_g: list[StrictInt] = Field(min_length=1, max_length=18)
 
 
 class Transition(StrictModel):
@@ -191,7 +198,7 @@ class Probe(StrictModel):
 
 class CoreCheck(StrictModel):
     expected_version: int = Field(ge=1)
-    probes: list[Probe] = Field(min_length=1, max_length=4)
+    probes: list[Probe] = Field(min_length=1, max_length=18)
 
 
 class JeyukDischargeSample(StrictModel):
@@ -223,7 +230,7 @@ class CompletedAssessment(StrictModel):
     quality_reason_codes: list[str] = Field(default_factory=list, max_length=9)
     quality_note: str | None = Field(default=None, max_length=500)
     planned_portions: int = Field(gt=0, le=1000)
-    actual_portions: int = Field(gt=0, le=4)
+    actual_portions: int = Field(gt=0, le=18)
     actual_mass_kg: Decimal = Field(gt=0, le=3)
     load_percent: Decimal = Field(gt=0, le=167)
     load_band: Literal["PARTIAL", "REFERENCE", "OVER_RECOMMENDED"]
@@ -237,15 +244,17 @@ class Recook(StrictModel):
 @router.post("", status_code=201)
 async def create_job(request: Request, body: NewJob) -> dict:
     session, store = await _context(request, write=True)
-    if body.equipment_profile == "synthetic-fryer":
+    if body.equipment_profile in {"synthetic-fryer", "synthetic-fryer-approved-v2"}:
         if body.thickness_cm is None or body.actual_load_kg is not None:
             raise HTTPException(422, "합성 돈까스 작업에는 두께만 입력해야 합니다.")
+        if body.equipment_profile == "synthetic-fryer" and body.planned_portions > 4:
+            raise HTTPException(422, "이전 합성 fixture는 최대 4인분입니다.")
         thickness_status, thickness_band = thickness_profile(body.thickness_cm)
         if thickness_status == "ABOVE_RANGE":
             raise HTTPException(422, "PROFILE_REJECTED: 두께가 합성 돈까스 프로파일 상한 2.0cm를 넘습니다.")
         menu, load_status = "TONKATSU", None
     elif body.equipment_profile == "jeyuk-small":
-        if body.actual_load_kg is None or body.thickness_cm is not None:
+        if body.actual_load_kg is None or body.thickness_cm is not None or body.planned_portions > 4:
             raise HTTPException(422, "합성 제육볶음 작업에는 실제 투입량만 입력해야 합니다.")
         load_status = jeyuk_load_status("SMALL", body.actual_load_kg)
         if load_status == "RATED_LOAD_EXCEEDED":
@@ -311,6 +320,31 @@ async def register_job_in_list(job_id: str, request: Request) -> dict:
     _, store, pk, meta, _ = await _read(request, job_id, write=True)
     await _store_call(store, store.ensure_listed, pk, meta)
     return {"job_id": meta["job_id"]}
+
+
+@router.post("/{job_id}/tonkatsu-batch")
+async def record_tonkatsu_batch(job_id: str, request: Request, body: TonkatsuBatchInput) -> dict:
+    session, store, pk, old, _ = await _read(request, job_id, write=True)
+    if int(old["version"]) != body.expected_version:
+        raise _conflict()
+    if old.get("menu") != "TONKATSU" or old.get("provenance") != "SYNTHETIC" or \
+            old.get("equipment_profile") != "synthetic-fryer-approved-v2":
+        raise HTTPException(422, "합성 돈까스 작업에만 배치를 기록할 수 있습니다.")
+    if old["status"] not in {"PENDING", "READY"}:
+        raise HTTPException(409, "조리 시작 전에만 배치를 기록할 수 있습니다.")
+    try:
+        value = approved_tonkatsu_batch(old.get("thickness_profile"), body.product_weights_g, body.mode)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    version = int(old.get("tonkatsu_batch_version", 0)) + 1
+    now = _now()
+    meta = {**old, "tonkatsu_batch": value, "tonkatsu_batch_version": version,
+            "version": int(old["version"]) + 1, "updated_at": now}
+    event = {"sk": f"EVENT#TONKATSU_BATCH#{version:012d}", "domain": "TONKATSU_BATCH",
+             "trigger": "TONKATSU_BATCH_RECORDED", "batch": value,
+             "actor_subject": session.subject, "occurred_at": now}
+    await _commit(store, pk, old, meta, event=event)
+    return meta
 
 
 @router.post("/{job_id}/source-binding")
@@ -504,6 +538,9 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
     next_status = TRANSITIONS.get((old["status"], body.event))
     if not next_status:
         raise HTTPException(409, "이 상태에서는 해당 전이를 사용할 수 없습니다.")
+    if body.event == "COOKING_STARTED" and old.get("equipment_profile") == "synthetic-fryer-approved-v2" and \
+            not old.get("tonkatsu_batch"):
+        raise HTTPException(409, "조리 시작 전에 합성 돈까스 배치를 기록해 주세요.")
     if old["safety_status"] in {"SUSPECTED", "UNDER_REVIEW", "FAILED"} and next_status != "CANCELED":
         raise HTTPException(409, "안전 확인 중에는 조리 진행을 허용하지 않습니다.")
     if old["status"] == "SAFETY_HOLD":
@@ -676,8 +713,12 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
     ids = [probe.item_id for probe in body.probes]
     if len(set(ids)) != len(ids):
         raise HTTPException(422, "제품별 탐침 기록이 중복되었습니다.")
-    if len(body.probes) != old["planned_portions"]:
-        raise HTTPException(422, "계획 인분마다 독립 탐침 기록이 필요합니다.")
+    batch_context = old.get("tonkatsu_batch")
+    if old.get("equipment_profile") == "synthetic-fryer-approved-v2" and not batch_context:
+        raise HTTPException(409, "해당 작업의 합성 배치 기록이 없습니다.")
+    required_probes = batch_context["product_count"] if batch_context else old["planned_portions"]
+    if len(body.probes) != required_probes:
+        raise HTTPException(422, "기록된 제품마다 독립 탐침 기록이 필요합니다.")
     failed = any(probe.calibration_status == "OK" and any(
         sample.celsius is not None and sample.celsius < 75 for sample in probe.samples)
         for probe in body.probes)
@@ -768,6 +809,8 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
         raise _conflict()
     if old["status"] != "COMPLETED" or old["safety_status"] != "PASSED" or old["evaluation_blocked"]:
         raise HTTPException(409, "작업 완료와 유효한 안전 판정 후에만 평가를 완료할 수 있습니다.")
+    if old.get("equipment_profile") == "synthetic-fryer-approved-v2" and not old.get("tonkatsu_batch"):
+        raise HTTPException(409, "해당 작업의 합성 배치 기록이 없습니다.")
     if set(body.scores) != set(SCORE_ITEMS) or any(type(score) is not int or score < 1 or score > 5
                                                   for score in body.scores.values()):
         raise HTTPException(422, "공통 척도의 7개 항목에 각각 1~5점을 입력해야 합니다.")
@@ -785,12 +828,16 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
             raise HTTPException(422, "제육볶음 품질 판정과 승인된 사유코드가 필요합니다.")
         if (body.quality_decision == "QUALITY_FAILED") != bool(body.quality_reason_codes):
             raise HTTPException(422, "품질 실패에는 하나 이상의 사유가, 통과에는 실패 사유가 없어야 합니다.")
-    elif body.actual_mass_kg > SYNTHETIC_FRYER_BATCH_KG or body.quality_decision is not None or \
+    elif (old.get("tonkatsu_batch") and body.actual_mass_kg != Decimal(old["tonkatsu_batch"]["total_mass_kg"])) or \
+            (not old.get("tonkatsu_batch") and body.actual_mass_kg > SYNTHETIC_FRYER_BATCH_KG) or \
+            body.actual_portions > old["planned_portions"] or body.quality_decision is not None or \
             body.quality_reason_codes or body.quality_note:
         raise HTTPException(422, "돈까스 첫 척도에는 합성 튀김기 적재량만 적용합니다.")
-    reference_kg = SYNTHETIC_JEYUK_RECOMMENDED_KG if old["menu"] == "JEYUK" else SYNTHETIC_FRYER_BATCH_KG
+    reference_kg = (SYNTHETIC_JEYUK_RECOMMENDED_KG if old["menu"] == "JEYUK" else
+                    RATED_KG if old.get("tonkatsu_batch") else SYNTHETIC_FRYER_BATCH_KG)
     calculated_load = (body.actual_mass_kg / reference_kg * 100).quantize(Decimal("0.01"))
-    expected_band = ("PARTIAL" if calculated_load <= 50 else "REFERENCE" if calculated_load <= 100
+    expected_band = (old["tonkatsu_batch"]["mode"] if old.get("tonkatsu_batch") else
+                     "PARTIAL" if calculated_load <= 50 else "REFERENCE" if calculated_load <= 100
                      else "OVER_RECOMMENDED")
     if body.load_percent != calculated_load or body.load_band != expected_band:
         raise HTTPException(422, "합성 장비 적재율과 구간이 일치하지 않습니다.")
@@ -822,6 +869,7 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
         "menu": old["menu"], "equipment_profile": old["equipment_profile"],
         "planned_portions": body.planned_portions, "actual_portions": body.actual_portions,
         "actual_mass_kg": str(body.actual_mass_kg), "load_percent": str(body.load_percent),
+        "tonkatsu_batch_rule_version": (old.get("tonkatsu_batch") or {}).get("rule_version"),
         "mass_per_portion_kg": str((body.actual_mass_kg / body.actual_portions).quantize(Decimal("0.001"))),
         "load_band": body.load_band, "assessed_by": session.subject, "completed_at": _now(),
     }

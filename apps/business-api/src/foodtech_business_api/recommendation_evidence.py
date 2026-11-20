@@ -36,6 +36,10 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
               "job_status": job.get("status"), "safety_status": job.get("safety_status"),
               "process_status": process.get("process_assessment_status"),
               "process_rule_version": process_detail.get("rule_version"), "quality": quality}
+    recorded_batch = job.get("tonkatsu_batch")
+    fields["tonkatsu_batch"] = ({key: recorded_batch.get(key) for key in
+        ("rule_version", "mode", "product_weights_g", "product_count", "total_mass_kg",
+         "rated_capacity_kg", "load_percent")} if isinstance(recorded_batch, dict) else None)
     missing = []
     if job.get("provenance") != "SYNTHETIC" or job.get("menu") not in {"TONKATSU", "JEYUK"}:
         missing.append("SUPPORTED_SYNTHETIC_JOB")
