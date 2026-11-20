@@ -557,7 +557,7 @@ async def record_jeyuk_validation_context(job_id: str, request: Request,
 
 @router.get("/{job_id}/validation-evidence")
 async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
-    _, _, _, job, _ = await _read(request, job_id)
+    _, store, pk, job, _ = await _read(request, job_id)
     if job["menu"] != "JEYUK":
         raise HTTPException(422, "제육볶음 작업에만 재검증 증거를 조회할 수 있습니다.")
     binding = job.get("source_binding")
@@ -610,6 +610,9 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
         "current_safety_passed": job.get("safety_status") == "PASSED" and not job.get("evaluation_blocked"),
         **source_checks,
     }
+    latest, _ = await _store_call(store, store.read, pk)
+    if not latest or latest.get("version") != job.get("version"):
+        raise HTTPException(409, "조리작업이 조회 중 변경되었습니다. 다시 확인해 주세요.")
     return {
         "job_id": job_id,
         "status": "LINKED_UNVERIFIED" if all(checks.values()) else "INCOMPLETE",
@@ -626,8 +629,8 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
         "activation_allowed": False,
         "remaining_verification": ["SENSOR_AND_CALIBRATION_IDENTITY",
                                    "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",
-                                   "PROCESS_CONDITION_PROFILE_IDENTITY",
-                                   "SOURCE_TIMELINE_ALIGNMENT"],
+                                   "PROCESS_CONDITION_PROFILE_IDENTITY"] +
+                                  ([] if checks["source_process_span_covers_cooking"] else ["SOURCE_TIMELINE_ALIGNMENT"]),
     }
 
 
