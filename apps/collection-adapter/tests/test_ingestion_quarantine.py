@@ -123,6 +123,22 @@ class MqttQuarantineTests(unittest.TestCase):
                 accept_message(Client(), message, Ingestor(), Sink(), "foodtech-collector-test", instance)
             self.assertEqual(calls, [])
 
+    def test_mqtt_xml_malformed_and_dtd_are_quarantined_before_ack(self):
+        from foodtech_collection_adapter.mqtt import accept_message, topic_for
+        calls = []
+        class Client:
+            def ack(self, mid, qos): calls.append("ack"); return 0
+        class Sink:
+            def preserve_mqtt(self, payload, **kwargs): calls.append((payload, kwargs["reason"], kwargs["profile_id"]))
+        class Ingestor:
+            def ingest(self, raw): raise AssertionError("invalid XML entered normal pipeline")
+        instance = "mockprofile-301-a-001"
+        for payload in (b"<record><broken>", b'<!DOCTYPE record [<!ENTITY x SYSTEM "file:///etc/passwd">]><record>&x;</record>'):
+            message = SimpleNamespace(topic=topic_for(instance), qos=1, retain=False, payload=payload, mid=5)
+            self.assertIsNone(accept_message(Client(), message, Ingestor(), Sink(), "foodtech-collector-test", instance))
+            self.assertEqual(calls, [(payload, "SCHEMA_VIOLATION", "mockprofile-301"), "ack"])
+            calls.clear()
+
     def test_ack_follows_successful_preservation_only(self):
         from foodtech_collection_adapter.mqtt import TOPIC, accept_message
         calls = []

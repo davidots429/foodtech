@@ -87,13 +87,16 @@ class IngestionQuarantine:
                 raise ValueError("conflicting ingestion quarantine manifest")
         return event_id
 
-    def preserve_mqtt(self, payload: bytes, *, topic: str, client_id: str, reason: str, missing: list[str]) -> str:
+    def preserve_mqtt(self, payload: bytes, *, topic: str, client_id: str, reason: str, missing: list[str],
+                      profile_id: str = "mockprofile-300") -> str:
         """Record each delivered message independently, including non-UTF-8 bytes."""
+        if profile_id not in {"mockprofile-300", "mockprofile-301"}:
+            raise ValueError("unsupported MQTT quarantine profile")
         if not isinstance(payload, bytes) or len(payload) > MAX_PAYLOAD_BYTES:
             raise ValueError("payload exceeds quarantine limit")
         event_id = str(uuid.uuid4())
         digest = hashlib.sha256(payload).hexdigest()
-        object_key = f"ingestion/MQTT/mockprofile-300/{event_id}/{digest}.bin"
+        object_key = f"ingestion/MQTT/{profile_id}/{event_id}/{digest}.bin"
         self.s3.put_object(Bucket=self.bucket, Key=object_key, Body=payload,
                            ContentType="application/octet-stream", ServerSideEncryption="AES256")
         self.table.put_item(Item={
@@ -101,7 +104,7 @@ class IngestionQuarantine:
             "object_key": object_key, "bucket": self.bucket, "sha256": digest,
             "ingestion_failure_reason_code": reason, "missing_components": missing,
             "received_at": datetime.now(timezone.utc).isoformat(), "protocol": "MQTT",
-            "profile_id": "mockprofile-300", "topic": topic, "client_id": client_id,
+            "profile_id": profile_id, "topic": topic, "client_id": client_id,
             "qos": 1, "provenance": "SYNTHETIC",
         }, ConditionExpression="attribute_not_exists(pk)")
         return event_id

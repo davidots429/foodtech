@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using System.Xml;
+using System.Xml.Linq;
 using MQTTnet;
 using MQTTnet.Formatter;
 using MQTTnet.Protocol;
@@ -15,7 +17,7 @@ internal static class MqttMock
 
     public static async Task Run(string path, string certificatePath, int port, string? fault)
     {
-        if (fault is not (null or "invalid-utf8" or "invalid-json"))
+        if (fault is not (null or "invalid-utf8" or "invalid-json" or "invalid-xml"))
             throw new ArgumentException("Unsupported MQTT fault scenario.");
         if (port is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         var user = Environment.GetEnvironmentVariable("FOODTECH_MQTT_USER");
@@ -26,14 +28,31 @@ internal static class MqttMock
         using var fixture = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
         var root = fixture.RootElement;
         var instance = root.GetProperty("instanceId").GetString();
+        var profile = root.GetProperty("profileId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            root.GetProperty("profileId").GetString() != "mockprofile-300" ||
-            instance is not ("mockprofile-300-a-001" or "mockprofile-300-b-001" or "mockprofile-300-c-001"))
+            profile is not ("mockprofile-300" or "mockprofile-301") ||
+            instance is not ("mockprofile-300-a-001" or "mockprofile-300-b-001" or "mockprofile-300-c-001" or
+                             "mockprofile-301-a-001" or "mockprofile-301-b-001" or "mockprofile-301-c-001") ||
+            !instance.StartsWith(profile + "-", StringComparison.Ordinal))
             throw new InvalidDataException("Only the approved synthetic MQTT profile is supported.");
         var topic = $"foodtech/synthetic/{instance}/observations";
-        var b = instance == "mockprofile-300-b-001";
-        var c = instance == "mockprofile-300-c-001";
+        var b = instance.EndsWith("-b-001", StringComparison.Ordinal);
+        var c = instance.EndsWith("-c-001", StringComparison.Ordinal);
+        var xml = profile == "mockprofile-301";
+        if ((xml && fault == "invalid-json") || (!xml && fault == "invalid-xml"))
+            throw new ArgumentException("Fault does not match the source format.");
         var records = root.GetProperty("records").EnumerateArray().Select((item, index) => {
+            if (xml) {
+                var raw = item.GetString() ?? throw new InvalidDataException("Invalid XML fixture.");
+                using var reader = XmlReader.Create(new StringReader(raw), new XmlReaderSettings {
+                    DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 2_000_000 });
+                var element = XDocument.Load(reader).Root ?? throw new InvalidDataException("Missing XML root.");
+                if ((string?)element.Element(b ? "source_id" : c ? "SrcId" : "sourceId") != "synthetic-mqtt-xml" ||
+                    (string?)element.Element(b ? "device_id" : c ? "DeviceId" : "deviceId") != instance ||
+                    (int?)element.Element(b ? "sequence_number" : c ? "SeqNo" : "sequenceNumber") != index + 1)
+                    throw new InvalidDataException("Invalid synthetic MQTT XML identity or sequence.");
+                return raw;
+            }
             if (item.GetProperty(b ? "source_id" : c ? "SrcId" : "sourceId").GetString() != "synthetic-mqtt" ||
                 item.GetProperty(b ? "device_id" : c ? "DeviceId" : "deviceId").GetString() != instance ||
                 item.GetProperty(b ? "sequence_number" : c ? "SeqNo" : "sequenceNumber").GetInt32() != index + 1)
@@ -76,6 +95,7 @@ internal static class MqttMock
                     {
                         var payload = index == 0 && fault == "invalid-utf8" ? new byte[] { 0xff, 0xfe, 0x80 } :
                             index == 0 && fault == "invalid-json" ? Encoding.UTF8.GetBytes("{\"incomplete\":") :
+                            index == 0 && fault == "invalid-xml" ? Encoding.UTF8.GetBytes("<record><broken>") :
                             Encoding.UTF8.GetBytes(records[index]);
                         var message = new MqttApplicationMessageBuilder().WithTopic(topic).WithPayload(payload)
                             .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build();

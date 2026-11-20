@@ -5,6 +5,8 @@ import os
 import ssl
 import time
 
+import jsonschema
+from lxml import etree
 import paho.mqtt.client as mqtt
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
@@ -13,7 +15,8 @@ from foodtech_contracts import decode_record, stream_key
 from .aws_flow import DynamoOrderedIngestor
 from .ingestion_quarantine import IngestionQuarantine, failure as ingestion_failure
 
-INSTANCES = ("mockprofile-300-a-001", "mockprofile-300-b-001", "mockprofile-300-c-001")
+INSTANCES = ("mockprofile-300-a-001", "mockprofile-300-b-001", "mockprofile-300-c-001",
+             "mockprofile-301-a-001", "mockprofile-301-b-001", "mockprofile-301-c-001")
 TOPIC = "foodtech/synthetic/mockprofile-300-a-001/observations"
 
 
@@ -27,22 +30,32 @@ def accept_message(client, message, ingestor, quarantine, client_id, instance=IN
     """Acknowledge only after a normal event or a quarantined raw payload is durable."""
     if message.topic != topic_for(instance) or message.qos != 1 or message.retain:
         raise ValueError("unexpected MQTT message contract")
+    record = None
+    xml = instance.startswith("mockprofile-301-")
     try:
         raw = message.payload.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         raw = None
         invalid = ("UNSUPPORTED_ENCODING", [])
     else:
-        invalid = ingestion_failure(raw)
+        if xml:
+            try:
+                record = decode_record(raw)
+                invalid = None
+            except (ValueError, etree.Error, jsonschema.ValidationError):
+                invalid = ("SCHEMA_VIOLATION", [])
+        else:
+            invalid = ingestion_failure(raw)
     if invalid is not None:
         if quarantine is None:
             raise ValueError("ingestion quarantine bucket is required for malformed input")
         quarantine.preserve_mqtt(bytes(message.payload), topic=message.topic, client_id=client_id,
-                                 reason=invalid[0], missing=invalid[1])
+                                 reason=invalid[0], missing=invalid[1],
+                                 profile_id="mockprofile-301" if xml else "mockprofile-300")
         stream = None
     else:
-        record = decode_record(raw)
-        if record["sourceId"] != "synthetic-mqtt" or record["deviceId"] != instance:
+        record = record if record is not None else decode_record(raw)
+        if record["sourceId"] != ("synthetic-mqtt-xml" if xml else "synthetic-mqtt") or record["deviceId"] != instance:
             raise ValueError("unexpected synthetic source")
         ingestor.ingest(raw)
         stream = stream_key(record)
