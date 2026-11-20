@@ -4,6 +4,7 @@ import json
 import os
 import uuid
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -50,7 +51,7 @@ def main() -> None:
     run_id = uuid.uuid4().hex[:12]
     job_pk = f"SCOPE#USER#synthetic-restatement-{run_id}#JOB#test"
     event_pks = [f"EVENT#synthetic-restatement-{run_id}-{name}"
-                 for name in ("first", "late", "third", "followup")]
+                 for name in ("first", "late", "third", "followup", "race")]
     binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
                "batch_id": f"batch-restatement-{run_id}"}
     stream_pk = stream_binding_key(**binding)
@@ -93,6 +94,7 @@ def main() -> None:
         collector = DynamoOrderedIngestor.__new__(DynamoOrderedIngestor)
         collector.table = data
         collector.save_completion_receipt(receipt, "synthetic-live-check")
+        data.put_item(Item={"pk": stream_pk, "sk": "SOURCE#REVISION", "revision": 3})
         with patch.dict(os.environ, {"FOODTECH_COOKING_TABLE": COOKING_TABLE}):
             worker = DynamoStandardizationWorker(DATA_TABLE, "unused", "unused")
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
@@ -105,6 +107,7 @@ def main() -> None:
         assert result["process_assessment"]["data_gap"] is False
         assert len(result["included_ingestion_event_ids"]) == 3
         assert result["source_raw_count"] == 3
+        assert result["source_revision"] == 3
         assert result["collection_evidence"]["raw_snapshot_matches"] is True
         assert result["observation_coverage"]["before_first_us"] == 2_000_000
         assert result["observation_coverage"]["after_last_us"] == 10_000_000
@@ -125,6 +128,9 @@ def main() -> None:
         data.put_item(Item={"pk": stream_pk, "sk": f"RAW#{followup_id}",
                             "ingestion_event_id": followup_id})
         data.put_item(Item=followup)
+        data.update_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"},
+                         UpdateExpression="ADD #r :one", ExpressionAttributeNames={"#r": "revision"},
+                         ExpressionAttributeValues={":one": 1})
         assert worker._publish_process(followup) == "RESTATEMENT_DERIVED"
         followup_request = cooking.get_item(
             Key={"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{followup_id}"},
@@ -137,18 +143,41 @@ def main() -> None:
         assert latest["version"] == 2 and latest["result_sk"] == next_result["sk"]
         assert len(next_result["included_ingestion_event_ids"]) == 4
         assert next_result["collection_evidence"]["raw_snapshot_matches"] is False
+        assert next_result["source_revision"] == 4
         assert next_result["observation_coverage"]["after_last_us"] == 5_000_000
         assert cooking.get_item(Key={"pk": job_pk, "sk": result["sk"]},
                                 ConsistentRead=True)["Item"] == result
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"}, ConsistentRead=True)["Item"] == job
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
         assert processor.process(job_pk, f"synthetic-restatement-{run_id}-late") == "ALREADY_COMPLETED"
+        race_id = f"synthetic-restatement-{run_id}-race"
+        race = {**followup, "pk": f"EVENT#{race_id}", "ingestion_event_id": race_id,
+                "normalized": {**followup["normalized"], "sequence_number": 5,
+                               "event_time": "2026-11-14T00:00:20Z"}}
+        data.put_item(Item={"pk": stream_pk, "sk": f"RAW#{race_id}", "ingestion_event_id": race_id})
+        data.put_item(Item=race)
+        data.update_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"},
+                         UpdateExpression="ADD #r :one", ExpressionAttributeNames={"#r": "revision"},
+                         ExpressionAttributeValues={":one": 1})
+        cooking.put_item(Item={"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{race_id}", "status": "PENDING",
+                               "source_assessment_pk": race["pk"], "source_stream_pk": stream_pk})
+        original_client = processor.client
+        def racing_transaction(**kwargs):
+            data.update_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"},
+                             UpdateExpression="ADD #r :one", ExpressionAttributeNames={"#r": "revision"},
+                             ExpressionAttributeValues={":one": 1})
+            return original_client.transact_write_items(**kwargs)
+        processor.client = SimpleNamespace(exceptions=original_client.exceptions,
+                                           transact_write_items=racing_transaction)
+        assert processor.process(job_pk, race_id) == "STALE_RETRY"
+        assert cooking.get_item(Key={"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"},
+                                ConsistentRead=True)["Item"]["version"] == 2
         print(json.dumps({"account": ACCOUNT, "region": REGION, "result": "DERIVED_ONLY",
                           "derived_status": result["process_assessment_status"],
                           "included_samples": len(next_result["included_ingestion_event_ids"]),
                           "latest_version": int(latest["version"]),
                           "job_unchanged": True, "replay": "ALREADY_COMPLETED",
-                          "cleanup_partitions": 7}))
+                          "source_revision_race": "STALE_RETRY", "cleanup_partitions": 8}))
     finally:
         clean_partition(cooking, job_pk)
         clean_partition(cooking, stream_pk)

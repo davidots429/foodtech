@@ -1,5 +1,7 @@
 # 첫 수집 어댑터
 
+공통 DynamoDB 수집기는 원본·대기 항목과 같은 트랜잭션에서 스트림별 `SOURCE#REVISION`을 증가시킨다. 중복 수신도 별도의 원본이므로 버전이 증가한다. 모든 원본 작성자가 이 계약을 사용하도록 배포되었는지는 별도 검증해야 하며 구버전 작성자와 직접 데이터 수정은 감지 보장을 제공하지 않는다.
+
 `mockprofile-100`을 커서 0부터 단일 실행에서 수집하고 서버가 종료를 명시하면, 한 스트림의 원본 바이트별 SHA-256과 건수·종료 커서를 불변 수집 기록으로 남긴다. 재시작된 수집, 여러 스트림, 원본 격리 또는 1,000건을 넘는 경우에는 기록을 생성하지 않는다. 이 기록은 수집기가 관찰한 종료 스냅샷일 뿐 품질 통과나 표준화 완료를 뜻하지 않는다. 2026-11-21 개발 DynamoDB에서 합성 기록·원본 대조와 정리를 확인했다. `AWS_PROFILE=foodtech .venv/bin/python tests/live/collection_receipt_dynamodb_check.py`로 재실행한다.
 
 합성 Mock의 HTTPS REST/JSONL을 OAuth 2.0 Client Credentials로 한 번 또는 지정 횟수만큼 조회한다. 원본과 순번 대기 항목을 DynamoDB에 보존한 뒤 `Source + Device + Batch`별 5초 복원 결과를 SQS FIFO에 전송한다. 같은 전송 호출의 재시도는 같은 `ingestion_event_id`를 사용하고, 별도 수신은 새 ID를 갖는다.

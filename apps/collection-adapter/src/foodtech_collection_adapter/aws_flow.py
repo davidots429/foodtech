@@ -76,6 +76,11 @@ class DynamoOrderedIngestor:
                      "ConditionExpression": "attribute_not_exists(pk)"}},
             {"Put": {"TableName": self.table.name, "Item": self._marshal(hold_item),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
+            {"Update": {"TableName": self.table.name,
+                        "Key": self._marshal({"pk": key, "sk": "SOURCE#REVISION"}),
+                        "UpdateExpression": "ADD #revision :one",
+                        "ExpressionAttributeNames": {"#revision": "revision"},
+                        "ExpressionAttributeValues": self._marshal({":one": 1})}},
         ])
         return self.drain(key, now)
 

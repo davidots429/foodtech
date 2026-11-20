@@ -91,6 +91,10 @@ def main() -> None:
         released = []
         for raw in raws:
             released.extend(ingestor.ingest(raw))
+        revision = table.get_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"},
+                                  ConsistentRead=True)["Item"]["revision"]
+        if revision != len(raws):
+            raise AssertionError("raw writes and source revision disagree")
         if [item.sequence_number for item in released] != fixture["expected"]["releaseSequence"]:
             raise AssertionError("DynamoDB resequencer did not restore the fixture order")
 
