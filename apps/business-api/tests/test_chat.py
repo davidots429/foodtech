@@ -57,6 +57,31 @@ class ChatBffTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("첫 답변", invocation["prompt"])
                 self.assertNotIn("csrf-test", invocation["prompt"])
 
+    async def test_gateway_denials_are_sanitized_and_distinguish_limits(self):
+        class DeniedGateway(GatewayClient):
+            code = "LIMIT_EXCEEDED"
+            async def post(self, url, *, json):
+                if url.endswith("/executions"):
+                    return await super().post(url, json=json)
+                return httpx.Response(403, json={"detail": self.code}, request=httpx.Request("POST", url))
+        gateway = DeniedGateway()
+        async def session(_request, _surface):
+            return SimpleNamespace(subject="customer-actual", csrf="csrf-test")
+        with patch.object(ai, "_session", side_effect=session), \
+             patch.object(ai, "_gateway_settings", return_value=("https://127.0.0.1:8443", "ca", "cert", "key")), \
+             patch.object(ai, "_client", return_value=gateway):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                for detail, status, expected in (("LIMIT_EXCEEDED", 429, "AI_USAGE_LIMIT_UNAVAILABLE"),
+                    ("MODEL_NOT_ACTIVE", 503, "AI_MODEL_UNAVAILABLE"),
+                    ("EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED", 503, "AI_TEMPORARILY_UNAVAILABLE"),
+                    ("secret internal error", 502, "AI_GATEWAY_ERROR")):
+                    gateway.code = detail
+                    response = await client.post("/api/customer/ai/chat",
+                        json={"messages": [{"role": "user", "content": "질문"}]},
+                        headers={"X-CSRF-Token": "csrf-test"})
+                    self.assertEqual(response.status_code, status)
+                    self.assertEqual(response.json()["detail"], expected)
+
     async def test_invalid_history_and_spoofed_scope_are_rejected(self):
         async def session(_request, _surface):
             return SimpleNamespace(subject="customer-actual", csrf="csrf-test")
