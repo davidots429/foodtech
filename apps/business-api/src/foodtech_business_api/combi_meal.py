@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
 from foodtech_contracts.combi_transition import TransitionSample, assess_transition
+from foodtech_contracts.combi_mackerel_process import Sample, assess as assess_mackerel_process
 
 from .cooking import _context, _now, _store_call
 from .cooking_store import Conflict
@@ -86,6 +87,19 @@ class MackerelSafetyCheck(BaseModel):
     expected_version: int = Field(ge=1)
     measured_at: datetime
     probes: list[MackerelProbe] = Field(min_length=1, max_length=3)
+
+
+class MackerelProcessSample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    second: int = Field(ge=1, le=900, strict=True)
+    chamber_celsius: Decimal
+    door: Literal["OPEN", "CLOSED"]
+
+
+class MackerelProcessEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    samples: list[MackerelProcessSample] = Field(min_length=1, max_length=900)
 
 
 def _pk(subject: str, meal_id: str) -> str:
@@ -333,6 +347,41 @@ async def record_mackerel_safety(meal_id: UUID, request: Request, body: Mackerel
              "recorded_at": _now(), "actor": session.subject, "safety_status": safety,
              "probes": [probe.model_dump(mode="json") for probe in body.probes],
              "products": step["products"]}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}
+
+
+@router.post("/{meal_id}/mackerel-process")
+async def record_mackerel_process(meal_id: UUID, request: Request, body: MackerelProcessEvidence) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {key: value for key, value in row.items() if key != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version or old["status"] not in {
+            "MACKEREL_UNLOADED", "MACKEREL_SAFETY_PASSED", "MACKEREL_SAFETY_FAILED"}:
+        raise HTTPException(409, "인양된 고등어 작업의 현재 상태를 확인해 주세요.")
+    step = rows.get(f"JOB#MACKEREL#{old['mackerel_cooking_job_id']}")
+    if not step or step.get("monitored_process_assessment"):
+        raise HTTPException(409, "이미 공정 표본을 기록했거나 고등어 작업이 없습니다.")
+    try:
+        assessment = assess_mackerel_process([Sample(**item.model_dump()) for item in body.samples],
+                                              int(step["program_cooking_duration"]), step["time_status"])
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    version = int(old["version"]) + 1
+    updated = {**step, "monitored_process_assessment": assessment,
+               "monitored_process_samples": [item.model_dump(mode="json") for item in body.samples]}
+    meta = {**old, "version": version, "updated_at": _now()}
+    event = {"sk": f"EVENT#{version:012d}", "event": "MACKEREL_PROCESS_ASSESSED",
+             "from_status": old["status"], "to_status": old["status"],
+             "observed_at": step["program_completed_at"], "recorded_at": _now(),
+             "actor": session.subject, "assessment": assessment}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:

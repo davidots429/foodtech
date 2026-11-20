@@ -11,6 +11,8 @@ type Meal = {
   mackerel: { job_id: string; safety_status: string; food_unloaded_at?: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     batch_representative_core_temperature?: string | null;
+    monitored_process_assessment?: { status: string; recovered_at_second: number | null;
+      door_open_seconds: number; reason_codes: string[] };
     products?: { product_id: string }[] };
   events?: { event: string; observed_at: string }[];
 };
@@ -116,6 +118,20 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "안전 표본을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
+  async function simulateMackerelProcess() {
+    if (!meal?.mackerel.program_cooking_duration || requestActive.current) return;
+    const duration = meal.mackerel.program_cooking_duration;
+    if (duration > 900) { setError("이 합성 표본 시험은 최대 900초까지 지원합니다."); return; }
+    requestActive.current = true; setBusy(true); setError("");
+    const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
+    const samples = Array.from({ length: duration }, (_, index) => ({ second: index + 1,
+      chamber_celsius: "220", door: "CLOSED" }));
+    try {
+      await api(path + "/mackerel-process", csrf, { expected_version: meal.meal.version, samples });
+      setMeal(await api<Meal>(path));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "공정 표본을 기록하지 못했습니다."); }
+    finally { requestActive.current = false; setBusy(false); }
+  }
   return <section><h2>밥·고등어 합성 식사 배치</h2>
     <p>밥을 인양한 뒤 오븐을 건열로 전환하고 고등어를 조리하는 시연입니다. 장비를 제어하지 않습니다.</p>
     <div className="field-grid">
@@ -152,6 +168,11 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></div>}
       {meal.meal.status === "MACKEREL_UNLOADED" && <div><p>인양 즉시 시작한 세 탐침의 75°C 합성 표본을 60초간 확인합니다. 인양 후 60초가 경과해야 합니다.</p>
         <button type="button" disabled={busy} onClick={simulateMackerelSafety}>합성 심부온도 확인</button></div>}
+      {["MACKEREL_UNLOADED", "MACKEREL_SAFETY_PASSED", "MACKEREL_SAFETY_FAILED"].includes(meal.meal.status) &&
+        !meal.mackerel.monitored_process_assessment && <div><p>조리 구간의 220°C·문 닫힘 합성 표본으로 온도 복원과 문 상태를 확인합니다.</p>
+          <button type="button" disabled={busy} onClick={simulateMackerelProcess}>합성 공정 표본 확인</button></div>}
+      {meal.mackerel.monitored_process_assessment && <p>고등어 온도 복원·문·시간 부분 판정: {meal.mackerel.monitored_process_assessment.status}
+        {meal.mackerel.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.mackerel.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
       {meal.mackerel.safety_status !== "NOT_MEASURED" && <p>고등어 합성 안전 표본: {meal.mackerel.safety_status}
         {meal.mackerel.batch_representative_core_temperature && <> · 최저 {meal.mackerel.batch_representative_core_temperature}°C</>}</p>}
       <p>고등어 투입: {meal.transition.mackerel_load_allowed ? "허용" : "차단"}
