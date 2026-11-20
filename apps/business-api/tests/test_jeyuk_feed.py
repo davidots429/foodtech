@@ -30,6 +30,32 @@ class JeyukFeedTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         for item in reversed(self.patches): item.stop()
 
+    async def test_initial_temperature_time_and_corrections_preserve_history(self):
+        created = await self.client.post("/api/customer/cooking-jobs", headers=self.headers, json={
+            "planned_portions": 2, "recipe_version": "synthetic-v1", "equipment_profile": "jeyuk-small",
+            "actual_load_kg": "1.8"})
+        job = created.json(); path = f"/api/customer/cooking-jobs/{job['job_id']}/jeyuk-feeds/meat"
+        start = datetime.now(timezone.utc) - timedelta(seconds=10)
+        base = {"expected_version": job["version"], "started_at": start.isoformat(),
+                "completed_at": start.isoformat(), "mass_kg": "1"}
+        for bad in ({"initial_temperature_c": "4"},
+                    {"initial_temperature_c": "4", "temperature_observed_at": (start + timedelta(seconds=1)).isoformat()},
+                    {"initial_temperature_c": "4", "temperature_observed_at": "2026-01-01T00:00:00"}):
+            self.assertEqual((await self.client.post(path, headers=self.headers, json={**base, **bad})).status_code, 422)
+        saved = await self.client.post(path, headers=self.headers, json={**base, "initial_temperature_c": "4.25",
+                     "temperature_observed_at": (start - timedelta(seconds=1)).isoformat()})
+        self.assertEqual(saved.status_code, 201, saved.text)
+        self.assertEqual(saved.json()["jeyuk_feeds"]["MEAT"]["initial_temperature_c"], "4.25")
+        revised = await self.client.post(path, headers=self.headers, json={**base, "expected_version": saved.json()["version"],
+                                                                         "reason": "투입량 정정", "mass_kg": "1.1"})
+        self.assertEqual(revised.json()["jeyuk_feeds"]["MEAT"]["initial_temperature_c"], "4.25")
+        cleared = await self.client.post(path, headers=self.headers, json={**base, "expected_version": revised.json()["version"],
+            "reason": "온도 기록 취소", "initial_temperature_c": None, "temperature_observed_at": None})
+        self.assertIsNone(cleared.json()["jeyuk_feeds"]["MEAT"]["initial_temperature_c"])
+        events = (await self.client.get(f"/api/customer/cooking-jobs/{job['job_id']}/events")).json()
+        self.assertEqual([event["trigger"] for event in events if event["domain"] == "JEYUK_FEED"],
+                         ["FEED_RECORDED", "FEED_REVISED", "FEED_REVISED"])
+
     async def test_feed_record_invalidates_existing_safety_and_assessment(self):
         created = await self.client.post("/api/customer/cooking-jobs", headers=self.headers, json={
             "planned_portions": 2, "recipe_version": "synthetic-v1", "equipment_profile": "jeyuk-small",

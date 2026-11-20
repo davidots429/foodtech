@@ -25,7 +25,8 @@ export type CookingJob = {
   planned_portions: number;
   thickness_cm?: string;
   actual_load_kg?: string | null;
-  jeyuk_feeds?: Record<string, { started_at: string; completed_at: string; mass_kg: string }>;
+  jeyuk_feeds?: Record<string, { started_at: string; completed_at: string; mass_kg: string;
+    initial_temperature_c?: string | null; temperature_observed_at?: string | null }>;
   jeyuk_feed_total_kg?: string;
   jeyuk_feed_mass_status?: "INCOMPLETE" | "MATCHED" | "MISMATCH";
   jeyuk_feed_safety_aligned?: boolean;

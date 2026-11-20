@@ -29,6 +29,12 @@ const completenessLabels: Record<string, string> = {
   CORE_SERIES_MISSING_INVALID_OR_INCONSISTENT: "제품별 심부온도 표본이 누락·무효이거나 안전 상태와 일치하지 않습니다.",
   THICKNESS_PROFILE_MISSING: "두께 프로파일이 없습니다.", COOKING_DURATION_MISSING: "조리시간이 없습니다.",
   BATCH_INPUT_MISSING: "배치 입력이 없습니다.", INITIAL_TEMPERATURE_MISSING: "재료 초기 온도 또는 관찰 시각이 없습니다.",
+  JEYUK_FEEDS_MISSING: "고기·채소·소스 투입 기록이 부족합니다.",
+  JEYUK_INITIAL_TEMPERATURE_MISSING: "재료 초기 온도와 관찰 시각이 기록되지 않았습니다.",
+  JEYUK_INITIAL_TEMPERATURE_PARTIAL: "일부 재료의 초기 온도만 기록되어 있습니다.",
+  JEYUK_FEED_MASS_UNVERIFIED: "투입량 합계가 확인되지 않았습니다.",
+  JEYUK_FEED_SAFETY_UNVERIFIED: "투입 시각과 안전 표본의 일치가 확인되지 않았습니다.",
+  JEYUK_INITIAL_TEMPERATURE_SUITABILITY_NOT_ASSESSED: "재료 초기 온도의 적합성은 아직 판정하지 않았습니다.",
   SOURCE_COMPLETENESS_NOT_ASSESSED: "전체 원천 데이터의 완전성은 아직 판정하지 않았습니다.",
   GAP_SEVERITY_NOT_ASSESSED: "감지된 결손의 심각도는 아직 판정하지 않았습니다.",
 };

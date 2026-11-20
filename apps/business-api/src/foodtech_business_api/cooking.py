@@ -206,6 +206,8 @@ class JeyukFeed(StrictModel):
     started_at: datetime
     completed_at: datetime
     mass_kg: Decimal = Field(gt=0, le=100, max_digits=6, decimal_places=3)
+    initial_temperature_c: Decimal | None = Field(default=None, ge=Decimal("-273.15"), le=Decimal("300"), max_digits=6, decimal_places=2)
+    temperature_observed_at: datetime | None = None
     reason: str | None = Field(default=None, max_length=500)
 
 
@@ -893,12 +895,28 @@ async def record_jeyuk_feed(job_id: str, ingredient: Literal["meat", "vegetable"
     previous = feeds.get(key)
     if previous and not (body.reason and body.reason.strip()):
         raise HTTPException(422, "투입 기록 수정 사유가 필요합니다.")
+    temperature_fields = {"initial_temperature_c", "temperature_observed_at"}
+    supplied = temperature_fields & body.model_fields_set
+    if supplied and supplied != temperature_fields:
+        raise HTTPException(422, "초기 온도와 관찰 시각을 함께 입력해야 합니다.")
+    if supplied:
+        temperature, observed = body.initial_temperature_c, body.temperature_observed_at
+    else:
+        temperature = previous.get("initial_temperature_c") if previous else None
+        observed = (datetime.fromisoformat(previous["temperature_observed_at"].replace("Z", "+00:00"))
+                    if previous and previous.get("temperature_observed_at") else None)
+    if (temperature is None) != (observed is None):
+        raise HTTPException(422, "초기 온도와 관찰 시각을 함께 입력해야 합니다.")
+    if observed is not None and (observed.utcoffset() is None or observed.astimezone(timezone.utc) > started):
+        raise HTTPException(422, "초기 온도 관찰 시각은 시간대를 포함하며 투입 시작 이전이어야 합니다.")
     group_id = old.get("jeyuk_addition_group_id")
     if ingredient != "meat" and not group_id:
         group_id = str(uuid.uuid4())
     now = _now()
     current = {"ingredient": key, "started_at": started.isoformat().replace("+00:00", "Z"),
                "completed_at": completed.isoformat().replace("+00:00", "Z"), "mass_kg": str(body.mass_kg),
+               "initial_temperature_c": str(temperature) if temperature is not None else None,
+               "temperature_observed_at": observed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if observed else None,
                "addition_group_id": group_id if ingredient != "meat" else None,
                "provenance": "SYNTHETIC", "recorded_at": now}
     feeds[key] = current
