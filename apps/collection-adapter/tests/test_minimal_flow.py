@@ -21,6 +21,52 @@ FIXTURE = json.loads((Path(__file__).resolve().parents[3] / "fixtures/mockprofil
 
 
 class MinimalFlowTests(unittest.TestCase):
+    def test_jeyuk_until_complete_requires_explicit_terminal_marker(self):
+        calls = []
+        class Client:
+            def __init__(self, *_args, **_kwargs): self.responses = iter([
+                PollResult((), 0, False, True), PollResult(("first",), 1, True, False),
+                PollResult(("second",), 2, True, True)])
+            def poll(self, cursor): calls.append(("poll", cursor)); return next(self.responses)
+            def close(self): calls.append("closed")
+        class Ingestor:
+            def __init__(self, *_args): pass
+            def cursor(self, key): return 0
+            def ingest(self, raw): calls.append(("ingest", raw))
+            def save_cursor(self, cursor, key): calls.append(("cursor", cursor))
+        config = {name: "test" for name in ("FOODTECH_MOCK_BASE_URL", "FOODTECH_MOCK_CLIENT_ID",
+            "FOODTECH_MOCK_CLIENT_SECRET", "FOODTECH_MOCK_CA_FILE", "FOODTECH_DATA_TABLE", "FOODTECH_ORDERED_QUEUE_URL")}
+        with patch.dict("os.environ", config), patch.object(collector_cli, "RestMockClient", Client), \
+             patch.object(collector_cli, "DynamoJeyukIngestor", Ingestor), \
+             patch("sys.argv", ["collector", "--profile", "mockprofile-110", "--until-complete", "--interval", "0"]):
+            self.assertEqual(collector_cli.main(), 0)
+        self.assertEqual(calls, [("poll", 0), ("cursor", 0), ("poll", 0), ("ingest", "first"),
+                                 ("cursor", 1), ("poll", 1), ("ingest", "second"), ("cursor", 2), "closed"])
+
+    def test_jeyuk_until_complete_timeout_keeps_last_saved_cursor(self):
+        clock, saved = [0.0], []
+        class Client:
+            def __init__(self, *_args, **_kwargs): pass
+            def poll(self, cursor): return PollResult(("sample",), cursor + 1, False, True)
+            def close(self): pass
+        class Ingestor:
+            def __init__(self, *_args): pass
+            def cursor(self, key): return 0
+            def ingest(self, raw): pass
+            def save_cursor(self, cursor, key): saved.append(cursor)
+        config = {name: "test" for name in ("FOODTECH_MOCK_BASE_URL", "FOODTECH_MOCK_CLIENT_ID",
+            "FOODTECH_MOCK_CLIENT_SECRET", "FOODTECH_MOCK_CA_FILE", "FOODTECH_DATA_TABLE", "FOODTECH_ORDERED_QUEUE_URL")}
+        def sleep(seconds): clock[0] += seconds
+        with patch.dict("os.environ", config), patch.object(collector_cli, "RestMockClient", Client), \
+             patch.object(collector_cli, "DynamoJeyukIngestor", Ingestor), \
+             patch.object(collector_cli.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(collector_cli.time, "sleep", side_effect=sleep), \
+             patch("sys.argv", ["collector", "--profile", "mockprofile-110", "--until-complete", "--max-runtime", "1"]):
+            with self.assertRaisesRegex(TimeoutError, "explicit completion"):
+                collector_cli.main()
+        self.assertEqual(saved, [1])
+
+
     def test_jeyuk_cli_uses_separate_profile_and_cursor(self):
         calls = {}
 

@@ -116,11 +116,11 @@ var tokenExpires = DateTimeOffset.MinValue;
 var disconnectOnce = options.ContainsKey("disconnect-once");
 var disconnected = false;
 var realtime = options.ContainsKey("realtime");
-if (realtime && !combi) throw new ArgumentException("Real-time replay is only supported for the combi profile.");
+if (realtime && !(combi || jeyuk)) throw new ArgumentException("Real-time replay requires a synthetic combi or Jeyuk profile.");
 var replayClock = Stopwatch.StartNew();
 // The prefix array permits replay from any cursor without skipping preceding samples.
 var priorityThrough = new int[recordLines.Length + 1];
-if (realtime)
+if (realtime && combi)
 {
     string? previousPhase = null, previousDoor = null;
     bool? previousAlarm = null;
@@ -149,6 +149,7 @@ int AvailableRecords()
 {
     if (!realtime) return recordLines.Length;
     var elapsed = Math.Min(recordLines.Length, (int)replayClock.Elapsed.TotalSeconds);
+    if (jeyuk) return elapsed;
     return Math.Max(elapsed / 5 * 5, priorityThrough[elapsed]);
 }
 var fault = options.GetValueOrDefault("fault");
