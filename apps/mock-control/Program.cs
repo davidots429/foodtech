@@ -30,6 +30,12 @@ if (args.Length > 0 && args[0] == "simulate-jeyuk")
     JeyukSimulation.Emit(Required(options, "fixture"), Required(options, "output"));
     return;
 }
+if (args.Length > 0 && args[0] == "bind-jeyuk")
+{
+    JeyukSimulation.Bind(Required(options, "fixture"), Required(options, "output"),
+        Required(options, "fixture-id"), Required(options, "start-at"));
+    return;
+}
 if (args.Length > 0 && args[0] == "simulate-tonkatsu-probes")
 {
     TonkatsuProbeSimulation.Emit(Required(options, "fixture"), Required(options, "output"));

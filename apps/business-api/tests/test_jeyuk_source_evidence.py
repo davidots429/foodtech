@@ -1,6 +1,7 @@
 import json
 import unittest
 from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 
 from foodtech_business_api.jeyuk_source_evidence import audit_source_records
 from foodtech_contracts.jeyuk_process import ProcessMonitor, RULE_VERSION as PROCESS_RULE_VERSION
@@ -68,6 +69,30 @@ def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL"):
 
 
 class JeyukSourceEvidenceTests(unittest.TestCase):
+    def test_synthetic_timestamps_must_match_the_exact_cooking_interval(self):
+        job, assessments, raws = fixture()
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        job["actual_placed_at"] = start.isoformat()
+        job["actual_lifted_at"] = (start + timedelta(seconds=61)).isoformat()
+        for index, row in enumerate(raws, 1):
+            sample = json.loads(row["raw"])
+            sample["observedAt"] = (start + timedelta(seconds=index)).isoformat()
+            row["raw"] = json.dumps(sample)
+        self.assertTrue(audit_source_records(job, assessments, raws)["source_process_span_covers_cooking"])
+        job["actual_placed_at"] = (start + timedelta(seconds=1)).isoformat()
+        job["actual_lifted_at"] = (start + timedelta(seconds=62)).isoformat()
+        self.assertFalse(audit_source_records(job, assessments, raws)["source_process_span_covers_cooking"])
+        job["actual_placed_at"] = start.isoformat()
+        job["actual_lifted_at"] = (start + timedelta(seconds=61)).isoformat()
+        sample = json.loads(raws[20]["raw"])
+        sample["observedAt"] = (start + timedelta(seconds=22)).isoformat()
+        raws[20]["raw"] = json.dumps(sample)
+        self.assertFalse(audit_source_records(job, assessments, raws)["source_process_span_covers_cooking"])
+        for invalid in ("2026-01-01T00:00:21", "2026-01-01T00:00:21.0000001Z", None):
+            sample["observedAt"] = invalid
+            raws[20]["raw"] = json.dumps(sample)
+            self.assertFalse(audit_source_records(job, assessments, raws)["source_records_match_binding"])
+
     def test_medium_and_large_full_spans_and_mismatched_profile(self):
         for size, count in (("MEDIUM", 920), ("LARGE", 1680)):
             with self.subTest(size=size):

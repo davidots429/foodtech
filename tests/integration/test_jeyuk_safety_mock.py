@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
@@ -19,6 +20,27 @@ DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class JeyukSafetyMockTests(unittest.TestCase):
+    def test_bound_fixture_generates_a_timestamp_for_every_second(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bound = Path(directory) / "bound.json"
+            output = Path(directory) / "samples.jsonl"
+            start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            command = ["dotnet", str(DLL), "bind-jeyuk", "--fixture", str(FIXTURE), "--output", str(bound),
+                       "--fixture-id", "jeyuk-timeline-test", "--start-at", start.isoformat()]
+            subprocess.run(command, check=True, capture_output=True)
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+            subprocess.run(["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(bound), "--output", str(output)],
+                           check=True, capture_output=True)
+            samples = [decode_jeyuk_mock_sample(line) for line in output.read_text().splitlines()]
+            self.assertEqual(len(samples), 61)
+            self.assertTrue(all(sample.observed_at == start + timedelta(seconds=i)
+                                for i, sample in enumerate(samples, 1)))
+            invalid = Path(directory) / "invalid.json"
+            invalid_command = ["dotnet", str(DLL), "bind-jeyuk", "--fixture", str(FIXTURE), "--output", str(invalid),
+                               "--fixture-id", "invalid", "--start-at", "2026-01-01T00:00:00"]
+            self.assertNotEqual(subprocess.run(invalid_command, capture_output=True).returncode, 0)
+            self.assertFalse(invalid.exists())
+
     def test_csharp_samples_reach_exact_safety_hold_boundary(self):
         for size in ("small", "medium", "large"):
             with self.subTest(size=size):

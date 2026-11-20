@@ -612,8 +612,8 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
         "activation_allowed": False,
         "remaining_verification": ["SENSOR_AND_CALIBRATION_IDENTITY",
                                    "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",
-                                   "PROCESS_CONDITION_PROFILE_IDENTITY",
-                                   "SOURCE_TIMELINE_ALIGNMENT"],
+                                   "PROCESS_CONDITION_PROFILE_IDENTITY"] +
+                                  ([] if checks["source_process_span_covers_cooking"] else ["SOURCE_TIMELINE_ALIGNMENT"]),
     }
 
 
