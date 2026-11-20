@@ -16,15 +16,18 @@ internal static class UaJsonMock
             throw new InvalidOperationException("Mock credentials and certificate password are required.");
         using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
         var root = fixture.RootElement;
+        var instance = root.GetProperty("instanceId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
             root.GetProperty("profileId").GetString() != "mockprofile-200" ||
-            root.GetProperty("instanceId").GetString() != "mockprofile-200-a-001")
+            instance is not ("mockprofile-200-a-001" or "mockprofile-200-b-001" or "mockprofile-200-c-001"))
             throw new InvalidDataException("Only the approved synthetic fixture is supported.");
+        var b = instance == "mockprofile-200-b-001";
+        var c = instance == "mockprofile-200-c-001";
         var records = root.GetProperty("records").EnumerateArray().ToArray();
         if (records.Length is < 1 or > 5000 || records.Where((r, i) =>
-            r.GetProperty("deviceId").GetString() != "mockprofile-200-a-001" ||
-            r.GetProperty("sourceId").GetString() != "synthetic-opcua-json" ||
-            r.GetProperty("sequenceNumber").GetInt32() != i + 1).Any())
+            r.GetProperty(b ? "device_id" : c ? "DeviceId" : "deviceId").GetString() != instance ||
+            r.GetProperty(b ? "source_id" : c ? "SrcId" : "sourceId").GetString() != "synthetic-opcua-json" ||
+            r.GetProperty(b ? "sequence_number" : c ? "SeqNo" : "sequenceNumber").GetInt32() != i + 1).Any())
             throw new InvalidDataException("Invalid synthetic source records.");
         var lines = records.Select(item => JsonSerializer.Serialize(item)).ToArray();
         if (lines.Any(line => Encoding.UTF8.GetByteCount(line) > 2048) ||
@@ -77,7 +80,7 @@ internal static class UaJsonMock
         {
             if (!Authorized(ctx)) return Results.Unauthorized();
             Headers(ctx);
-            if (node == "DeviceId") return Results.Json(new { node, value = "mockprofile-200-a-001" });
+            if (node == "DeviceId") return Results.Json(new { node, value = instance });
             if (node != "AvailableSnapshots") return Results.NotFound();
             lock (gate)
             {

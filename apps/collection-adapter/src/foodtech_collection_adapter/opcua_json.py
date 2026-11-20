@@ -13,6 +13,9 @@ from .aws_flow import DynamoOrderedIngestor
 from .opcua import validate_history
 
 
+INSTANCES = ("mockprofile-200-a-001", "mockprofile-200-b-001", "mockprofile-200-c-001")
+
+
 class UaJsonClient:
     def __init__(self, base_url: str, client_id: str, client_secret: str, ca_file: str):
         parsed = urlsplit(base_url)
@@ -58,15 +61,15 @@ class UaJsonClient:
 
 
 def collect(base_url: str, client_id: str, client_secret: str, ca_file: str, ingestor, *,
-            count: int, timeout_seconds: int) -> int:
-    if not 1 <= count <= 5000 or timeout_seconds < 1:
+            count: int, timeout_seconds: int, instance: str = INSTANCES[0]) -> int:
+    if instance not in INSTANCES or not 1 <= count <= 5000 or timeout_seconds < 1:
         raise ValueError("invalid collection limits")
     client = UaJsonClient(base_url, client_id, client_secret, ca_file)
     try:
         if client.get("/ua-json/v1/browse").get("nodes") != ["DeviceId", "AvailableSnapshots"]:
             raise ValueError("unexpected synthetic nodes")
         device = client.read("DeviceId")
-        if device != "mockprofile-200-a-001":
+        if device != instance:
             raise ValueError("unexpected synthetic device")
         deadline = time.monotonic() + timeout_seconds
         seen = {}
@@ -104,11 +107,12 @@ def main():
     parser = argparse.ArgumentParser(description="Collect project-specific synthetic sessionless Browse/Read")
     parser.add_argument("--count", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=30)
+    parser.add_argument("--instance", choices=INSTANCES, default=INSTANCES[0])
     args = parser.parse_args()
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
     accepted = collect(os.environ["FOODTECH_UA_JSON_URL"], os.environ["FOODTECH_MOCK_CLIENT_ID"],
                        os.environ["FOODTECH_MOCK_CLIENT_SECRET"], os.environ["FOODTECH_MOCK_CA"], ingestor,
-                       count=args.count, timeout_seconds=args.timeout)
+                       count=args.count, timeout_seconds=args.timeout, instance=args.instance)
     print(f"accepted={accepted} provenance=SYNTHETIC")
 
 

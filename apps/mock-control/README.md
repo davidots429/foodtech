@@ -79,3 +79,5 @@ REST 기본 프로파일의 `serve`에 `--fault invalid-utf8`을 지정하면 �
 `serve --fixture fixtures/mockprofile-100-c-001.json --cert <PFX> --port <포트>`는 PascalCase/약어, 중첩 측정값, 오프셋 시각, 분 단위 경과값, `Y/N`과 순서형 `0~10` 속도 단계를 사용하는 합성 vendor-c 원천을 제공한다. 실제 제조사 호환 사양이 아니다.
 
 MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprofile-300-c-001.json`도 지원한다. 인스턴스별 Topic에만 구독을 허용하며 각 vendor의 원천 표현을 그대로 전송한다. 실제 장비 호환 사양은 아니다.
+
+`serve-ua-json`은 `fixtures/mockprofile-200-b-001.json`과 `fixtures/mockprofile-200-c-001.json`도 지원한다. 각 합성 원천의 이력을 읽기 전용으로 제공하며 표준 OPC UA JSON 서비스라는 의미는 아니다.
