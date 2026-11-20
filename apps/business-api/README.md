@@ -138,6 +138,8 @@
 
 제육볶음 작업은 `jeyuk-small`, `jeyuk-medium`, `jeyuk-large`를 선택하며 각각 정격 3·20·100kg, 권장 1.8·12·60kg을 적용한다. 평가 적재율과 집계도 작업의 장비 규모를 따른다. 원천 감사는 작업과 원표본의 규모를 대조하고 승인된 최대 조리 구간인 1,680초까지 확인한다. 별도 61초 안전 fixture와 목표 조리시간 전체를 표현한 정상 fixture를 제공한다. 두 종류 모두 합성 시나리오이며 실제 측정값이나 72시간 유효성 검증을 뜻하지 않는다.
 
+2026-11-21 개발용 DynamoDB·FIFO에서 중형과 대형 각각 61초 안전 fixture를 고객 작업에 연결해 수집·Worker 반영·안전 유지 경계·원천 감사·재전달 재사용을 검증하고 시험 데이터를 정리했다. `AWS_PROFILE=foodtech uv run --no-sync python tests/live/jeyuk_job_dynamodb_check.py --safety --size medium` 또는 `--size large`로 재실행할 수 있다. 고객 세션은 합성 대역이며 전체 목표 조리시간의 AWS 실행과 운영 부하는 이 시험에 포함되지 않는다.
+
 공통 계약 `foodtech_contracts.validation_window`는 이미 유효하게 검증되었다는 전제 아래 검증시각부터 최대 72시간과 먼저 발생한 취소 사건을 계산한다. 유효구간은 만료시각을 포함하지 않으며 미래 검증·검증 이전 취소·시간대 없는 시각은 거부한다. 이 계산 자체는 증거 검증이나 취소 사건의 완전성을 보장하지 않고 아직 업무 API·저장소·배치 수락 경로에 연결되지 않았다. 따라서 기존 `activation_allowed=false`는 유지한다.
 
 `GET /api/customer/cooking-jobs/{job_id}/validation-evidence`는 현재 제육볶음 작업의 조합·수집 배치·조리 완료·자동 공정판정 참조·혼합물 자동 안전판정·배출 표본 수동 판정·현재 안전 상태를 항목별로 확인한다. 조합 해시와 작업 정보 및 공정판정의 출처 키·규칙 버전이 일치하는지도 확인한다. 필요한 기록과 원천 검사가 모두 통과해도 상태는 `LINKED_UNVERIFIED`다. 응답의 `activation_allowed`는 항상 `false`이며 72시간 유효기간을 시작하지 않는다. 이 조회는 현재 작업 버전의 스냅샷으로 저장된 검증 이력을 만들지 않는다.

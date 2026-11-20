@@ -27,10 +27,12 @@ from process_flow_dynamodb_check import (ACCOUNT, COOKING_TABLE, DATA_TABLE, ORD
                                          remove_test_messages)
 
 
-SAFETY_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures/jeyuk-small-safety-v1.json"
+FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures"
 
 
-async def run_check(*, safety: bool = False) -> int:
+async def run_check(*, safety: bool = False, size: str = "small") -> int:
+    if size not in {"small", "medium", "large"} or (not safety and size != "small"):
+        raise ValueError("medium and large require the safety scenario")
     if os.getenv("AWS_PROFILE") != "foodtech":
         raise SystemExit("Use AWS_PROFILE=foodtech for the development account.")
     session = boto3.Session(profile_name="foodtech", region_name=REGION)
@@ -67,7 +69,8 @@ async def run_check(*, safety: bool = False) -> int:
                                          base_url="http://local") as client:
                 job = await post(client, "/api/customer/cooking-jobs", {
                     "planned_portions": 2, "recipe_version": "synthetic-jeyuk-live-v1",
-                    "equipment_profile": "jeyuk-small", "actual_load_kg": "1.8"}, 201)
+                    "equipment_profile": f"jeyuk-{size}",
+                    "actual_load_kg": {"small": "1.8", "medium": "12", "large": "60"}[size]}, 201)
                 job_pk = cooking._pk(subject, job["job_id"])
                 listing_key = {"pk": f"SCOPE#USER#{subject}#JOBS",
                                "sk": f"CREATED#{job['created_at']}#{job['job_id']}"}
@@ -82,14 +85,14 @@ async def run_check(*, safety: bool = False) -> int:
                         "ingredient_spec_id": "synthetic-pork-v1",
                         "ingredient_lot_id": "synthetic-lot-v1", "supplier_id": "synthetic-supplier",
                         "sensor_id": "synthetic-probe", "sensor_calibration_record_id": "synthetic-cal-v1",
-                        "process_condition_profile_id": "jeyuk-small-safety",
+                        "process_condition_profile_id": f"jeyuk-{size}-safety",
                         "process_condition_version": "v1"})
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "PREHEAT_COMPLETED"})
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "COOKING_STARTED",
                     "actual_placed_at": datetime.now(timezone.utc).isoformat()})
-                raws = csharp_samples(fixture_id, SAFETY_FIXTURE) if safety else csharp_samples(fixture_id)
+                raws = csharp_samples(fixture_id, FIXTURE_DIR / f"jeyuk-{size}-safety-v1.json") if safety else csharp_samples(fixture_id)
                 for raw in raws:
                     ingestor.ingest(raw)
                 processed = []
@@ -143,7 +146,7 @@ async def run_check(*, safety: bool = False) -> int:
                     raise AssertionError("Jeyuk warning or failure did not reach the bound job")
                 if worker.process(references[-1])["job_result"] != "REPLAYED":
                     raise AssertionError("replayed assessment changed the bound job")
-                print(json.dumps({"processed": len(processed), "scenario": "SAFETY" if safety else "PROCESS",
+                print(json.dumps({"processed": len(processed), "scenario": "SAFETY" if safety else "PROCESS", "size": size,
                                   "job_status": final["status"],
                                   "auto_safety_status": final["auto_safety_status"],
                                   "replay": "REPLAYED"}), flush=True)
@@ -173,7 +176,9 @@ async def run_check(*, safety: bool = False) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--safety", action="store_true")
-    return asyncio.run(run_check(safety=parser.parse_args().safety))
+    parser.add_argument("--size", choices=("small", "medium", "large"), default="small")
+    args = parser.parse_args()
+    return asyncio.run(run_check(safety=args.safety, size=args.size))
 
 
 if __name__ == "__main__":
