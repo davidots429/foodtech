@@ -3,7 +3,7 @@ import unittest
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 
-from foodtech_business_api.jeyuk_source_evidence import audit_source_records
+from foodtech_business_api.jeyuk_source_evidence import audit_source_records, feed_safety_alignment
 from foodtech_contracts.jeyuk_process import ProcessMonitor, RULE_VERSION as PROCESS_RULE_VERSION
 from foodtech_contracts.jeyuk_safety import JeyukSafetyMonitor, RULE_VERSION as SAFETY_RULE_VERSION
 
@@ -69,6 +69,27 @@ def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL"):
 
 
 class JeyukSourceEvidenceTests(unittest.TestCase):
+    def test_final_feed_must_match_source_marker_and_complete_hold(self):
+        job, assessments, raws = fixture()
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        job.update(actual_placed_at=start.isoformat(), actual_lifted_at=(start + timedelta(seconds=61)).isoformat(),
+                   actual_load_kg="1.8", jeyuk_feed_mass_status="MATCHED",
+                   jeyuk_feeds={name: {"completed_at": start.isoformat()} for name in ("MEAT", "VEGETABLE", "SAUCE")})
+        job["process_assessment"]["source_assessment_pk"] = "JEYUK#jeyuk-evidence-a"
+        for index, row in enumerate(raws, 1):
+            sample = json.loads(row["raw"])
+            sample["observedAt"] = (start + timedelta(seconds=index)).isoformat()
+            row["raw"] = json.dumps(sample)
+        self.assertTrue(feed_safety_alignment(job, assessments, raws))
+        job["jeyuk_feeds"]["SAUCE"]["completed_at"] = (start + timedelta(seconds=2)).isoformat()
+        self.assertFalse(feed_safety_alignment(job, assessments, raws))
+        job["jeyuk_feeds"]["SAUCE"]["completed_at"] = start.isoformat()
+        self.assertFalse(feed_safety_alignment(job, assessments, raws[:-1]))
+        job["actual_lifted_at"] = (start + timedelta(seconds=60)).isoformat()
+        self.assertFalse(feed_safety_alignment(job, assessments, raws))
+        job["jeyuk_feed_mass_status"] = "MISMATCH"
+        self.assertFalse(feed_safety_alignment(job, assessments, raws))
+
     def test_synthetic_timestamps_must_match_the_exact_cooking_interval(self):
         job, assessments, raws = fixture()
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)

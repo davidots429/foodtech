@@ -28,6 +28,7 @@ export type CookingJob = {
   jeyuk_feeds?: Record<string, { started_at: string; completed_at: string; mass_kg: string }>;
   jeyuk_feed_total_kg?: string;
   jeyuk_feed_mass_status?: "INCOMPLETE" | "MATCHED" | "MISMATCH";
+  jeyuk_feed_safety_aligned?: boolean;
   jeyuk_additions_simultaneous?: boolean | null;
   jeyuk_discharge?: { completed_at: string; duration_seconds: string; total_process_duration_seconds: string | null; method: string } | null;
   tonkatsu_batch?: { rule_version: string; mode: "REFERENCE" | "PARTIAL"; product_weights_g: number[];

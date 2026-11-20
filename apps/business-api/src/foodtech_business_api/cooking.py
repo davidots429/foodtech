@@ -862,7 +862,7 @@ def _jeyuk_total_seconds(feeds: dict, completed: datetime) -> str | None:
 @router.post("/{job_id}/jeyuk-feeds/{ingredient}", status_code=201)
 async def record_jeyuk_feed(job_id: str, ingredient: Literal["meat", "vegetable", "sauce"],
                             request: Request, body: JeyukFeed) -> dict:
-    session, store, pk, old, _ = await _read(request, job_id, write=True)
+    session, store, pk, old, pointer = await _read(request, job_id, write=True)
     if int(old["version"]) != body.expected_version:
         raise _conflict()
     if old["menu"] != "JEYUK" or old["status"] == "CANCELED":
@@ -903,7 +903,11 @@ async def record_jeyuk_feed(job_id: str, ingredient: Literal["meat", "vegetable"
     version = int(old["version"]) + 1
     meta = {**old, "version": version, "updated_at": now, "jeyuk_feeds": feeds,
             "jeyuk_addition_group_id": group_id, "jeyuk_additions_simultaneous": simultaneous,
-            "jeyuk_feed_total_kg": str(total_mass), "jeyuk_feed_mass_status": mass_status}
+            "jeyuk_feed_total_kg": str(total_mass), "jeyuk_feed_mass_status": mass_status,
+            "jeyuk_feed_safety_aligned": False}
+    if old.get("safety_status") == "PASSED":
+        meta.update(safety_status="INCOMPLETE", safety_version=int(old["safety_version"]) + 1,
+                    evaluation_blocked=True)
     if old.get("jeyuk_discharge"):
         discharge = old["jeyuk_discharge"]
         discharge_completed = datetime.fromisoformat(discharge["completed_at"].replace("Z", "+00:00"))
@@ -913,7 +917,9 @@ async def record_jeyuk_feed(job_id: str, ingredient: Literal["meat", "vegetable"
              "trigger": "FEED_REVISED" if previous else "FEED_RECORDED", "ingredient": key,
              "previous": previous, "feed": current, "reason": body.reason.strip() if body.reason else None,
              "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(store, pk, old, meta,
+                  pointer=_blocked_pointer(pointer, "JEYUK_FEED_CHANGED"),
+                  event=event)
     return meta
 
 
@@ -1130,6 +1136,23 @@ async def tonkatsu_reheat(job_id: str, request: Request, body: TonkatsuReheat) -
     return meta
 
 
+async def _jeyuk_feed_alignment(job: dict) -> bool:
+    process = job.get("process_assessment") or {}
+    source_table = os.getenv("FOODTECH_DATA_TABLE", "")
+    binding = job.get("source_binding") or {}
+    second = process.get("second")
+    if not (source_table and binding.get("batch_id") and type(second) is int and
+            1 <= second <= max(profile.time_bands[-1] for profile in JEYUK_PROFILES.values())):
+        return False
+    from .jeyuk_source_evidence import feed_safety_alignment
+    try:
+        assessments, raws = await _read_jeyuk_source_records(source_table, binding["batch_id"], second)
+        return feed_safety_alignment(job, assessments, raws)
+    except Exception as exc:
+        logger.exception("Jeyuk feed safety evidence read failed")
+        raise HTTPException(503, "재료 투입과 원천 안전 증거를 조회하지 못했습니다.") from exc
+
+
 @router.post("/{job_id}/safety/discharge-check")
 async def jeyuk_discharge_check(job_id: str, request: Request, body: JeyukDischargeCheck) -> dict:
     session, store, pk, old, pointer = await _read(request, job_id, write=True)
@@ -1163,8 +1186,10 @@ async def jeyuk_discharge_check(job_id: str, request: Request, body: JeyukDischa
                     sample.celsius is not None for sample in body.samples))
     manual_status = "FAILED" if valid_low else "PASSED" if complete else "ASSESSMENT_INCOMPLETE"
     auto_status = old.get("auto_safety_status", "NOT_MEASURED")
+    feed_alignment = (await _jeyuk_feed_alignment(old)
+                      if manual_status == "PASSED" and auto_status == "PASSED" else False)
     status = ("FAILED" if manual_status == "FAILED" else
-              "PASSED" if manual_status == "PASSED" and auto_status == "PASSED" else
+              "PASSED" if manual_status == "PASSED" and auto_status == "PASSED" and feed_alignment else
               "INCOMPLETE")
     now = _now()
     version = int(old.get("discharge_check_version", 0)) + 1
@@ -1172,12 +1197,14 @@ async def jeyuk_discharge_check(job_id: str, request: Request, body: JeyukDischa
     meta = {**old, "safety_status": status, "safety_version": int(old["safety_version"]) + 1,
             "discharge_check_version": version, "discharge_check_status": manual_status,
             "discharge_check_kind": body.kind, "discharge_check": evidence,
+            "jeyuk_feed_safety_aligned": feed_alignment,
             "discharge_check_by": session.subject, "version": int(old["version"]) + 1,
             "evaluation_blocked": status != "PASSED", "updated_at": now}
     event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}",
              "domain": "SAFETY_STATUS", "trigger": "JEYUK_DISCHARGE_CHECK",
              "from_status": old["safety_status"], "to_status": status,
              "manual_status": manual_status, "auto_safety_status": auto_status,
+             "feed_safety_aligned": feed_alignment,
              "kind": body.kind, "samples": evidence, "actor": session.subject, "occurred_at": now}
     await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
     return meta

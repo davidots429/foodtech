@@ -1,4 +1,5 @@
 import os
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -9,6 +10,7 @@ from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app
+from test_jeyuk_source_evidence import fixture
 
 
 class JeyukFeedTests(unittest.IsolatedAsyncioTestCase):
@@ -27,6 +29,55 @@ class JeyukFeedTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.aclose()
         for item in reversed(self.patches): item.stop()
+
+    async def test_feed_record_invalidates_existing_safety_and_assessment(self):
+        created = await self.client.post("/api/customer/cooking-jobs", headers=self.headers, json={
+            "planned_portions": 2, "recipe_version": "synthetic-v1", "equipment_profile": "jeyuk-small",
+            "actual_load_kg": "1.8"})
+        job = created.json()
+        pk = cooking._pk(self.subject, job["job_id"])
+        self.store.items[(pk, "META")].update(safety_status="PASSED", safety_version=1,
+                                               evaluation_blocked=False, jeyuk_feed_safety_aligned=True)
+        self.store.items[(pk, "ASSESSMENT#CURRENT")] = {"version": 1, "usable": True, "safety_version": 1}
+        when = datetime.now(timezone.utc) - timedelta(seconds=20)
+        result = await self.client.post(f"/api/customer/cooking-jobs/{job['job_id']}/jeyuk-feeds/meat",
+            headers=self.headers, json={"expected_version": job["version"],
+                "started_at": when.isoformat(), "completed_at": when.isoformat(), "mass_kg": "1.0"})
+        self.assertEqual(result.status_code, 201, result.text)
+        self.assertEqual(result.json()["safety_status"], "INCOMPLETE")
+        self.assertTrue(result.json()["evaluation_blocked"])
+        self.assertFalse(result.json()["jeyuk_feed_safety_aligned"])
+        self.assertFalse(self.store.items[(pk, "ASSESSMENT#CURRENT")]["usable"])
+
+    async def test_discharge_uses_bound_raw_feed_timeline(self):
+        created = await self.client.post("/api/customer/cooking-jobs", headers=self.headers, json={
+            "planned_portions": 2, "recipe_version": "synthetic-v1", "equipment_profile": "jeyuk-small",
+            "actual_load_kg": "1.8"})
+        job = created.json(); pk = cooking._pk(self.subject, job["job_id"])
+        evidence, assessments, raws = fixture()
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for index, raw in enumerate(raws, 1):
+            sample = json.loads(raw["raw"])
+            sample["observedAt"] = (start + timedelta(seconds=index)).isoformat()
+            raw["raw"] = json.dumps(sample)
+        evidence.update(status="COMPLETED", actual_placed_at=start.isoformat(),
+            actual_lifted_at=(start + timedelta(seconds=61)).isoformat(), actual_load_kg="1.8",
+            jeyuk_feed_mass_status="MATCHED", jeyuk_feeds={name: {"completed_at": start.isoformat()}
+              for name in ("MEAT", "VEGETABLE", "SAUCE")})
+        evidence["process_assessment"]["source_assessment_pk"] = "JEYUK#jeyuk-evidence-a"
+        self.store.items[(pk, "META")].update(evidence)
+        samples = [{"phase": phase, "probe_id": f"probe-{index}", "meat_sample_id": f"meat-{index}",
+                    "thickest_or_clumped_part": True, "sampled_at": (start + timedelta(seconds=62 + index)).isoformat(),
+                    "calibration_status": "OK", "celsius": 75}
+                   for index, phase in enumerate(("EARLY", "MIDDLE", "LATE"))]
+        path = f"/api/customer/cooking-jobs/{job['job_id']}/safety/discharge-check"
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "synthetic"}), \
+             patch.object(cooking, "_read_jeyuk_source_records", return_value=(assessments, raws)):
+            safe = await self.client.post(path, headers=self.headers, json={
+                "expected_version": job["version"], "kind": "INITIAL", "samples": samples})
+        self.assertEqual(safe.status_code, 200, safe.text)
+        self.assertEqual(safe.json()["safety_status"], "PASSED")
+        self.assertTrue(safe.json()["jeyuk_feed_safety_aligned"])
 
     async def test_individual_feeds_group_boundary_and_discharge_history(self):
         created = await self.client.post("/api/customer/cooking-jobs", headers=self.headers, json={
