@@ -58,6 +58,25 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
+    async def test_running_time_guidance_is_owned_read_only_and_uncached(self):
+        job = await self.create()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        ready = await self.client.post(path + "/transitions", headers=CSRF,
+                                       json={"event": "PREHEAT_COMPLETED", "expected_version": job["version"]})
+        self.assertEqual(ready.status_code, 200, ready.text)
+        placed = datetime.now(timezone.utc) - timedelta(seconds=361)
+        running = await self.client.post(path + "/transitions", headers=CSRF, json={
+            "event": "COOKING_STARTED", "expected_version": ready.json()["version"], "actual_placed_at": placed.isoformat()})
+        self.assertEqual(running.status_code, 200, running.text)
+        response = await self.client.get(path + "/time-monitor")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.json()["status"], "MAX_TIME_EXCEEDED")
+        unchanged = (await self.client.get(path)).json()["job"]
+        self.assertEqual((unchanged["status"], unchanged["version"]), ("RUNNING", running.json()["version"]))
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(path + "/time-monitor")).status_code, 404)
+
     async def test_owned_job_list_is_paginated_and_isolated(self):
         jobs = [await self.create() for _ in range(3)]
         first = await self.client.get("/api/customer/cooking-jobs", params={"limit": 2})

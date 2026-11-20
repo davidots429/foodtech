@@ -106,6 +106,13 @@ async def main() -> None:
                               if event == "COOKING_COMPLETED" else {})
                     job = await checked_post(client, path + "/transitions",
                                              {"event": event, "expected_version": job["version"], **timing})
+                    if event == "COOKING_STARTED":
+                        monitor = await client.get(path + "/time-monitor")
+                        assert monitor.status_code == 200 and monitor.headers["cache-control"] == "no-store"
+                        assert monitor.json()["elapsed_seconds"] >= 300
+                        assert monitor.json()["recommended_limit_seconds"] == 330 and monitor.json()["maximum_seconds"] == 360
+                        after_monitor = (await client.get(path)).json()["job"]
+                        assert after_monitor["status"] == "RUNNING" and after_monitor["version"] == job["version"]
                 assert job["thickness_profile"] == "STANDARD"
                 assert job["actual_cooking_seconds"] == 300
                 assert job["process_time_status"] == "NORMAL"
@@ -197,6 +204,7 @@ async def main() -> None:
                 print(json.dumps({
                     "account": ACCOUNT, "region": "ap-southeast-2", "table": TABLE,
                     "owner_isolation_status": isolated.status_code,
+                    "live_time_monitor_read_only": True,
                     "missing_sample_status": incomplete["safety_status"],
                     "stale_assessment_status": stale.status_code,
                     "assessment_versions": [item["version"] for item in revisions],

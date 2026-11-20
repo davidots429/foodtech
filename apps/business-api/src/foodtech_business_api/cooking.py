@@ -10,9 +10,10 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.cooking_live_time import observe as observe_live_time
 from foodtech_contracts.tonkatsu_process import RULE_VERSION, cooking_time_status, process_status, thickness_profile
 from foodtech_contracts.jeyuk_process import (RULE_VERSION as JEYUK_RULE_VERSION,
                                               cooking_time_status as jeyuk_cooking_time_status,
@@ -469,6 +470,14 @@ async def get_job(job_id: str, request: Request,
                 "created_at": None, "job_version_at_derivation": None,
                 "job_version_changed": False})
     return {"job": meta, "current_assessment": pointer, "process_assessment_view": process}
+
+
+@router.get("/{job_id}/time-monitor")
+async def get_time_monitor(job_id: str, request: Request, response: Response) -> dict:
+    _, _, _, job, _ = await _read(request, job_id)
+    response.headers["Cache-Control"] = "no-store"
+    return {"job_id": job_id, "job_version": int(job["version"]),
+            **observe_live_time(job, datetime.now(timezone.utc))}
 
 
 @router.get("/{job_id}/events")
