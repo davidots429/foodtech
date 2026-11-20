@@ -18,3 +18,9 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 
 어댑터는 고객 권한으로 배치와 CSRF 값을 확인하고 전체 합성 스트림의 배치·작업·장비 ID, 순서와 크기를 검증한 뒤 기존 등록 API에 배치 버전을 포함해 한 번 제출한다. 중간에 배치가 변경되면 API가 거절한다. 이 경로는 즉시 생성된 합성 원표본을 일괄 연결하며 실시간 5초 수집, SQS/Worker 경로 또는 조리 안전·품질의 자동 승인을 의미하지 않는다. 실제 장비 호환성도 주장하지 않는다.
 
+## 합성 MQTT 구독
+
+`python -m foodtech_collection_adapter.mqtt --count 3 --timeout 30`은 별도 C# MQTT Mock의 TLS 인증서를 검증하고 MQTT 5·QoS 1로 고정 합성 Topic을 구독한다. `FOODTECH_MQTT_HOST`, `FOODTECH_MQTT_PORT`, `FOODTECH_MQTT_CA_FILE`, `FOODTECH_MQTT_USER`, `FOODTECH_MQTT_PASSWORD`, `FOODTECH_MQTT_CLIENT_ID`, `FOODTECH_DATA_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`이 필요하다. Client ID는 `foodtech-collector-` 접두어로 고정하고 재연결 시 동일 ID를 사용한다. 원표본을 기존 DynamoDB Resequencer에 기록하고 SQS FIFO에 연결하며 지속 중 1초마다 결손 만료를 확인한다. 저장 성공 후에만 MQTT 확인 응답을 보낸다. 재전달은 새 수신으로 보존하고 업무 중복 판정은 기존 Worker가 수행한다.
+
+로컬 통합 시험은 별도 C# Mock·TLS·인증 오류·Topic ACL·외부 발행 차단과 저장 실패 후 동일 세션 재전달, 합성 표본 세 건의 표준화 규칙을 확인한다. 표준화 Worker의 vendor-a MQTT 매핑 버전은 `mockprofile-300-a-map-v1`이다. MQTT 메시지의 AWS 실저장과 배포된 수집기 실행 역할, 프로세스 재시작·장기 단절과 63개 인스턴스 시험은 후속 검증이다.
+

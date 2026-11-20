@@ -1,6 +1,21 @@
 {
   "version": 1,
   "dependencies": {
-    "net10.0": {}
+    "net10.0": {
+      "MQTTnet.Server": {
+        "type": "Direct",
+        "requested": "[5.2.0.1603, )",
+        "resolved": "5.2.0.1603",
+        "contentHash": "o0zmNXtDJlDsa3796C6HBrSwwVDOzQRibK9vpixFk38Gu6ZWT+BDBRekgDQ+OjRk3ornjSqkKzBqBzMDLJ2Zdw==",
+        "dependencies": {
+          "MQTTnet": "5.2.0.1603"
+        }
+      },
+      "MQTTnet": {
+        "type": "Transitive",
+        "resolved": "5.2.0.1603",
+        "contentHash": "iNuWVo/568aRo2ExEN2qkC4J5b07ckKqt+9Uok2kIbbK7PMBsXvYiKVENPHmOBWFB5ExhlNQb/qQ8M9/IYRTdQ=="
+      }
+    }
   }
 }

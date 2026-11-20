@@ -60,7 +60,10 @@ def main() -> int:
             result = client.poll(cursor)
             released = []
             for raw in result.records:
-                streams.add(stream_key(decode_record(raw)))
+                record = decode_record(raw)
+                if record["deviceId"] != "mockprofile-100-a-001":
+                    raise ValueError("unexpected REST Mock device")
+                streams.add(stream_key(record))
                 released.extend(ingestor.ingest(raw))
             for stream in sorted(streams):
                 released.extend(ingestor.drain(stream))

@@ -14,6 +14,13 @@ PROFILE_ID = "mockprofile-100"
 INSTANCE_ID = "mockprofile-100-a-001"
 SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-100-a-v1.schema.json").read_text())
 VALIDATOR = jsonschema.Draft202012Validator(SCHEMA, format_checker=jsonschema.FormatChecker())
+MQTT_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-300-a-v1.schema.json").read_text())
+MQTT_VALIDATOR = jsonschema.Draft202012Validator(MQTT_SCHEMA, format_checker=jsonschema.FormatChecker())
+
+
+def _validate(record: dict) -> None:
+    validator = MQTT_VALIDATOR if record.get("deviceId") == "mockprofile-300-a-001" else VALIDATOR
+    validator.validate(record)
 
 
 def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
@@ -30,7 +37,7 @@ def decode_record(raw: str | bytes) -> dict:
     record = json.loads(raw, parse_float=Decimal, object_pairs_hook=_unique_pairs)
     if not isinstance(record, dict):
         raise ValueError("record must be a JSON object")
-    VALIDATOR.validate(record)
+    _validate(record)
     return record
 
 
@@ -62,7 +69,7 @@ def _extension(value: object) -> object:
 
 def canonical_record(record: dict) -> dict:
     """Schema-specific normalization before RFC 8785 serialization."""
-    VALIDATOR.validate(record)
+    _validate(record)
     measurements = record["measurements"]
     return {
         "schema_version": SCHEMA_VERSION,
