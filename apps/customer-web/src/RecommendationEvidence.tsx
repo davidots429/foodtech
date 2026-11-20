@@ -6,6 +6,18 @@ type Evidence = {
   recorded: { recipe_version: string | null; safety_status: string | null; process_status: string | null;
     cooking_seconds: number | null; quality: { score_percent: string | null } | null };
   unverified_categories: string[];
+  completeness: "INSUFFICIENT" | "NOT_ASSESSED";
+  completeness_reasons: string[];
+};
+
+const completenessLabels: Record<string, string> = {
+  MENU_NOT_ASSESSED: "이 메뉴의 입력 완전성은 아직 판정하지 않았습니다.",
+  SAFETY_NOT_MEASURED_OR_INCOMPLETE: "안전 측정이 없거나 완료되지 않았습니다.",
+  CORE_SERIES_MISSING_INVALID_OR_INCONSISTENT: "제품별 심부온도 표본이 누락·무효이거나 안전 상태와 일치하지 않습니다.",
+  THICKNESS_PROFILE_MISSING: "두께 프로파일이 없습니다.", COOKING_DURATION_MISSING: "조리시간이 없습니다.",
+  BATCH_INPUT_MISSING: "배치 입력이 없습니다.", INITIAL_TEMPERATURE_MISSING: "재료 초기 온도 또는 관찰 시각이 없습니다.",
+  SOURCE_COMPLETENESS_NOT_ASSESSED: "전체 원천 데이터의 완전성은 아직 판정하지 않았습니다.",
+  GAP_SEVERITY_NOT_ASSESSED: "감지된 결손의 심각도는 아직 판정하지 않았습니다.",
 };
 
 const labels: Record<string, string> = {
@@ -34,7 +46,7 @@ export function RecommendationEvidence({ jobId }: { jobId: string }) {
   }
   return <section className="binding-box" aria-labelledby="recommendation-evidence-title">
     <h4 id="recommendation-evidence-title">AI 권고에 사용할 조리 기록 확인</h4>
-    <p className="small">기록된 정보와 아직 확인하지 못한 범주를 조회합니다. 데이터 완전성과 AI 권고는 아직 판정하지 않습니다.</p>
+    <p className="small">기록된 정보와 필수 근거의 일부를 확인합니다. 전체 데이터 완전성과 AI 권고는 아직 판정하지 않습니다.</p>
     <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "조회 중" : "조리 근거 조회"}</button>
     {error && <p role="alert">{error}</p>}
     {value && <div aria-live="polite">
@@ -42,6 +54,8 @@ export function RecommendationEvidence({ jobId }: { jobId: string }) {
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}
         {" "}· 품질평가 {value.recorded.quality?.score_percent == null ? "현재 유효 평가 없음" : `${value.recorded.quality.score_percent}점`}</p>
       {value.process_stale && <p className="warning">공정 재계산 이후 작업이 변경되어 다시 확인해야 합니다.</p>}
+      <p>입력 완전성: {value.completeness === "INSUFFICIENT" ? "필수 근거 부족" : "전체 미평가"}</p>
+      <ul>{value.completeness_reasons.map(reason => <li key={reason}>{completenessLabels[reason] ?? reason}</li>)}</ul>
       {value.unverified_categories.length > 0 && <><p>아직 확인하지 못한 범주</p>
         <ul>{value.unverified_categories.map(category => <li key={category}>{labels[category] ?? category}</li>)}</ul></>}
       <p className="small">이 화면에서 AI를 호출하거나 장비 설정을 변경하지 않습니다.</p>

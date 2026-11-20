@@ -58,7 +58,8 @@ async def main():
                 value = response.json()
                 assert value["recorded"]["quality"]["score_percent"] == "80"
                 assert value["observation_coverage"]["sample_count"] == 2
-                assert value["completeness"] == "NOT_ASSESSED" and not value["recommendation_execution_available"]
+                assert value["completeness"] == "INSUFFICIENT" and not value["recommendation_execution_available"]
+                assert "CORE_SERIES_MISSING_INVALID_OR_INCONSISTENT" in value["completeness_reasons"]
                 assert "never-export" not in response.text and subject not in response.text
                 with patch.object(cooking, "_session", side_effect=foreign):
                     assert (await client.get(path)).status_code == 404

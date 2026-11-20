@@ -4,6 +4,7 @@ The result describes recorded facts, not evidence completeness or authorization
 to call a model. Free-text notes, ownership IDs and raw probe values stay out.
 """
 from .cooking import _read, _store_call
+from .recommendation_completeness import preliminary
 
 
 def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived: dict | None) -> dict:
@@ -87,13 +88,15 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
         missing.append("COMPARABLE_PREVIOUS_JOB")
     elif job.get("menu") == "JEYUK":
         missing.extend(["TARGET_SETTINGS_AND_INTERVALS", "PREVIOUS_JAM_OR_OVERLOAD", "COMPARABLE_PREVIOUS_JOB"])
+    completeness = preliminary(job, initial_context=initial, coverage=coverage)
     return {"job_id": job["job_id"], "job_version": job["version"],
             "safety_version": job.get("safety_version"),
             "process_view": "LATEST_RESTATED" if derived else "AS_PROCESSED",
             "process_result_version": derived.get("sk") if derived else None,
             "process_stale": stale, "observation_coverage": coverage,
             "recorded": fields, "unverified_categories": missing,
-            "completeness": "NOT_ASSESSED", "recommendation_execution_available": False}
+            "completeness": completeness["status"], "completeness_reasons": completeness["reasons"],
+            "completeness_rule_version": completeness["rule_version"], "recommendation_execution_available": False}
 
 
 async def read_evidence(request, job_id: str) -> dict:

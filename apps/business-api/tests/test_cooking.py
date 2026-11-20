@@ -288,7 +288,7 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("INGREDIENT_INITIAL_STATE", evidence["unverified_categories"])
         self.assertNotIn("FRYER_AND_BATCH_BASELINE", evidence["unverified_categories"])
         self.assertIn("INITIAL_CONTEXT_DECLARED_UNVERIFIED", evidence["unverified_categories"])
-        self.assertEqual(evidence["completeness"], "NOT_ASSESSED")
+        self.assertEqual(evidence["completeness"], "INSUFFICIENT")
         frozen = await self.client.post(path + "/tonkatsu-initial-context", headers=CSRF,
             json={**body, "expected_version": job["version"], "storage_state": "FROZEN"})
         self.assertEqual(frozen.status_code, 200, frozen.text)
