@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import httpx
 
-from foodtech_business_api import cooking
+from foodtech_business_api import cooking, combi_meal
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app
@@ -52,6 +52,74 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(path)).json(), result)
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path)).status_code, 404)
+
+    async def test_rice_safety_uses_process_and_explicit_anomaly_confirmation(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        meta = created["meal"]
+        path = "/api/customer/combi-meals/" + meta["meal_batch_id"]
+        pk = combi_meal._pk(self.subject, meta["meal_batch_id"])
+        rice = self.store.items[(pk, f"JOB#RICE#{meta['rice_cooking_job_id']}")]
+        rice["status"] = "UNLOADED"
+        confirmation = {"expected_version": 1, "observation": "NO_ANOMALY", "note": "합성 안전 확인"}
+        incomplete = await self.client.post(path + "/rice-safety", headers=headers, json=confirmation)
+        self.assertEqual(incomplete.json()["step"]["safety_status"], "INCOMPLETE")
+        rice = self.store.items[(pk, rice["sk"])]
+        rice["monitored_process_assessment"] = {"status": "NORMAL", "reason_codes": []}
+        passed = await self.client.post(path + "/rice-safety", headers=headers,
+                                        json={**confirmation, "expected_version": 2})
+        self.assertEqual(passed.json()["step"]["safety_status"], "PASSED")
+        quality = {"expected_version": 3, "expected_current_version": 0, "kind": "INITIAL",
+                   "scores": {key: 4 for key in cooking.SCORE_ITEMS},
+                   "observations": {key: "합성 관찰" for key in cooking.SCORE_ITEMS},
+                   "quality_decision": "QUALITY_PASSED", "planned_portions": 3, "actual_portions": 3}
+        assessed = await self.client.post(path + "/quality/rice", headers=headers, json=quality)
+        self.assertEqual(assessed.status_code, 201, assessed.text)
+        self.assertTrue(assessed.json()["step"]["quality_current"]["usable"])
+        suspected = await self.client.post(path + "/rice-safety", headers=headers, json={
+            "expected_version": 4, "observation": "SUSPECTED", "note": "합성 이상 보고"})
+        self.assertEqual(suspected.json()["step"]["safety_status"], "SUSPECTED")
+        self.assertFalse(suspected.json()["step"]["quality_current"]["usable"])
+        cleared = await self.client.post(path + "/rice-safety", headers=headers,
+                                         json={**confirmation, "expected_version": 5, "note": "이상 해소 확인"})
+        self.assertEqual(cleared.json()["step"]["safety_status"], "PASSED")
+        self.assertFalse(cleared.json()["step"]["quality_current"]["usable"])
+        self.assertEqual((await self.client.post(path + "/quality/rice", headers=headers,
+            json={**quality, "expected_version": 6})).status_code, 409)
+        reassessed = await self.client.post(path + "/quality/rice", headers=headers, json={
+            **quality, "expected_version": 6, "expected_current_version": 1,
+            "kind": "REASSESSMENT", "reason": "안전 확인 후 재평가"})
+        self.assertEqual(reassessed.status_code, 201, reassessed.text)
+        self.assertTrue(reassessed.json()["step"]["quality_current"]["usable"])
+
+    async def test_rice_safety_never_accepts_failed_or_unverified_evidence(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        meta = created["meal"]
+        pk = combi_meal._pk(self.subject, meta["meal_batch_id"])
+        step = self.store.items[(pk, f"JOB#RICE#{meta['rice_cooking_job_id']}")]
+        step.update(status="UNLOADED", monitored_process_assessment={"status": "FAILED", "reason_codes": []})
+        path = "/api/customer/combi-meals/" + meta["meal_batch_id"] + "/rice-safety"
+        body = {"expected_version": 1, "observation": "NO_ANOMALY", "note": "확인"}
+        response = await self.client.post(path, headers=headers, json=body)
+        self.assertEqual(response.json()["step"]["safety_status"], "INCOMPLETE")
+        step = self.store.items[(pk, step["sk"])]
+        step["monitored_process_assessment"] = {"status": "WARNING", "reason_codes": ["SENSOR_ANOMALY_SUSPECTED"]}
+        response = await self.client.post(path, headers=headers, json={**body, "expected_version": 2})
+        self.assertEqual(response.json()["step"]["safety_status"], "SUSPECTED")
+        step = self.store.items[(pk, step["sk"])]
+        step["monitored_process_assessment"] = {"status": "NORMAL", "reason_codes": []}
+        self.store.items[(pk, "META")]["source"] = {"raw_sha256": "synthetic"}
+        manual = await self.client.post("/api/customer/combi-meals/" + meta["meal_batch_id"] + "/rice-process",
+            headers=headers, json={"expected_version": 3, "humidity_source": "MEASURED",
+                                   "samples": [{"second": 1, "chamber_celsius": "100", "humidity_percent": "98"}]})
+        self.assertEqual(manual.status_code, 409)
+        response = await self.client.post(path, headers=headers, json={**body, "expected_version": 3})
+        self.assertEqual(response.json()["step"]["safety_status"], "INCOMPLETE")
+        step = self.store.items[(pk, step["sk"])]
+        step.update(monitored_process_source={"raw_sha256": "synthetic"}, rice_critical_alarm_observed=True)
+        response = await self.client.post(path, headers=headers, json={**body, "expected_version": 4})
+        self.assertEqual(response.json()["step"]["safety_status"], "SUSPECTED")
 
     async def test_live_source_isolated_idempotent_and_checked_before_completion(self):
         headers = {"X-CSRF-Token": "csrf"}

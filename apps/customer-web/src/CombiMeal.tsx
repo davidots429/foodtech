@@ -12,7 +12,7 @@ type Meal = {
     source?: { device_id: string; record_count: number; raw_sha256: string; first_observed_at?: string;
       phase_counts: { RICE: number; TRANSITION: number; MACKEREL: number } } };
   rice: { job_id: string; status: string; safety_status: string; quality_current?: { version: number;
-    quality_status: string; score_percent: string; quality_target: boolean };
+    quality_status: string; score_percent: string; quality_target: boolean; usable?: boolean };
     water_ratio_status: string; effective_water_ratio: string;
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
@@ -65,6 +65,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
   const [observedAt, setObservedAt] = useState("");
   const [sourceDevice, setSourceDevice] = useState("synthetic-combi-medium");
   const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [riceSafetyObservation, setRiceSafetyObservation] = useState<"" | "NO_ANOMALY" | "SUSPECTED">("");
+  const [riceSafetyNote, setRiceSafetyNote] = useState("");
   const [sampleLayout, setSampleLayout] = useState("THREE_SHELVES");
   const [selectedProducts, setSelectedProducts] = useState<string[] | null>(null);
   const [selectionNote, setSelectionNote] = useState("");
@@ -98,6 +100,17 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         device_id: sourceDevice, records: lines });
       setMeal(await api<Meal>(path)); setSourceFile(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "합성 원천 자료를 연결하지 못했습니다."); }
+    finally { requestActive.current = false; setBusy(false); }
+  }
+  async function confirmRiceSafety() {
+    if (!meal || !riceSafetyObservation || !riceSafetyNote.trim() || requestActive.current) return;
+    requestActive.current = true; setBusy(true); setError("");
+    const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
+    try {
+      await api(path + "/rice-safety", csrf, { expected_version: meal.meal.version,
+        observation: riceSafetyObservation, note: riceSafetyNote.trim() });
+      setMeal(await api<Meal>(path)); setRiceSafetyObservation(""); setRiceSafetyNote("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "밥 안전 확인을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
   function downloadMockFixture() {
@@ -292,8 +305,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       {meal.rice.thermal_exposure_duration !== undefined && !meal.rice.monitored_process_assessment && <div>
         <p>밥 조리 구간의 100°C·문 닫힘 합성 표본으로 온도·습도와 문 상태를 확인합니다.</p>
         {meal.meal.source && <button type="button" disabled={busy} onClick={() => assessSource("rice")}>연결된 밥 원표본 판정</button>}{" "}
-        <button type="button" disabled={busy} onClick={() => simulateRiceProcess(true)}>습도 지원 합성 표본</button>{" "}
-        <button type="button" disabled={busy} onClick={() => simulateRiceProcess(false)}>습도 미지원 합성 표본</button></div>}
+        {!meal.meal.source && <><button type="button" disabled={busy} onClick={() => simulateRiceProcess(true)}>습도 지원 합성 표본</button>{" "}
+        <button type="button" disabled={busy} onClick={() => simulateRiceProcess(false)}>습도 미지원 합성 표본</button></>}</div>}
       {meal.rice.monitored_process_assessment && <p>밥 온도·습도·문·시간 부분 판정: {meal.rice.monitored_process_assessment.status}
         {" "}· 습도 출처 {meal.rice.monitored_process_assessment.humidity_value_source}
         {" "}· 문 상태 {meal.rice.monitored_process_assessment.door_assessment?.status ?? "NOT_MEASURED"}
@@ -355,6 +368,14 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         </li>)}</ul></div>}
       {meal.events?.filter(event => event.event === "MACKEREL_CORE_CHECK").slice(-1)[0]?.selection_issues?.length ?
         <p role="alert">표본 선정 확인 필요: {meal.events.filter(event => event.event === "MACKEREL_CORE_CHECK").slice(-1)[0].selection_issues?.join(", ")}</p> : null}
+      {meal.rice.status === "UNLOADED" && <div className="binding-box"><h4>밥 안전 확인</h4>
+        <p>별도 측정 없이 기록된 공정 판정과 운영자가 확인한 안전 이상 여부를 함께 확인합니다. 현재 상태: {meal.rice.safety_status}</p>
+        <label>안전 이상 여부<select value={riceSafetyObservation} onChange={event => setRiceSafetyObservation(event.target.value as typeof riceSafetyObservation)}>
+          <option value="">선택</option><option value="NO_ANOMALY">안전 이상 없음</option><option value="SUSPECTED">안전 이상 의심</option>
+        </select></label>
+        <label>확인 근거<input maxLength={500} value={riceSafetyNote} onChange={event => setRiceSafetyNote(event.target.value)} /></label>
+        <button type="button" disabled={busy || !riceSafetyObservation || !riceSafetyNote.trim()} onClick={confirmRiceSafety}>안전 확인 기록</button>
+      </div>}
       {(["rice", "mackerel"] as const).map(menu => <CombiQuality key={`${meal.meal.meal_batch_id}-${menu}`}
         menu={menu} mealId={meal.meal.meal_batch_id} version={meal.meal.version}
         safety={meal[menu].safety_status} jobStatus={meal[menu].status} current={meal[menu].quality_current}
