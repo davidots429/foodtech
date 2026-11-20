@@ -1,9 +1,10 @@
 """Opt-in DynamoDB check for an immutable synthetic late-event derivation."""
 
 import json
+import asyncio
 import os
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 import boto3
@@ -14,6 +15,7 @@ from foodtech_contracts.collection_evidence import CompletionTracker
 from foodtech_collection_adapter.aws_flow import DynamoOrderedIngestor
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.source_revision import _read as read_source_revision
+from foodtech_business_api import recommendation_evidence
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 from foodtech_standardization_worker.process_restatement import DynamoProcessRestatement
 
@@ -119,6 +121,11 @@ def main() -> None:
                                   ConsistentRead=True)["Item"]
         assert latest["result_sk"] == result["sk"] and latest["version"] == 1
         assert DynamoCookingStore(COOKING_TABLE).latest_process_result(job_pk)["sk"] == result["sk"]
+        customer_store = DynamoCookingStore(COOKING_TABLE)
+        read_job = AsyncMock(return_value=(None, customer_store, job_pk, job, None))
+        with patch.object(recommendation_evidence, "_read", read_job):
+            evidence = asyncio.run(recommendation_evidence.read_evidence(None, "test"))
+            assert evidence["source_revision_status"] == "MATCHED_AT_READ"
         followup_id = f"synthetic-restatement-{run_id}-followup"
         followup = {"pk": f"EVENT#{followup_id}", "sk": "ASSESSMENT#v1",
                     "source_pk": stream_pk, "ingestion_event_id": followup_id,
@@ -133,6 +140,9 @@ def main() -> None:
         data.update_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"},
                          UpdateExpression="ADD #r :one", ExpressionAttributeNames={"#r": "revision"},
                          ExpressionAttributeValues={":one": 1})
+        with patch.object(recommendation_evidence, "_read", read_job):
+            evidence = asyncio.run(recommendation_evidence.read_evidence(None, "test"))
+            assert evidence["source_revision_status"] == "CHANGED"
         assert worker._publish_process(followup) == "RESTATEMENT_DERIVED"
         followup_request = cooking.get_item(
             Key={"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{followup_id}"},
@@ -180,7 +190,8 @@ def main() -> None:
                           "included_samples": len(next_result["included_ingestion_event_ids"]),
                           "latest_version": int(latest["version"]),
                           "job_unchanged": True, "replay": "ALREADY_COMPLETED",
-                          "source_revision_race": "STALE_RETRY", "cleanup_partitions": 8}))
+                          "source_revision_race": "STALE_RETRY", "customer_revision_status": [
+                              "MATCHED_AT_READ", "CHANGED"], "cleanup_partitions": 8}))
     finally:
         clean_partition(cooking, job_pk)
         clean_partition(cooking, stream_pk)
