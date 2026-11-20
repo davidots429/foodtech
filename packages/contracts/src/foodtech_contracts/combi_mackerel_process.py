@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from decimal import Decimal
+from .combi_fan import observe as observe_fan
 
 
 @dataclass(frozen=True)
@@ -9,6 +10,7 @@ class Sample:
     second: int
     chamber_celsius: Decimal
     door: str
+    fan_level: int | None = None
 
 
 def assess(samples: list[Sample], duration: int, time_status: str) -> dict:
@@ -79,4 +81,4 @@ def assess(samples: list[Sample], duration: int, time_status: str) -> dict:
             "recovered_at_second": recovered, "recovery_clock_started_second": 2,
             "door_open_seconds": total_open, "door_max_open_seconds": max_open,
             "door_changes": changes, "door_final_state_pending": candidate is not None,
-            "sample_count": len(samples)}
+            "sample_count": len(samples), "fan_observation": observe_fan([sample.fan_level for sample in samples], 3)}

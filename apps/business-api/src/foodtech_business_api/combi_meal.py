@@ -97,6 +97,7 @@ class MackerelProcessSample(BaseModel):
     second: int = Field(ge=1, le=900, strict=True)
     chamber_celsius: Decimal
     door: Literal["OPEN", "CLOSED"]
+    fan_level: int | None = Field(default=None, strict=True, ge=0, le=10)
 
 
 class MackerelProcessEvidence(BaseModel):
@@ -111,6 +112,7 @@ class RiceProcessSample(BaseModel):
     chamber_celsius: Decimal = Field(ge=Decimal("-50"), le=Decimal("350"), max_digits=6, decimal_places=2)
     humidity_percent: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
     door: Literal["OPEN", "CLOSED"] | None = None
+    fan_level: int | None = Field(default=None, strict=True, ge=0, le=10)
 
 
 class RiceProcessEvidence(BaseModel):
@@ -594,11 +596,11 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
             assessment = assess_rice_process([
                 RiceSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
                            Decimal(item["measuredHumidityPercent"]) if item["measuredHumidityPercent"] is not None else None,
-                           item["doorState"])
+                           item["doorState"], item["fanLevel"])
                 for item in selected], len(selected), step["time_status"], sources.pop())
         elif phase == "mackerel":
             assessment = assess_mackerel_process([
-                Sample(item["phaseSecond"], Decimal(item["chamberCelsius"]), item["doorState"])
+                Sample(item["phaseSecond"], Decimal(item["chamberCelsius"]), item["doorState"], item["fanLevel"])
                 for item in selected], len(selected), step["time_status"])
         else:
             if any(item["schemaVersion"] != "synthetic-combi-v2" for item in selected):
