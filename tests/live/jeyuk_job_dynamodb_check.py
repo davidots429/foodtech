@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from pathlib import Path
 
@@ -30,8 +30,10 @@ from process_flow_dynamodb_check import (ACCOUNT, COOKING_TABLE, DATA_TABLE, ORD
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures"
 
 
-async def run_check(*, safety: bool = False, size: str = "small") -> int:
-    if size not in {"small", "medium", "large"} or (not safety and size != "small"):
+async def run_check(*, safety: bool = False, size: str = "small", timeline: bool = False,
+                    full: bool = False) -> int:
+    if size not in {"small", "medium", "large"} or (not safety and (size != "small" or timeline or full)) or \
+            (full and not timeline):
         raise ValueError("medium and large require the safety scenario")
     if os.getenv("AWS_PROFILE") != "foodtech":
         raise SystemExit("Use AWS_PROFILE=foodtech for the development account.")
@@ -89,15 +91,19 @@ async def run_check(*, safety: bool = False, size: str = "small") -> int:
                         "process_condition_version": "v1"})
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "PREHEAT_COMPLETED"})
+                duration = {"small": 480, "medium": 900, "large": 1500}[size] if full else 61
+                placed_at = datetime.now(timezone.utc) - (timedelta(seconds=duration + 10) if timeline else timedelta())
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "COOKING_STARTED",
-                    "actual_placed_at": datetime.now(timezone.utc).isoformat()})
-                raws = csharp_samples(fixture_id, FIXTURE_DIR / f"jeyuk-{size}-safety-v1.json") if safety else csharp_samples(fixture_id)
+                    "actual_placed_at": placed_at.isoformat()})
+                fixture_kind = "full" if full else "safety"
+                raws = csharp_samples(fixture_id, FIXTURE_DIR / f"jeyuk-{size}-{fixture_kind}-v1.json",
+                                      placed_at.isoformat() if timeline else None) if safety else csharp_samples(fixture_id)
                 for raw in raws:
                     ingestor.ingest(raw)
                 processed = []
                 references = []
-                for _ in range(16):
+                for _ in range(len(raws) + 16):
                     page = sqs.receive_message(QueueUrl=ordered_url, MaxNumberOfMessages=10,
                                                WaitTimeSeconds=1, VisibilityTimeout=180)
                     for message in page.get("Messages", []):
@@ -129,6 +135,14 @@ async def run_check(*, safety: bool = False, size: str = "small") -> int:
                             (final["status"], final["auto_safety_status"], final["evaluation_blocked"]) !=
                             ("RUNNING", "PASSED", True)):
                         raise AssertionError("post-addition sixty-second safety hold was not recorded")
+                    if full:
+                        if len(raws) != duration or final["process_assessment"]["second"] != duration:
+                            raise AssertionError("the complete synthetic cooking stream was not processed")
+                        final = await post(client, path + "/transitions", {
+                            "expected_version": final["version"], "event": "COOKING_COMPLETED",
+                            "actual_lifted_at": (placed_at + timedelta(seconds=duration)).isoformat()})
+                        if final["status"] != "COMPLETED" or final["process_time_status"] != "NORMAL":
+                            raise AssertionError("the full synthetic cooking job was not completed normally")
                     evidence_response = await client.get(path + "/validation-evidence")
                     if evidence_response.status_code != 200:
                         raise AssertionError(f"source evidence read failed: {evidence_response.text}")
@@ -137,8 +151,14 @@ async def run_check(*, safety: bool = False, size: str = "small") -> int:
                                   "source_derived_results_match_raw", "source_safety_samples_valid"):
                         if not evidence["checks"][check]:
                             raise AssertionError(f"source evidence check failed: {check}")
-                    if evidence["activation_allowed"] or evidence["checks"]["job_completed"]:
-                        raise AssertionError("running job must not activate validation")
+                    if timeline:
+                        recorded = data_table.get_item(Key={"pk": stream_pk, "sk": "RAW#000061"}, ConsistentRead=True)["Item"]
+                        observed = datetime.fromisoformat(json.loads(recorded["raw"])["observedAt"].replace("Z", "+00:00"))
+                        if observed != placed_at + timedelta(seconds=61) or \
+                                evidence["checks"]["source_process_span_covers_cooking"] != full:
+                            raise AssertionError("stored synthetic time or cooking timeline assessment is incorrect")
+                    if evidence["activation_allowed"] or evidence["checks"]["job_completed"] != full:
+                        raise AssertionError("the synthetic job must not activate validation")
                 elif (processed[4]["job_result"] != "WARNING" or
                       processed[29]["job_result"] != "FAILED" or
                       (final["status"], final["process_assessment_status"],
@@ -146,7 +166,7 @@ async def run_check(*, safety: bool = False, size: str = "small") -> int:
                     raise AssertionError("Jeyuk warning or failure did not reach the bound job")
                 if worker.process(references[-1])["job_result"] != "REPLAYED":
                     raise AssertionError("replayed assessment changed the bound job")
-                print(json.dumps({"processed": len(processed), "scenario": "SAFETY" if safety else "PROCESS", "size": size,
+                print(json.dumps({"processed": len(processed), "scenario": "SAFETY" if safety else "PROCESS", "size": size, "timeline": timeline, "full": full,
                                   "job_status": final["status"],
                                   "auto_safety_status": final["auto_safety_status"],
                                   "replay": "REPLAYED"}), flush=True)
@@ -177,8 +197,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--safety", action="store_true")
     parser.add_argument("--size", choices=("small", "medium", "large"), default="small")
+    parser.add_argument("--timeline", action="store_true")
+    parser.add_argument("--full", action="store_true")
     args = parser.parse_args()
-    return asyncio.run(run_check(safety=args.safety, size=args.size))
+    return asyncio.run(run_check(safety=args.safety, size=args.size, timeline=args.timeline, full=args.full))
 
 
 if __name__ == "__main__":

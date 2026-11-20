@@ -1,6 +1,7 @@
 """Bounded, read-only audit of synthetic Jeyuk source assessments and raw samples."""
 
 from decimal import Decimal, InvalidOperation
+from datetime import datetime, timedelta
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -149,6 +150,15 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
     result["source_relative_duration_covers_cooking"] = (
         type(duration) is int and duration > 0 and last_second >= duration and
         process.get("rule_version") == PROCESS_RULE_VERSION)
-    # These synthetic samples contain relative seconds only. Their actual
-    # alignment with the job's placement and lift times is not established.
+    try:
+        placed = datetime.fromisoformat(job["actual_placed_at"].replace("Z", "+00:00"))
+        lifted = datetime.fromisoformat(job["actual_lifted_at"].replace("Z", "+00:00"))
+        result["source_process_span_covers_cooking"] = bool(
+            result["source_relative_duration_covers_cooking"] and placed.utcoffset() is not None and
+            lifted.utcoffset() is not None and lifted > placed and
+            int((lifted - placed).total_seconds()) == duration and
+            all(sample.observed_at == placed + timedelta(seconds=index)
+                for index, sample in enumerate(samples, 1)) and samples[-1].observed_at >= lifted)
+    except (AttributeError, KeyError, ValueError, TypeError, OverflowError):
+        pass
     return result
