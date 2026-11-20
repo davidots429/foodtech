@@ -11,6 +11,12 @@ if (args.Length > 0 && args[0] == "simulate-jeyuk")
     JeyukSimulation.Emit(Required(options, "fixture"), Required(options, "output"));
     return;
 }
+if (args.Length > 0 && args[0] == "simulate-combi")
+{
+    CombiSimulation.Emit(Required(options, "fixture"), Required(options, "output"),
+                         Required(options, "aggregates"));
+    return;
+}
 var fixturePath = Required(options, "fixture");
 using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
 var root = fixture.RootElement;
