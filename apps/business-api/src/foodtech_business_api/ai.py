@@ -83,6 +83,19 @@ async def _invoke_local(tenant_id: str, prompt: str) -> dict:
             execution_id = created.json()["execution_id"]
             invoked = await client.post(f"{url}/internal/ai/executions/{execution_id}/invoke",
                                         json={"tenant_id": tenant_id, "prompt": prompt})
+            if invoked.status_code == 403:
+                try:
+                    detail = invoked.json().get("detail")
+                except (ValueError, AttributeError):
+                    detail = None
+                if detail == "LIMIT_EXCEEDED":
+                    raise HTTPException(429, "AI_USAGE_LIMIT_UNAVAILABLE")
+                if isinstance(detail, str) and detail in {"LOCAL_MODEL_REQUIRED", "LOCAL_MODEL_UNAVAILABLE", "MODEL_NOT_ACTIVE",
+                              "MODEL_CONFIGURATION_INVALID"}:
+                    raise HTTPException(503, "AI_MODEL_UNAVAILABLE")
+                if detail == "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED":
+                    raise HTTPException(503, "AI_TEMPORARILY_UNAVAILABLE")
+                raise HTTPException(502, "AI_GATEWAY_ERROR")
             invoked.raise_for_status()
             return invoked.json()
     except (httpx.HTTPError, KeyError, ValueError, OSError) as error:

@@ -157,6 +157,28 @@ class ExecutionFlowTests(unittest.IsolatedAsyncioTestCase):
         execution_id = response.json()["execution_id"]
         self.assertEqual(self.registry.execution_result(execution_id)["state"], "SUCCEEDED")
 
+    async def test_customer_chat_receives_limit_status_without_internal_details(self):
+        async def session(request, surface):
+            return SimpleNamespace(subject="customer-1")
+
+        def gateway_client(ca, cert, key):
+            return httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="https://gateway.local")
+
+        with patch.object(business_ai, "_session", session), \
+             patch.object(business_ai, "_csrf", lambda request, session: None), \
+             patch.object(business_ai, "_gateway_settings",
+                          lambda: ("https://gateway.local", "unused-ca", "unused-cert", "unused-key")), \
+             patch.object(business_ai, "_client", gateway_client):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=business_app),
+                                         base_url="http://business.local") as client:
+                body = {"messages": [{"role": "user", "content": "합성 조리 안내"}]}
+                self.assertEqual((await client.post("/api/customer/ai/chat", json=body)).status_code, 200)
+                self.assertEqual((await client.post("/api/customer/ai/chat", json=body)).status_code, 200)
+                exhausted = await client.post("/api/customer/ai/chat", json=body)
+                self.assertEqual(exhausted.status_code, 429)
+                self.assertEqual(exhausted.json()["detail"], "AI_USAGE_LIMIT_UNAVAILABLE")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,12 +29,27 @@ export function LocalChat({ csrf }: { csrf: string }) {
         headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
         body: JSON.stringify({ messages: context }),
       });
-      if (!response.ok) throw new Error(response.status === 503
-        ? "로컬 AI가 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
-        : "답변을 받지 못했습니다. 질문을 확인하고 다시 시도해 주세요.");
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({})) as { detail?: unknown };
+        const messages: Record<string, string> = {
+          AI_USAGE_LIMIT_UNAVAILABLE: "현재 AI 이용 한도에 도달했거나 시연용 한도가 준비되지 않았습니다.",
+          AI_MODEL_UNAVAILABLE: "로컬 AI 모델이 준비되지 않았습니다. 잠시 후 다시 시도해 주세요.",
+          AI_TEMPORARILY_UNAVAILABLE: "AI 실행이 일시적으로 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
+        };
+        throw new Error(typeof errorBody.detail === "string" && Object.hasOwn(messages, errorBody.detail)
+          ? messages[errorBody.detail] : response.status === 503
+            ? "로컬 AI가 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
+            : "답변을 받지 못했습니다. 질문을 확인하고 다시 시도해 주세요.");
+      }
       const outcome = await response.json() as Outcome;
       if (outcome.state !== "SUCCEEDED" || !outcome.response_text) {
-        throw new Error(`답변을 완료하지 못했습니다. 상태: ${outcome.error_code ?? outcome.state}`);
+        const messages: Record<string, string> = {
+          OLLAMA_UNAVAILABLE: "로컬 AI에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+          OLLAMA_TIMEOUT: "답변 생성 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.",
+          OLLAMA_HTTP_ERROR: "로컬 AI가 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        };
+        throw new Error((outcome.error_code && Object.hasOwn(messages, outcome.error_code) && messages[outcome.error_code]) ||
+          "답변을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.");
       }
       setMessages(previous => [...previous, { role: "user", content: question },
         { role: "assistant", content: outcome.response_text! }]);
