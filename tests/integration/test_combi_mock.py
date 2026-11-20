@@ -104,7 +104,7 @@ class CombiMockTests(unittest.TestCase):
         self.assertTrue(all(item["lastSequence"] - item["firstSequence"] == 4 and
                             item["outsideTargetSeconds"] == 0 for item in aggregates))
         rice_result = assess_rice([RiceSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
-                                             Decimal(item["measuredHumidityPercent"]), item["doorState"]) for item in rice],
+                                             Decimal(item["measuredHumidityPercent"]), item["doorState"], item["fanLevel"]) for item in rice],
                                   1800, "NORMAL", "MEASURED")
         self.assertEqual(rice_result["status"], "NORMAL")
         transition_result = assess_transition([TransitionSample(item["phaseSecond"],
@@ -113,7 +113,7 @@ class CombiMockTests(unittest.TestCase):
             humidity_supported=False, vent_supported=False)
         self.assertEqual(transition_result["ready_at_second"], 180)
         fish_result = assess_fish([FishSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
-                                              item["doorState"]) for item in fish], 720, "NORMAL")
+                                              item["doorState"], item["fanLevel"]) for item in fish], 720, "NORMAL")
         self.assertEqual(fish_result["status"], "NORMAL")
 
     def test_invalid_fixture_produces_no_output(self):
