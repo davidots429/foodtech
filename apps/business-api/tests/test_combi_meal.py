@@ -299,7 +299,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         meal = created["meal"]
         path = "/api/customer/combi-meals/" + meal["meal_batch_id"]
         pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal['meal_batch_id']}"
-        unloaded = datetime.now(timezone.utc) - timedelta(seconds=120)
+        unloaded = datetime.now(timezone.utc) - timedelta(seconds=300)
         self.store.items[(pk, "META")]["status"] = "MACKEREL_UNLOADED"
         fish = self.store.items[(pk, f"JOB#MACKEREL#{meal['mackerel_cooking_job_id']}")]
         fish.update(food_unloaded_at=unloaded.isoformat(), products=[
@@ -317,6 +317,32 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
                                         json={**body, "expected_version": 2, "probes": probes})
         self.assertEqual(failed.json()["step"]["safety_status"], "FAILED")
         self.assertEqual(failed.json()["meal"]["status"], "MACKEREL_SAFETY_FAILED")
+        reheat = {"expected_version": 3, "started_at": (unloaded + timedelta(seconds=61)).isoformat(),
+                  "unloaded_at": (unloaded + timedelta(seconds=120)).isoformat(), "reason": "안전 실패 후 추가 가열"}
+        invalid = await self.client.post(path + "/mackerel-reheat", headers=headers,
+                                         json={**reheat, "started_at": unloaded.isoformat()})
+        self.assertEqual(invalid.status_code, 422)
+        created_segment = await self.client.post(path + "/mackerel-reheat", headers=headers, json=reheat)
+        self.assertEqual(created_segment.status_code, 201, created_segment.text)
+        self.assertEqual(created_segment.json()["step"]["safety_status"], "RECHECK_REQUIRED")
+        self.assertEqual(created_segment.json()["step"]["latest_reheat"]["previous_safety_version"], 2)
+        self.assertEqual((await self.client.post(path + "/mackerel-reheat", headers=headers, json=reheat)).status_code, 409)
+        probes[1]["readings"][23]["celsius"] = "75"
+        previous_time = await self.client.post(path + "/mackerel-safety", headers=headers,
+            json={"expected_version": 4, "measured_at": unloaded.isoformat(), "probes": probes})
+        self.assertEqual(previous_time.status_code, 422)
+        rechecked = await self.client.post(path + "/mackerel-safety", headers=headers,
+            json={"expected_version": 4, "measured_at": reheat["unloaded_at"], "probes": probes})
+        self.assertEqual(rechecked.status_code, 200, rechecked.text)
+        self.assertEqual((rechecked.json()["step"]["safety_status"], rechecked.json()["step"]["safety_version"]),
+                         ("PASSED", 3))
+        snapshot = (await self.client.get(path)).json()
+        events = [event for event in snapshot["events"] if event["event"] in ("MACKEREL_CORE_CHECK", "MACKEREL_REHEATED")]
+        self.assertEqual([event["event"] for event in events],
+                         ["MACKEREL_CORE_CHECK", "MACKEREL_CORE_CHECK", "MACKEREL_REHEATED", "MACKEREL_CORE_CHECK"])
+        self.assertEqual(events[1]["safety_status"], "FAILED")
+        self.assertEqual(events[1]["safety_version"], events[2]["segment"]["previous_safety_version"])
+        self.assertEqual(events[3]["reheat_segment_id"], events[2]["segment"]["segment_id"])
 
     async def test_sampling_coverage_is_required_for_safe_result(self):
         headers = {"X-CSRF-Token": "csrf"}

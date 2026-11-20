@@ -95,6 +95,14 @@ class MackerelSafetyCheck(BaseModel):
     selection_note: str | None = Field(default=None, max_length=500)
 
 
+class MackerelReheat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    started_at: datetime
+    unloaded_at: datetime
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class MackerelProcessSample(BaseModel):
     model_config = ConfigDict(extra="forbid")
     second: int = Field(ge=1, le=900, strict=True)
@@ -438,7 +446,7 @@ async def record_mackerel_safety(meal_id: UUID, request: Request, body: Mackerel
     if body.measured_at.tzinfo is None or body.measured_at.utcoffset() is None:
         raise HTTPException(422, "측정 시작시각에 시간대가 필요합니다.")
     start = body.measured_at.astimezone(timezone.utc)
-    unloaded = datetime.fromisoformat(step["food_unloaded_at"].replace("Z", "+00:00"))
+    unloaded = datetime.fromisoformat(step.get("current_unloaded_at", step["food_unloaded_at"]).replace("Z", "+00:00"))
     if start != unloaded or start + timedelta(seconds=60) > datetime.now(timezone.utc):
         raise HTTPException(422, "측정은 인양 즉시 시작하고 60초가 경과해야 합니다.")
     products = {item["product_id"]: item for item in step["products"]}
@@ -458,15 +466,63 @@ async def record_mackerel_safety(meal_id: UUID, request: Request, body: Mackerel
     version = int(old["version"]) + 1
     safety_version = int(step.get("safety_version", 0)) + 1
     updated = {**step, "safety_status": safety, "safety_version": safety_version,
-               "batch_representative_core_temperature": minimum}
+               "batch_representative_core_temperature": minimum,
+               "safety_measured_through": (start + timedelta(seconds=60)).isoformat().replace("+00:00", "Z")}
     next_status = "MACKEREL_SAFETY_PASSED" if safety == "PASSED" else \
                   "MACKEREL_SAFETY_FAILED" if safety == "FAILED" else "MACKEREL_UNLOADED"
     meta = {**old, "status": next_status, "version": version, "updated_at": _now()}
     event = {"sk": f"EVENT#{version:012d}", "event": "MACKEREL_CORE_CHECK", "from_status": old["status"],
              "to_status": next_status, "observed_at": start.isoformat().replace("+00:00", "Z"),
              "recorded_at": _now(), "actor": session.subject, "safety_status": safety,
+             "safety_version": safety_version, "reheat_segment_id": step.get("latest_reheat", {}).get("segment_id"),
              "probes": [probe.model_dump(mode="json") for probe in body.probes],
              "products": step["products"], "selection_issues": issues, "selection_note": body.selection_note}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}
+
+
+@router.post("/{meal_id}/mackerel-reheat", status_code=201)
+async def record_mackerel_reheat(meal_id: UUID, request: Request, body: MackerelReheat) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {k: v for k, v in row.items() if k != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version or old["status"] != "MACKEREL_SAFETY_FAILED":
+        raise HTTPException(409, "안전 실패가 기록된 배치에서만 추가 가열을 기록할 수 있습니다.")
+    step = rows.get(f"JOB#MACKEREL#{old['mackerel_cooking_job_id']}")
+    if not step or step.get("safety_status") != "FAILED" or not body.reason.strip():
+        raise HTTPException(422, "안전 실패와 추가 가열 사유를 확인해 주세요.")
+    if any(value.tzinfo is None or value.utcoffset() is None for value in (body.started_at, body.unloaded_at)):
+        raise HTTPException(422, "추가 가열 시각에 시간대가 필요합니다.")
+    started, unloaded = (value.astimezone(timezone.utc) for value in (body.started_at, body.unloaded_at))
+    measured_through = step.get("safety_measured_through")
+    if measured_through is None:
+        # Compatibility with failures recorded before the measurement-end field existed.
+        measured_through = (datetime.fromisoformat(step["food_unloaded_at"].replace("Z", "+00:00")) +
+                            timedelta(seconds=60)).isoformat()
+    earliest = datetime.fromisoformat(measured_through.replace("Z", "+00:00"))
+    if started < earliest or unloaded <= started or unloaded > datetime.now(timezone.utc):
+        raise HTTPException(422, "추가 가열은 기존 안전 측정 이후 시작하고 과거에 인양되어야 합니다.")
+    iso = lambda value: value.isoformat().replace("+00:00", "Z")
+    elapsed = unloaded - started
+    microseconds = (elapsed.days * 86400 + elapsed.seconds) * 1_000_000 + elapsed.microseconds
+    segment = {"segment_id": str(uuid4()), "started_at": iso(started), "unloaded_at": iso(unloaded),
+               "duration_seconds": str(Decimal(microseconds) / Decimal(1_000_000)), "reason": body.reason.strip(),
+               "previous_safety_version": int(step["safety_version"])}
+    version = int(old["version"]) + 1
+    updated = {**step, "current_unloaded_at": iso(unloaded), "latest_reheat": segment,
+               "safety_status": "RECHECK_REQUIRED", "batch_representative_core_temperature": None}
+    meta = {**old, "status": "MACKEREL_UNLOADED", "version": version,
+            "last_observed_at": iso(unloaded), "updated_at": _now()}
+    event = {"sk": f"EVENT#{version:012d}", "event": "MACKEREL_REHEATED", "segment": segment,
+             "from_status": old["status"], "to_status": meta["status"], "observed_at": iso(unloaded),
+             "recorded_at": _now(), "actor": session.subject}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:

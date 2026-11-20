@@ -17,6 +17,7 @@ type Meal = {
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
     humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null };
   mackerel: { job_id: string; status: string; safety_status: string; food_unloaded_at?: string;
+    current_unloaded_at?: string;
     quality_current?: { version: number; quality_status: string; score_percent: string; quality_target: boolean };
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     batch_representative_core_temperature?: string | null;
@@ -59,6 +60,9 @@ export function CombiMeal({ csrf }: { csrf: string }) {
   const [sourceDevice, setSourceDevice] = useState("synthetic-combi-medium");
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sampleLayout, setSampleLayout] = useState("THREE_SHELVES");
+  const [reheatStart, setReheatStart] = useState("");
+  const [reheatEnd, setReheatEnd] = useState("");
+  const [reheatReason, setReheatReason] = useState("");
   const requestActive = useRef(false);
 
   async function create() {
@@ -162,9 +166,24 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       readings: Array.from({ length: 60 }, (_, second) => ({ second, celsius: "75" })) }));
     try {
       await api(path + "/mackerel-safety", csrf, { expected_version: meal.meal.version,
-        measured_at: meal.mackerel.food_unloaded_at, probes });
+        measured_at: meal.mackerel.current_unloaded_at ?? meal.mackerel.food_unloaded_at, probes });
       setMeal(await api<Meal>(path));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "안전 표본을 기록하지 못했습니다."); }
+    finally { requestActive.current = false; setBusy(false); }
+  }
+  async function recordReheat() {
+    if (!meal || requestActive.current) return;
+    const start = new Date(reheatStart), end = new Date(reheatEnd);
+    if (!reheatStart || !reheatEnd || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || !reheatReason.trim()) {
+      setError("추가 가열의 시작·인양 시각과 사유를 입력해 주세요."); return;
+    }
+    requestActive.current = true; setBusy(true); setError("");
+    const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
+    try {
+      await api(path + "/mackerel-reheat", csrf, { expected_version: meal.meal.version,
+        started_at: start.toISOString(), unloaded_at: end.toISOString(), reason: reheatReason.trim() });
+      setMeal(await api<Meal>(path)); setReheatStart(""); setReheatEnd(""); setReheatReason("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "추가 가열을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
   async function simulateMackerelProcess() {
@@ -279,6 +298,11 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></div>}
       {meal.meal.status === "MACKEREL_UNLOADED" && <div><p>인양 즉시 시작한 세 탐침의 75°C 합성 표본을 60초간 확인합니다. 인양 후 60초가 경과해야 합니다.</p>
         <button type="button" disabled={busy} onClick={simulateMackerelSafety}>합성 심부온도 확인</button></div>}
+      {meal.meal.status === "MACKEREL_SAFETY_FAILED" && <div><p>실패 이력을 보존하고 별도의 추가 가열 구간을 기록한 뒤 안전 표본을 다시 확인합니다.</p>
+        <div className="field-row"><label>추가 가열 시작<input type="datetime-local" step="0.001" value={reheatStart} onChange={event => setReheatStart(event.target.value)} /></label>
+        <label>추가 가열 후 인양<input type="datetime-local" step="0.001" value={reheatEnd} onChange={event => setReheatEnd(event.target.value)} /></label>
+        <label>사유<input maxLength={500} value={reheatReason} onChange={event => setReheatReason(event.target.value)} /></label>
+        <button type="button" disabled={busy} onClick={recordReheat}>추가 가열 구간 기록</button></div></div>}
       {["MACKEREL_UNLOADED", "MACKEREL_SAFETY_PASSED", "MACKEREL_SAFETY_FAILED"].includes(meal.meal.status) &&
         !meal.mackerel.monitored_process_assessment && <div><p>조리 구간의 220°C·문 닫힘 합성 표본으로 온도 복원과 문 상태를 확인합니다.</p>
           {meal.meal.source && <button type="button" disabled={busy} onClick={() => assessSource("mackerel")}>연결된 고등어 원표본 판정</button>}{" "}
