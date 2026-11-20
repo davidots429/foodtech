@@ -229,6 +229,59 @@ async def get_combi_source(meal_id: UUID, request: Request, cursor: int = Query(
             "raw_sha256": meta["source"]["raw_sha256"]}
 
 
+@router.get("/{meal_id}/source-windows")
+async def get_combi_source_windows(meal_id: UUID, request: Request,
+                                   phase: Literal["RICE", "TRANSITION", "MACKEREL"],
+                                   cursor: int = Query(0, ge=0, le=999)) -> dict:
+    """Recompute bounded 5-second views from a verified immutable synthetic stream."""
+    session, store = await _context(request)
+    pk = _pk(session.subject, str(meal_id))
+    meta, _ = await _store_call(store, store.read, pk)
+    if not meta or not meta.get("source"):
+        raise HTTPException(404, "연결된 원천 자료가 없습니다.")
+    source = meta["source"]
+    jobs = {"RICE": meta["rice_cooking_job_id"], "TRANSITION": meta["mode_transition_id"],
+            "MACKEREL": meta["mackerel_cooking_job_id"]}
+    records, selected = [], []
+    try:
+        validator = CombiStreamValidator(str(meal_id), source["device_id"], jobs)
+        total = int(source["record_count"])
+        if not 3 <= total <= 5000:
+            raise ValueError("invalid source size")
+        for index in range((total + 99) // 100):
+            chunk = await _store_call(store, store.read_meal_source_chunk, pk, index)
+            if not chunk or int(chunk["first_sequence"]) != index * 100 + 1:
+                raise ValueError("missing or out-of-order chunk")
+            for line in chunk["records"]:
+                item = validator.accept(line)
+                records.append(line)
+                if item["phase"] == phase:
+                    selected.append(item)
+        digest = hashlib.sha256(b"\n".join(line.encode("utf-8") for line in records) + b"\n").hexdigest()
+        if len(records) != total or digest != source["raw_sha256"] or not selected:
+            raise ValueError("source integrity check failed")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(422, "원표본의 무결성을 확인할 수 없습니다.") from exc
+    windows = []
+    for offset in range(0, len(selected), 5):
+        group = selected[offset:offset + 5]
+        temperatures = [Decimal(item["chamberCelsius"]) for item in group]
+        lower, upper = (Decimal(98), Decimal(102)) if phase == "RICE" else (Decimal(215), Decimal(225))
+        windows.append({"first_sequence": group[0]["sequence"], "last_sequence": group[-1]["sequence"],
+                        "first_phase_second": group[0]["phaseSecond"], "last_phase_second": group[-1]["phaseSecond"],
+                        "first_observed_at": group[0]["occurredAt"], "last_observed_at": group[-1]["occurredAt"],
+                        "sample_count": len(group), "complete_window": len(group) == 5,
+                        "current_celsius": str(temperatures[-1]), "minimum_celsius": str(min(temperatures)),
+                        "maximum_celsius": str(max(temperatures)),
+                        "average_celsius": str(sum(temperatures) / len(temperatures)),
+                        "outside_target_seconds": sum(temp < lower or temp > upper for temp in temperatures)})
+    if cursor >= len(windows):
+        raise HTTPException(404, "요청한 요약 구간이 없습니다.")
+    page = windows[cursor:cursor + 25]
+    return {"phase": phase, "provenance": "SYNTHETIC", "raw_sha256": digest, "windows": page,
+            "next_cursor": cursor + len(page) if cursor + len(page) < len(windows) else None}
+
+
 @router.post("", status_code=201)
 async def create_meal(request: Request, body: CreateMeal) -> dict:
     session, store = await _context(request, write=True)

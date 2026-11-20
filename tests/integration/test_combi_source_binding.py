@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -122,12 +123,26 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                                     "--output", str(output), "--aggregates", str(aggregate)],
                                    check=True, capture_output=True)
                     records = output.read_text().splitlines()
+                    generated_windows = [json.loads(line) for line in aggregate.read_text().splitlines()]
                 path = "/api/customer/combi-meals/" + meal["meal_batch_id"]
                 imported = await client.post(path + "/source-observations", headers=headers, json={
                     "expected_version": 1, "device_id": fixture["deviceId"], "records": records})
                 self.assertEqual(imported.status_code, 201, imported.text)
                 self.assertEqual(imported.json()["meal"]["source"]["phase_counts"],
                                  {"RICE": 1800, "TRANSITION": 180, "MACKEREL": 720})
+                for phase in ("RICE", "TRANSITION", "MACKEREL"):
+                    response = await client.get(path + f"/source-windows?phase={phase}")
+                    self.assertEqual(response.status_code, 200, response.text)
+                    calculated = response.json()["windows"][0]
+                    generated = next(item for item in generated_windows if item["phase"] == phase)
+                    self.assertEqual((calculated["first_sequence"], calculated["last_sequence"],
+                                      calculated["outside_target_seconds"]),
+                                     (generated["firstSequence"], generated["lastSequence"], generated["outsideTargetSeconds"]))
+                    self.assertEqual(Decimal(calculated["average_celsius"]), Decimal(str(generated["averageCelsius"])))
+                    self.assertEqual(response.json()["next_cursor"], 25)
+                    next_page = await client.get(path + f"/source-windows?phase={phase}&cursor=25")
+                    self.assertEqual(next_page.status_code, 200, next_page.text)
+                    self.assertEqual(next_page.json()["windows"][0]["first_phase_second"], 126)
                 first = (await client.get(path + "/source-observations")).json()
                 self.assertEqual((first["records"][0], first["next_cursor"]), (records[0], 1))
                 last = (await client.get(path + "/source-observations?cursor=26")).json()
