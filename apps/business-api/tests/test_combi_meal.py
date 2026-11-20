@@ -95,6 +95,22 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["records"] + second["records"], records)
         self.assertEqual((await self.client.post(path + "/source-observations", headers=headers,
                          json={**body, "expected_version": 2})).status_code, 409)
+        for version, event, offset in ((2, "RICE_STARTED", 0), (3, "RICE_PROGRAM_COMPLETED", 102),
+                                       (4, "RICE_UNLOADED", 102)):
+            step = await self.client.post(path + "/events", headers=headers, json={
+                "expected_version": version, "event": event,
+                "observed_at": (start + timedelta(seconds=offset)).isoformat()})
+            self.assertEqual(step.status_code, 200, step.text)
+        mismatch = await self.client.post(path + "/source-assessment/rice", headers=headers,
+                                          json={"expected_version": 5})
+        self.assertEqual(mismatch.status_code, 422)
+        pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal_id}"
+        self.store.items[(pk, f"JOB#RICE#{meta['rice_cooking_job_id']}")]["program_cooking_duration"] = 103
+        result = await self.client.post(path + "/source-assessment/rice", headers=headers,
+                                        json={"expected_version": 5})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["step"]["monitored_process_assessment"]["status"], "FAILED")
+        self.assertEqual(result.json()["step"]["monitored_process_source"]["phase"], "RICE")
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path + "/source-observations")).status_code, 404)
 

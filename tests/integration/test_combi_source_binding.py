@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,3 +64,56 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((first["records"][0], first["next_cursor"]), (records[0], 1))
                 last = (await client.get(path + "/source-observations?cursor=26")).json()
                 self.assertEqual((last["records"][-1], last["next_cursor"]), (records[-1], None))
+                started_at = datetime.fromisoformat(json.loads(records[0])["occurredAt"])
+                for version, event, offset in ((2, "RICE_STARTED", 0), (3, "RICE_PROGRAM_COMPLETED", 1800),
+                                               (4, "RICE_UNLOADED", 1800)):
+                    step = await client.post(path + "/events", headers=headers, json={
+                        "expected_version": version, "event": event,
+                        "observed_at": (started_at + timedelta(seconds=offset)).isoformat()})
+                    self.assertEqual(step.status_code, 200, step.text)
+                source_pk = f"SCOPE#USER#test-customer#COMBI_MEAL#{meal['meal_batch_id']}#SOURCE"
+                chunk = store.items[(source_pk, "RAW#0000")]
+                original = chunk["records"][0]
+                changed = json.loads(original)
+                changed["chamberCelsius"] = 101
+                chunk["records"][0] = json.dumps(changed)
+                rejected = await client.post(path + "/source-assessment/rice", headers=headers,
+                                             json={"expected_version": 5})
+                self.assertEqual(rejected.status_code, 422, rejected.text)
+                chunk["records"][0] = original
+                assessment = await client.post(path + "/source-assessment/rice", headers=headers,
+                                               json={"expected_version": 5})
+                self.assertEqual(assessment.status_code, 200, assessment.text)
+                self.assertEqual(assessment.json()["step"]["monitored_process_assessment"]["status"], "NORMAL")
+                self.assertEqual(assessment.json()["step"]["monitored_process_source"]["raw_sha256"],
+                                 imported.json()["meal"]["source"]["raw_sha256"])
+                transition_started = await client.post(path + "/events", headers=headers, json={
+                    "expected_version": 6, "event": "MODE_TRANSITION_STARTED",
+                    "observed_at": (started_at + timedelta(seconds=1800)).isoformat()})
+                self.assertEqual(transition_started.status_code, 200, transition_started.text)
+                # The source contract does not yet include critical alarm or vent capability.
+                # Explicit separate synthetic observations are used for the transition gate.
+                transition_samples = [{"second": i, "chamber_celsius": "220",
+                                       "climate_setpoint_percent": "10", "door_closed": True,
+                                       "critical_alarm": False, "humidity_percent": None}
+                                      for i in range(1, 181)]
+                ready = await client.post(path + "/transition-evidence", headers=headers, json={
+                    "expected_version": 7, "humidity_supported": False, "vent_supported": False,
+                    "samples": transition_samples})
+                self.assertEqual(ready.status_code, 200, ready.text)
+                products = [{"product_id": f"fish-{n}", "rack_id": "rack-1", "shelf": n,
+                             "pan_id": f"pan-{n}", "mass_kg": "0.13", "thickness_cm": "1.5"}
+                            for n in (1, 2, 3)]
+                for version, event, offset in ((8, "MACKEREL_STARTED", 1980),
+                                               (9, "MACKEREL_PROGRAM_COMPLETED", 2700),
+                                               (10, "MACKEREL_UNLOADED", 2700)):
+                    step = await client.post(path + "/events", headers=headers, json={
+                        "expected_version": version, "event": event,
+                        "observed_at": (started_at + timedelta(seconds=offset)).isoformat(),
+                        **({"products": products} if event == "MACKEREL_STARTED" else {})})
+                    self.assertEqual(step.status_code, 200, step.text)
+                fish = await client.post(path + "/source-assessment/mackerel", headers=headers,
+                                         json={"expected_version": 11})
+                self.assertEqual(fish.status_code, 200, fish.text)
+                self.assertEqual(fish.json()["step"]["monitored_process_assessment"]["status"], "NORMAL")
+                self.assertEqual(fish.json()["step"]["safety_status"], "NOT_MEASURED")
