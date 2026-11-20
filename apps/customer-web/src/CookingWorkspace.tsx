@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError, api, jobPath, loadForMass, scoreItems,
   type Assessment, type AssessmentKind, type CookingJob, type CurrentAssessment,
-  type JobEvent, type JobSnapshot, type Probe, type ProcessAssessmentView, type ScoreKey, type TransitionEvent,
+  type JobEvent, type JobSnapshot, type ProcessAssessmentView, type ScoreKey, type TransitionEvent,
 } from "./cookingApi";
 import { AssessmentAggregate } from "./AssessmentAggregate";
 import { CookingTimeMonitor } from "./CookingTimeMonitor";
@@ -213,13 +213,14 @@ export function CookingWorkspace({ csrf }: Props) {
   const loadedJobId = useRef<string | null>(null);
   const loadedJobVersion = useRef<number | null>(null);
   const probeCount = useRef<number | null>(null);
+  const probeFileRequest = useRef(0);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [safetyReason, setSafetyReason] = useState("");
   const [manualStopConfirmed, setManualStopConfirmed] = useState(false);
-  const [probeTemps, setProbeTemps] = useState<string[]>([]);
-  const [probeExpired, setProbeExpired] = useState<boolean[]>([]);
-  const [simulateGap, setSimulateGap] = useState(false);
+  const [probeSamples, setProbeSamples] = useState<unknown[] | null>(null);
+  const [probeEvidence, setProbeEvidence] = useState<Record<string, unknown> | null>(null);
+  const [probeFileName, setProbeFileName] = useState("");
   const [dischargeTemps, setDischargeTemps] = useState(["75", "75", "75"]);
   const [dischargeExpired, setDischargeExpired] = useState([false, false, false]);
   const [dischargeGap, setDischargeGap] = useState(false);
@@ -279,7 +280,7 @@ export function CookingWorkspace({ csrf }: Props) {
         setComparison(null);
         setComparisonFreshness(null);
         setComparisonChangedJobs([]);
-        setSimulateGap(false);
+        setProbeSamples(null); setProbeEvidence(null); setProbeFileName("");
         setDischargeTemps(["75", "75", "75"]);
         setDischargeExpired([false, false, false]);
         setDischargeGap(false);
@@ -301,8 +302,7 @@ export function CookingWorkspace({ csrf }: Props) {
       }
       const count = snapshot.job.tonkatsu_batch?.product_count ?? snapshot.job.planned_portions;
       if (isNewJob || probeCount.current !== count) {
-        setProbeTemps(Array(count).fill("75.0"));
-        setProbeExpired(Array(count).fill(false));
+        setProbeSamples(null); setProbeEvidence(null); setProbeFileName("");
         probeCount.current = count;
       }
       loadedJobVersion.current = snapshot.job.version;
@@ -526,20 +526,32 @@ export function CookingWorkspace({ csrf }: Props) {
     }), "안전 상태와 근거를 기록했습니다.");
   }
 
+  async function loadProbeFile(file: File | undefined) {
+    const requestNumber = ++probeFileRequest.current;
+    setProbeSamples(null); setProbeEvidence(null); setProbeFileName(""); setError("");
+    if (!file || !job) return;
+    if (file.size > 256_000) { setError("표본 파일은 256KB 이하여야 합니다."); return; }
+    try {
+      const data: unknown = JSON.parse(await file.text());
+      if (typeof data !== "object" || data === null || !("schema_version" in data) ||
+          data.schema_version !== "tonkatsu-core-samples-v1" || !("provenance" in data) ||
+          data.provenance !== "SYNTHETIC" || !("probes" in data) || !Array.isArray(data.probes) ||
+          data.probes.length !== (job.tonkatsu_batch?.product_count ?? job.planned_portions)) {
+        throw new Error("합성 표본 파일과 현재 작업의 제품 수를 확인해 주세요.");
+      }
+      if (requestNumber !== probeFileRequest.current || loadedJobId.current !== job.job_id ||
+          loadedJobVersion.current !== job.version) return;
+      const fields = data as Record<string, unknown>;
+      setProbeEvidence(Object.fromEntries(["schema_version", "provenance", "generator_version", "fixture_version",
+        "seed", "scenario", "measurement_start_utc", "measurement_end_utc"].map(key => [key, fields[key]])));
+      setProbeSamples(data.probes); setProbeFileName(file.name);
+    } catch { if (requestNumber === probeFileRequest.current) setError("합성 표본 파일과 현재 작업의 제품 수를 확인해 주세요."); }
+  }
+
   async function checkCore() {
-    if (!job) return;
-    const temps = probeTemps.map((value) => Number(value));
-    if (temps.length !== (job.tonkatsu_batch?.product_count ?? job.planned_portions) || temps.some((value) => !Number.isFinite(value) || value < -273.15 || value > 300)) {
-      setError("각 제품의 합성 온도를 -273.15~300°C 범위로 입력해 주세요."); return;
-    }
-    const probes: Probe[] = temps.map((value, index) => ({
-      item_id: `piece-${index + 1}`,
-      calibration_status: probeExpired[index] ? "EXPIRED" : "OK",
-      samples: Array.from({ length: 61 }, (_, second) => ({ at_second: second, celsius: value.toString() }))
-        .filter((sample) => !simulateGap || index !== 0 || sample.at_second !== 30),
-    }));
+    if (!job || !probeSamples || !probeEvidence) return;
     await action(() => api<CookingJob>(jobPath(job.job_id) + "/safety/core-check", csrf, {
-      expected_version: job.version, probes,
+      expected_version: job.version, probes: probeSamples, mock_evidence: probeEvidence,
     }), "합성 심부온도 표본의 안전 판정을 기록했습니다.");
   }
 
@@ -855,20 +867,12 @@ export function CookingWorkspace({ csrf }: Props) {
             <div className="divider" />
             {job.menu === "TONKATSU" ? <>
             <h4>합성 심부온도 표본</h4>
-            <p className="small">제품마다 입력 온도로 0~60초의 1Hz 합성 표본 61개를 생성합니다. 실제 측정값으로 표시하지 않습니다. 전 제품의 유효 표본이 75°C 이상이어야 통과합니다.</p>
-            <div className="probe-grid">
-              {Array.from({ length: job.tonkatsu_batch?.product_count ?? job.planned_portions }, (_, index) => <div className="probe-card" key={index}>
-                <label>제품 {index + 1} 온도(°C)
-                  <input type="number" step="0.1" value={probeTemps[index] ?? "75.0"}
-                    onChange={(event) => setProbeTemps((old) => old.map((value, at) => at === index ? event.target.value : value))} />
-                </label>
-                <label className="check-line"><input type="checkbox" checked={probeExpired[index] ?? false}
-                  onChange={(event) => setProbeExpired((old) => old.map((value, at) => at === index ? event.target.checked : value))} /> 탐침 교정 만료 재현</label>
-              </div>)}
-            </div>
-            <label className="check-line"><input type="checkbox" checked={simulateGap}
-              onChange={(event) => setSimulateGap(event.target.checked)} /> 첫 제품의 30초 표본 누락 재현</label>
-            <button type="button" onClick={checkCore} disabled={busy || job.status !== "COMPLETED" || safetyLocked}>
+            <p className="small">별도 Mock 프로그램에서 생성한 제품별 합성 표본 파일을 불러옵니다. 실제 측정값이 아닙니다.</p>
+            <label>합성 탐침 표본 파일 <input type="file" accept="application/json,.json"
+              onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = "";
+                void loadProbeFile(file); }} /></label>
+            {probeFileName && <p>선택한 파일: {probeFileName} · 제품 {probeSamples?.length}개</p>}
+            <button type="button" onClick={checkCore} disabled={busy || !probeSamples || job.status !== "COMPLETED" || safetyLocked}>
               합성 표본으로 안전 판정 기록</button>
             {job.status !== "COMPLETED" && <p className="small">조리 완료 후 제품별 안전 확인을 기록할 수 있습니다.</p>}
             </> : <>

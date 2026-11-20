@@ -30,10 +30,20 @@ OBSERVATIONS = {name: "SYNTHETIC live storage validation" for name in cooking.SC
 
 
 def probe(item_id: str, celsius: str = "75.0", missing_second: int | None = None) -> dict:
-    return {"item_id": item_id, "calibration_status": "OK", "samples": [
+    return {"item_id": item_id, "probe_id": "synthetic-probe-" + item_id,
+            "removal_sequence": int(item_id.rsplit("-", 1)[-1]),
+            "measurement_start": "2026-11-14T00:00:00Z", "measurement_end": "2026-11-14T00:01:00Z",
+            "calibration_status": "OK", "samples": [
         {"at_second": second, "celsius": celsius}
         for second in range(61) if second != missing_second
     ]}
+
+
+def mock_evidence(scenario: str) -> dict:
+    return {"schema_version": "tonkatsu-core-samples-v1", "provenance": "SYNTHETIC",
+            "generator_version": "1.0.0", "fixture_version": "tonkatsu-core-fixture-v1", "seed": 100,
+            "scenario": scenario, "measurement_start_utc": "2026-11-14T00:00:00Z",
+            "measurement_end_utc": "2026-11-14T00:01:00Z"}
 
 
 def assessment(job: dict, current: int = 0, kind: str = "INITIAL", reason: str | None = None) -> dict:
@@ -120,13 +130,19 @@ async def main() -> None:
                 incomplete = await checked_post(client, path + "/safety/core-check", {
                     "expected_version": job["version"],
                     "probes": [probe("piece-1", missing_second=30), probe("piece-2")],
+                    "mock_evidence": mock_evidence("MISSING_SAMPLE"),
                 })
                 assert incomplete["safety_status"] == "INCOMPLETE"
                 job = await checked_post(client, path + "/safety/core-check", {
                     "expected_version": incomplete["version"],
                     "probes": [probe("piece-1"), probe("piece-2")],
+                    "mock_evidence": mock_evidence("NORMAL"),
                 })
                 assert job["safety_status"] == "PASSED"
+                persisted, _ = store.read(pk)
+                assert persisted["core_check"][0]["probe_id"] == "synthetic-probe-piece-1"
+                assert persisted["core_check_summary"][0]["hold_seconds"] == 60
+                assert persisted["core_check_mock_evidence"]["seed"] == 100
 
                 first = await checked_post(client, path + "/assessments", assessment(job), 201)
                 assert first["version"] == 1 and first["quality_target"]
