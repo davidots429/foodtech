@@ -16,6 +16,7 @@ from foodtech_contracts.combi_rice_process import Sample as RiceSample, assess a
 from foodtech_contracts.combi_stream import CombiStreamValidator
 from foodtech_contracts.combi_rice_live import observe as observe_rice_live
 from foodtech_contracts.combi_mackerel_live import observe as observe_mackerel_live
+from foodtech_contracts.combi_transition_live import observe as observe_transition_live
 from foodtech_contracts.combi_sampling import selection_issues
 from foodtech_contracts.combi_probe import summarize as summarize_probe
 
@@ -184,6 +185,7 @@ async def get_combi_live(meal_id: UUID, request: Request) -> dict:
             "count": int(state["count"]), "device_id": state["device_id"],
             "latest": state["latest"], "latest_window": state.get("latest_window"),
             "rice_monitor": state.get("rice_monitor"), "mackerel_monitor": state.get("mackerel_monitor"),
+            "transition_monitor": state.get("transition_monitor"),
             "updated_at": state["updated_at"], "provenance": "SYNTHETIC"}
 
 
@@ -230,11 +232,14 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
     latest_window = (state or {}).get("latest_window")
     rice_monitor = (state or {}).get("rice_monitor")
     mackerel_monitor = (state or {}).get("mackerel_monitor")
+    transition_monitor = (state or {}).get("transition_monitor")
     for observation in observations:
         if observation["phase"] == "RICE":
             rice_monitor = observe_rice_live(rice_monitor, observation)
         elif observation["phase"] == "MACKEREL":
             mackerel_monitor = observe_mackerel_live(mackerel_monitor, observation)
+        elif observation["phase"] == "TRANSITION":
+            transition_monitor = observe_transition_live(transition_monitor, observation)
         second = observation["phaseSecond"]
         phase = observation["phase"]
         if second % 5 == 1:
@@ -262,6 +267,7 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
                   "previous_time": validator.previous_time.isoformat(), "schema_version": validator.schema_version,
                   "latest": latest, "latest_window": latest_window, "pending_window": pending,
                   "rice_monitor": rice_monitor, "mackerel_monitor": mackerel_monitor,
+                  "transition_monitor": transition_monitor,
                   "updated_at": now, "byte_count": int((state or {}).get("byte_count", 0)) + sum(len(line) + 1 for line in encoded)}
     chunk = {"sk": f"CHUNK#{count:06d}", "device_id": body.device_id,
              "records": body.records, "sha256": digest}

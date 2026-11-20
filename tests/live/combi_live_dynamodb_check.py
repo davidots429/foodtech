@@ -32,18 +32,21 @@ def records_for(meal):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     records = []
     for phase, job in phases:
-        count = 60 if phase == "RICE" else 61 if phase == "MACKEREL" else 1
+        count = 60 if phase == "RICE" else 61 if phase == "MACKEREL" else 180
         for phase_second in range(1, count + 1):
             index = len(records) + 1
             at = (start + timedelta(seconds=index - 1)).isoformat()
             records.append(json.dumps({"eventId": f"{meal_id}-{index:06d}", "mealBatchId": meal_id,
                 "cookingJobId": job, "deviceId": "synthetic-combi-validation", "mockInstanceId": "mockprofile-120-a-001",
                 "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": index,
-                "schemaVersion": "synthetic-combi-v1", "programVersion": "v1", "provenance": "SYNTHETIC",
+                "schemaVersion": "synthetic-combi-v2", "programVersion": "v1", "provenance": "SYNTHETIC",
                 "dataQuality": "VALID", "phase": phase, "phaseSecond": phase_second,
                 "chamberCelsius": 94 if phase == "RICE" else 199 if phase == "MACKEREL" and phase_second > 31 else 220,
-                "climateSetpointPercent": 100, "measuredHumidityPercent": 98,
-                "humidityValueSource": "MEASURED", "fanLevel": 4, "doorState": "CLOSED"}, separators=(",", ":")))
+                "climateSetpointPercent": 10 if phase == "TRANSITION" else 100,
+                "measuredHumidityPercent": None if phase == "TRANSITION" else 98,
+                "humidityValueSource": "NOT_SUPPORTED" if phase == "TRANSITION" else "MEASURED",
+                "fanLevel": 4, "doorState": "CLOSED", "criticalAlarm": False,
+                "ventSupported": False, "ventEvent": None}, separators=(",", ":")))
     return records
 
 
@@ -103,6 +106,9 @@ async def run_scenario(store, subject, created_partitions):
             monitor = (await client.get(path + "/source-live")).json()["rice_monitor"]
             assert monitor["last_second"] == 60 and monitor["low_total"] == 60
             assert "LOW_TEMPERATURE_PROCESS_FAILURE" in monitor["failure_codes"]
+            transition = (await client.get(path + "/source-live")).json()["transition_monitor"]
+            assert transition["complete_from_start"] and transition["ready_observed_at_second"] == 180
+            assert transition["humidity_source"] == "NOT_SUPPORTED" and not transition["timeout"]
             fish = (await client.get(path + "/source-live")).json()["mackerel_monitor"]
             assert fish["recovered_at_second"] == 31 and fish["last_second"] == 61
             assert "LOW_TEMPERATURE_PROCESS_FAILURE" in fish["failure_codes"]
@@ -121,7 +127,8 @@ async def run_scenario(store, subject, created_partitions):
             return {"competing_appends": statuses, "idempotent_replay": True,
                     "customer_isolation": isolated.status_code, "rice_monitor_second": monitor["last_second"],
                     "low_temperature_failure_detected": True, "mackerel_recovered_second": fish["recovered_at_second"],
-                    "mackerel_low_failure_detected": True, "final_record_count": len(records)}
+                    "mackerel_low_failure_detected": True, "transition_ready_second": transition["ready_observed_at_second"],
+                    "final_record_count": len(records)}
 
 
 def remove_and_verify(table, partitions):

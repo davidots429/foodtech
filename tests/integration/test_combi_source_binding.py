@@ -170,6 +170,9 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                             result = await task
                             final_live = (await api.get(live_path)).json()
                             self.assertEqual(final_live["state"], "COMPLETED")
+                            self.assertEqual(final_live["transition_monitor"]["last_second"], 5)
+                            self.assertTrue(final_live["transition_monitor"]["complete_from_start"])
+                            self.assertIsNone(final_live["transition_monitor"]["ready_observed_at_second"])
                             self.assertEqual(final_live["mackerel_monitor"]["last_second"], 5)
                             self.assertEqual(final_live["mackerel_monitor"]["failure_codes"], [])
                         finally:
