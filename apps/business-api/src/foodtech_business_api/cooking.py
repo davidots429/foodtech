@@ -197,6 +197,20 @@ class SafetyEvent(StrictModel):
     partial_observations: dict[str, str] = Field(default_factory=dict)
 
 
+class JeyukFeed(StrictModel):
+    expected_version: StrictInt = Field(ge=1)
+    started_at: datetime
+    completed_at: datetime
+    mass_kg: Decimal = Field(gt=0, le=100, max_digits=6, decimal_places=3)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class JeyukDischarge(StrictModel):
+    expected_version: StrictInt = Field(ge=1)
+    completed_at: datetime
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class CoreSample(StrictModel):
     at_second: int = Field(ge=0, le=60)
     celsius: Decimal | None = Field(default=None, ge=Decimal("-273.15"), le=Decimal("300"))
@@ -751,6 +765,9 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
         placed_at = body.actual_placed_at.astimezone(timezone.utc)
         if placed_at > now:
             raise HTTPException(422, "투입시각은 현재보다 미래일 수 없습니다.")
+        meat_feed = (old.get("jeyuk_feeds") or {}).get("MEAT") if old["menu"] == "JEYUK" else None
+        if meat_feed and datetime.fromisoformat(meat_feed["completed_at"].replace("Z", "+00:00")) != placed_at:
+            raise HTTPException(422, "조리 시작은 기록된 고기 투입 완료 시각과 같아야 합니다.")
         initial = old.get("tonkatsu_initial_context") or {}
         if initial.get("batch_version") == old.get("tonkatsu_batch_version") and initial:
             for field in ("temperature_observed_at", "oil_changed_at"):
@@ -767,6 +784,10 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
         placed_at = datetime.fromisoformat(previous_placed.replace("Z", "+00:00"))
         if lifted_at < placed_at or lifted_at > now:
             raise HTTPException(422, "인양시각은 투입 이후이면서 현재 이전이어야 합니다.")
+        if old["menu"] == "JEYUK" and any(
+                datetime.fromisoformat(feed["completed_at"].replace("Z", "+00:00")) > lifted_at
+                for feed in (old.get("jeyuk_feeds") or {}).values()):
+            raise HTTPException(422, "배출 시작 시각은 기록된 재료 투입 완료 이후여야 합니다.")
         cooking_seconds = int((lifted_at - placed_at).total_seconds())
         time_status = (jeyuk_cooking_time_status(old["jeyuk_size_profile"], cooking_seconds)
                        if old["menu"] == "JEYUK" else
@@ -822,6 +843,110 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
 
 def _blocked_pointer(pointer: dict | None, reason: str) -> dict | None:
     return {**pointer, "usable": False, "blocked_reason": reason, "blocked_at": _now()} if pointer else None
+
+
+def _jeyuk_total_seconds(feeds: dict, completed: datetime) -> str | None:
+    meat = feeds.get("MEAT")
+    if not meat:
+        return None
+    started = datetime.fromisoformat(meat["started_at"].replace("Z", "+00:00"))
+    elapsed = completed - started
+    microseconds = (elapsed.days * 86400 + elapsed.seconds) * 1_000_000 + elapsed.microseconds
+    return str(Decimal(microseconds) / Decimal(1_000_000))
+
+
+@router.post("/{job_id}/jeyuk-feeds/{ingredient}", status_code=201)
+async def record_jeyuk_feed(job_id: str, ingredient: Literal["meat", "vegetable", "sauce"],
+                            request: Request, body: JeyukFeed) -> dict:
+    session, store, pk, old, _ = await _read(request, job_id, write=True)
+    if int(old["version"]) != body.expected_version:
+        raise _conflict()
+    if old["menu"] != "JEYUK" or old["status"] == "CANCELED":
+        raise HTTPException(409, "취소되지 않은 제육볶음 작업에만 투입을 기록합니다.")
+    if body.started_at.utcoffset() is None or body.completed_at.utcoffset() is None:
+        raise HTTPException(422, "투입 시각에는 시간대가 필요합니다.")
+    started, completed = body.started_at.astimezone(timezone.utc), body.completed_at.astimezone(timezone.utc)
+    if started > completed or completed > datetime.now(timezone.utc):
+        raise HTTPException(422, "투입 시작·완료 순서와 시각을 확인해 주세요.")
+    previous_placed = old.get("actual_placed_at")
+    if ingredient == "meat" and previous_placed and completed != datetime.fromisoformat(previous_placed.replace("Z", "+00:00")):
+        raise HTTPException(422, "고기 투입 완료는 기록된 조리 시작 시각과 같아야 합니다.")
+    previous_lifted = old.get("actual_lifted_at")
+    if previous_lifted and completed > datetime.fromisoformat(previous_lifted.replace("Z", "+00:00")):
+        raise HTTPException(422, "투입 완료는 배출 시작 이전이어야 합니다.")
+    key = ingredient.upper()
+    feeds = dict(old.get("jeyuk_feeds") or {})
+    previous = feeds.get(key)
+    if previous and not (body.reason and body.reason.strip()):
+        raise HTTPException(422, "투입 기록 수정 사유가 필요합니다.")
+    group_id = old.get("jeyuk_addition_group_id")
+    if ingredient != "meat" and not group_id:
+        group_id = str(uuid.uuid4())
+    now = _now()
+    current = {"ingredient": key, "started_at": started.isoformat().replace("+00:00", "Z"),
+               "completed_at": completed.isoformat().replace("+00:00", "Z"), "mass_kg": str(body.mass_kg),
+               "addition_group_id": group_id if ingredient != "meat" else None,
+               "provenance": "SYNTHETIC", "recorded_at": now}
+    feeds[key] = current
+    total_mass = sum((Decimal(feed["mass_kg"]) for feed in feeds.values()), Decimal(0))
+    mass_status = ("INCOMPLETE" if len(feeds) != 3 else
+                   "MATCHED" if total_mass == Decimal(str(old["actual_load_kg"])) else "MISMATCH")
+    simultaneous = None
+    if "VEGETABLE" in feeds and "SAUCE" in feeds:
+        times = [datetime.fromisoformat(feeds[name]["started_at"].replace("Z", "+00:00"))
+                 for name in ("VEGETABLE", "SAUCE")]
+        simultaneous = abs((times[0] - times[1]).total_seconds()) <= 30
+    version = int(old["version"]) + 1
+    meta = {**old, "version": version, "updated_at": now, "jeyuk_feeds": feeds,
+            "jeyuk_addition_group_id": group_id, "jeyuk_additions_simultaneous": simultaneous,
+            "jeyuk_feed_total_kg": str(total_mass), "jeyuk_feed_mass_status": mass_status}
+    if old.get("jeyuk_discharge"):
+        discharge = old["jeyuk_discharge"]
+        discharge_completed = datetime.fromisoformat(discharge["completed_at"].replace("Z", "+00:00"))
+        meta["jeyuk_discharge"] = {**discharge, "total_process_duration_seconds":
+                                   _jeyuk_total_seconds(feeds, discharge_completed)}
+    event = {"sk": f"EVENT#JEYUK_FEED#{version:012d}", "domain": "JEYUK_FEED",
+             "trigger": "FEED_REVISED" if previous else "FEED_RECORDED", "ingredient": key,
+             "previous": previous, "feed": current, "reason": body.reason.strip() if body.reason else None,
+             "actor": session.subject, "occurred_at": now}
+    await _commit(store, pk, old, meta, event=event)
+    return meta
+
+
+@router.post("/{job_id}/jeyuk-discharge", status_code=201)
+async def record_jeyuk_discharge(job_id: str, request: Request, body: JeyukDischarge) -> dict:
+    session, store, pk, old, _ = await _read(request, job_id, write=True)
+    if int(old["version"]) != body.expected_version:
+        raise _conflict()
+    started_text = old.get("actual_lifted_at")
+    if old["menu"] != "JEYUK" or old["status"] not in {"COMPLETED", "FAILED"} or not started_text:
+        raise HTTPException(409, "제육볶음 배출 시작을 기록한 후에만 완료를 기록합니다.")
+    if body.completed_at.utcoffset() is None:
+        raise HTTPException(422, "배출 완료 시각에는 시간대가 필요합니다.")
+    started = datetime.fromisoformat(started_text.replace("Z", "+00:00"))
+    completed = body.completed_at.astimezone(timezone.utc)
+    if completed < started or completed > datetime.now(timezone.utc):
+        raise HTTPException(422, "배출 완료는 시작 이후이면서 현재 이전이어야 합니다.")
+    previous = old.get("jeyuk_discharge")
+    if previous and not (body.reason and body.reason.strip()):
+        raise HTTPException(422, "배출 기록 수정 사유가 필요합니다.")
+    method = {"SMALL": "MANUAL_POUR", "MEDIUM": "SEMI_AUTOMATIC_TILT",
+              "LARGE": "AUTOMATIC_BOTTOM_TILT_PUMP"}[old["jeyuk_size_profile"]]
+    elapsed = completed - started
+    microseconds = (elapsed.days * 86400 + elapsed.seconds) * 1_000_000 + elapsed.microseconds
+    now = _now()
+    current = {"started_at": started_text, "completed_at": completed.isoformat().replace("+00:00", "Z"),
+               "duration_seconds": str(Decimal(microseconds) / Decimal(1_000_000)),
+               "total_process_duration_seconds": _jeyuk_total_seconds(old.get("jeyuk_feeds") or {}, completed),
+               "method": method, "method_basis": "SYNTHETIC_ASSUMPTION", "recorded_at": now}
+    version = int(old["version"]) + 1
+    meta = {**old, "version": version, "updated_at": now, "jeyuk_discharge": current}
+    event = {"sk": f"EVENT#JEYUK_DISCHARGE#{version:012d}", "domain": "JEYUK_DISCHARGE",
+             "trigger": "DISCHARGE_REVISED" if previous else "DISCHARGE_COMPLETED", "previous": previous,
+             "discharge": current, "reason": body.reason.strip() if body.reason else None,
+             "actor": session.subject, "occurred_at": now}
+    await _commit(store, pk, old, meta, event=event)
+    return meta
 
 
 @router.post("/{job_id}/safety/events")

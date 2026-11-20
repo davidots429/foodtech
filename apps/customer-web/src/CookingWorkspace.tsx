@@ -10,6 +10,7 @@ import { LocalChat } from "./LocalChat";
 import { RecommendationEvidence } from "./RecommendationEvidence";
 import { TonkatsuBatch } from "./TonkatsuBatch";
 import { TonkatsuInitialContext } from "./TonkatsuInitialContext";
+import { JeyukFeeds } from "./JeyukFeeds";
 
 type Props = { csrf: string };
 type ScoreForm = Record<ScoreKey, number | "">;
@@ -805,6 +806,7 @@ export function CookingWorkspace({ csrf }: Props) {
             {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuBatch key={job.job_id} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}
             {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuInitialContext
               key={`${job.job_id}-${job.tonkatsu_batch_version ?? 0}`} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}
+            {job.menu === "JEYUK" && <JeyukFeeds key={job.job_id} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}
             {job.source_binding ? <p className="small">연결된 합성 수집 배치: <code>{job.source_binding.batch_id}</code> · 온도 판정 {temperatureLabels[job.process_temperature_status] ?? job.process_temperature_status}</p>
               : <div className="binding-box"><p className="small">Mock의 <code>synthetic-rest / {job.menu === "JEYUK" ? "mockprofile-110-a-001" : "mockprofile-100-a-001"}</code> 배치를 조리 시작 전에 연결해야 자동 공정판정이 실행됩니다.</p>
                 <div className="field-row"><label className="grow">합성 배치 ID

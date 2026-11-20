@@ -25,6 +25,11 @@ export type CookingJob = {
   planned_portions: number;
   thickness_cm?: string;
   actual_load_kg?: string | null;
+  jeyuk_feeds?: Record<string, { started_at: string; completed_at: string; mass_kg: string }>;
+  jeyuk_feed_total_kg?: string;
+  jeyuk_feed_mass_status?: "INCOMPLETE" | "MATCHED" | "MISMATCH";
+  jeyuk_additions_simultaneous?: boolean | null;
+  jeyuk_discharge?: { completed_at: string; duration_seconds: string; total_process_duration_seconds: string | null; method: string } | null;
   tonkatsu_batch?: { rule_version: string; mode: "REFERENCE" | "PARTIAL"; product_weights_g: number[];
     product_count: number; total_mass_kg: string; rated_capacity_kg: string; load_percent: string } | null;
   tonkatsu_batch_version?: number;
