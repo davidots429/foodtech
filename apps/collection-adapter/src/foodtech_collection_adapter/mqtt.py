@@ -117,6 +117,10 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
     disconnected = False
     try:
         while len(received) < count and not failure and time.monotonic() < deadline:
+            if time.monotonic() >= next_drain:
+                for stream in streams:
+                    ingestor.drain(stream)
+                next_drain = time.monotonic() + 1
             if disconnected:
                 if time.monotonic() < next_reconnect:
                     time.sleep(max(0, min(0.2, next_reconnect - time.monotonic())))
@@ -137,10 +141,6 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
                     next_reconnect = time.monotonic() + 1
                 else:
                     failure.append("MQTT connection failed")
-            if time.monotonic() >= next_drain:
-                for stream in streams:
-                    ingestor.drain(stream)
-                next_drain = time.monotonic() + 1
         if failure:
             raise RuntimeError(failure[0])
         if len(received) != count:
