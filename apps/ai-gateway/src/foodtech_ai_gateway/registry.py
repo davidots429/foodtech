@@ -158,6 +158,54 @@ class DynamoRegistry:
         except self.client.exceptions.TransactionCanceledException as error:
             raise RegistryConflict("quote expired, changed or already used") from error
 
+    def confirm_local_downgrade(self, quote: dict[str, Any], consent: Consent, execution: Execution) -> None:
+        """Consume one local downgrade notice and atomically create consent and execution."""
+        if quote.get("purpose") != "LOCAL_RECIPE_DOWNGRADE" or quote.get("quote_id") != consent.consent_id or \
+                quote.get("execution_id") != execution.execution_id or quote.get("tenant_id") != execution.tenant_id or \
+                consent.tenant_id != execution.tenant_id or consent.execution_id != execution.execution_id or \
+                consent.parent_execution_id != execution.parent_execution_id or \
+                quote.get("parent_execution_id") != execution.parent_execution_id or \
+                not execution.parent_execution_id or execution.parent_execution_id == execution.execution_id or \
+                consent.model_id != execution.model_id or quote.get("model_id") != execution.model_id or \
+                execution.feature != Feature.RECIPE_CORRECTION or execution.downgrade_consent_id != consent.consent_id or \
+                consent.kind != "TIER_DOWNGRADE" or consent.quality_warning_acknowledged is not True or \
+                consent.notice_version != quote.get("notice_version") or not consent.consented_at.tzinfo or \
+                consent.transmission_location != "LOCAL" or consent.estimated_cost_usd != Decimal("0") or \
+                execution.estimated_cost_usd != Decimal("0") or execution.credential_id is not None:
+            raise ValueError("downgrade notice and execution do not match")
+        quote_key = _key("QUOTE", quote["quote_id"])
+        quote_version = self._read_versions.get(quote_key["pk"])
+        if quote_version is None:
+            raise RegistryConflict("notice was not read consistently")
+        consent_fields = asdict(consent)
+        consent_fields["consented_at"] = _iso(consent.consented_at)
+        execution_fields = asdict(execution)
+        execution_fields["feature"] = execution.feature.value
+        execution_fields["state"] = "PENDING"
+        items = [{"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
+                  "UpdateExpression": "SET #s = :used, #v = #v + :one",
+                  "ConditionExpression": "#s = :open AND #v = :v AND expires > :now AND tenant_id = :tenant",
+                  "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
+                  "ExpressionAttributeValues": self._av({":used": "USED", ":open": "OPEN", ":one": 1,
+                    ":v": quote_version, ":now": int(datetime.now(timezone.utc).timestamp()), ":tenant": execution.tenant_id})}},
+                 {"Put": {"TableName": self.table_name,
+                          "Item": self._av({**_key("CONSENT", consent.consent_id), **consent_fields, "version": 1}),
+                          "ConditionExpression": "attribute_not_exists(pk)"}},
+                 {"Put": {"TableName": self.table_name,
+                          "Item": self._av({**_key("EXEC", execution.execution_id), **execution_fields, "version": 1}),
+                          "ConditionExpression": "attribute_not_exists(pk)"}}]
+        required = {_key("EXEC", execution.parent_execution_id)["pk"], _key("MODEL", execution.model_id)["pk"]}
+        if not required.issubset(self._read_versions):
+            raise RegistryConflict("parent or target model was not checked")
+        for pk in self.snapshot_versions():
+            if pk != quote_key["pk"]:
+                kind, identifier = pk.split("#", 1)
+                items.append(self._condition(kind, identifier))
+        try:
+            self.client.transact_write_items(TransactItems=items, ClientRequestToken=str(uuid4()))
+        except self.client.exceptions.TransactionCanceledException as error:
+            raise RegistryConflict("notice expired, changed or already used") from error
+
     def create_limit(self, scope: str, identifier: str, remaining_usd: Decimal,
                      *, calls_remaining: int | None = None) -> None:
         if scope not in {"TENANT", "PROVIDER", "PROJECT"} or remaining_usd < 0 or \
