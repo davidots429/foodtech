@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { api } from "./cookingApi";
 import { CombiQuality } from "./CombiQuality";
+import { CombiWindows } from "./CombiWindows";
 
 type FanObservation = { status: string; target_level: number; deviation_seconds: number; missing_seconds: number };
 type ProbeSummary = { probe_id: string; product_id: string; rack_id: string; shelf: number; pan_id: string;
@@ -284,6 +285,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
           <button type="button" className="secondary" disabled={busy || !sourceDevice} onClick={downloadMockFixture}>이 배치용 Mock fixture 받기</button>
           <label>Mock 원표본 JSONL<input type="file" accept=".jsonl,.ndjson,application/x-ndjson" onChange={event => setSourceFile(event.target.files?.[0] ?? null)} /></label>
           <button type="button" disabled={busy || !sourceFile || !sourceDevice} onClick={importSource}>합성 원천 자료 연결</button></div>}
+      {meal.meal.source && <CombiWindows key={meal.meal.meal_batch_id} mealId={meal.meal.meal_batch_id} />}
       {meal.rice.time_status && <p>밥 프로그램 시간 {meal.rice.program_cooking_duration}초 · 시간 판정 {meal.rice.time_status}
         {meal.rice.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.rice.thermal_exposure_duration}초</>}</p>}
       {meal.rice.thermal_exposure_duration !== undefined && !meal.rice.monitored_process_assessment && <div>

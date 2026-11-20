@@ -93,6 +93,23 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((len(first["records"]), first["next_cursor"], len(second["records"]), second["next_cursor"]),
                          (100, 1, 5, None))
         self.assertEqual(first["records"] + second["records"], records)
+        windows = await self.client.get(path + "/source-windows?phase=RICE")
+        self.assertEqual(windows.status_code, 200, windows.text)
+        self.assertEqual((len(windows.json()["windows"]), windows.json()["next_cursor"]), (21, None))
+        self.assertEqual((windows.json()["windows"][0]["average_celsius"],
+                          windows.json()["windows"][0]["outside_target_seconds"]), ("100", 0))
+        self.assertEqual((windows.json()["windows"][-1]["sample_count"],
+                          windows.json()["windows"][-1]["complete_window"]), (3, False))
+        page = await self.client.get(path + "/source-windows?phase=RICE&cursor=20")
+        self.assertEqual(len(page.json()["windows"]), 1)
+        self.assertEqual((await self.client.get(path + "/source-windows?phase=RICE&cursor=21")).status_code, 404)
+        source_pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal_id}#SOURCE"
+        chunk = self.store.items[(source_pk, "RAW#0000")]
+        original = chunk["records"][0]
+        altered = json.loads(original); altered["chamberCelsius"] = 101
+        chunk["records"][0] = json.dumps(altered)
+        self.assertEqual((await self.client.get(path + "/source-windows?phase=RICE")).status_code, 422)
+        chunk["records"][0] = original
         self.assertEqual((await self.client.post(path + "/source-observations", headers=headers,
                          json={**body, "expected_version": 2})).status_code, 409)
         for version, event, offset in ((2, "RICE_STARTED", 0), (3, "RICE_PROGRAM_COMPLETED", 102),
@@ -120,6 +137,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(legacy.status_code, 422)
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path + "/source-observations")).status_code, 404)
+        self.assertEqual((await self.client.get(path + "/source-windows?phase=RICE")).status_code, 404)
 
     async def test_load_rejection_and_water_warning(self):
         headers = {"X-CSRF-Token": "csrf"}
