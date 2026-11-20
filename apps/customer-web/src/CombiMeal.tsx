@@ -85,7 +85,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     if (!meal) return;
     const segment = (seconds: number, chamber: string, climate: string, humidity: string | null,
       source: string, fan: number) => ({ seconds, chamberCelsius: chamber, climateSetpointPercent: climate,
-      measuredHumidityPercent: humidity, humidityValueSource: source, fanLevel: fan, doorState: "CLOSED" });
+      measuredHumidityPercent: humidity, humidityValueSource: source, fanLevel: fan, doorState: "CLOSED",
+      criticalAlarm: false, ventSupported: false, ventEvent: null });
     const fixture = { provenance: "SYNTHETIC", profileId: "mockprofile-120", mockInstanceId: "mockprofile-120-a-001",
       mealBatchId: meal.meal.meal_batch_id, deviceId: sourceDevice, generatorVersion: "combi-generator-v1", seed: 2026,
       logicalStartAt: new Date(Date.now() - 2_701_000).toISOString(), phases: [
@@ -184,7 +185,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "밥 공정 표본을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
-  async function assessSource(phase: "rice" | "mackerel") {
+  async function assessSource(phase: "rice" | "transition" | "mackerel") {
     if (!meal || requestActive.current) return;
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
@@ -254,6 +255,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {meal.meal.source?.first_observed_at && <button type="button" className="secondary" disabled={busy} onClick={useSourceTime}>원표본 시각 입력</button>}
         <button type="button" disabled={busy} onClick={recordStep}>{mealSteps[meal.meal.status].label}</button></div>}
       {meal.meal.status === "MODE_TRANSITION" && <div><p>합성 표본으로 전환 조건을 시험합니다. 전환 시작 시각 이후 30초 또는 180초가 경과해야 합니다.</p>
+        {meal.meal.source && <button type="button" disabled={busy} onClick={() => assessSource("transition")}>연결된 전환 원표본 판정</button>}{" "}
         <button type="button" disabled={busy} onClick={() => simulateTransition(true)}>습도 지원 합성 표본</button>{" "}
         <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></div>}
       {meal.meal.status === "MACKEREL_UNLOADED" && <div><p>인양 즉시 시작한 세 탐침의 75°C 합성 표본을 60초간 확인합니다. 인양 후 60초가 경과해야 합니다.</p>

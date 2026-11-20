@@ -111,6 +111,13 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 200, result.text)
         self.assertEqual(result.json()["step"]["monitored_process_assessment"]["status"], "FAILED")
         self.assertEqual(result.json()["step"]["monitored_process_source"]["phase"], "RICE")
+        transition = await self.client.post(path + "/events", headers=headers, json={
+            "expected_version": 6, "event": "MODE_TRANSITION_STARTED",
+            "observed_at": (start + timedelta(seconds=103)).isoformat()})
+        self.assertEqual(transition.status_code, 200, transition.text)
+        legacy = await self.client.post(path + "/source-assessment/transition", headers=headers,
+                                         json={"expected_version": 7})
+        self.assertEqual(legacy.status_code, 422)
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path + "/source-observations")).status_code, 404)
 

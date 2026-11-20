@@ -12,7 +12,8 @@ internal static class CombiSimulation
         string DeviceId, string MockInstanceId, string EventType, string OccurredAt, string ReceivedAt,
         int Sequence, string SchemaVersion, string ProgramVersion, string Provenance, string DataQuality,
         string Phase, int PhaseSecond, decimal ChamberCelsius, decimal ClimateSetpointPercent,
-        decimal? MeasuredHumidityPercent, string HumidityValueSource, int FanLevel, string DoorState);
+        decimal? MeasuredHumidityPercent, string HumidityValueSource, int FanLevel, string DoorState,
+        bool CriticalAlarm, bool VentSupported, string? VentEvent);
 
     public static void Emit(string fixturePath, string outputPath, string aggregatePath)
     {
@@ -73,15 +74,23 @@ internal static class CombiSimulation
                     throw new InvalidDataException("Invalid humidity source or value.");
                 var fan = segment.GetProperty("fanLevel").GetInt32();
                 var door = String(segment, "doorState");
+                var alarm = segment.GetProperty("criticalAlarm").GetBoolean();
+                var ventSupported = segment.GetProperty("ventSupported").GetBoolean();
+                var ventElement = segment.GetProperty("ventEvent");
+                var ventEvent = ventElement.ValueKind == JsonValueKind.Null ? null : ventElement.GetString();
                 if (fan is < 0 or > 10 || door is not ("OPEN" or "CLOSED"))
                     throw new InvalidDataException("Invalid fan or door state.");
+                if (ventEvent is not (null or "OPENED" or "CLOSED") ||
+                    (ventEvent is not null && (!ventSupported || seconds != 1)))
+                    throw new InvalidDataException("A vent event requires a supported single-second segment.");
                 for (var i = 0; i < seconds; i++)
                 {
                     var sequence = raw.Count + 1;
                     var at = start.AddSeconds(sequence - 1).ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
                     raw.Add(new Observation($"{meal}-{sequence:D6}", meal, job, device, instance,
-                        "OBSERVATION", at, at, sequence, "synthetic-combi-v1", version, "SYNTHETIC", "VALID",
-                        name, ++phaseSecond, temperature, climate, humidity, humiditySource, fan, door));
+                        "OBSERVATION", at, at, sequence, "synthetic-combi-v2", version, "SYNTHETIC", "VALID",
+                        name, ++phaseSecond, temperature, climate, humidity, humiditySource, fan, door,
+                        alarm, ventSupported, ventEvent));
                 }
             }
             if (phaseSecond % 5 != 0)
