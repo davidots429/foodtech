@@ -33,7 +33,7 @@ if (args.Length > 0 && args[0] == "simulate-jeyuk")
 if (args.Length > 0 && args[0] == "bind-jeyuk")
 {
     JeyukSimulation.Bind(Required(options, "fixture"), Required(options, "output"),
-        Required(options, "fixture-id"), Required(options, "start-at"));
+        Required(options, "fixture-id"), Required(options, "start-at"), options.GetValueOrDefault("last-addition-second"));
     return;
 }
 if (args.Length > 0 && args[0] == "simulate-tonkatsu-probes")

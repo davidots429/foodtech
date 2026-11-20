@@ -13,7 +13,8 @@ internal static class JeyukSimulation
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public static void Bind(string fixturePath, string outputPath, string fixtureId, string startAt)
+    public static void Bind(string fixturePath, string outputPath, string fixtureId, string startAt,
+                            string? lastAdditionSecond = null)
     {
         if (Path.GetFullPath(fixturePath) == Path.GetFullPath(outputPath))
             throw new ArgumentException("The source fixture must not be overwritten.");
@@ -21,6 +22,43 @@ internal static class JeyukSimulation
                    ?? throw new InvalidDataException("A fixture object is required.");
         root["fixtureId"] = fixtureId;
         root["logicalStartAt"] = startAt;
+        if (lastAdditionSecond is not null)
+        {
+            if (!int.TryParse(lastAdditionSecond, NumberStyles.None, CultureInfo.InvariantCulture, out var target) || target < 1)
+                throw new ArgumentException("last-addition-second must be a positive integer.");
+            using var original = JsonDocument.Parse(root.ToJsonString());
+            var existing = Expand(original.RootElement);
+            var segments = root["samples"]?.AsArray() ?? throw new InvalidDataException("Samples are required.");
+            if (target > existing.Count || segments.Any(segment => segment?["lastIngredientAdditionCompleted"] is null))
+                throw new ArgumentException("last-addition-second requires safety samples and must be within their duration.");
+            var rebuilt = new JsonArray();
+            var elapsed = 0;
+            foreach (var item in segments)
+            {
+                var segment = item!.AsObject();
+                var length = segment["seconds"]!.GetValue<int>();
+                void Add(int count, bool marker)
+                {
+                    if (count == 0) return;
+                    var copy = segment.DeepClone().AsObject();
+                    copy["seconds"] = count;
+                    copy["lastIngredientAdditionCompleted"] = marker;
+                    rebuilt.Add(copy);
+                }
+                if (target > elapsed && target <= elapsed + length)
+                {
+                    var before = target - elapsed - 1;
+                    Add(before, false);
+                    Add(1, true);
+                    Add(length - before - 1, false);
+                }
+                else Add(length, false);
+                elapsed += length;
+            }
+            root["samples"] = rebuilt;
+            // Existing checkpoints describe the original addition point and would be misleading.
+            root.Remove("checkpoints");
+        }
         var json = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         using var validated = JsonDocument.Parse(json);
         Expand(validated.RootElement);
