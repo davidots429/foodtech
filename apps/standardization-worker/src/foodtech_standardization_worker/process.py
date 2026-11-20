@@ -90,5 +90,6 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
             "event_time": canonical["event_time"],
         },
         correction_rule_id="FT-MAP-VENDOR-A-1",
-        mapping_version="mockprofile-300-a-map-v1" if record["deviceId"] == "mockprofile-300-a-001" else MAPPING_VERSION,
+        mapping_version={"mockprofile-300-a-001": "mockprofile-300-a-map-v1",
+                         "mockprofile-203-a-001": "mockprofile-203-a-map-v1"}.get(record["deviceId"], MAPPING_VERSION),
     )

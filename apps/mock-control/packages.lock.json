@@ -11,10 +11,131 @@
           "MQTTnet": "5.2.0.1603"
         }
       },
+      "OPCFoundation.NetStandard.Opc.Ua.Server": {
+        "type": "Direct",
+        "requested": "[2.0.2, )",
+        "resolved": "2.0.2",
+        "contentHash": "x84Lh+2N5JtFudsuO8+hEPrc+NlBLwSQehWUzJx8JzgeHVRVxKEUmoQlWerhVDv+FqnP6TIegzMYeVPQBabHMw==",
+        "dependencies": {
+          "BitFaster.Caching": "2.6.1",
+          "Microsoft.Bcl.TimeProvider": "10.0.13",
+          "Microsoft.Extensions.Compliance.Abstractions": "10.11.0",
+          "Microsoft.Extensions.Telemetry": "10.11.0",
+          "Microsoft.Extensions.Telemetry.Abstractions": "10.11.0",
+          "OPCFoundation.NetStandard.Opc.Ua.Configuration": "2.0.2",
+          "OPCFoundation.NetStandard.Opc.Ua.Core": "2.0.2",
+          "OPCFoundation.NetStandard.Opc.Ua.Core.Schema": "2.0.2"
+        }
+      },
+      "BitFaster.Caching": {
+        "type": "Transitive",
+        "resolved": "2.6.1",
+        "contentHash": "wFFvDHne7d0mzh70dnryCyCs2YhBG5xGOlKPtObLF7SmtNEqNz3RXKffOcrjpi0IcqrvRgsL/MtH5rU++uK17g=="
+      },
+      "Microsoft.Bcl.TimeProvider": {
+        "type": "Transitive",
+        "resolved": "10.0.13",
+        "contentHash": "lc+MQKVVPUZTVdo2zXNsxeldfnHQGCxw5DslUyIjn1rGuTYkE8ssz+Ip0yyd/srN6R4uYS2i18zOr+gj5/lC4g=="
+      },
+      "Microsoft.Extensions.AmbientMetadata.Application": {
+        "type": "Transitive",
+        "resolved": "10.11.0",
+        "contentHash": "aMCm7C6CexZT8W/p8zRp4BoxSnqRs3MmkBF7FvPIXC92b7vqs2SL0J+mVJi5W2Mk9Vb4ZRFWe9sdzFew6zUl1w=="
+      },
+      "Microsoft.Extensions.Compliance.Abstractions": {
+        "type": "Transitive",
+        "resolved": "10.11.0",
+        "contentHash": "2mjAb3Sm5k6uNeI+IyXpggYMpfdDDGgZSwUm9QQsm5QgZboJWbm2eU+6wNMrlfFEao11yq6JS1zXI7SVQQ0NuQ=="
+      },
+      "Microsoft.Extensions.DependencyInjection.AutoActivation": {
+        "type": "Transitive",
+        "resolved": "10.11.0",
+        "contentHash": "h/sovspxVmT2DTIbWORMG0Gi3zVcPQzNl3kbwtpo0LoUXYbe2+66wQqZYwaF2ZWKN8HDdHv5yoc7d0DbDBBlnA=="
+      },
+      "Microsoft.Extensions.Telemetry": {
+        "type": "Transitive",
+        "resolved": "10.11.0",
+        "contentHash": "2meCfABvkLPtEBBwGzItIGnhrex1AEn2N+dHvxB5UoozeX/xTtBuUz5BRdjNI5oNgd5T31kC69WWw3BHDc9iZA==",
+        "dependencies": {
+          "Microsoft.Extensions.AmbientMetadata.Application": "10.11.0",
+          "Microsoft.Extensions.DependencyInjection.AutoActivation": "10.11.0",
+          "Microsoft.Extensions.Telemetry.Abstractions": "10.11.0"
+        }
+      },
+      "Microsoft.Extensions.Telemetry.Abstractions": {
+        "type": "Transitive",
+        "resolved": "10.11.0",
+        "contentHash": "FzcHRan/C2g5X5KD0kPlL4tTROFRpM8sqcXfOIi6FGLsw/d2yoOYMbLJ5hyb8N5QgOVW7e1TdwEN4zVUfcwfdw==",
+        "dependencies": {
+          "Microsoft.Extensions.Compliance.Abstractions": "10.11.0"
+        }
+      },
       "MQTTnet": {
         "type": "Transitive",
         "resolved": "5.2.0.1603",
         "contentHash": "iNuWVo/568aRo2ExEN2qkC4J5b07ckKqt+9Uok2kIbbK7PMBsXvYiKVENPHmOBWFB5ExhlNQb/qQ8M9/IYRTdQ=="
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Configuration": {
+        "type": "Transitive",
+        "resolved": "2.0.2",
+        "contentHash": "PY/DtbGYJrOJfGE8xnoJPQwbURHJSSqtBqF/ZpAOVgRz9WsQO7WufU0CD+qsFsgc3fwCES05Bfuwl+JzvkhfDQ==",
+        "dependencies": {
+          "BitFaster.Caching": "2.6.1",
+          "Microsoft.Bcl.TimeProvider": "10.0.13",
+          "Microsoft.Extensions.Compliance.Abstractions": "10.11.0",
+          "Microsoft.Extensions.Telemetry": "10.11.0",
+          "Microsoft.Extensions.Telemetry.Abstractions": "10.11.0",
+          "OPCFoundation.NetStandard.Opc.Ua.Core": "2.0.2"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Core": {
+        "type": "Transitive",
+        "resolved": "2.0.2",
+        "contentHash": "0EkE97IoqblfVWaaf7ca/m0j2l4woegiOK5TBS98Q6JyQw0I8VYI6PTM/zL3aPuecdj0sfI+4NJ2qnafQbz7HA==",
+        "dependencies": {
+          "BitFaster.Caching": "2.6.1",
+          "Microsoft.Bcl.TimeProvider": "10.0.13",
+          "Microsoft.Extensions.Compliance.Abstractions": "10.11.0",
+          "Microsoft.Extensions.Telemetry": "10.11.0",
+          "Microsoft.Extensions.Telemetry.Abstractions": "10.11.0",
+          "OPCFoundation.NetStandard.Opc.Ua.Core.Types": "2.0.2",
+          "OPCFoundation.NetStandard.Opc.Ua.Security.Certificates": "2.0.2"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Core.Schema": {
+        "type": "Transitive",
+        "resolved": "2.0.2",
+        "contentHash": "+1bhppqDhpl3KhRa3QPzAR+R/ylQXxdJ8msE0syjRcPLgrv8Z+7zHAKhAZ9Fix8lU9JGrpdnWAAETAUt01e10Q==",
+        "dependencies": {
+          "BitFaster.Caching": "2.6.1",
+          "Microsoft.Bcl.TimeProvider": "10.0.13",
+          "Microsoft.Extensions.Compliance.Abstractions": "10.11.0",
+          "Microsoft.Extensions.Telemetry": "10.11.0",
+          "Microsoft.Extensions.Telemetry.Abstractions": "10.11.0",
+          "OPCFoundation.NetStandard.Opc.Ua.Core": "2.0.2"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Core.Types": {
+        "type": "Transitive",
+        "resolved": "2.0.2",
+        "contentHash": "QXkqKLY/nQ5s3qQMzBOVsXhiwOtHjvwxQxGbetIlGulYCn8qj547INT/Jmcjmhgv5tgP+/3wJPqBYo8HEnM60w==",
+        "dependencies": {
+          "Microsoft.Bcl.TimeProvider": "10.0.13",
+          "OPCFoundation.NetStandard.Opc.Ua.Types": "2.0.2"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Security.Certificates": {
+        "type": "Transitive",
+        "resolved": "2.0.2",
+        "contentHash": "kahKCePxJlmbkbaseNUgYb2uDsW9k4RpJ5HJKrqN/knIXWA0TZdHKuOc62X0xIWZIHNhTLGn1G5Bs7aXbTFgeA==",
+        "dependencies": {
+          "OPCFoundation.NetStandard.Opc.Ua.Types": "2.0.2"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Types": {
+        "type": "Transitive",
+        "resolved": "2.0.2",
+        "contentHash": "BoNx3DDUwvjfv+ACdBUjp9o2dFeQT2uj3ytYMzT+h0f8QwMiUY2cpyTxSKFChkgyDIy1EIgtHLDht0lssC9TKw=="
       }
     }
   }

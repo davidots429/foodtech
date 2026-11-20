@@ -24,3 +24,9 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 
 로컬 통합 시험은 별도 C# Mock·TLS·인증 오류·Topic ACL·외부 발행 차단과 저장 실패 후 동일 세션 재전달, 합성 표본 세 건의 표준화 규칙을 확인한다. 표준화 Worker의 vendor-a MQTT 매핑 버전은 `mockprofile-300-a-map-v1`이다. MQTT 메시지의 AWS 실저장과 배포된 수집기 실행 역할, 프로세스 재시작·장기 단절과 63개 인스턴스 시험은 후속 검증이다.
 
+## 합성 OPC UA Binary 구독
+
+`python -m foodtech_collection_adapter.opcua --count 3 --timeout 30`은 명시적으로 신뢰한 클라이언트 인증서·개인키와 고정된 서버 인증서를 사용해 UA-TCP `Basic256Sha256/SignAndEncrypt`로 연결한다. `FOODTECH_OPCUA_ENDPOINT`, `FOODTECH_OPCUA_CLIENT_CERT`(PEM), `FOODTECH_OPCUA_CLIENT_KEY`(PEM), `FOODTECH_OPCUA_SERVER_CERT`(DER), `FOODTECH_DATA_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`을 설정한다. 서버 인증서의 유효기간·애플리케이션 URI·호스트와 고정 인증서의 일치를 확인한다. Browse·Read로 합성 장비를 확인한 뒤 `RecordSnapshot`을 Subscription으로 받아 원표본을 기존 Resequencer·FIFO 흐름으로 전달한다. 표준화 매핑 버전은 `mockprofile-203-a-map-v1`이다.
+
+현재는 vendor-a 단일 합성 인스턴스의 첫 연결 경로다. UA 클라이언트가 Publish 응답을 자동 확인하므로 저장 실패·프로세스 종료에서 손실 없는 재전송은 보장하지 않는다. 재연결·Republish·Subscription 상태 복구, 실제 AWS 저장과 부하·나머지 프로파일은 후속 구현·검증이다. 인증서의 발급·교체·폐기와 서버 개인키 보호는 개발용 임시 시험과 별도로 마련해야 한다.
+

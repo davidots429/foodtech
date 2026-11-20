@@ -9,6 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="MQTTnet.Server" Version="5.2.0.1603" />
+    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Server" Version="2.0.2" />
   </ItemGroup>
 </Project>
 
