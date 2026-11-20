@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { api } from "./cookingApi";
 import { CombiQuality } from "./CombiQuality";
 import { CombiWindows } from "./CombiWindows";
+import { CombiLive } from "./CombiLive";
 
 type FanObservation = { status: string; target_level: number; deviation_seconds: number; missing_seconds: number };
 type ProbeSummary = { probe_id: string; product_id: string; rack_id: string; shelf: number; pan_id: string;
@@ -359,6 +360,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         safety={meal[menu].safety_status} jobStatus={meal[menu].status} current={meal[menu].quality_current}
         csrf={csrf} busy={busy} onBusy={setBusy} onUpdated={async () =>
           setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`))} />)}
+      <CombiLive mealId={meal.meal.meal_batch_id} />
       <p>고등어 투입: {meal.transition.mackerel_load_allowed ? "허용" : "차단"}
         {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>
       <p>시간 판정은 전체 공정·안전 판정과 별도입니다. 화면의 전환 자료는 합성 표본입니다.</p>

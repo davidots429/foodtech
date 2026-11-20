@@ -1,5 +1,6 @@
 """C# synthetic source attaches to the authenticated customer's combi meal."""
 
+import asyncio
 import json
 import os
 import shutil
@@ -86,6 +87,86 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                         finally:
                             mock.close()
                         self.assertEqual(result["phase_counts"], {"RICE": 1800, "TRANSITION": 180, "MACKEREL": 720})
+                        fetched = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}")
+                        self.assertEqual(fetched.json()["meal"]["source"]["raw_sha256"], result["raw_sha256"])
+                        self.assertEqual(fetched.json()["mackerel"]["safety_status"], "NOT_MEASURED")
+                    finally:
+                        server.terminate()
+                        server.wait(timeout=5)
+
+    async def test_timed_mock_publishes_live_then_finalizes(self):
+        async def session(_request, _surface):
+            return Session("customer", "test-customer", None, "csrf", 9999999999, 0)
+
+        store = MemoryCookingStore()
+        with patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false"}), \
+             patch.object(cooking, "_session", side_effect=session), \
+             patch.object(cooking, "get_cooking_store", return_value=store):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                created = await api.post("/api/customer/combi-meals", headers={"X-CSRF-Token": "csrf"}, json={
+                    "equipment_size": "MEDIUM_FIXED_RACK_10", "rack_count": 1, "pan_count": 10,
+                    "dry_rice_kg": "20", "drained_rice_kg": "24", "added_water_kg": "20",
+                    "pan_tare_kg": "10", "rack_tare_kg": "0"})
+                self.assertEqual(created.status_code, 201, created.text)
+                meal = created.json()["meal"]
+                fixture = json.loads(FIXTURE.read_text())
+                fixture["mealBatchId"] = meal["meal_batch_id"]
+                for phase in fixture["phases"]:
+                    phase["segments"][0]["seconds"] = 5
+                for phase, key in zip(fixture["phases"],
+                                      ("rice_cooking_job_id", "mode_transition_id", "mackerel_cooking_job_id")):
+                    phase["cookingJobId"] = meal[key]
+                with tempfile.TemporaryDirectory() as directory:
+                    temp = Path(directory)
+                    source, key, cert, pfx = (temp / name for name in ("fixture.json", "key.pem", "cert.pem", "cert.pfx"))
+                    source.write_text(json.dumps(fixture))
+                    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
+                                    "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
+                                    "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key),
+                                    "-in", str(cert), "-password", "pass:test-password"],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    with socket.socket() as probe:
+                        probe.bind(("127.0.0.1", 0))
+                        port = probe.getsockname()[1]
+                    env = {**os.environ, "FOODTECH_MOCK_CLIENT_ID": "test-client",
+                           "FOODTECH_MOCK_CLIENT_SECRET": "test-secret", "FOODTECH_MOCK_CERT_PASSWORD": "test-password"}
+                    server = subprocess.Popen(["dotnet", str(DLL), "serve", "--fixture", str(source),
+                                               "--cert", str(pfx), "--port", str(port), "--realtime"], env=env,
+                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    try:
+                        base = f"https://localhost:{port}"
+                        for _ in range(50):
+                            if server.poll() is not None:
+                                self.fail("Mock exited before becoming healthy")
+                            try:
+                                if httpx.get(base + "/health", verify=str(cert), timeout=0.3).status_code == 200:
+                                    break
+                            except httpx.TransportError:
+                                time.sleep(0.1)
+                        else:
+                            self.fail("Mock health did not become available")
+                        mock = RestMockClient(base, "test-client", "test-secret", str(cert), profile_id="mockprofile-120")
+                        try:
+                            task = asyncio.create_task(import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"], "csrf", publish_live=True))
+                            live_path = f"/api/customer/combi-meals/{meal['meal_batch_id']}/source-live"
+                            for _ in range(30):
+                                await asyncio.sleep(.5)
+                                live = (await api.get(live_path)).json()
+                                if live["count"]:
+                                    break
+                            self.assertEqual(live["state"], "COLLECTING")
+                            self.assertEqual(live["latest"]["phase"], "RICE")
+                            step = await api.post(f"/api/customer/combi-meals/{meal['meal_batch_id']}/events",
+                                headers={"X-CSRF-Token": "csrf"}, json={"expected_version": 1,
+                                "event": "RICE_STARTED", "observed_at": fixture["logicalStartAt"]})
+                            self.assertEqual(step.status_code, 200, step.text)
+                            result = await task
+                            self.assertEqual((await api.get(live_path)).json()["state"], "COMPLETED")
+                        finally:
+                            mock.close()
+                        self.assertEqual(result["phase_counts"], {"RICE": 5, "TRANSITION": 5, "MACKEREL": 5})
                         fetched = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}")
                         self.assertEqual(fetched.json()["meal"]["source"]["raw_sha256"], result["raw_sha256"])
                         self.assertEqual(fetched.json()["mackerel"]["safety_status"], "NOT_MEASURED")

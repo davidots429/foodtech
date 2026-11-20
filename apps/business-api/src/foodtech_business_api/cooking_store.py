@@ -53,8 +53,12 @@ class CookingStore(Protocol):
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict]) -> None: ...
+                           event: dict, chunks: list[dict], live_count: int | None = None) -> None: ...
     def read_meal_source_chunk(self, pk: str, index: int) -> dict | None: ...
+    def read_meal_live(self, pk: str) -> dict | None: ...
+    def read_meal_live_chunk(self, pk: str, start: int) -> dict | None: ...
+    def read_meal_live_chunks(self, pk: str) -> list[dict]: ...
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None: ...
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
@@ -117,11 +121,13 @@ class MemoryCookingStore:
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict]) -> None:
+                           event: dict, chunks: list[dict], live_count: int | None = None) -> None:
         source_pk = pk + "#SOURCE"
         with self.lock:
             current = self.items.get((pk, "META"))
+            live = self.items.get((pk + "#LIVE", "META"))
             if (not current or current["version"] != expected_version or (pk, event["sk"]) in self.items or
+                    (int(live["count"]) if live else None) != live_count or
                     any((source_pk, row["sk"]) in self.items for row in chunks)):
                 raise Conflict
             self.items[(pk, "META")] = {"pk": pk, **meta}
@@ -133,6 +139,31 @@ class MemoryCookingStore:
         with self.lock:
             row = self.items.get((pk + "#SOURCE", f"RAW#{index:04d}"))
             return row.copy() if row else None
+
+    def read_meal_live(self, pk: str) -> dict | None:
+        with self.lock:
+            row = self.items.get((pk + "#LIVE", "META"))
+            return row.copy() if row else None
+
+    def read_meal_live_chunk(self, pk: str, start: int) -> dict | None:
+        with self.lock:
+            row = self.items.get((pk + "#LIVE", f"CHUNK#{start:06d}"))
+            return row.copy() if row else None
+
+    def read_meal_live_chunks(self, pk: str) -> list[dict]:
+        with self.lock:
+            return [row.copy() for (item_pk, sk), row in sorted(self.items.items())
+                    if item_pk == pk + "#LIVE" and sk.startswith("CHUNK#")]
+
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None:
+        with self.lock:
+            meal = self.items.get((pk, "META"))
+            current = self.items.get((pk + "#LIVE", "META"))
+            if (not meal or meal.get("source") or int((current or {}).get("count", 0)) != expected or
+                    (pk + "#LIVE", chunk["sk"]) in self.items):
+                raise Conflict
+            self.items[(pk + "#LIVE", chunk["sk"])] = {"pk": pk + "#LIVE", **chunk}
+            self.items[(pk + "#LIVE", "META")] = {"pk": pk + "#LIVE", **state}
 
     def read(self, pk: str) -> tuple[dict | None, dict | None]:
         with self.lock:
@@ -440,7 +471,7 @@ class DynamoCookingStore:
             raise
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict]) -> None:
+                           event: dict, chunks: list[dict], live_count: int | None = None) -> None:
         operations = [
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected", "ExpressionAttributeNames": {"#v": "version"},
@@ -448,6 +479,12 @@ class DynamoCookingStore:
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **event}),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
         ]
+        live_check = {"TableName": self.table.name, "Key": self._item({"pk": pk + "#LIVE", "sk": "META"}),
+                      "ConditionExpression": "attribute_not_exists(pk)" if live_count is None else "#count = :expected"}
+        if live_count is not None:
+            live_check["ExpressionAttributeNames"] = {"#count": "count"}
+            live_check["ExpressionAttributeValues"] = {":expected": {"N": str(live_count)}}
+        operations.append({"ConditionCheck": live_check})
         operations.extend({"Put": {"TableName": self.table.name,
                                    "Item": self._item({"pk": pk + "#SOURCE", **row}),
                                    "ConditionExpression": "attribute_not_exists(pk)"}} for row in chunks)
@@ -463,6 +500,52 @@ class DynamoCookingStore:
         row = self.table.get_item(Key={"pk": pk + "#SOURCE", "sk": f"RAW#{index:04d}"},
                                   ConsistentRead=True).get("Item")
         return _api_numbers(row)
+
+    def read_meal_live(self, pk: str) -> dict | None:
+        row = self.table.get_item(Key={"pk": pk + "#LIVE", "sk": "META"}, ConsistentRead=True).get("Item")
+        return _api_numbers(row)
+
+    def read_meal_live_chunk(self, pk: str, start: int) -> dict | None:
+        row = self.table.get_item(Key={"pk": pk + "#LIVE", "sk": f"CHUNK#{start:06d}"}, ConsistentRead=True).get("Item")
+        return _api_numbers(row)
+
+    def read_meal_live_chunks(self, pk: str) -> list[dict]:
+        items = []
+        start_key = None
+        while True:
+            params = {"KeyConditionExpression": Key("pk").eq(pk + "#LIVE") & Key("sk").begins_with("CHUNK#"),
+                      "ConsistentRead": True}
+            if start_key:
+                params["ExclusiveStartKey"] = start_key
+            page = self.table.query(**params)
+            items.extend(page.get("Items", []))
+            if len(items) > 5000:
+                raise ValueError("too many live chunks")
+            start_key = page.get("LastEvaluatedKey")
+            if not start_key:
+                return _api_numbers(items)
+
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None:
+        condition = "attribute_not_exists(pk)" if expected == 0 else "#count = :expected"
+        live_put = {"TableName": self.table.name, "Item": self._item({"pk": pk + "#LIVE", **state}),
+                    "ConditionExpression": condition}
+        if expected:
+            live_put["ExpressionAttributeNames"] = {"#count": "count"}
+            live_put["ExpressionAttributeValues"] = {":expected": {"N": str(expected)}}
+        operations = [
+            {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
+                                "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(#source)",
+                                "ExpressionAttributeNames": {"#source": "source"}}},
+            {"Put": live_put},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk + "#LIVE", **chunk}),
+                     "ConditionExpression": "attribute_not_exists(pk)"}},
+        ]
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in exc.response.get("CancellationReasons", [])):
+                raise Conflict from exc
+            raise
 
     def read(self, pk: str) -> tuple[dict | None, dict | None]:
         meta = self.table.get_item(Key={"pk": pk, "sk": "META"}, ConsistentRead=True).get("Item")

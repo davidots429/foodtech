@@ -53,6 +53,50 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path)).status_code, 404)
 
+    async def test_live_source_isolated_idempotent_and_checked_before_completion(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        meta = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()["meal"]
+        meal_id = meta["meal_batch_id"]
+        path = "/api/customer/combi-meals/" + meal_id
+        records = []
+        for index, (phase, job) in enumerate((("RICE", meta["rice_cooking_job_id"]),
+                                               ("TRANSITION", meta["mode_transition_id"]),
+                                               ("MACKEREL", meta["mackerel_cooking_job_id"])), 1):
+            at = (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=index-1)).isoformat()
+            records.append(json.dumps({"eventId": f"{meal_id}-{index:06d}", "mealBatchId": meal_id,
+                "cookingJobId": job, "deviceId": "combi-1", "mockInstanceId": "mockprofile-120-a-001",
+                "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": index,
+                "schemaVersion": "synthetic-combi-v1", "programVersion": "v1", "provenance": "SYNTHETIC",
+                "dataQuality": "VALID", "phase": phase, "phaseSecond": 1, "chamberCelsius": 100,
+                "climateSetpointPercent": 100, "measuredHumidityPercent": 98,
+                "humidityValueSource": "MEASURED", "fanLevel": 4, "doorState": "CLOSED"}))
+        batch = {"device_id": "combi-1", "expected_cursor": 0, "records": records[:1]}
+        self.assertEqual((await self.client.get(path + "/source-live")).json()["state"], "NOT_STARTED")
+        self.assertEqual((await self.client.post(path + "/source-live", json=batch)).status_code, 403)
+        first = await self.client.post(path + "/source-live", json=batch, headers=headers)
+        self.assertEqual(first.json(), {"next_cursor": 1, "duplicate": False})
+        duplicate = await self.client.post(path + "/source-live", json=batch, headers=headers)
+        self.assertEqual(duplicate.json(), {"next_cursor": 1, "duplicate": True})
+        changed = json.loads(records[0]); changed["chamberCelsius"] = 99
+        self.assertEqual((await self.client.post(path + "/source-live", json={**batch, "records": [json.dumps(changed)]}, headers=headers)).status_code, 409)
+        gap = {**batch, "expected_cursor": 2, "records": records[2:]}
+        self.assertEqual((await self.client.post(path + "/source-live", json=gap, headers=headers)).status_code, 409)
+        status = (await self.client.get(path + "/source-live")).json()
+        self.assertEqual((status["state"], status["count"], status["latest"]["phase"]), ("COLLECTING", 1, "RICE"))
+        self.subject = "customer-two"
+        self.assertEqual((await self.client.get(path + "/source-live")).status_code, 404)
+        self.subject = "customer-one"
+        completion = {"expected_version": 1, "device_id": "combi-1", "records": records}
+        self.assertEqual((await self.client.post(path + "/source-observations", json=completion, headers=headers)).status_code, 409)
+        rest = {"device_id": "combi-1", "expected_cursor": 1, "records": records[1:]}
+        self.assertEqual((await self.client.post(path + "/source-live", json=rest, headers=headers)).status_code, 200)
+        altered = list(records); altered[0] = json.dumps(changed)
+        self.assertEqual((await self.client.post(path + "/source-observations", json={**completion, "records": altered}, headers=headers)).status_code, 409)
+        response = await self.client.post(path + "/source-observations", json=completion, headers=headers)
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual((await self.client.get(path + "/source-live")).json()["state"], "COMPLETED")
+        self.assertEqual((await self.client.post(path + "/source-live", json={**batch, "expected_cursor": 3}, headers=headers)).status_code, 409)
+
     async def test_source_import_binds_and_pages_without_advancing_cooking(self):
         headers = {"X-CSRF-Token": "csrf"}
         created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
