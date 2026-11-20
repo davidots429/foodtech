@@ -11,6 +11,7 @@ import rfc8785
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.collection_evidence import matches_snapshot
 from foodtech_contracts.tonkatsu_process import process_status
 
 from .process_rules import RULE_VERSION, advance
@@ -152,6 +153,20 @@ class DynamoProcessRestatement:
             if not last:
                 return items
 
+    def _collection_receipts(self, stream_pk: str) -> list[dict]:
+        items = []
+        last = None
+        while True:
+            args = {"KeyConditionExpression": Key("pk").eq(stream_pk) & Key("sk").begins_with("COLLECTION#RECEIPT#"),
+                    "ConsistentRead": True}
+            if last:
+                args["ExclusiveStartKey"] = last
+            page = self.data.query(**args)
+            items.extend(page.get("Items", []))
+            last = page.get("LastEvaluatedKey")
+            if not last:
+                return items
+
     @staticmethod
     def _eligible(item: dict, job: dict) -> str | None:
         normalized = item.get("normalized")
@@ -198,6 +213,9 @@ class DynamoProcessRestatement:
         events = self._query(job_pk, "EVENT#PROCESS#")
         sources.update((item["source_assessment_pk"], "ASSESSMENT#v1") for item in events)
         raw = self._stream_sources(stream_pk)
+        receipts = self._collection_receipts(stream_pk)
+        matching = sorted(item["sk"] for item in receipts if matches_snapshot(item, stream_pk, raw))
+        receipt_sk = matching[0] if matching else None
         raw_ids = {item["ingestion_event_id"] for item in raw}
         if ingestion_event_id not in raw_ids:
             raise RuntimeError("restatement trigger raw source is not ready")
@@ -225,6 +243,7 @@ class DynamoProcessRestatement:
         pointer_version = int(previous_pointer["version"]) + 1 if previous_pointer else 1
         manifest = {"request_sk": request["sk"], "job_version": int(job["version"]),
                     "rule_version": RULE_VERSION, "coverage_version": COVERAGE_VERSION,
+                    "collection_receipt_sk": receipt_sk,
                     "source_assessment_keys": [f"{pk}/{sk}" for pk, sk in sorted(sources)],
                     "excluded": excluded}
         digest = hashlib.sha256(rfc8785.dumps(manifest)).hexdigest()
@@ -235,6 +254,7 @@ class DynamoProcessRestatement:
                   "trigger_request_sk": request["sk"], "job_id": job["job_id"],
                   "job_version_at_derivation": int(job["version"]),
                   "source_stream_pk": stream_pk, "source_raw_count": len(raw),
+                  "collection_evidence": {"receipt_sk": receipt_sk, "raw_snapshot_matches": bool(receipt_sk)},
                   "source_assessment_keys": manifest["source_assessment_keys"],
                   "excluded_sources": excluded, "input_hash": digest,
                   "created_at": completed_at, **derived}

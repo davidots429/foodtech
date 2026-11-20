@@ -75,6 +75,17 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CURRENT_QUALITY_ASSESSMENT", value["unverified_categories"])
         self.assertIn("CURRENT_PROCESS_DERIVATION", value["unverified_categories"])
 
+    async def test_collection_receipt_reports_snapshot_match_without_claiming_completeness(self):
+        derived = self.store.items[(self.pk, "RESTATEMENT#RESULT#test")]
+        derived["collection_evidence"] = {"receipt_sk": "COLLECTION#RECEIPT#test", "raw_snapshot_matches": True}
+        path = f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence"
+        result = (await self.client.get(path)).json()
+        self.assertTrue(result["collection_snapshot_matches_receipt"])
+        self.assertIn("SOURCE_COMPLETENESS", result["unverified_categories"])
+        self.assertFalse(result["recommendation_execution_available"])
+        self.store.items[(self.pk, "META")]["version"] = 8
+        self.assertFalse((await self.client.get(path)).json()["collection_snapshot_matches_receipt"])
+
     async def test_concurrent_job_change_rejects_mixed_snapshot(self):
         original = self.store.latest_process_result
         def racing_read(pk):

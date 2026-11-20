@@ -8,6 +8,7 @@ type Evidence = {
   unverified_categories: string[];
   completeness: "INSUFFICIENT" | "NOT_ASSESSED";
   completeness_reasons: string[];
+  collection_snapshot_matches_receipt: boolean;
 };
 
 const completenessLabels: Record<string, string> = {
@@ -87,6 +88,8 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}
         {" "}· 품질평가 {value.recorded.quality?.score_percent == null ? "현재 유효 평가 없음" : `${value.recorded.quality.score_percent}점`}</p>
       {value.process_stale && <p className="warning">공정 재계산 이후 작업이 변경되어 다시 확인해야 합니다.</p>}
+      {value.collection_snapshot_matches_receipt && <p>저장된 수집 원본 스냅샷이 수집 종료 기록과 일치합니다.
+        전체 원천 완전성과 이후 추가 데이터는 별도로 확인해야 합니다.</p>}
       <p>입력 완전성: {value.completeness === "INSUFFICIENT" ? "필수 근거 부족" : "전체 미평가"}</p>
       <ul>{value.completeness_reasons.map(reason => <li key={reason}>{completenessLabels[reason] ?? reason}</li>)}</ul>
       {value.unverified_categories.length > 0 && <><p>아직 확인하지 못한 범주</p>
