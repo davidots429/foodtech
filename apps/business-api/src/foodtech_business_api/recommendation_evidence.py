@@ -66,6 +66,10 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
     fields["tonkatsu_batch"] = ({key: recorded_batch.get(key) for key in
         ("rule_version", "mode", "product_weights_g", "product_count", "total_mass_kg",
          "rated_capacity_kg", "load_percent")} if isinstance(recorded_batch, dict) else None)
+    reheat = job.get("latest_tonkatsu_reheat")
+    fields["latest_tonkatsu_reheat"] = ({key: reheat.get(key) for key in
+        ("started_at", "lifted_at", "duration_seconds", "previous_safety_version")}
+        if isinstance(reheat, dict) else None)
     raw_initial = job.get("tonkatsu_initial_context")
     initial_current = bool(isinstance(raw_initial, dict) and
                            raw_initial.get("batch_version") == job.get("tonkatsu_batch_version") and
@@ -96,6 +100,8 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
     if stale:
         missing.append("CURRENT_PROCESS_DERIVATION")
     if job.get("menu") == "TONKATSU":
+        if reheat:
+            missing.append("REHEAT_HISTORY_NOT_ASSESSED")
         if not preload or stale or preload.get("status") != "OBSERVED":
             missing.append("PREPLACEMENT_TEMPERATURE_UNAVAILABLE")
         else:
