@@ -178,6 +178,30 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(processor.process("JOB#1", "late"), "ALREADY_COMPLETED")
         processor._refresh_dependents.assert_called_once_with("JOB#1")
 
+    def test_customer_request_replays_current_source_without_trigger_event(self):
+        job = self.job()
+        sample = self.sample("first", 1, 0)
+        source_pk = stream_binding_key(**self.binding)
+        request_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        request = {"pk": "JOB#1", "sk": f"RESTATEMENT#REQUEST#{request_id}", "status": "PENDING",
+                   "reason": "CUSTOMER_REFRESH", "request_id": request_id, "source_stream_pk": source_pk}
+        processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.cooking, processor.data, processor.client = Mock(), Mock(), Mock()
+        processor.cooking.name, processor.data.name = "cooking", "data"
+        processor.serializer = TypeSerializer()
+        processor._refresh_dependents = Mock()
+        processor.cooking.get_item.side_effect = lambda **kwargs: (
+            {} if kwargs["Key"]["sk"] == "PROCESS#LATEST_RESTATED" else
+            {"Item": job if kwargs["Key"]["sk"] == "META" else request})
+        processor.data.get_item.side_effect = lambda **kwargs: (
+            {"Item": {"revision": 1}} if kwargs["Key"]["sk"] == "SOURCE#REVISION" else {"Item": sample})
+        processor._query = lambda _pk, prefix: [request] if prefix.startswith("RESTATEMENT") else []
+        processor._stream_sources = lambda _pk: [{"ingestion_event_id": "first"}]
+        processor._collection_receipts = lambda _pk: []
+        self.assertEqual(processor.process("JOB#1", request_id), "DERIVED")
+        request_put = processor.client.transact_write_items.call_args.kwargs["TransactItems"][2]["Put"]["Item"]
+        self.assertEqual(request_put["status"]["S"], "COMPLETED")
+
     def test_refresh_dependents_uses_business_aggregate_refresh(self):
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
         processor.cooking = Mock()

@@ -55,6 +55,8 @@ def _api_numbers(value):
 
 
 class CookingStore(Protocol):
+    def customer_restatement(self, pk: str, request_id: str) -> dict | None: ...
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict: ...
     def create_meal(self, pk: str, records: list[dict]) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
@@ -105,6 +107,26 @@ class MemoryCookingStore:
     def __init__(self) -> None:
         self.items: dict[tuple[str, str], dict] = {}
         self.lock = threading.RLock()
+
+    def customer_restatement(self, pk: str, request_id: str) -> dict | None:
+        with self.lock:
+            value = self.items.get((pk, f"RESTATEMENT#REQUEST#{request_id}"))
+            return value.copy() if value else None
+
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict:
+        key = (pk, request["sk"])
+        with self.lock:
+            existing = self.items.get(key)
+            if existing:
+                if any(existing.get(field) != request.get(field) for field in
+                       ("reason", "request_id", "job_version_at_detection", "source_stream_pk")):
+                    raise Conflict
+                return existing.copy()
+            current = self.items.get((pk, "META"))
+            if not current or current["version"] != expected_version:
+                raise Conflict
+            self.items[key] = {"pk": pk, **request}
+            return self.items[key].copy()
 
     def create_meal(self, pk: str, records: list[dict]) -> None:
         with self.lock:
@@ -430,6 +452,36 @@ class DynamoCookingStore:
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
+
+    def customer_restatement(self, pk: str, request_id: str) -> dict | None:
+        item = self.table.get_item(Key={"pk": pk, "sk": f"RESTATEMENT#REQUEST#{request_id}"},
+                                   ConsistentRead=True).get("Item")
+        return _api_numbers(item)
+
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict:
+        def existing_or_conflict():
+            value = self.customer_restatement(pk, request["request_id"])
+            if not value or any(value.get(field) != request.get(field) for field in
+                                ("reason", "request_id", "job_version_at_detection", "source_stream_pk")):
+                raise Conflict
+            return value
+
+        if self.customer_restatement(pk, request["request_id"]):
+            return existing_or_conflict()
+        try:
+            self.client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
+                    "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
+                    "ExpressionAttributeValues": self._item({":v": expected_version})}},
+                {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **request}),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in
+                   exc.response.get("CancellationReasons", [])):
+                return existing_or_conflict()
+            raise
+        return {"pk": pk, **request}
 
     def create_meal(self, pk: str, records: list[dict]) -> None:
         operations = [{"Put": {"TableName": self.table.name,

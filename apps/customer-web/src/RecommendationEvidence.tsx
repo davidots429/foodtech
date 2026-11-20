@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api, jobPath } from "./cookingApi";
 
 type Evidence = {
   job_version: number; process_view: "AS_PROCESSED" | "LATEST_RESTATED"; process_stale: boolean;
-  recorded: { recipe_version: string | null; safety_status: string | null; process_status: string | null;
-    cooking_seconds: number | null; quality: { score_percent: string | null } | null };
+  recorded: { menu: string | null; recipe_version: string | null; safety_status: string | null; process_status: string | null;
+    job_status: string | null; cooking_seconds: number | null; quality: { score_percent: string | null } | null };
   unverified_categories: string[];
   completeness: "INSUFFICIENT" | "NOT_ASSESSED";
   completeness_reasons: string[];
@@ -45,12 +45,18 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
   const [notice, setNotice] = useState<LocalNotice | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const restatementId = useRef<string | null>(null);
+  const [restatementStatus, setRestatementStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function load() {
     if (busy) return;
     setBusy(true); setError(""); setValue(null); setRequested(null); setNotice(null); setConfirmed(false); setAcknowledged(false);
-    try { setValue(await api<Evidence>(jobPath(jobId) + "/recommendation-evidence")); }
+    try {
+      const next = await api<Evidence>(jobPath(jobId) + "/recommendation-evidence");
+      if (!value || value.job_version !== next.job_version) { restatementId.current = null; setRestatementStatus(""); }
+      setValue(next);
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "조리 근거를 조회하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -60,6 +66,29 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
     try { setRequested(await api<RecipeRequest>("/api/customer/ai/recipe-requests", csrf,
       { job_id: jobId, job_version: value.job_version })); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "권고 요청을 기록하지 못했습니다."); }
+    finally { setBusy(false); }
+  }
+  async function requestRestatement() {
+    if (!value || busy) return;
+    setBusy(true); setError("");
+    const requestId = restatementId.current ?? crypto.randomUUID();
+    restatementId.current = requestId;
+    try {
+      const result = await api<{ status: string }>(jobPath(jobId) + "/process-restatements", csrf,
+        { request_id: requestId, expected_version: value.job_version });
+      setRestatementStatus(result.status);
+      if (result.status === "COMPLETED") restatementId.current = null;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "재계산 요청을 전달하지 못했습니다."); }
+    finally { setBusy(false); }
+  }
+  async function checkRestatement() {
+    if (!restatementId.current || busy) return;
+    setBusy(true); setError("");
+    try {
+      const result = await api<{ status: string }>(jobPath(jobId) + "/process-restatements/" + restatementId.current);
+      setRestatementStatus(result.status);
+      if (result.status === "COMPLETED") restatementId.current = null;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "재계산 상태를 조회하지 못했습니다."); }
     finally { setBusy(false); }
   }
   async function preview() {
@@ -102,6 +131,11 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
       <ul>{value.completeness_reasons.map(reason => <li key={reason}>{completenessLabels[reason] ?? reason}</li>)}</ul>
       {value.unverified_categories.length > 0 && <><p>아직 확인하지 못한 범주</p>
         <ul>{value.unverified_categories.map(category => <li key={category}>{labels[category] ?? category}</li>)}</ul></>}
+      {value.recorded.menu === "TONKATSU" && value.recorded.job_status && ["COMPLETED", "FAILED"].includes(value.recorded.job_status) && <div>
+        <button type="button" disabled={busy} onClick={() => void requestRestatement()}>공정 근거 재계산 요청</button>
+        {restatementId.current && <button type="button" disabled={busy} onClick={() => void checkRestatement()}>재계산 상태 확인</button>}
+        {restatementStatus && <p>재계산 요청: {restatementStatus === "COMPLETED" ? "완료 · 조리 근거를 다시 조회해 주세요" : "처리 대기"}</p>}
+      </div>}
       {!requested && <button type="button" onClick={() => void requestRecipe()}
         disabled={busy || value.completeness === "INSUFFICIENT"}>AI 권고 요청 기록</button>}
       {requested && <><p>Tier 1 모델이 설정되지 않아 요청의 실행이 차단되어 있습니다.</p>

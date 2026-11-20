@@ -45,6 +45,22 @@ class DynamoStandardizationWorker:
         return results
 
     def process(self, reference: dict) -> dict:
+        if reference.get("kind") == "CUSTOMER_RESTATEMENT":
+            bridge = getattr(self, "process_bridge", None)
+            if not bridge or not bridge.restatement:
+                raise RuntimeError("restatement worker is not configured")
+            job_pk, request_id = reference.get("job_pk"), reference.get("request_id")
+            if not isinstance(job_pk, str) or not job_pk.startswith("SCOPE#USER#") or \
+                    not isinstance(request_id, str) or len(request_id) != 36:
+                raise ValueError("invalid restatement reference")
+            request = bridge.table.get_item(Key={"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{request_id}"},
+                                            ConsistentRead=True).get("Item")
+            if not request or request.get("reason") != "CUSTOMER_REFRESH" or request.get("request_id") != request_id:
+                raise ValueError("untrusted customer restatement reference")
+            result = bridge.restatement.process(job_pk, request_id)
+            if result not in {"DERIVED", "ALREADY_COMPLETED"}:
+                raise RuntimeError(f"customer restatement must be retried: {result}")
+            return {"request_id": request_id, "result": result}
         if reference.get("profile_id") == "mockprofile-110":
             result = self.jeyuk_processor.process(reference)
             bridge = getattr(self, "jeyuk_job_bridge", None)

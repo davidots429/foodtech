@@ -253,6 +253,11 @@ class CoreCheck(StrictModel):
         return self
 
 
+class CustomerRestatementRequest(StrictModel):
+    expected_version: StrictInt = Field(ge=1)
+    request_id: uuid.UUID
+
+
 def _probe_summary(probe: Probe) -> dict:
     values = [sample.celsius for sample in probe.samples if sample.celsius is not None]
     complete = (probe.calibration_status == "OK" and len(probe.samples) == 61 and
@@ -626,6 +631,65 @@ async def recommendation_evidence(job_id: str, request: Request, response: Respo
     from .recommendation_evidence import read_evidence
     response.headers["Cache-Control"] = "no-store"
     return await read_evidence(request, job_id)
+
+
+@router.post("/{job_id}/process-restatements", status_code=202)
+async def request_process_restatement(job_id: str, request: Request, body: CustomerRestatementRequest) -> dict:
+    from .restatement_queue import send, source_revision
+    _, store, pk, job, _ = await _read(request, job_id, write=True)
+    request_id = str(body.request_id)
+    existing = await _store_call(store, store.customer_restatement, pk, request_id)
+    if existing:
+        if existing.get("reason") != "CUSTOMER_REFRESH" or \
+                existing.get("job_version_at_detection") != body.expected_version:
+            raise HTTPException(409, "재계산 요청 ID가 다른 요청에 사용되었습니다.")
+        if existing["status"] == "COMPLETED":
+            return {"request_id": request_id, "status": "COMPLETED"}
+    else:
+        if int(job["version"]) != body.expected_version:
+            raise _conflict()
+        if job.get("provenance") != "SYNTHETIC" or job.get("menu") != "TONKATSU" or \
+                job.get("status") not in {"COMPLETED", "FAILED"} or not job.get("source_binding"):
+            raise HTTPException(409, "원천이 연결된 완료 돈까스 작업만 재계산할 수 있습니다.")
+    queue_url = os.getenv("FOODTECH_ORDERED_QUEUE_URL", "")
+    table_name = os.getenv("FOODTECH_DATA_TABLE", "")
+    if not queue_url or not table_name:
+        raise HTTPException(503, "공정 재계산 저장소 또는 대기열이 설정되지 않았습니다.")
+    if not existing:
+        stream = stream_binding_key(**job["source_binding"])
+        try:
+            revision = await asyncio.to_thread(source_revision, table_name, stream)
+        except Exception as exc:
+            logger.exception("Unable to read restatement source revision")
+            raise HTTPException(503, "원천 상태를 확인하지 못했습니다.") from exc
+        if revision is None:
+            raise HTTPException(409, "재계산할 원천 버전이 없습니다.")
+        record = {"sk": f"RESTATEMENT#REQUEST#{request_id}", "request_id": request_id,
+                  "status": "PENDING", "reason": "CUSTOMER_REFRESH", "source_stream_pk": stream,
+                  "source_revision_at_request": revision, "job_id": job["job_id"],
+                  "job_version_at_detection": body.expected_version, "provenance": "SYNTHETIC",
+                  "requested_at": _now()}
+        try:
+            existing = await _store_call(store, store.create_customer_restatement, pk, body.expected_version, record)
+        except Conflict as exc:
+            raise _conflict() from exc
+    if existing["status"] == "PENDING":
+        try:
+            await asyncio.to_thread(send, queue_url, pk, request_id)
+        except Exception as exc:
+            logger.exception("Unable to dispatch restatement request")
+            raise HTTPException(503, "요청은 저장되었으나 전달되지 않았습니다. 같은 요청으로 다시 시도해 주세요.") from exc
+    return {"request_id": request_id, "status": existing["status"]}
+
+
+@router.get("/{job_id}/process-restatements/{request_id}")
+async def process_restatement_status(job_id: str, request_id: uuid.UUID, request: Request, response: Response) -> dict:
+    _, store, pk, _, _ = await _read(request, job_id)
+    item = await _store_call(store, store.customer_restatement, pk, str(request_id))
+    if not item or item.get("reason") != "CUSTOMER_REFRESH":
+        raise HTTPException(404, "재계산 요청을 찾을 수 없습니다.")
+    response.headers["Cache-Control"] = "no-store"
+    return {"request_id": str(request_id), "status": item["status"]}
 
 
 @router.get("/{job_id}/time-monitor")

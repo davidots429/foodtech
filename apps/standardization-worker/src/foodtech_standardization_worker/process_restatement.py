@@ -214,7 +214,7 @@ class DynamoProcessRestatement:
         requests = self._query(job_pk, "RESTATEMENT#REQUEST#")
         selected = [item for item in requests if item["status"] == "COMPLETED" or item["sk"] == request["sk"]]
         sources = {(item["source_assessment_pk"], item.get("source_assessment_sk", "ASSESSMENT#v1"))
-                   for item in selected}
+                   for item in selected if item.get("source_assessment_pk")}
         events = self._query(job_pk, "EVENT#PROCESS#")
         sources.update((item["source_assessment_pk"], "ASSESSMENT#v1") for item in events)
         source_revision = self._source_revision(stream_pk)
@@ -223,7 +223,7 @@ class DynamoProcessRestatement:
         matching = sorted(item["sk"] for item in receipts if matches_snapshot(item, stream_pk, raw))
         receipt_sk = matching[0] if matching else None
         raw_ids = {item["ingestion_event_id"] for item in raw}
-        if ingestion_event_id not in raw_ids:
+        if request.get("reason") != "CUSTOMER_REFRESH" and ingestion_event_id not in raw_ids:
             raise RuntimeError("restatement trigger raw source is not ready")
         sources.update((f"EVENT#{item['ingestion_event_id']}", "ASSESSMENT#v1") for item in raw)
         if len(sources) > MAX_RESTATEMENT_SAMPLES:
