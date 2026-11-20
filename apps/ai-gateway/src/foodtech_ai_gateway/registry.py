@@ -15,7 +15,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
 
-from .policy import Budget, Consent, Credential, Execution, Feature, Model, Tier
+from .policy import Budget, Consent, Credential, Execution, Feature, Model, Tier, UNCONFIGURED_TIER1
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -88,6 +88,8 @@ class DynamoRegistry:
         self._put_new("EXEC", value.execution_id, fields)
 
     def create_model(self, value: Model) -> None:
+        if value.model_id == UNCONFIGURED_TIER1:
+            raise ValueError("reserved request marker is not a model")
         fields = asdict(value)
         fields["tier"] = value.tier.value
         for field in ("approved_at", "activated_at"):
@@ -198,6 +200,10 @@ class DynamoRegistry:
         required = {_key("EXEC", execution.parent_execution_id)["pk"], _key("MODEL", execution.model_id)["pk"]}
         if not required.issubset(self._read_versions):
             raise RegistryConflict("parent or target model was not checked")
+        if quote.get("source_model_id") == UNCONFIGURED_TIER1:
+            items.append({"ConditionCheck": {"TableName": self.table_name,
+                          "Key": self._av(_key("MODEL", UNCONFIGURED_TIER1)),
+                          "ConditionExpression": "attribute_not_exists(pk)"}})
         for pk in self.snapshot_versions():
             if pk != quote_key["pk"]:
                 kind, identifier = pk.split("#", 1)

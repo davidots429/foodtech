@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from .policy import Caller, Consent, Execution, Feature, GatewayPolicy, Tier, _active
+from .policy import Caller, Consent, Execution, Feature, GatewayPolicy, Tier, UNCONFIGURED_TIER1, _active
 from .registry import RegistryConflict
 
 NOTICE_VERSION = "local-recipe-downgrade-v1"
@@ -34,7 +34,8 @@ class DowngradeFlow:
         if self.registry.snapshot_versions().get(f"EXEC#{parent_id}") != first_versions.get(f"EXEC#{parent_id}"):
             raise DowngradeError("PARENT_CHANGED")
         source = self.registry.model(parent.model_id)
-        if not source or source.tier != Tier.TIER_1:
+        if (parent.model_id == UNCONFIGURED_TIER1 and source is not None) or \
+                (parent.model_id != UNCONFIGURED_TIER1 and (not source or source.tier != Tier.TIER_1)):
             raise DowngradeError("PARENT_NOT_TIER_ONE")
         prior_versions = self.registry.snapshot_versions()
         decision = GatewayPolicy(self.registry).authorize(Caller("business-api", tenant), parent_id)
@@ -61,6 +62,7 @@ class DowngradeFlow:
         expires = now + timedelta(minutes=5)
         self.registry.create_quote(quote_id, {"quote_id": quote_id, "execution_id": execution_id,
             "parent_execution_id": parent_id, "tenant_id": tenant, "purpose": PURPOSE,
+            "source_model_id": parent.model_id,
             "job_id": parent.job_id, "job_version": parent.job_version,
             "model_id": MODEL_ID, "notice_version": NOTICE_VERSION, "estimated_cost_usd": Decimal("0"),
             "created_at": now.isoformat(), "expires": int(expires.timestamp())})
@@ -81,7 +83,8 @@ class DowngradeFlow:
                 quote.get("expires", 0) <= int(datetime.now(timezone.utc).timestamp()):
             raise DowngradeError("NOTICE_UNAVAILABLE")
         parent = self._check(tenant, quote["parent_execution_id"])
-        if (parent.job_id, parent.job_version) != (quote.get("job_id"), quote.get("job_version")):
+        if (parent.job_id, parent.job_version) != (quote.get("job_id"), quote.get("job_version")) or \
+                (quote.get("source_model_id") is not None and parent.model_id != quote["source_model_id"]):
             raise DowngradeError("PARENT_CHANGED")
         execution = Execution(quote["execution_id"], tenant, Feature.RECIPE_CORRECTION, MODEL_ID,
                               None, "SYNTHETIC", Decimal("0"), downgrade_consent_id=quote_id,

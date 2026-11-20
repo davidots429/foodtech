@@ -3,6 +3,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from botocore.session import get_session
@@ -10,7 +12,7 @@ from botocore.validate import validate_parameters
 
 from foodtech_ai_gateway.downgrade_flow import DowngradeError, DowngradeFlow, NOTICE_VERSION
 from foodtech_ai_gateway.main import app
-from foodtech_ai_gateway.policy import Caller, Execution, Feature, GatewayPolicy, Model, Tier
+from foodtech_ai_gateway.policy import Caller, Execution, Feature, GatewayPolicy, Model, Tier, UNCONFIGURED_TIER1
 from foodtech_ai_gateway.registry import DynamoRegistry
 from foodtech_ai_gateway.service import GatewayService
 from test_registry import AtomicClient, MemoryResource
@@ -140,6 +142,97 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
                 self.assertEqual((await client.post("/internal/ai/recipe-downgrades/preview",
                     json={"tenant_id": "customer-a", "parent_execution_id": self.parent})).status_code, 401)
+        finally:
+            del app.state.mtls_listener
+            del app.state.gateway_service
+
+    async def test_unconfigured_tier_one_request_and_explicit_downgrade(self):
+        app.state.mtls_listener = True
+        app.state.gateway_service = GatewayService(self.registry)
+        job = str(uuid4())
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway") as client:
+                response = await client.post("/internal/ai/recipe-requests", json={
+                    "tenant_id": "customer-a", "job_id": job, "job_version": 7})
+                self.assertEqual(response.status_code, 201, response.text)
+                self.assertEqual(response.json()["reason"], "TIER1_MODEL_NOT_CONFIGURED")
+                parent_id = response.json()["execution_id"]
+                self.assertEqual(self.registry.execution(parent_id).model_id, UNCONFIGURED_TIER1)
+                preview_path = "/internal/ai/recipe-downgrades/preview"
+                wrong = await client.post(preview_path, json={"tenant_id": "customer-a",
+                    "parent_execution_id": parent_id, "job_id": job, "job_version": 8})
+                self.assertEqual(wrong.status_code, 409)
+                cross_tenant = await client.post(preview_path, json={"tenant_id": "customer-b",
+                    "parent_execution_id": parent_id, "job_id": job, "job_version": 7})
+                self.assertEqual(cross_tenant.status_code, 409)
+                quote = self.flow.preview("customer-a", parent_id)
+                self.assertEqual((quote["job_id"], quote["job_version"]), (job, 7))
+                child = self.flow.confirm("customer-a", quote["quote_id"], NOTICE_VERSION, True)
+                self.assertEqual((self.registry.execution(child).job_id, self.registry.execution(child).job_version),
+                                 (job, 7))
+                self.assertEqual((await client.post("/internal/ai/recipe-requests", json={
+                    "tenant_id": "customer-a", "job_id": job, "job_version": True})).status_code, 422)
+        finally:
+            del app.state.mtls_listener
+            del app.state.gateway_service
+
+    def test_unconfigured_marker_cannot_become_a_model_during_confirmation(self):
+        parent = str(uuid4())
+        self.registry.create_execution(Execution(parent, "customer-a", Feature.RECIPE_CORRECTION,
+            UNCONFIGURED_TIER1, None, "SYNTHETIC", Decimal("0"), job_id=str(uuid4()), job_version=1))
+        quote = self.flow.preview("customer-a", parent)
+        marker_key = (f"MODEL#{UNCONFIGURED_TIER1}", "META")
+        self.client.before_commit = lambda: self.resource.table.items.update({marker_key: {"version": 1}})
+        with self.assertRaises(DowngradeError):
+            self.flow.confirm("customer-a", quote["quote_id"], NOTICE_VERSION, True)
+        self.assertIsNone(self.registry.execution(quote["execution_id"]))
+
+    async def test_customer_to_gateway_notice_and_consent_without_model_call(self):
+        from foodtech_business_api import ai, cooking
+        from foodtech_business_api.cooking_store import MemoryCookingStore
+        from foodtech_business_api.main import app as business_app
+
+        job = str(uuid4())
+        store = MemoryCookingStore()
+        store.items[(cooking._pk("customer-a", job), "META")] = {"job_id": job, "version": 7}
+        async def session(request, surface):
+            return SimpleNamespace(subject="customer-a", csrf="token")
+        evidence = {"job_version": 7, "completeness": "NOT_ASSESSED",
+                    "recorded": {"provenance": "SYNTHETIC", "menu": "TONKATSU"}}
+        app.state.mtls_listener = True
+        app.state.gateway_service = GatewayService(self.registry)
+        try:
+            with patch.dict("os.environ", {"FOODTECH_SECURE_COOKIES": "false"}), \
+                 patch.object(cooking, "_session", side_effect=session), \
+                 patch.object(cooking, "get_cooking_store", return_value=store), \
+                 patch("foodtech_business_api.recommendation_evidence.read_evidence", new_callable=AsyncMock,
+                       return_value=evidence), \
+                 patch.object(ai, "_gateway_settings", return_value=("https://gateway", "", "", "")), \
+                 patch.object(ai, "_client", side_effect=lambda *args: httpx.AsyncClient(
+                     transport=httpx.ASGITransport(app=app), base_url="https://gateway")):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=business_app),
+                                             base_url="http://business") as customer:
+                    body = {"job_id": job, "job_version": 7}
+                    headers = {"X-CSRF-Token": "token"}
+                    created = await customer.post("/api/customer/ai/recipe-requests", headers=headers, json=body)
+                    self.assertEqual(created.status_code, 201, created.text)
+                    parent = created.json()["execution_id"]
+                    preview = await customer.post(f"/api/customer/ai/recipe-requests/{parent}/local-preview",
+                                                  headers=headers, json=body)
+                    self.assertEqual(preview.status_code, 201, preview.text)
+                    quote = preview.json()
+                    path = f"/api/customer/ai/recipe-quotes/{quote['quote_id']}/confirm"
+                    consent = {**body, "notice_version": quote["notice_version"],
+                               "quality_warning_acknowledged": False}
+                    self.assertEqual((await customer.post(path, headers=headers, json=consent)).status_code, 409)
+                    consent["quality_warning_acknowledged"] = True
+                    confirmed = await customer.post(path, headers=headers, json=consent)
+                    self.assertEqual(confirmed.status_code, 201, confirmed.text)
+                    self.assertFalse(confirmed.json()["execution_available"])
+                    child = self.registry.execution(confirmed.json()["execution_id"])
+                    self.assertEqual((child.job_id, child.job_version), (job, 7))
+                    self.assertEqual(self.registry.execution_state(child.execution_id), "PENDING")
+                    self.assertEqual((await customer.post(path, headers=headers, json=consent)).status_code, 409)
         finally:
             del app.state.mtls_listener
             del app.state.gateway_service

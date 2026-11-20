@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from .auth import _csrf, _session
 
@@ -56,6 +56,70 @@ class ExternalPreviewRequest(BaseModel):
 class ExternalConfirmRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     notice_version: str = Field(min_length=1, max_length=64)
+
+
+class RecipeJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: UUID
+    job_version: int = Field(strict=True, ge=1)
+
+
+class RecipeConfirmRequest(RecipeJobRequest):
+    notice_version: str = Field(min_length=1, max_length=64)
+    quality_warning_acknowledged: StrictBool
+
+
+async def _recipe_job(request: Request, body: RecipeJobRequest):
+    from .cooking import _read
+    from .recommendation_evidence import read_evidence
+    session, _, _, job, _ = await _read(request, str(body.job_id), write=True)
+    evidence = await read_evidence(request, str(body.job_id))
+    if job["version"] != body.job_version or evidence["job_version"] != body.job_version:
+        raise HTTPException(409, "조리 기록이 변경되었습니다. 근거를 다시 조회해 주세요.")
+    if evidence["recorded"].get("provenance") != "SYNTHETIC" or \
+            evidence["recorded"].get("menu") not in {"TONKATSU", "JEYUK"}:
+        raise HTTPException(409, "합성 조리 기록만 요청할 수 있습니다.")
+    if evidence["completeness"] == "INSUFFICIENT":
+        raise HTTPException(409, "필수 조리 근거가 부족합니다.")
+    return session
+
+
+async def _recipe_gateway(path: str, body: dict) -> dict:
+    url, ca, cert, key = _gateway_settings()
+    try:
+        async with _client(ca, cert, key) as client:
+            result = await client.post(f"{url}{path}", json=body)
+            if result.status_code == 409:
+                raise HTTPException(409, "요청 또는 전환 고지를 다시 확인해 주세요.")
+            result.raise_for_status()
+            return result.json()
+    except (httpx.HTTPError, ValueError, OSError):
+        raise HTTPException(502, "AI 권고 요청을 처리하지 못했습니다.") from None
+
+
+@router.post("/recipe-requests", status_code=201)
+async def recipe_request(request: Request, body: RecipeJobRequest) -> dict:
+    session = await _recipe_job(request, body)
+    return await _recipe_gateway("/internal/ai/recipe-requests", {
+        "tenant_id": session.subject, "job_id": str(body.job_id), "job_version": body.job_version})
+
+
+@router.post("/recipe-requests/{parent_id}/local-preview", status_code=201)
+async def recipe_local_preview(request: Request, parent_id: UUID, body: RecipeJobRequest) -> dict:
+    session = await _recipe_job(request, body)
+    return await _recipe_gateway("/internal/ai/recipe-downgrades/preview", {
+        "tenant_id": session.subject, "parent_execution_id": str(parent_id),
+        "job_id": str(body.job_id), "job_version": body.job_version})
+
+
+@router.post("/recipe-quotes/{quote_id}/confirm", status_code=201)
+async def recipe_local_confirm(request: Request, quote_id: UUID, body: RecipeConfirmRequest) -> dict:
+    session = await _recipe_job(request, body)
+    result = await _recipe_gateway(f"/internal/ai/recipe-downgrades/{quote_id}/confirm", {
+        "tenant_id": session.subject, "notice_version": body.notice_version,
+        "quality_warning_acknowledged": body.quality_warning_acknowledged,
+        "job_id": str(body.job_id), "job_version": body.job_version})
+    return {**result, "execution_available": False}
 
 
 def _gateway_settings() -> tuple[str, str, str, str]:

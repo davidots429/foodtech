@@ -33,15 +33,48 @@ const labels: Record<string, string> = {
   TARGET_SETTINGS_AND_INTERVALS: "목표 설정과 투입 간격", PREVIOUS_JAM_OR_OVERLOAD: "이전 걸림·과부하 여부",
 };
 
-export function RecommendationEvidence({ jobId }: { jobId: string }) {
+type RecipeRequest = { execution_id: string; state: string; reason: string };
+type LocalNotice = { quote_id: string; notice_version: string; model_id: string; quality_notice: string;
+  transmission_location: "LOCAL"; estimated_cost_usd: string; expires_at: string };
+
+export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: string }) {
   const [value, setValue] = useState<Evidence | null>(null);
+  const [requested, setRequested] = useState<RecipeRequest | null>(null);
+  const [notice, setNotice] = useState<LocalNotice | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function load() {
     if (busy) return;
-    setBusy(true); setError(""); setValue(null);
+    setBusy(true); setError(""); setValue(null); setRequested(null); setNotice(null); setConfirmed(false); setAcknowledged(false);
     try { setValue(await api<Evidence>(jobPath(jobId) + "/recommendation-evidence")); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "조리 근거를 조회하지 못했습니다."); }
+    finally { setBusy(false); }
+  }
+  async function requestRecipe() {
+    if (!value || busy) return;
+    setBusy(true); setError("");
+    try { setRequested(await api<RecipeRequest>("/api/customer/ai/recipe-requests", csrf,
+      { job_id: jobId, job_version: value.job_version })); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "권고 요청을 기록하지 못했습니다."); }
+    finally { setBusy(false); }
+  }
+  async function preview() {
+    if (!value || !requested || busy) return;
+    setBusy(true); setError("");
+    try { setNotice(await api<LocalNotice>(`/api/customer/ai/recipe-requests/${requested.execution_id}/local-preview`, csrf,
+      { job_id: jobId, job_version: value.job_version })); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "전환 고지를 조회하지 못했습니다."); }
+    finally { setBusy(false); }
+  }
+  async function confirm() {
+    if (!value || !notice || !acknowledged || busy) return;
+    setBusy(true); setError("");
+    try { await api(`/api/customer/ai/recipe-quotes/${notice.quote_id}/confirm`, csrf,
+      { job_id: jobId, job_version: value.job_version, notice_version: notice.notice_version,
+        quality_warning_acknowledged: true }); setConfirmed(true); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "전환 동의를 기록하지 못했습니다."); }
     finally { setBusy(false); }
   }
   return <section className="binding-box" aria-labelledby="recommendation-evidence-title">
@@ -58,6 +91,20 @@ export function RecommendationEvidence({ jobId }: { jobId: string }) {
       <ul>{value.completeness_reasons.map(reason => <li key={reason}>{completenessLabels[reason] ?? reason}</li>)}</ul>
       {value.unverified_categories.length > 0 && <><p>아직 확인하지 못한 범주</p>
         <ul>{value.unverified_categories.map(category => <li key={category}>{labels[category] ?? category}</li>)}</ul></>}
+      {!requested && <button type="button" onClick={() => void requestRecipe()}
+        disabled={busy || value.completeness === "INSUFFICIENT"}>AI 권고 요청 기록</button>}
+      {requested && <><p>Tier 1 모델이 설정되지 않아 요청의 실행이 차단되어 있습니다.</p>
+        {!notice && <button type="button" disabled={busy} onClick={() => void preview()}>로컬 모델 전환 고지 보기</button>}</>}
+      {notice && !confirmed && <div>
+        <p>{notice.quality_notice}</p>
+        <p>모델: {notice.model_id} · 처리 위치: 로컬 서버 · 예상 API 호출 비용: 00원</p>
+        <p>시연 기능이며 실제 과금은 없습니다. 로컬 서버 자원은 별도로 사용합니다.</p>
+        <p>고지 만료: {new Date(notice.expires_at).toLocaleString()}</p>
+        <label><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />
+          품질 저하 가능성과 모델·처리 위치·예상 비용을 확인했습니다.</label>
+        <button type="button" disabled={busy || !acknowledged} onClick={() => void confirm()}>전환에 동의</button>
+      </div>}
+      {confirmed && <p role="status">전환 동의가 기록되었습니다. 원천 데이터 완전성과 실행 전 근거 확인이 끝나야 권고를 생성할 수 있습니다.</p>}
       <p className="small">이 화면에서 AI를 호출하거나 장비 설정을 변경하지 않습니다.</p>
     </div>}
   </section>;

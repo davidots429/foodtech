@@ -25,6 +25,8 @@ class Tier(StrEnum):
 
 
 LOCAL_FALLBACK_MODEL = "llama3.1:8b"
+# A request marker, never a registered model or an executable provider.
+UNCONFIGURED_TIER1 = "__unconfigured_recipe_tier1__"
 ALLOWED_TIERS = {
     Feature.RECIPE_CORRECTION: {Tier.TIER_1},
     Feature.GENERAL_GUIDE: {Tier.TIER_1, Tier.TIER_2, Tier.TIER_3},
