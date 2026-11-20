@@ -15,6 +15,7 @@ from foodtech_contracts.combi_mackerel_process import Sample, assess as assess_m
 from foodtech_contracts.combi_rice_process import Sample as RiceSample, assess as assess_rice_process
 from foodtech_contracts.combi_stream import CombiStreamValidator
 from foodtech_contracts.combi_sampling import selection_issues
+from foodtech_contracts.combi_probe import summarize as summarize_probe
 
 from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
@@ -463,10 +464,11 @@ async def record_mackerel_safety(meal_id: UUID, request: Request, body: Mackerel
                     all(r.celsius is not None for r in p.readings) for p in body.probes))
     safety = "FAILED" if low else "PASSED" if complete else "ASSESSMENT_INCOMPLETE"
     minimum = (str(min(r.celsius for p in body.probes for r in p.readings)) if complete else None)
+    probe_summaries = [summarize_probe(probe.model_dump(), products[probe.product_id], start) for probe in body.probes]
     version = int(old["version"]) + 1
     safety_version = int(step.get("safety_version", 0)) + 1
     updated = {**step, "safety_status": safety, "safety_version": safety_version,
-               "batch_representative_core_temperature": minimum,
+               "batch_representative_core_temperature": minimum, "safety_probe_summaries": probe_summaries,
                "safety_measured_through": (start + timedelta(seconds=60)).isoformat().replace("+00:00", "Z")}
     next_status = "MACKEREL_SAFETY_PASSED" if safety == "PASSED" else \
                   "MACKEREL_SAFETY_FAILED" if safety == "FAILED" else "MACKEREL_UNLOADED"
@@ -475,6 +477,7 @@ async def record_mackerel_safety(meal_id: UUID, request: Request, body: Mackerel
              "to_status": next_status, "observed_at": start.isoformat().replace("+00:00", "Z"),
              "recorded_at": _now(), "actor": session.subject, "safety_status": safety,
              "safety_version": safety_version, "reheat_segment_id": step.get("latest_reheat", {}).get("segment_id"),
+             "probe_summaries": probe_summaries,
              "probes": [probe.model_dump(mode="json") for probe in body.probes],
              "products": step["products"], "selection_issues": issues, "selection_note": body.selection_note}
     try:
@@ -517,7 +520,8 @@ async def record_mackerel_reheat(meal_id: UUID, request: Request, body: Mackerel
                "previous_safety_version": int(step["safety_version"])}
     version = int(old["version"]) + 1
     updated = {**step, "current_unloaded_at": iso(unloaded), "latest_reheat": segment,
-               "safety_status": "RECHECK_REQUIRED", "batch_representative_core_temperature": None}
+               "safety_status": "RECHECK_REQUIRED", "batch_representative_core_temperature": None,
+               "safety_probe_summaries": []}
     meta = {**old, "status": "MACKEREL_UNLOADED", "version": version,
             "last_observed_at": iso(unloaded), "updated_at": _now()}
     event = {"sk": f"EVENT#{version:012d}", "event": "MACKEREL_REHEATED", "segment": segment,
