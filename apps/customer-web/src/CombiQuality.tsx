@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { api, scoreItems, type ScoreKey } from "./cookingApi";
 
-type CurrentQuality = { version: number; quality_status: string; score_percent: string; quality_target: boolean };
+type CurrentQuality = { version: number; quality_status: string; score_percent: string; quality_target: boolean; usable?: boolean };
 type Props = { menu: "rice" | "mackerel"; mealId: string; version: number; safety: string; jobStatus: string;
   current?: CurrentQuality; csrf: string; busy: boolean; onBusy: (value: boolean) => void; onUpdated: () => Promise<void> };
 
@@ -51,7 +51,9 @@ export function CombiQuality({ menu, mealId, version, safety, jobStatus, current
   }
 
   return <div className="binding-box"><h4>{menu === "rice" ? "밥" : "고등어"} 품질평가</h4><p>{details[menu]}</p>
-    {current && <p>현재 평가 v{current.version} · {current.quality_status === "QUALITY_PASSED" ? "합격" : "불합격"} · {current.score_percent}점 · 목표 {current.quality_target ? "달성" : "미달"}</p>}
+    {current && (current.usable === false || safety !== "PASSED" ?
+      <p role="status">평가 v{current.version} · 안전 상태 변경으로 사용이 차단되었습니다. 재평가가 필요합니다.</p> :
+      <p>현재 평가 v{current.version} · {current.quality_status === "QUALITY_PASSED" ? "합격" : "불합격"} · {current.score_percent}점 · 목표 {current.quality_target ? "달성" : "미달"}</p>)}
     {!canAssess ? <p>인양과 안전 확인이 완료되면 평가할 수 있습니다. 현재 안전 상태: {safety}</p> : <>
       {scoreItems.map(item => <div key={item.key} className="field-row"><label>{item.label} 점수
         <select value={scores[item.key] ?? ""} onChange={event => setScores(previous => ({ ...previous,

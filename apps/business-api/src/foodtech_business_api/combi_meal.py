@@ -138,6 +138,13 @@ class RiceProcessEvidence(BaseModel):
     samples: list[RiceProcessSample] = Field(min_length=1, max_length=2000)
 
 
+class RiceSafetyConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    observation: Literal["NO_ANOMALY", "SUSPECTED"]
+    note: str = Field(min_length=1, max_length=500)
+
+
 class CombiSourceImport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
@@ -862,6 +869,8 @@ async def record_rice_process(meal_id: UUID, request: Request, body: RiceProcess
     if int(old["version"]) != body.expected_version:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.")
     step = rows.get(f"JOB#RICE#{old['rice_cooking_job_id']}")
+    if old.get("source"):
+        raise HTTPException(409, "연결된 원표본의 밥 공정 판정을 사용해야 합니다.")
     if not step or step.get("status") != "UNLOADED" or step.get("monitored_process_assessment"):
         raise HTTPException(409, "인양된 밥 작업의 아직 기록되지 않은 공정 표본이 필요합니다.")
     try:
@@ -994,6 +1003,8 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
                    "samples": transition_samples, "observed_through": observed_at, "source": lineage}
     else:
         updated = {**step, "monitored_process_assessment": assessment, "monitored_process_source": lineage}
+        if phase == "rice":
+            updated["rice_critical_alarm_observed"] = any(item.get("criticalAlarm") is True for item in selected)
     meta = {**old, "status": next_status, "version": version, "updated_at": _now()}
     if phase == "transition":
         meta["last_observed_at"] = observed_at
@@ -1001,6 +1012,53 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
              "from_status": old["status"], "to_status": next_status,
              "observed_at": observed_at, "recorded_at": _now(),
              "actor": session.subject, "assessment": assessment, "source_sha256": digest}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}
+
+
+@router.post("/{meal_id}/rice-safety")
+async def confirm_rice_safety(meal_id: UUID, request: Request, body: RiceSafetyConfirmation) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {key: value for key, value in row.items() if key != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.")
+    step = rows.get(f"JOB#RICE#{old['rice_cooking_job_id']}")
+    if not step or step.get("status") != "UNLOADED":
+        raise HTTPException(409, "밥 인양 이후에 안전 상태를 확인할 수 있습니다.")
+    if not body.note.strip():
+        raise HTTPException(422, "안전 확인 근거를 입력해 주세요.")
+    assessment = step.get("monitored_process_assessment") or {}
+    process_status = assessment.get("status")
+    reasons = assessment.get("reason_codes") or []
+    suspected = (body.observation == "SUSPECTED" or step.get("rice_critical_alarm_observed") is True or
+                 "SENSOR_ANOMALY_SUSPECTED" in reasons)
+    source_checked = not old.get("source") or bool(step.get("monitored_process_source"))
+    safety = ("SUSPECTED" if suspected else "PASSED" if process_status in {"NORMAL", "WARNING"} and source_checked
+              else "INCOMPLETE")
+    now = _now()
+    version = int(old["version"]) + 1
+    safety_version = int(step.get("safety_version", 0)) + 1
+    updated = {**step, "safety_status": safety, "safety_version": safety_version,
+               "rice_safety_observation": body.observation, "rice_safety_note": body.note.strip()}
+    if step.get("quality_current"):
+        updated["quality_current"] = {**step["quality_current"], "usable": False,
+                                      "blocked_reason": "SAFETY_RECONFIRMED"}
+    meta = {**old, "version": version, "updated_at": now}
+    event = {"sk": f"EVENT#{version:012d}", "event": "RICE_SAFETY_CONFIRMED",
+             "from_status": old["status"], "to_status": old["status"], "observed_at": now,
+             "recorded_at": now, "actor": session.subject, "safety_status": safety,
+             "safety_version": safety_version, "observation": body.observation, "note": body.note.strip(),
+             "process_status": process_status, "process_reason_codes": reasons,
+             "critical_alarm_observed": step.get("rice_critical_alarm_observed"),
+             "source_checked": source_checked}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:
@@ -1076,7 +1134,7 @@ async def assess_combi_quality(meal_id: UUID, menu: Literal["rice", "mackerel"],
                           pan_count=step["pan_count"], load_ratio=step["load_ratio"])
     pointer = {"version": quality_version, "event_sk": event_sk, "quality_status": assessment["quality_status"],
                "score_percent": str(score), "quality_target": assessment["quality_target"],
-               "safety_version": assessment["safety_version"]}
+               "safety_version": assessment["safety_version"], "usable": True}
     updated = {**step, "quality_status": assessment["quality_status"], "quality_version": quality_version,
                "quality_current": pointer}
     meta = {**old, "version": event_version, "updated_at": now}
