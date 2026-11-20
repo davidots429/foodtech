@@ -178,6 +178,35 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
     assessment = None
     if pointer and type(pointer.get("version")) is int and pointer["version"] > 0:
         assessment = await _store_call(store, store.assessment, pk, pointer["version"])
+    reheat_history = []
+    reheat_status = "NOT_RECORDED"
+    latest_reheat = job.get("latest_tonkatsu_reheat")
+    if job.get("menu") == "TONKATSU" and latest_reheat:
+        events = await _store_call(store, store.events, pk)
+        segments = {}
+        reheat_status = "RECORDED"
+        for event in events:
+            if event.get("trigger") == "TONKATSU_REHEATED":
+                segment = event.get("segment")
+                if not isinstance(segment, dict) or not isinstance(segment.get("segment_id"), str) or \
+                        segment["segment_id"] in segments or any(segment.get(key) is None for key in
+                        ("started_at", "lifted_at", "duration_seconds", "previous_safety_version")):
+                    reheat_status = "INCONSISTENT"
+                    continue
+                item = {key: segment[key] for key in
+                        ("segment_id", "started_at", "lifted_at", "duration_seconds", "previous_safety_version")}
+                item["rechecks"] = []
+                segments[item["segment_id"]] = item
+                reheat_history.append(item)
+            elif event.get("trigger") == "CORE_CHECK" and event.get("reheat_segment_id"):
+                segment = segments.get(event["reheat_segment_id"])
+                if segment is None or event.get("to_status") not in {"PASSED", "FAILED", "INCOMPLETE"}:
+                    reheat_status = "INCONSISTENT"
+                else:
+                    segment["rechecks"].append({"status": event["to_status"], "recorded_at": event.get("occurred_at")})
+        if not isinstance(latest_reheat, dict) or not reheat_history or \
+                reheat_history[-1]["segment_id"] != latest_reheat.get("segment_id"):
+            reheat_status = "INCONSISTENT"
     comparison_result = None
     comparison_check = None
     if comparison_id is not None:
@@ -267,4 +296,5 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
             (first_process_pointer and (not derived or derived.get("sk") != first_process_pointer.get("result_sk"))):
         raise HTTPException(409, "조리 근거가 변경되었습니다. 다시 조회해 주세요.")
     return {**_snapshot(job, pointer, assessment, derived), "source_revision_status": source_status,
-            "selected_comparison": comparison_result}
+            "selected_comparison": comparison_result, "reheat_history_status": reheat_status,
+            "reheat_history": reheat_history}

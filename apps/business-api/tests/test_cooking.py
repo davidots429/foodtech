@@ -112,6 +112,11 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event["trigger"] for event in safety], ["CORE_CHECK", "TONKATSU_REHEATED", "CORE_CHECK", "CORE_CHECK"])
         self.assertEqual(safety[0]["to_status"], "FAILED")
         self.assertEqual(safety[1]["segment"]["segment_id"], safety[3]["reheat_segment_id"])
+        evidence = await self.client.get(path + "/recommendation-evidence")
+        self.assertEqual(evidence.status_code, 200, evidence.text)
+        self.assertEqual(evidence.json()["reheat_history_status"], "RECORDED")
+        self.assertEqual([check["status"] for check in evidence.json()["reheat_history"][0]["rechecks"]],
+                         ["INCOMPLETE", "PASSED"])
 
     async def test_running_time_guidance_is_owned_read_only_and_uncached(self):
         job = await self.create()
