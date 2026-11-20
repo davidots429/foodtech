@@ -35,6 +35,44 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         for item in reversed(self.patches):
             item.stop()
 
+    async def test_rice_preparation_is_versioned_and_precedes_cooking(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)
+        meal = created.json()["meal"]
+        path = "/api/customer/combi-meals/" + meal["meal_batch_id"]
+        started = datetime.now(timezone.utc) - timedelta(minutes=40)
+        soaked, drained = started + timedelta(minutes=30), started + timedelta(minutes=35)
+        body = {"expected_version": 1, "wash_count": 3, "soaking_water_celsius": "20",
+                "washed_rice_kg": "21", "soaked_rice_kg": "25",
+                "soaking_started_at": started.isoformat(), "soaking_completed_at": soaked.isoformat(),
+                "draining_completed_at": drained.isoformat()}
+        self.assertEqual((await self.client.post(path + "/rice-preparation", headers=headers,
+                         json={**body, "draining_completed_at": started.isoformat()})).status_code, 422)
+        saved = await self.client.post(path + "/rice-preparation", headers=headers, json=body)
+        self.assertEqual(saved.status_code, 201, saved.text)
+        self.assertEqual((saved.json()["step"]["rice_preparation"]["soaking_seconds"],
+                          saved.json()["step"]["rice_preparation"]["draining_seconds"]), ("1800", "300"))
+        self.assertEqual((await self.client.post(path + "/rice-preparation", headers=headers, json=body)).status_code, 409)
+        self.assertEqual((await self.client.post(path + "/rice-preparation", headers=headers,
+                         json={**body, "expected_version": 2})).status_code, 422)
+        correction = {key: value for key, value in body.items() if key not in {"washed_rice_kg", "soaked_rice_kg"}}
+        corrected = await self.client.post(path + "/rice-preparation", headers=headers,
+                                           json={**correction, "expected_version": 2, "wash_count": 2, "reason": "횟수 정정"})
+        self.assertEqual(corrected.status_code, 201, corrected.text)
+        self.assertEqual(corrected.json()["event"]["previous"]["wash_count"], 3)
+        self.assertEqual(corrected.json()["step"]["rice_preparation"]["washed_rice_kg"], "21")
+        invalid = await self.client.post(path + "/events", headers=headers, json={
+            "expected_version": 3, "event": "RICE_STARTED", "observed_at": soaked.isoformat()})
+        self.assertEqual(invalid.status_code, 422)
+        started_job = await self.client.post(path + "/events", headers=headers, json={
+            "expected_version": 3, "event": "RICE_STARTED", "observed_at": drained.isoformat()})
+        self.assertEqual(started_job.status_code, 200, started_job.text)
+        self.assertEqual((await self.client.post(path + "/rice-preparation", headers=headers,
+                         json={**body, "expected_version": 4, "reason": "늦은 수정"})).status_code, 409)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.post(path + "/rice-preparation", headers=headers,
+                         json={**body, "expected_version": 4})).status_code, 404)
+
     async def test_creation_stores_linked_records_and_isolates_customers(self):
         response = await self.client.post("/api/customer/combi-meals", json=self.body,
                                           headers={"X-CSRF-Token": "csrf"})
