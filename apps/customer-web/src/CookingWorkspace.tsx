@@ -5,6 +5,7 @@ import {
   type JobEvent, type JobSnapshot, type Probe, type ProcessAssessmentView, type ScoreKey, type TransitionEvent,
 } from "./cookingApi";
 import { AssessmentAggregate } from "./AssessmentAggregate";
+import { CookingTimeMonitor } from "./CookingTimeMonitor";
 
 type Props = { csrf: string };
 type ScoreForm = Record<ScoreKey, number | "">;
@@ -739,6 +740,7 @@ export function CookingWorkspace({ csrf }: Props) {
               : <p className="small">제육볶음 합성 적재량 {job.actual_load_kg ?? "미기록"}kg · 자동 혼합물 안전 {job.auto_safety_status ?? "NOT_MEASURED"} · 유지 {job.mixture_hold_seconds ?? 0}초</p>}
             <p className="small">실제 조리시간 {job.actual_cooking_seconds == null ? "완료 전" : `${job.actual_cooking_seconds}초`}
               {" "}· 시간 판정 {timeLabels[job.process_time_status ?? "NOT_MEASURED"] ?? "미판정"}</p>
+            {["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) && <CookingTimeMonitor jobId={job.job_id} />}
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
             {job.source_binding ? <p className="small">연결된 합성 수집 배치: <code>{job.source_binding.batch_id}</code> · 온도 판정 {temperatureLabels[job.process_temperature_status] ?? job.process_temperature_status}</p>
               : <div className="binding-box"><p className="small">Mock의 <code>synthetic-rest / {job.menu === "JEYUK" ? "mockprofile-110-a-001" : "mockprofile-100-a-001"}</code> 배치를 조리 시작 전에 연결해야 자동 공정판정이 실행됩니다.</p>
