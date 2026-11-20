@@ -25,6 +25,7 @@ def main():
     table = session.resource("dynamodb").Table(TABLE)
     suffix = uuid4().hex
     parent, tenant, source, target = str(uuid4()), f"synthetic-{suffix}", f"tier1-{suffix}", f"local-{suffix}"
+    job_id = str(uuid4())
     period = "2097-11"
     registry = DynamoRegistry(TABLE, period, resource=session.resource("dynamodb"),
                               client=session.client("dynamodb"), local_models={target})
@@ -41,11 +42,12 @@ def main():
             registry.create_limit(scope, ident, Decimal("0"), calls_remaining=calls)
             mark("LIMIT", f"{period}#{scope}#{ident}")
         registry.create_execution(Execution(parent, tenant, Feature.RECIPE_CORRECTION, source,
-                                              None, "SYNTHETIC", Decimal("0")))
+                                              None, "SYNTHETIC", Decimal("0"), job_id=job_id, job_version=7))
         mark("EXEC", parent)
         with patch.object(downgrade_flow, "MODEL_ID", target):
             flow = DowngradeFlow(registry)
             quote = flow.preview(tenant, parent)
+            assert (quote["job_id"], quote["job_version"]) == (job_id, 7)
             mark("QUOTE", quote["quote_id"])
             mark("CONSENT", quote["quote_id"])
             mark("EXEC", quote["execution_id"])
@@ -56,6 +58,7 @@ def main():
                 pass
             child = flow.confirm(tenant, quote["quote_id"], NOTICE_VERSION, True)
             assert child != parent and child == quote["execution_id"]
+            assert (registry.execution(child).job_id, registry.execution(child).job_version) == (job_id, 7)
             assert registry.consent(quote["quote_id"]).parent_execution_id == parent
             assert GatewayPolicy(registry).authorize(Caller("business-api", tenant), child).allowed
             try:
