@@ -85,6 +85,26 @@ class FakeDdb:
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class JeyukAwsTests(unittest.TestCase):
+    def test_full_medium_and_large_streams_persist_every_sample_and_safety_state(self):
+        for size, seconds in (("medium", 900), ("large", 1500)):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "samples.jsonl"
+                fixture = ROOT / f"fixtures/jeyuk-{size}-full-v1.json"
+                subprocess.run(["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(fixture),
+                                "--output", str(output)], check=True, capture_output=True)
+                raws = output.read_text().splitlines()
+                table, sqs = FakeTable(), FakeSqs()
+                ingestor = DynamoJeyukIngestor.__new__(DynamoJeyukIngestor)
+                ingestor.table, ingestor.sqs, ingestor.queue_url = table, sqs, "test.fifo"
+                worker = DynamoJeyukProcessor(table, FakeDdb(table))
+                for raw in raws:
+                    result = worker.process(ingestor.ingest(raw))
+                self.assertEqual(len(raws), seconds)
+                self.assertEqual((result["profile"], result["second"], result["process_status"],
+                                  result["auto_safety_status"]), (size.upper(), seconds, "NORMAL", "PASSED"))
+                self.assertEqual(len(sqs.messages), seconds)
+                self.assertEqual(table.items[(f"JEYUK#jeyuk-{size}-full-v1", "STATE")]["last_second"], seconds)
+
     def test_safety_hold_is_persisted_with_process_state(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "safety.jsonl"

@@ -737,7 +737,7 @@ export function CookingWorkspace({ csrf }: Props) {
             <label>메뉴 <select value={createMenu} onChange={(event) => {
               const menu = event.target.value as "TONKATSU" | "JEYUK";
               setCreateMenu(menu);
-              setBatchId(menu === "JEYUK" ? `jeyuk-${jeyukSize}-safety-v1` : "batch-a-001");
+              setBatchId(menu === "JEYUK" ? `jeyuk-${jeyukSize}-full-v1` : "batch-a-001");
             }}>
               <option value="TONKATSU">돈까스</option><option value="JEYUK">제육볶음</option>
             </select></label>
@@ -750,7 +750,7 @@ export function CookingWorkspace({ csrf }: Props) {
               : <><label>합성 장비 규모 <select value={jeyukSize} onChange={(event) => {
                   const size = event.target.value as "small" | "medium" | "large";
                   setJeyukSize(size); setJeyukLoadKg({ small: "1.8", medium: "12", large: "60" }[size]);
-                  setBatchId(`jeyuk-${size}-safety-v1`);
+                  setBatchId(`jeyuk-${size}-full-v1`);
                 }}><option value="small">소형</option><option value="medium">중형</option><option value="large">대형</option></select></label>
                 <label>합성 적재량(kg) <input type="number" min="0.01" max={{ small: 3, medium: 20, large: 100 }[jeyukSize]} step="0.01" value={jeyukLoadKg}
                   onChange={(event) => setJeyukLoadKg(event.target.value)} /></label></>}

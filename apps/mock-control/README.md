@@ -30,6 +30,8 @@ C# Mock의 `simulate-jeyuk` 명령은 승인된 소형 볶음·교반 합성 fix
 
 `fixtures/jeyuk-medium-safety-v1.json`과 `fixtures/jeyuk-large-safety-v1.json`은 같은 명령과 HTTPS 수집 경로에서 중형 12kg·대형 60kg의 합성 안전 표본을 제공한다. 두 fixture는 최종 투입 이후 60초 안전 경계를 시험하는 61초 표본이며 전체 조리시간의 원천 데이터나 실제 장비 사양을 뜻하지 않는다.
 
+`fixtures/jeyuk-{small,medium,large}-full-v1.json`은 각 목표 조리시간 480·900·1,500초의 1초 합성 표본을 제공한다. 첫 표본에서 마지막 재료 투입 완료를 가정하며 이후 온도·회전속도·부하를 일정하게 유지하는 정상 fixture다. 실제 투입 간격이나 센서 측정값을 재현했다는 의미는 아니다.
+
 `fixtures/combi-rice-low-v1.json`, `combi-transition-timeout-v1.json`, `combi-mackerel-low-v1.json`은 독립된 합성 장애 시험이다. 각각 밥 저온 60초, 건열 전환 미준비 300초, 고등어 온도 복원 후 저온 30초를 재현한다. Mock은 판정하지 않으며 `tests/integration/test_combi_mock.py`가 원표본을 플랫폼 규칙에 전달해 해당 실패와 전환 시 투입 차단을 확인한다. 전환 시간 초과 fixture 뒤의 고등어 원표본은 생성기의 세 단계 형식 유지를 위한 자료이며, 강제 투입 승인이나 정상 업무 진행을 뜻하지 않는다.
 
 생성한 식사 배치의 ID로 별도 Mock fixture를 만들려면 다음 명령의 값을 실제 합성 배치·작업 ID로 바꾼다. `--start-at`은 UTC 논리 시작 시각이며 식별자와 시나리오 구성을 검증한 뒤에만 새 파일을 생성한다. 기존 파일과 원본 fixture는 덮어쓰지 않는다.
