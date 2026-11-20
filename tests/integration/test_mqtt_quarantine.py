@@ -1,5 +1,6 @@
 """Exercise a malformed C# MQTT delivery over actual TLS and QoS 1."""
 import os
+import json
 import shutil
 import socket
 import subprocess
@@ -18,6 +19,12 @@ FIXTURE = ROOT / "fixtures/mockprofile-300-a-001.json"
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class MqttQuarantineIntegrationTests(unittest.TestCase):
     def test_encoding_failure_redelivery_after_failed_storage(self):
+        self._check_redelivery(schema_failure=False)
+
+    def test_schema_failure_redelivery_after_failed_storage(self):
+        self._check_redelivery(schema_failure=True)
+
+    def _check_redelivery(self, *, schema_failure):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
             key, cert, pfx = (temp / name for name in ("key.pem", "cert.pem", "cert.pfx"))
@@ -32,8 +39,16 @@ class MqttQuarantineIntegrationTests(unittest.TestCase):
                 port = probe.getsockname()[1]
             env = {**os.environ, "FOODTECH_MQTT_USER": "test-user", "FOODTECH_MQTT_PASSWORD": "test-secret",
                    "FOODTECH_MOCK_CERT_PASSWORD": "test-password"}
-            server = subprocess.Popen(["dotnet", str(DLL), "serve-mqtt", "--fixture", str(FIXTURE),
-                "--cert", str(pfx), "--port", str(port), "--fault", "invalid-utf8"], env=env,
+            fixture = FIXTURE
+            if schema_failure:
+                value = json.loads(FIXTURE.read_text())
+                value["records"][0]["measurements"]["temperatureCelsius"] = "invalid"
+                fixture = temp / "schema-invalid.json"
+                fixture.write_text(json.dumps(value))
+            command = ["dotnet", str(DLL), "serve-mqtt", "--fixture", str(fixture),
+                "--cert", str(pfx), "--port", str(port)]
+            if not schema_failure: command += ["--fault", "invalid-utf8"]
+            server = subprocess.Popen(command, env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 for _ in range(100):
@@ -55,8 +70,12 @@ class MqttQuarantineIntegrationTests(unittest.TestCase):
                     collect(*args, count=1, timeout_seconds=10, quarantine=Failed())
                 sink = Sink()
                 self.assertEqual(collect(*args, count=1, timeout_seconds=10, quarantine=sink), 1)
-                self.assertEqual(sink.items[0][0], b'\xff\xfe\x80')
-                self.assertEqual(sink.items[0][1]["reason"], "UNSUPPORTED_ENCODING")
+                if schema_failure:
+                    self.assertEqual(json.loads(sink.items[0][0])["measurements"]["temperatureCelsius"], "invalid")
+                    self.assertEqual(sink.items[0][1]["reason"], "SCHEMA_VIOLATION")
+                else:
+                    self.assertEqual(sink.items[0][0], b'\xff\xfe\x80')
+                    self.assertEqual(sink.items[0][1]["reason"], "UNSUPPORTED_ENCODING")
             finally:
                 server.terminate()
                 server.wait(timeout=5)
