@@ -25,6 +25,25 @@ class OpcUaRecoveryTests(unittest.TestCase):
             validate_history(json.dumps([json.dumps(changed), *self.records[1:]]), self.device, seen, batch)
         with self.assertRaisesRegex(ValueError, "sequence"):
             validate_history(json.dumps([self.records[0], self.records[2]]), self.device, {}, None)
+        short, _ = validate_history(json.dumps(self.records[:1]), self.device, seen, batch)
+        self.assertEqual([item[0] for item in short if item[0] not in seen], [])
+
+    def test_restarted_binary_history_catches_up_without_changing_prior_progress(self):
+        parsed, batch = validate_history(json.dumps(self.records[:2]), self.device, {}, None)
+        seen = {number: digest for number, _raw, _record, digest in parsed}
+        before = dict(seen)
+        prefix = json.dumps(self.records[:1])
+        saved = []
+        class Sink:
+            def preserve_opcua_history(self, payload, **kwargs): saved.append((payload, kwargs))
+        short, _ = validate_or_quarantine(prefix, self.device, seen, batch, source_id="synthetic-opcua",
+                                          profile_id="mockprofile-203", quarantine=Sink())
+        self.assertEqual(seen, before)
+        self.assertEqual(saved, [])
+        self.assertFalse(any(number not in seen for number, *_ in short))
+        restored, _ = validate_or_quarantine(json.dumps(self.records), self.device, seen, batch,
+            source_id="synthetic-opcua", profile_id="mockprofile-203", quarantine=Sink())
+        self.assertEqual([number for number, *_ in restored if number not in seen], [3])
 
     def test_foreign_batch_is_rejected(self):
         changed = json.loads(self.records[1]); changed["batchId"] = "batch-a-foreign"
