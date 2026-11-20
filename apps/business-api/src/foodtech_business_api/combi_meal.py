@@ -180,7 +180,8 @@ async def get_combi_live(meal_id: UUID, request: Request) -> dict:
         return {"state": "NOT_STARTED", "count": 0}
     return {"state": "COMPLETED" if meal.get("source") else "COLLECTING",
             "count": int(state["count"]), "device_id": state["device_id"],
-            "latest": state["latest"], "updated_at": state["updated_at"], "provenance": "SYNTHETIC"}
+            "latest": state["latest"], "latest_window": state.get("latest_window"),
+            "updated_at": state["updated_at"], "provenance": "SYNTHETIC"}
 
 
 @router.post("/{meal_id}/source-live")
@@ -214,11 +215,35 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
         validator.phase_second = int(state["phase_second"])
         validator.previous_time = datetime.fromisoformat(state["previous_time"].replace("Z", "+00:00"))
         validator.schema_version = state["schema_version"]
+    observations = []
     try:
         for line in body.records:
             record = validator.accept(line)
+            observations.append(record)
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(422, "원천 표본이 배치 계약과 일치하지 않습니다.") from exc
+    # Retain an incomplete phase-local window across requests; never fill missing values.
+    pending = list((state or {}).get("pending_window", []))
+    latest_window = (state or {}).get("latest_window")
+    for observation in observations:
+        second = observation["phaseSecond"]
+        phase = observation["phase"]
+        if second % 5 == 1:
+            pending = []
+        if pending and (pending[-1]["phase"] != phase or pending[-1]["phase_second"] + 1 != second):
+            pending = []
+        pending.append({"phase": phase, "phase_second": second,
+                        "celsius": str(observation["chamberCelsius"])})
+        if second % 5 == 0:
+            if len(pending) == 5:
+                temperatures = [Decimal(item["celsius"]) for item in pending]
+                lower, upper = (Decimal("98"), Decimal("102")) if phase == "RICE" else (Decimal("215"), Decimal("225"))
+                latest_window = {"phase": phase, "first_phase_second": second - 4,
+                    "last_phase_second": second, "sample_count": 5,
+                    "current_celsius": str(temperatures[-1]), "minimum_celsius": str(min(temperatures)),
+                    "maximum_celsius": str(max(temperatures)), "average_celsius": str(sum(temperatures) / 5),
+                    "outside_target_seconds": sum(not lower <= value <= upper for value in temperatures)}
+            pending = []
     now = _now()
     latest = {"phase": record["phase"], "phase_second": record["phaseSecond"],
               "occurred_at": record["occurredAt"], "chamber_celsius": str(record["chamberCelsius"]),
@@ -226,8 +251,8 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
     next_state = {"sk": "META", "count": count + len(encoded), "device_id": body.device_id,
                   "phase": validator.phase, "phase_second": validator.phase_second,
                   "previous_time": validator.previous_time.isoformat(), "schema_version": validator.schema_version,
-                  "latest": latest, "updated_at": now,
-                  "byte_count": int((state or {}).get("byte_count", 0)) + sum(len(line) + 1 for line in encoded)}
+                  "latest": latest, "latest_window": latest_window, "pending_window": pending,
+                  "updated_at": now, "byte_count": int((state or {}).get("byte_count", 0)) + sum(len(line) + 1 for line in encoded)}
     chunk = {"sk": f"CHUNK#{count:06d}", "device_id": body.device_id,
              "records": body.records, "sha256": digest}
     try:

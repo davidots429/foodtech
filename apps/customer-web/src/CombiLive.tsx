@@ -3,7 +3,10 @@ import { api } from "./cookingApi";
 
 type Live = { state: "NOT_STARTED" | "COLLECTING" | "COMPLETED"; count: number; updated_at?: string;
   latest?: { phase: string; phase_second: number; occurred_at: string; chamber_celsius: string;
-    door_state: string; fan_level: number } };
+    door_state: string; fan_level: number };
+  latest_window?: { phase: string; first_phase_second: number; last_phase_second: number;
+    current_celsius: string; minimum_celsius: string; maximum_celsius: string;
+    average_celsius: string; outside_target_seconds: number } | null };
 
 export function CombiLive({ mealId }: { mealId: string }) {
   const [live, setLive] = useState<Live | null>(null);
@@ -32,6 +35,10 @@ export function CombiLive({ mealId }: { mealId: string }) {
       {live && live.state !== "NOT_STARTED" && <> · {live.count}건 · 마지막 수신 {live.updated_at ? new Date(live.updated_at).toLocaleString() : "미확인"}</>}</p>
     {live?.latest && <p>최근 표본: {live.latest.phase} {live.latest.phase_second}초 · 챔버 {live.latest.chamber_celsius}°C
       {" "}· 문 {live.latest.door_state} · 팬 {live.latest.fan_level} · 논리 시각 {live.latest.occurred_at}</p>}
+    {live?.latest_window && <p>최근 완전한 5초 구간: {live.latest_window.phase} {live.latest_window.first_phase_second}~{live.latest_window.last_phase_second}초
+      {" "}· 현재 {live.latest_window.current_celsius}°C · 최저 {live.latest_window.minimum_celsius}°C
+      {" "}· 최고 {live.latest_window.maximum_celsius}°C · 평균 {live.latest_window.average_celsius}°C
+      {" "}· 목표 범위 이탈 {live.latest_window.outside_target_seconds}초</p>}
     <p>수집 중 표본은 합성 관찰값이며 안전·공정 판정이 아닙니다.</p>
   </div>;
 }
