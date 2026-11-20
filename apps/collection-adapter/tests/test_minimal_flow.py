@@ -166,6 +166,20 @@ class MinimalFlowTests(unittest.TestCase):
         self.assertEqual(gap.accept(event(2, 7), 7)[0].sequence_status, "LATE_AFTER_GAP")
         self.assertEqual(assess("3", raws[1], gap_before=(2, 2)).quality_status, "QUARANTINED")
 
+    def test_https_preserves_invalid_bytes_and_rejects_mismatched_cursor(self):
+        def handler(request):
+            if request.url.path == "/oauth2/token":
+                return httpx.Response(200, json={"access_token": "token", "token_type": "Bearer"})
+            return httpx.Response(200, content=b"\xff\xfe\n{}\n", headers={
+                "X-Contract-Version": "1.0", "X-Profile-ID": "mockprofile-100",
+                "X-Provenance": "SYNTHETIC", "X-Next-Cursor": "2"})
+        client = httpx.Client(base_url="https://localhost", transport=httpx.MockTransport(handler))
+        poller = RestMockClient("https://localhost", "id", "secret", "test-ca", client)
+        self.assertEqual(poller.poll().records, (b"\xff\xfe", "{}"))
+        with self.assertRaisesRegex(ValueError, "cursor does not match"):
+            poller.poll(1)
+        poller.close()
+
     def test_https_poll_retries_real_transport_disconnect(self):
         records = self.records()
         calls = {"records": 0}

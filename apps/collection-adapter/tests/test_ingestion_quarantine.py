@@ -10,6 +10,7 @@ from foodtech_collection_adapter.rest import PollResult
 
 class QuarantineTests(unittest.TestCase):
     def test_failure_boundary(self):
+        self.assertEqual(failure(b"\xff\xfe"), ("UNSUPPORTED_ENCODING", []))
         self.assertEqual(failure('{"a":'), ("SCHEMA_VIOLATION", []))
         self.assertEqual(failure('{"a":1,"a":2}'), ("SCHEMA_VIOLATION", []))
         self.assertEqual(failure('[]'), ("SCHEMA_VIOLATION", []))
@@ -43,6 +44,10 @@ class QuarantineTests(unittest.TestCase):
         self.assertEqual(sink.s3.asserted, "AES256")
         self.assertEqual(sink.table.item["ingestion_event_id"], first)
         self.assertNotIn("event_id", sink.table.item)
+        binary_sink = IngestionQuarantine.__new__(IngestionQuarantine)
+        binary_sink.s3, binary_sink.table, binary_sink.bucket = S3(), Table(), "private-bucket"
+        binary_sink.preserve(b"\xff\xfe", **{**kwargs, "reason": "UNSUPPORTED_ENCODING"})
+        self.assertEqual(list(binary_sink.s3.objects.values()), [b"\xff\xfe"])
         sink.table.item["sha256"] = "altered"
         with self.assertRaisesRegex(ValueError, "conflicting"):
             sink.preserve('{"a":', **kwargs)

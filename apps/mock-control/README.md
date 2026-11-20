@@ -69,3 +69,5 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
 `serve-ua-json --fixture fixtures/mockprofile-200-a-001.json --cert <PFX> --port <포트>`는 프로젝트 전용 HTTPS JSON 계약을 제공한다. `FOODTECH_MOCK_CERT_PASSWORD`, `FOODTECH_MOCK_CLIENT_ID`, `FOODTECH_MOCK_CLIENT_SECRET`을 환경변수로 설정한다. OAuth client credentials 후 `/ua-json/v1/browse`와 `/ua-json/v1/read?node=DeviceId` 또는 `AvailableSnapshots`를 읽는다. 쓰기와 제어는 제공하지 않는다. 첫 이력 조회 이후 합성 표본을 5초 간격으로 공개한다. 이는 UA 세션이 없는 프로젝트 시험 계약이며 OPC UA 표준 JSON 서비스나 제조사 호환 서버라는 의미가 아니다. 이력은 프로세스 메모리에만 존재한다.
 
 MQTT `serve-mqtt`에 `--fault invalid-utf8` 또는 `--fault invalid-json`을 더하면 첫 번째 전송에서 합성 인코딩·JSON 오류를 재현한다. 정상 fixture와 별도 오류 시나리오이며 장비 제어를 제공하지 않는다.
+
+REST 기본 프로파일의 `serve`에 `--fault invalid-utf8`을 지정하면 첫 NDJSON 레코드에 합성 UTF-8 오류를 재현한다.

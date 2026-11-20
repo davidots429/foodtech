@@ -8,7 +8,7 @@ import httpx
 
 @dataclass(frozen=True)
 class PollResult:
-    records: tuple[str, ...]
+    records: tuple[str | bytes, ...]
     next_cursor: int
 
 
@@ -60,7 +60,23 @@ class RestMockClient:
                 next_cursor = int(response.headers["X-Next-Cursor"])
                 if next_cursor < cursor:
                     raise ValueError("cursor moved backwards")
-                return PollResult(tuple(line for line in response.text.splitlines() if line), next_cursor)
+                # Split on wire-level NDJSON separators before strict UTF-8 decoding.
+                # Invalid records retain their exact bytes for the ingestion quarantine.
+                parts = response.content.split(b"\n") if response.content else []
+                if parts and parts[-1] == b"":
+                    parts.pop()
+                records = []
+                for part in parts:
+                    part = part.removesuffix(b"\r")
+                    try:
+                        records.append(part.decode("utf-8", errors="strict"))
+                    except UnicodeDecodeError:
+                        if self.profile_id != "mockprofile-100":
+                            raise ValueError("invalid UTF-8 in Mock stream") from None
+                        records.append(part)
+                if next_cursor != cursor + len(records):
+                    raise ValueError("Mock cursor does not match returned records")
+                return PollResult(tuple(records), next_cursor)
             except (httpx.TransportError, httpx.TimeoutException):
                 if attempt:
                     raise

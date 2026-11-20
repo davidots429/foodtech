@@ -9,7 +9,7 @@ import boto3
 MAX_PAYLOAD_BYTES = 2_000_000
 
 
-def failure(raw: str) -> tuple[str, list[str]] | None:
+def failure(raw: str | bytes) -> tuple[str, list[str]] | None:
     """Identify only failures that cannot enter the ordered event pipeline."""
     def unique(pairs):
         result = {}
@@ -18,6 +18,11 @@ def failure(raw: str) -> tuple[str, list[str]] | None:
                 raise ValueError("duplicate JSON member")
             result[key] = value
         return result
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            return "UNSUPPORTED_ENCODING", []
     try:
         value = json.loads(raw, object_pairs_hook=unique, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     except (ValueError, RecursionError):
@@ -40,8 +45,8 @@ class IngestionQuarantine:
         self.table = session.resource("dynamodb").Table(table)
         self.bucket = bucket
 
-    def preserve(self, raw: str, *, cursor_key: str, position: int, reason: str, missing: list[str]) -> str:
-        payload = raw.encode("utf-8")
+    def preserve(self, raw: str | bytes, *, cursor_key: str, position: int, reason: str, missing: list[str]) -> str:
+        payload = raw if isinstance(raw, bytes) else raw.encode("utf-8")
         if len(payload) > MAX_PAYLOAD_BYTES:
             raise ValueError("payload exceeds quarantine limit; source cursor was not advanced")
         digest = hashlib.sha256(payload).hexdigest()
