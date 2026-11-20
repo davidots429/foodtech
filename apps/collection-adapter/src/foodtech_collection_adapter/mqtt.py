@@ -48,6 +48,11 @@ def accept_message(client, message, ingestor, quarantine, client_id, instance=IN
                 invalid = ("SCHEMA_VIOLATION", [])
         else:
             invalid = ingestion_failure(raw)
+            if invalid is None:
+                try:
+                    record = decode_record(raw)
+                except (ValueError, etree.Error, jsonschema.ValidationError):
+                    invalid = ("SCHEMA_VIOLATION", [])
     if invalid is not None:
         if quarantine is None:
             raise ValueError("ingestion quarantine bucket is required for malformed input")

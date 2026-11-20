@@ -49,6 +49,8 @@ MQTT 수집 중 TCP 연결이 끊어지면 동일 클라이언트 ID로 기한 �
 
 `FOODTECH_INGESTION_DLQ_BUCKET`에 전용 버킷을 설정하면 JSON 구문·중복 키 오류와 필수 식별자 누락 원본을 S3에 암호화 저장하고 수집 테이블에 별도 `INGESTION_DLQ#.../MANIFEST`를 기록한다. 두 저장이 모두 성공한 뒤에만 커서를 갱신한다. 같은 fixture 커서 위치와 바이트의 재시도는 같은 manifest에 연결된다. 원본은 2 MB 이하이며 이를 초과하거나 버킷 설정·저장이 실패하면 커서를 전진시키지 않는다. 일반 이벤트나 품질 평가 레코드를 만들지 않는다. REST 경로는 `mockprofile-100`의 NDJSON 레코드를 대상으로 잘못된 UTF-8도 원본 바이트로 격리한다. 파일 전체·압축 오류와 recordId가 없는 fallback 처리, 실행 역할과 AWS 실환경 검증은 후속 범위다.
 
+REST·MQTT JSON은 필수 식별자가 있더라도 각 vendor 원천 스키마 검증에 실패하면 원본을 격리한다. 격리 저장 후 REST는 커서를 갱신하고 MQTT는 QoS 1 메시지를 확인한다. 격리 저장 실패나 버킷 미설정 시 진행하지 않아 재수집·재전달을 허용한다. 정상 스키마에서 허용되지 않은 원천·인스턴스 연결은 별도 연결 오류로 중단한다.
+
 같은 버킷이 설정된 합성 OPC UA Binary·HTTPS Browse/Read 수집기는 `AvailableSnapshots`의 잘못된 형식, 스키마·순서·소스 불일치 또는 기존 이력 변경을 발견하면 복구 값과 `INVALID_SOURCE_HISTORY` manifest를 보존한 뒤 수집을 중단한다. 같은 인스턴스·내용의 재시도는 같은 manifest로 연결하며 저장 실패 시에도 진행하지 않는다. Binary는 읽은 문자열의 UTF-8 바이트를 저장하고 HTTPS는 디코딩된 배열을 JSON으로 다시 직렬화하므로 HTTP 원본 바이트가 아니다. 전체 복구 값의 한도는 2 MB이며 초과분과 비문자열 Binary 값은 격리하지 못한 채 중단한다. 실제 AWS 저장·실행 역할 및 재처리는 후속 검증이다.
 
 Binary Mock 재시작 후 복구 이력이 일시적으로 짧아지면 이미 본 접두 내용은 검증하되 기존 진행 상태를 유지하고 이후 자료를 기다린다. 전용 격리 버킷이 개발 스택에 배포되면 `AWS_PROFILE=foodtech .venv/bin/python tests/live/opcua_quarantine_check.py`로 무작위 합성 이력의 객체·manifest·동일 재시도와 정리를 확인할 수 있다. 이 스크립트는 해당 스택 출력의 전용 버킷이 없으면 쓰기 전에 중단한다. 2026-11-20 개발 스택에는 이 출력이 없어 실제 저장 시험을 수행하지 않았다.
