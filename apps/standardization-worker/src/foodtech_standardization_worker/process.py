@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 
-from foodtech_contracts import canonical_record, decode_record, dedup_key, payload_hash
+from foodtech_contracts import canonical_record, decode_record, dedup_key, legacy_dedup_key, payload_hash
 
 ABSOLUTE_ZERO_C = Decimal("-273.15")
 MAPPING_VERSION = "mockprofile-100-a-map-v1"
@@ -22,6 +22,7 @@ class Finding:
 class Assessment:
     ingestion_event_id: str
     business_dedup_key: str
+    legacy_business_dedup_key: str
     payload_hash: str
     quality_status: str
     findings: tuple[Finding, ...]
@@ -71,6 +72,7 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
     return Assessment(
         ingestion_event_id=ingestion_event_id,
         business_dedup_key=dedup_key(record),
+        legacy_business_dedup_key=legacy_dedup_key(record),
         payload_hash=payload_hash(record),
         quality_status=quality,
         findings=tuple(findings),

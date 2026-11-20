@@ -30,3 +30,11 @@ SQS FIFO의 원본 참조를 받아 DynamoDB 원본을 강하게 읽고, 원천 
 
 실제 FIFO 전달·재시도는 `AWS_PROFILE=foodtech FOODTECH_DATA_TABLE=foodtech-data-flow-dev FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev .venv/bin/python tests/live/late_restatement_sqs_retry_check.py`로 확인한다. 2026-11-14 개발용 큐가 비어 있음을 확인한 뒤 합성 늦은 이벤트 한 건을 전송하고, 첫 파생 계산에 일시 충돌을 주입했다. Worker가 메시지를 삭제하지 않아 SQS가 재전달했고, 저장된 표준화 평가를 재사용하여 요청을 `COMPLETED`로 바꾸고 `NORMAL` 파생 결과를 기록했다. 현재 조리작업 판정은 유지됐으며 시험 메시지와 합성 DynamoDB 항목을 정리했다. 배포된 Worker 실행 역할과 실제 서비스 부하 조건은 별도 검증 대상이다. 실제 AWS 요청 비용이 발생할 수 있다.
 
+
+### 중복 키 v2 전환
+
+공통 중복 키 v2는 `sourceId`, `deviceId`, `schemaVersion`, `recordId`를 길이 접두 형식으로 구분한다. 공통 키 함수는 recordId가 없는 경우 원천·장비·순번·UTC 정규화 발생시각을 사용하는 별도 fallback 영역도 정의한다. 현재 합성 프로파일의 스키마는 recordId를 계속 필수로 요구하므로 fallback이 해당 프로파일의 입력 검증을 우회하지는 않는다.
+
+v1 키는 읽기 전용으로 보존한다. v2가 없고 v1이 있다면 최초 평가와 원본의 v1 키·내용 해시를 강하게 읽어 검증한 후 같은 장비일 때만 최초 수신과 해시를 v2에 연결한다. 원본이나 평가가 없거나 일치하지 않으면 처리를 중단한다. 중단된 같은 최초 수신의 재시도는 그 입력을 검증해 복구한다. 기존 평가를 덮어쓰거나 기존 오판정을 자동 재처리하지 않는다.
+
+**배포 전 전환 조건:** 구버전 Worker의 소비를 중단하고 처리 중인 메시지가 정리됐는지 확인한 후 신버전만 실행한다. 구버전과 신버전의 동시 처리나 롤백 중 신규 쓰기는 보장하지 않는다. 실환경 데이터 이전 및 다중 Worker 경쟁·롤백 검증은 아직 수행하지 않았다.
