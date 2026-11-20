@@ -20,6 +20,7 @@ class CustomerRestatementTests(unittest.IsolatedAsyncioTestCase):
                 "source_id": "source", "device_id": "device", "batch_id": "batch"}}
         async def session(_request, _surface): return SimpleNamespace(subject=self.subject, csrf="csrf")
         self.patches = [patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false", "FOODTECH_DATA_TABLE": "data",
+                                               "FOODTECH_COOKING_TABLE": "test-cooking",
                                                "FOODTECH_ORDERED_QUEUE_URL": "queue"}),
                         patch.object(cooking, "_session", side_effect=session),
                         patch.object(cooking, "get_cooking_store", return_value=self.store),
@@ -51,6 +52,8 @@ class CustomerRestatementTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_rejects_stale_unbound_and_missing_csrf(self):
         self.assertEqual((await self.client.post(self.path, json=self.body)).status_code, 403)
+        with patch.dict(os.environ, {"FOODTECH_COOKING_TABLE": ""}):
+            self.assertEqual((await self.client.post(self.path, headers=self.headers, json=self.body)).status_code, 503)
         self.assertEqual((await self.client.post(self.path, headers=self.headers,
                           json={**self.body, "expected_version": 6})).status_code, 409)
         self.store.items[(self.pk, "META")]["source_binding"] = None

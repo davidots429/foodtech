@@ -653,7 +653,8 @@ async def request_process_restatement(job_id: str, request: Request, body: Custo
             raise HTTPException(409, "원천이 연결된 완료 돈까스 작업만 재계산할 수 있습니다.")
     queue_url = os.getenv("FOODTECH_ORDERED_QUEUE_URL", "")
     table_name = os.getenv("FOODTECH_DATA_TABLE", "")
-    if not queue_url or not table_name:
+    cooking_table = os.getenv("FOODTECH_COOKING_TABLE", "")
+    if not queue_url or not table_name or not cooking_table:
         raise HTTPException(503, "공정 재계산 저장소 또는 대기열이 설정되지 않았습니다.")
     if not existing:
         stream = stream_binding_key(**job["source_binding"])
