@@ -6,10 +6,18 @@ from foodtech_contracts.combi_mackerel_process import Sample, assess
 
 
 def records(count=180):
-    return [Sample(second, D("220"), "CLOSED") for second in range(1, count + 1)]
+    return [Sample(second, D("220"), "CLOSED", 3) for second in range(1, count + 1)]
 
 
 class MackerelMonitorTests(unittest.TestCase):
+    def test_fan_missing_or_deviation_leaves_process_incomplete(self):
+        for fan in (None, 4):
+            data = records(); data[10] = replace(data[10], fan_level=fan)
+            result = assess(data, len(data), "NORMAL")
+            self.assertEqual(result["status"], "INSUFFICIENT_DATA")
+            if fan == 4:
+                self.assertIn("FAN_DEVIATION", result["reason_codes"])
+
     def test_recovery_deadline_and_low_temperature(self):
         normal = records()
         for index in range(1, 92):

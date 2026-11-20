@@ -567,6 +567,11 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
     return {"meal": records[0], "rice": records[1], "transition": records[2], "mackerel": records[3]}
 
 
+def _rice_fan_verified(step: dict) -> bool:
+    assessment = step.get("monitored_process_assessment") or {}
+    return (assessment.get("fan_observation") or {}).get("status") == "MATCHED"
+
+
 @router.get("/{meal_id}")
 async def get_meal(meal_id: UUID, request: Request) -> dict:
     session, store = await _context(request)
@@ -581,6 +586,13 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
         raise HTTPException(503, "식사 배치의 연결된 작업을 불러올 수 없습니다.")
     events = [rows[key] for key in sorted(rows) if key.startswith("EVENT#")]
     result = {"meal": meta, "rice": rows[keys[0]], "transition": rows[keys[1]], "mackerel": rows[keys[2]]}
+    rice = result["rice"]
+    if rice.get("safety_status") == "PASSED" and not _rice_fan_verified(rice):
+        rice = {**rice, "safety_status": "INCOMPLETE"}
+        if rice.get("quality_current") and rice["quality_current"].get("usable"):
+            rice["quality_current"] = {**rice["quality_current"], "usable": False,
+                                       "blocked_reason": "FAN_EVIDENCE_UNVERIFIED"}
+        result["rice"] = rice
     if events:
         result["events"] = events
     return result
@@ -1041,7 +1053,8 @@ async def confirm_rice_safety(meal_id: UUID, request: Request, body: RiceSafetyC
     suspected = (body.observation == "SUSPECTED" or step.get("rice_critical_alarm_observed") is True or
                  "SENSOR_ANOMALY_SUSPECTED" in reasons)
     source_checked = not old.get("source") or bool(step.get("monitored_process_source"))
-    safety = ("SUSPECTED" if suspected else "PASSED" if process_status in {"NORMAL", "WARNING"} and source_checked
+    fan_checked = _rice_fan_verified(step)
+    safety = ("SUSPECTED" if suspected else "PASSED" if process_status in {"NORMAL", "WARNING"} and source_checked and fan_checked
               else "INCOMPLETE")
     now = _now()
     version = int(old["version"]) + 1
@@ -1058,7 +1071,7 @@ async def confirm_rice_safety(meal_id: UUID, request: Request, body: RiceSafetyC
              "safety_version": safety_version, "observation": body.observation, "note": body.note.strip(),
              "process_status": process_status, "process_reason_codes": reasons,
              "critical_alarm_observed": step.get("rice_critical_alarm_observed"),
-             "source_checked": source_checked}
+             "source_checked": source_checked, "fan_checked": fan_checked}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:
@@ -1083,6 +1096,8 @@ async def assess_combi_quality(meal_id: UUID, menu: Literal["rice", "mackerel"],
     step = rows.get(f"JOB#{kind}#{job_id}")
     if not step or step.get("status") != "UNLOADED" or step.get("safety_status") != "PASSED":
         raise HTTPException(409, "인양과 유효한 안전 확인 후에만 품질평가를 완료할 수 있습니다.")
+    if menu == "rice" and not _rice_fan_verified(step):
+        raise HTTPException(409, "밥 공정의 팬 관찰을 먼저 확인해야 합니다.")
     current = int(step.get("quality_version", 0))
     if current != body.expected_current_version:
         raise HTTPException(409, "현재 품질평가가 변경되었습니다. 다시 조회해 주세요.")

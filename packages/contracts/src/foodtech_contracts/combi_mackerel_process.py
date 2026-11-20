@@ -75,10 +75,14 @@ def assess(samples: list[Sample], duration: int, time_status: str) -> dict:
         warnings.append("DOOR_OPEN_WARNING")
     if time_status in ("SHORT_WARNING", "DELAY_WARNING"):
         warnings.append(time_status)
-    incomplete = recovered is None and "TEMPERATURE_RECOVERY_FAILURE" not in failures or candidate is not None
+    fan = observe_fan([sample.fan_level for sample in samples], 3)
+    if fan["reason_code"]:
+        warnings.append(fan["reason_code"])
+    incomplete = (recovered is None and "TEMPERATURE_RECOVERY_FAILURE" not in failures or
+                  candidate is not None or fan["status"] != "MATCHED")
     status = "FAILED" if failures else "INSUFFICIENT_DATA" if incomplete else "WARNING" if warnings else "NORMAL"
     return {"status": status, "reason_codes": sorted(failures | set(warnings)),
             "recovered_at_second": recovered, "recovery_clock_started_second": 2,
             "door_open_seconds": total_open, "door_max_open_seconds": max_open,
             "door_changes": changes, "door_final_state_pending": candidate is not None,
-            "sample_count": len(samples), "fan_observation": observe_fan([sample.fan_level for sample in samples], 3)}
+            "sample_count": len(samples), "fan_observation": fan}
