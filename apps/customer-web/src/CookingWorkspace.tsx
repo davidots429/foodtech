@@ -801,6 +801,7 @@ export function CookingWorkspace({ csrf }: Props) {
             {["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) && <CookingTimeMonitor jobId={job.job_id} />}
             {job.menu === "JEYUK" && ["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) &&
               <JeyukLiveProcess key={job.job_id} jobId={job.job_id} knownVersion={job.version}
+                refreshDisabled={busy || loadingJob}
                 onRefresh={() => { void refresh(job.job_id).catch(() => setError("최신 작업을 불러오지 못했습니다.")); }} />}
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
             <LocalChat key={job.job_id} csrf={csrf} jobId={job.job_id} />
