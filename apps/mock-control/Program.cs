@@ -41,7 +41,7 @@ var root = fixture.RootElement;
 var jeyuk = root.TryGetProperty("fixtureId", out _);
 var combi = root.TryGetProperty("profileId", out var profile) && profile.GetString() == "mockprofile-120";
 if (!jeyuk && !combi && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-    root.GetProperty("instanceId").GetString() is not ("mockprofile-100-a-001" or "mockprofile-100-b-001")))
+    root.GetProperty("instanceId").GetString() is not ("mockprofile-100-a-001" or "mockprofile-100-b-001" or "mockprofile-100-c-001")))
     throw new InvalidDataException("Only approved synthetic profiles are supported.");
 if ((jeyuk || combi) && (args.Length == 0 || args[0] != "serve"))
     throw new ArgumentException("Use the matching simulation command or serve for this fixture.");

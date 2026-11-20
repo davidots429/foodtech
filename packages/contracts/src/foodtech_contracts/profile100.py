@@ -36,8 +36,20 @@ NORMALIZED_B_SCHEMA["properties"]["measurements"]["properties"]["outputPercent"]
 NORMALIZED_B_VALIDATOR = jsonschema.Draft202012Validator(NORMALIZED_B_SCHEMA, format_checker=jsonschema.FormatChecker())
 
 
+VENDOR_C_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-100-c-v1.schema.json").read_text())
+VENDOR_C_VALIDATOR = jsonschema.Draft202012Validator(VENDOR_C_SCHEMA, format_checker=jsonschema.FormatChecker())
+NORMALIZED_C_SCHEMA = json.loads(json.dumps(SCHEMA))
+NORMALIZED_C_SCHEMA["properties"]["deviceId"] = {"const": "mockprofile-100-c-001"}
+NORMALIZED_C_SCHEMA["properties"]["batchId"]["pattern"] = "^batch-c-[A-Za-z0-9-]+$"
+NORMALIZED_C_SCHEMA["properties"]["recordId"]["pattern"] = "^rec-c-[A-Za-z0-9-]+$"
+NORMALIZED_C_SCHEMA["properties"]["measurements"]["required"] = ["temperatureCelsius", "speedLevel", "elapsedSeconds"]
+NORMALIZED_C_SCHEMA["properties"]["measurements"]["properties"]["elapsedSeconds"] = {"type": "number", "minimum": 0}
+NORMALIZED_C_SCHEMA["properties"]["measurements"]["properties"]["speedLevel"] = {"type": "integer", "minimum": 0, "maximum": 10}
+NORMALIZED_C_VALIDATOR = jsonschema.Draft202012Validator(NORMALIZED_C_SCHEMA, format_checker=jsonschema.FormatChecker())
+
+
 def _validate(record: dict) -> None:
-    validator = {"mockprofile-100-b-001": NORMALIZED_B_VALIDATOR, "mockprofile-300-a-001": MQTT_VALIDATOR, "mockprofile-203-a-001": UA_VALIDATOR, "mockprofile-200-a-001": UA_JSON_VALIDATOR}.get(
+    validator = {"mockprofile-100-c-001": NORMALIZED_C_VALIDATOR, "mockprofile-100-b-001": NORMALIZED_B_VALIDATOR, "mockprofile-300-a-001": MQTT_VALIDATOR, "mockprofile-203-a-001": UA_VALIDATOR, "mockprofile-200-a-001": UA_JSON_VALIDATOR}.get(
         record.get("deviceId"), VALIDATOR)
     validator.validate(record)
 
@@ -56,6 +68,8 @@ def decode_record(raw: str | bytes) -> dict:
     record = json.loads(raw, parse_float=Decimal, object_pairs_hook=_unique_pairs)
     if not isinstance(record, dict):
         raise ValueError("record must be a JSON object")
+    if record.get("deviceId") == "mockprofile-100-c-001" and record.get("DeviceId") != "mockprofile-100-c-001":
+        raise ValueError("vendor-c input must use its source schema")
     if record.get("deviceId") == "mockprofile-100-b-001" and record.get("device_id") != "mockprofile-100-b-001":
         raise ValueError("vendor-b input must use its source schema")
     if record.get("device_id") == "mockprofile-100-b-001":
@@ -74,6 +88,17 @@ def decode_record(raw: str | bytes) -> dict:
                   "measurements": {"temperatureCelsius": temperature_c, "outputPercent": record["output_percent"],
                                    "elapsedSeconds": Decimal(record["elapsed_ms"]) / 1000},
                   "extensions": {key: value for key, value in record.items() if key.startswith("ext_")}}
+    elif record.get("DeviceId") == "mockprofile-100-c-001":
+        VENDOR_C_VALIDATOR.validate(record)
+        reading = record["Readings"]
+        record = {"schemaVersion": record["SchVer"], "sourceId": record["SrcId"],
+                  "deviceId": record["DeviceId"], "batchId": record["BatchId"], "recordId": record["RecId"],
+                  "sequenceNumber": record["SeqNo"], "eventTime": record["Timestamp"],
+                  "deviceStatus": "running" if record["Status"] == "RUN" else "stopped",
+                  "errorReason": record.get("Err") or None,
+                  "measurements": {"temperatureCelsius": reading["TempC"], "speedLevel": reading["SpeedLvl"],
+                                   "elapsedSeconds": Decimal(reading["ElapsedMin"]) * 60},
+                  "extensions": {"alarm": record["Alarm"] == "Y", "vendor_extension": record.get("Extension", {})}}
     _validate(record)
     return record
 
@@ -119,6 +144,7 @@ def canonical_record(record: dict) -> dict:
         "device_status": record["deviceStatus"],
         "temperature_celsius": _decimal(measurements["temperatureCelsius"]),
         **({"output_percent": _decimal(measurements["outputPercent"])} if "outputPercent" in measurements
+           else {"speed_level": measurements["speedLevel"]} if "speedLevel" in measurements
            else {"speed_rpm": _decimal(measurements["speedRpm"])}),
         "elapsed_seconds": _decimal(measurements["elapsedSeconds"]),
         "error_reason": record.get("errorReason"),

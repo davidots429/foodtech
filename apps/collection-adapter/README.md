@@ -46,3 +46,7 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 ### vendor-b 기본 REST 인스턴스
 
 `--instance mockprofile-100-b-001`로 별도 vendor-b JSON 원천을 수집한다. 해당 원천 JSON Schema를 먼저 검증하고 화씨·밀리초·정수 상태를 표준 단위와 상태로 결정적으로 변환한다. 출력 비율은 `OUTPUT_PERCENT`로 기록하고 RPM으로 변환하지 않는다. 수집 원본은 그대로 보존하며 vendor-a와 커서를 분리한다. 합성 제한상 화씨는 0.1°C로 정확히 변환 가능한 값만 처리하며 그 외는 중단한다. 로컬 HTTPS 시험 범위이며 AWS 실저장·나머지 vendor 및 프로파일은 후속이다.
+
+### vendor-c 기본 REST 인스턴스
+
+`--instance mockprofile-100-c-001`로 PascalCase·약어와 중첩 측정값을 쓰는 세 번째 합성 원천을 수집한다. 원천 Schema 검증 후 오프셋 시각을 UTC로 정규화하고 분 단위 경과값을 초로 변환한다. `0~10` 순서형 속도는 `SPEED_LEVEL`로 기록하며 출력 비율이나 RPM으로 환산하지 않는다. `Y/N` 알람과 빈 오류 문자열은 명시적으로 변환하고 원본 JSON은 유지한다. fixture의 분 단위 값은 표시 정밀도 때문에 변환 결과가 5초와 미세하게 다를 수 있으며 이를 보간하지 않는다. vendor별 커서는 분리된다. 실제 AWS 저장과 나머지 연계 방식·프로파일 검증은 후속이다.
