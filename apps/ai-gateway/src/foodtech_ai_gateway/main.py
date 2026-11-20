@@ -4,7 +4,8 @@ from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Literal
 
 from .ollama import OllamaClient
 from .policy import Caller, Execution, Feature
@@ -25,9 +26,26 @@ class NewExecution(StrictBody):
     tenant_id: str = Field(min_length=1, max_length=128)
 
 
+class ChatMessage(StrictBody):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=1000)
+
+
 class InvokeExecution(StrictBody):
     tenant_id: str = Field(min_length=1, max_length=128)
-    prompt: str = Field(min_length=1, max_length=4000)
+    prompt: str | None = Field(default=None, min_length=1, max_length=4000)
+    messages: list[ChatMessage] | None = Field(default=None, min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def validate_content(self):
+        if (self.prompt is None) == (self.messages is None):
+            raise ValueError("exactly one input form is required")
+        if self.messages is not None and (len(self.messages) % 2 != 1 or
+                sum(len(message.content) for message in self.messages) > 3400 or any(
+                    message.role != ("user" if i % 2 == 0 else "assistant") or not message.content.strip()
+                    for i, message in enumerate(self.messages))):
+            raise ValueError("invalid chat history")
+        return self
 
 
 class ExternalPreview(StrictBody):
@@ -116,7 +134,8 @@ async def invoke_execution(request: Request, execution_id: str, body: InvokeExec
         raise HTTPException(403, "EXECUTION_NOT_FOUND")
     if execution.model_id == "llama3.1:8b":
         outcome = await service.execute_local(Caller("business-api", body.tenant_id),
-                                              execution_id, body.prompt, ollama)
+            execution_id, body.prompt, ollama,
+            messages=[message.model_dump() for message in body.messages] if body.messages is not None else None)
     else:
         raise HTTPException(403, "EXTERNAL_FIXTURE_CONFIRMATION_REQUIRED")
     if outcome.state == "DENIED":

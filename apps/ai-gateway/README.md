@@ -27,6 +27,8 @@
 
 2026-11-07에는 [실저장 검증 스크립트](../../tests/live/ai_gateway_dynamodb_check.py)로 같은 업무 API → 실제 mTLS Gateway → 실제 Ollama → 개발용 DynamoDB 레지스트리 경로를 결합했다. 합성 요청의 `SUCCEEDED`와 응답 본문 저장 일치, Ollama 종료 후 `FAILED / OLLAMA_UNAVAILABLE`, 두 실행의 tenant 호출 잔여량 `2→1→0`을 확인했다. 시험 레코드는 삭제했고 테이블 항목 수 0을 확인했다. 재실행 명령은 저장소 루트에서 `AWS_PROFILE=foodtech uv run --no-sync python tests/live/ai_gateway_dynamodb_check.py`다. 스크립트는 로컬 Ollama와 Gateway를 임시 실행하며 AWS 요청이 발생한다. 고객 세션·CSRF는 합성 대역이고, 실제 Cognito 세션·배포된 Gateway 실행 역할·서버 GPU 성능은 아직 검증하지 않았다.
 
+고객 채팅은 검증된 사용자·어시스턴트 턴을 분리해 Gateway로 전달한다. Gateway는 고객이 지정할 수 없는 시스템 메시지를 추가해 Ollama `/api/chat`을 호출하며 잘못된 역할·순서·길이와 시스템 역할 위조를 거부한다. 역할 분리는 프롬프트 주입에 대한 완전한 방어를 보장하지 않는다. 2026-11-20 설치된 `llama3.1:8b`와 로컬 Ollama에서 분리된 메시지로 응답 생성을 확인했다. 해당 시험은 배포 환경이나 실제 고객 세션을 포함하지 않는다.
+
 로컬 검사는 `uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v`로 실행한다. 자격증명 값·암호문·프롬프트 원문을 시험 입력에 넣지 않는다.
 
 ## 저장 자격증명과 외부 공급자 첫 실행 경계

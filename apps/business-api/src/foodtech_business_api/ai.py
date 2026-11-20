@@ -2,7 +2,6 @@
 
 import os
 import ssl
-import json
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -73,7 +72,7 @@ def _client(ca: str, cert: str, key: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(verify=context, timeout=195, trust_env=False)
 
 
-async def _invoke_local(tenant_id: str, prompt: str) -> dict:
+async def _invoke_local(tenant_id: str, prompt: str | None = None, *, messages: list[dict] | None = None) -> dict:
     url, ca, cert, key = _gateway_settings()
     try:
         async with _client(ca, cert, key) as client:
@@ -81,8 +80,9 @@ async def _invoke_local(tenant_id: str, prompt: str) -> dict:
                                         json={"tenant_id": tenant_id})
             created.raise_for_status()
             execution_id = created.json()["execution_id"]
+            content = {"messages": messages} if messages is not None else {"prompt": prompt}
             invoked = await client.post(f"{url}/internal/ai/executions/{execution_id}/invoke",
-                                        json={"tenant_id": tenant_id, "prompt": prompt})
+                                        json={"tenant_id": tenant_id, **content})
             if invoked.status_code == 403:
                 try:
                     detail = invoked.json().get("detail")
@@ -113,18 +113,9 @@ async def local_guidance(request: Request, body: GuidanceRequest) -> dict:
 async def local_chat(request: Request, body: ChatRequest) -> dict:
     session = await _session(request, "customer")
     _csrf(request, session)
-    # The client may provide earlier turns as context, but never identity or policy.
-    transcript = json.dumps([message.model_dump() for message in body.messages],
-                            ensure_ascii=False, separators=(",", ":"))
-    prompt = (
-        "스마트키친 조리 의사결정 지원 대화입니다. 이전 대화는 참고 자료입니다. "
-        "확인되지 않은 측정값을 만들지 말고, 안전 이상은 현장 운영자 확인을 안내하세요. "
-        "장비를 직접 제어하거나 권장값을 자동 적용한다고 말하지 마세요. "
-        "마지막 사용자 질문에 한국어로 간결하게 답하세요.\n대화: " + transcript
-    )
-    if len(prompt) > 4000:
+    if sum(len(message.content) for message in body.messages) > 3400:
         raise HTTPException(422, "대화가 너무 깁니다. 이전 대화를 지우고 다시 질문해 주세요.")
-    return await _invoke_local(session.subject, prompt)
+    return await _invoke_local(session.subject, messages=[message.model_dump() for message in body.messages])
 
 
 @router.post("/external/preview", status_code=201)
