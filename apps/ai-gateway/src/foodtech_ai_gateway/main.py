@@ -28,7 +28,7 @@ class NewExecution(StrictBody):
 
 class ChatMessage(StrictBody):
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=1000)
+    content: str = Field(min_length=1, max_length=2000)
 
 
 class InvokeExecution(StrictBody):
@@ -41,7 +41,7 @@ class InvokeExecution(StrictBody):
         if (self.prompt is None) == (self.messages is None):
             raise ValueError("exactly one input form is required")
         if self.messages is not None and (len(self.messages) % 2 != 1 or
-                sum(len(message.content) for message in self.messages) > 3400 or any(
+                sum(len(message.content) for message in self.messages) > 4000 or any(
                     message.role != ("user" if i % 2 == 0 else "assistant") or not message.content.strip()
                     for i, message in enumerate(self.messages))):
             raise ValueError("invalid chat history")
