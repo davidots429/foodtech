@@ -176,8 +176,19 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.json()["step"]["safety_status"], "PASSED")
         self.assertEqual(result.json()["step"]["batch_representative_core_temperature"], "75")
         self.assertEqual(result.json()["step"]["process_status"], "NOT_MEASURED")
+        process_samples = [{"second": i, "chamber_celsius": "220", "door": "CLOSED"}
+                           for i in range(1, 721)]
+        bad_process = await self.client.post(path + "/mackerel-process", headers=headers,
+                                             json={"expected_version": 11, "samples": process_samples[:-1]})
+        self.assertEqual(bad_process.status_code, 422)
+        process = await self.client.post(path + "/mackerel-process", headers=headers,
+                                         json={"expected_version": 11, "samples": process_samples})
+        self.assertEqual(process.status_code, 200, process.text)
+        self.assertEqual(process.json()["step"]["monitored_process_assessment"]["status"], "NORMAL")
+        self.assertEqual(process.json()["step"]["safety_status"], "PASSED")
+        self.assertEqual(process.json()["step"]["process_status"], "NOT_MEASURED")
         self.assertEqual((await self.client.post(path + "/mackerel-safety", headers=headers,
-                         json={**body, "expected_version": 11})).status_code, 409)
+                         json={**body, "expected_version": 12})).status_code, 409)
 
     async def test_low_temperature_failure_and_expired_probe_incomplete(self):
         headers = {"X-CSRF-Token": "csrf"}
