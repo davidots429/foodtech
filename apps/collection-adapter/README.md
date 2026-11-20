@@ -41,7 +41,9 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 
 ### 수집 전 격리 (REST 기본 프로파일)
 
-`FOODTECH_INGESTION_DLQ_BUCKET`에 전용 버킷을 설정하면 JSON 구문·중복 키 오류와 필수 식별자 누락 원본을 S3에 암호화 저장하고 수집 테이블에 별도 `INGESTION_DLQ#.../MANIFEST`를 기록한다. 두 저장이 모두 성공한 뒤에만 커서를 갱신한다. 같은 fixture 커서 위치와 바이트의 재시도는 같은 manifest에 연결된다. 원본은 2 MB 이하이며 이를 초과하거나 버킷 설정·저장이 실패하면 커서를 전진시키지 않는다. 일반 이벤트나 품질 평가 레코드를 만들지 않는다. REST 경로는 `mockprofile-100`의 NDJSON 레코드를 대상으로 잘못된 UTF-8도 원본 바이트로 격리한다. 파일 전체·압축 오류와 OPC UA 격리, recordId가 없는 fallback 처리, 실행 역할과 AWS 실환경 검증은 후속 범위다.
+`FOODTECH_INGESTION_DLQ_BUCKET`에 전용 버킷을 설정하면 JSON 구문·중복 키 오류와 필수 식별자 누락 원본을 S3에 암호화 저장하고 수집 테이블에 별도 `INGESTION_DLQ#.../MANIFEST`를 기록한다. 두 저장이 모두 성공한 뒤에만 커서를 갱신한다. 같은 fixture 커서 위치와 바이트의 재시도는 같은 manifest에 연결된다. 원본은 2 MB 이하이며 이를 초과하거나 버킷 설정·저장이 실패하면 커서를 전진시키지 않는다. 일반 이벤트나 품질 평가 레코드를 만들지 않는다. REST 경로는 `mockprofile-100`의 NDJSON 레코드를 대상으로 잘못된 UTF-8도 원본 바이트로 격리한다. 파일 전체·압축 오류와 recordId가 없는 fallback 처리, 실행 역할과 AWS 실환경 검증은 후속 범위다.
+
+같은 버킷이 설정된 합성 OPC UA Binary·HTTPS Browse/Read 수집기는 `AvailableSnapshots`의 잘못된 형식, 스키마·순서·소스 불일치 또는 기존 이력 변경을 발견하면 복구 값과 `INVALID_SOURCE_HISTORY` manifest를 보존한 뒤 수집을 중단한다. 같은 인스턴스·내용의 재시도는 같은 manifest로 연결하며 저장 실패 시에도 진행하지 않는다. Binary는 읽은 문자열의 UTF-8 바이트를 저장하고 HTTPS는 디코딩된 배열을 JSON으로 다시 직렬화하므로 HTTP 원본 바이트가 아니다. 전체 복구 값의 한도는 2 MB이며 초과분과 비문자열 Binary 값은 격리하지 못한 채 중단한다. 실제 AWS 저장·실행 역할 및 재처리는 후속 검증이다.
 
 `mockprofile-300-a-001` MQTT 구독에도 같은 버킷 설정을 사용할 수 있다. UTF-8 디코딩이나 JSON 파싱 실패, 필수 식별자 누락은 원본 바이트와 manifest를 저장한 뒤 QoS 1 ACK를 보낸다. 미설정·저장 실패·2 MB 초과 시 ACK하지 않는다. 재전달은 새로운 수신 ID로 보존될 수 있으며, 객체 저장 후 manifest 실패 시 미참조 객체가 남을 수 있다. MQTT 시험은 프로세스 메모리 기반 테스트 저장소를 사용하며 AWS 실저장은 별도 검증이다.
 

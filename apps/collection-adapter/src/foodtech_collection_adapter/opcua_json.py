@@ -10,7 +10,8 @@ from urllib.parse import urlsplit
 import httpx
 from foodtech_contracts import stream_key
 from .aws_flow import DynamoOrderedIngestor
-from .opcua import validate_history
+from .opcua import validate_or_quarantine
+from .ingestion_quarantine import IngestionQuarantine
 
 
 INSTANCES = ("mockprofile-200-a-001", "mockprofile-200-b-001", "mockprofile-200-c-001")
@@ -61,7 +62,7 @@ class UaJsonClient:
 
 
 def collect(base_url: str, client_id: str, client_secret: str, ca_file: str, ingestor, *,
-            count: int, timeout_seconds: int, instance: str = INSTANCES[0]) -> int:
+            count: int, timeout_seconds: int, instance: str = INSTANCES[0], quarantine=None) -> int:
     if instance not in INSTANCES or not 1 <= count <= 5000 or timeout_seconds < 1:
         raise ValueError("invalid collection limits")
     client = UaJsonClient(base_url, client_id, client_secret, ca_file)
@@ -84,9 +85,12 @@ def collect(base_url: str, client_id: str, client_secret: str, ca_file: str, ing
                 time.sleep(min(.25, max(0, deadline - time.monotonic())))
                 continue
             if not isinstance(values, list) or (seen and len(values) < max(seen)):
+                if quarantine is not None:
+                    quarantine.preserve_opcua_history(json.dumps(values, ensure_ascii=False).encode("utf-8"),
+                        instance_id=device, profile_id="mockprofile-200")
                 raise ValueError("synthetic source history moved backwards")
-            parsed, batch = validate_history(json.dumps(values, ensure_ascii=False), device, seen, batch,
-                                              source_id="synthetic-opcua-json")
+            parsed, batch = validate_or_quarantine(json.dumps(values, ensure_ascii=False), device, seen, batch,
+                source_id="synthetic-opcua-json", profile_id="mockprofile-200", quarantine=quarantine)
             for number, raw, record, digest in parsed:
                 if number not in seen:
                     ingestor.ingest(raw)
@@ -110,9 +114,11 @@ def main():
     parser.add_argument("--instance", choices=INSTANCES, default=INSTANCES[0])
     args = parser.parse_args()
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
+    bucket = os.getenv("FOODTECH_INGESTION_DLQ_BUCKET")
+    quarantine = IngestionQuarantine(bucket, os.environ["FOODTECH_DATA_TABLE"]) if bucket else None
     accepted = collect(os.environ["FOODTECH_UA_JSON_URL"], os.environ["FOODTECH_MOCK_CLIENT_ID"],
                        os.environ["FOODTECH_MOCK_CLIENT_SECRET"], os.environ["FOODTECH_MOCK_CA"], ingestor,
-                       count=args.count, timeout_seconds=args.timeout, instance=args.instance)
+                       count=args.count, timeout_seconds=args.timeout, instance=args.instance, quarantine=quarantine)
     print(f"accepted={accepted} provenance=SYNTHETIC")
 
 

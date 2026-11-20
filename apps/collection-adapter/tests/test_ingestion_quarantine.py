@@ -9,6 +9,32 @@ from foodtech_collection_adapter.rest import PollResult
 
 
 class QuarantineTests(unittest.TestCase):
+    def test_opcua_history_preservation_is_idempotent_and_fails_on_conflict(self):
+        class Collision(Exception): pass
+        class S3:
+            def __init__(self): self.objects = {}
+            def put_object(self, **request): self.objects[request["Key"]] = request
+        class Table:
+            def __init__(self):
+                self.items = {}
+                self.meta = SimpleNamespace(client=SimpleNamespace(exceptions=SimpleNamespace(ConditionalCheckFailedException=Collision)))
+            def put_item(self, Item, ConditionExpression):
+                if Item["pk"] in self.items: raise Collision()
+                self.items[Item["pk"]] = Item
+            def get_item(self, Key, ConsistentRead): return {"Item": self.items.get(Key["pk"])}
+        sink = IngestionQuarantine.__new__(IngestionQuarantine)
+        sink.s3, sink.table, sink.bucket = S3(), Table(), "private"
+        args = {"instance_id": "mockprofile-203-a-001", "profile_id": "mockprofile-203"}
+        first = sink.preserve_opcua_history(b'["broken"]', **args)
+        self.assertEqual(first, sink.preserve_opcua_history(b'["broken"]', **args))
+        obj = next(iter(sink.s3.objects.values()))
+        self.assertEqual((obj["Body"], obj["ServerSideEncryption"]), (b'["broken"]', "AES256"))
+        item = sink.table.items[f"INGESTION_DLQ#{first}"]
+        self.assertEqual((item["protocol"], item["node"]), ("OPCUA", "AvailableSnapshots"))
+        item["sha256"] = "tampered"
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            sink.preserve_opcua_history(b'["broken"]', **args)
+
     def test_failure_boundary(self):
         self.assertEqual(failure(b"\xff\xfe"), ("UNSUPPORTED_ENCODING", []))
         self.assertEqual(failure('{"a":'), ("SCHEMA_VIOLATION", []))

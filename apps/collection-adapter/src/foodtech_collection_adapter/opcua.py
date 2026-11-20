@@ -14,9 +14,11 @@ from urllib.parse import urlsplit
 from asyncua import Client, ua
 from asyncua.crypto.security_policies import SecurityPolicyBasic256Sha256
 from cryptography import x509
+from jsonschema.exceptions import ValidationError
 
 from foodtech_contracts import decode_record, stream_key
 from .aws_flow import DynamoOrderedIngestor
+from .ingestion_quarantine import IngestionQuarantine
 
 NAMESPACE = "urn:foodtech:synthetic:opcua:203:a:v1"
 SERVER_URI = "urn:localhost:foodtech:synthetic-ua"
@@ -71,8 +73,18 @@ def validate_history(value: str, device_id: str, seen: dict[int, str], batch: st
     return parsed, batch
 
 
+def validate_or_quarantine(value: str, device_id: str, seen: dict[int, str], batch: str | None,
+                           *, source_id: str, profile_id: str, quarantine):
+    try:
+        return validate_history(value, device_id, seen, batch, source_id=source_id)
+    except (ValueError, ValidationError):
+        if quarantine is not None and isinstance(value, str):
+            quarantine.preserve_opcua_history(value.encode("utf-8"), instance_id=device_id, profile_id=profile_id)
+        raise
+
+
 async def collect(endpoint: str, client_certificate: str, client_key: str, server_certificate: str,
-                  ingestor, *, count: int, timeout_seconds: int, instance: str = INSTANCES[0]) -> int:
+                  ingestor, *, count: int, timeout_seconds: int, instance: str = INSTANCES[0], quarantine=None) -> int:
     if instance not in INSTANCES or not 1 <= count <= 5000 or timeout_seconds < 1:
         raise ValueError("invalid collection limits")
     validate_server_certificate(endpoint, server_certificate)
@@ -137,7 +149,8 @@ async def collect(endpoint: str, client_certificate: str, client_key: str, serve
                 except (ConnectionError, OSError, TimeoutError):
                     await asyncio.sleep(min(.25, max(0, deadline - asyncio.get_running_loop().time())))
                     continue
-                parsed, expected_batch = validate_history(values, device_id, seen, expected_batch)
+                parsed, expected_batch = await asyncio.to_thread(validate_or_quarantine, values, device_id, seen,
+                    expected_batch, source_id="synthetic-opcua", profile_id="mockprofile-203", quarantine=quarantine)
                 for number, raw, record, digest in parsed:
                     if number not in seen:
                         await asyncio.to_thread(ingestor.ingest, raw)
@@ -162,9 +175,11 @@ def main() -> None:
     parser.add_argument("--instance", choices=INSTANCES, default=INSTANCES[0])
     args = parser.parse_args()
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
+    bucket = os.getenv("FOODTECH_INGESTION_DLQ_BUCKET")
+    quarantine = IngestionQuarantine(bucket, os.environ["FOODTECH_DATA_TABLE"]) if bucket else None
     accepted = asyncio.run(collect(os.environ["FOODTECH_OPCUA_ENDPOINT"], os.environ["FOODTECH_OPCUA_CLIENT_CERT"],
         os.environ["FOODTECH_OPCUA_CLIENT_KEY"], os.environ["FOODTECH_OPCUA_SERVER_CERT"], ingestor,
-        count=args.count, timeout_seconds=args.timeout, instance=args.instance))
+        count=args.count, timeout_seconds=args.timeout, instance=args.instance, quarantine=quarantine))
     print(f"accepted={accepted} provenance=SYNTHETIC")
 
 
