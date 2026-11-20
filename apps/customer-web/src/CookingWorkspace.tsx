@@ -86,7 +86,7 @@ const eventLabels: Record<string, string> = {
   COOKING_RESUMED: "조리 재개", COOKING_COMPLETED: "조리 완료",
   COOKING_CANCELED: "조리 취소", SUSPECTED: "이상 의심 신고",
   UNDER_REVIEW: "안전 확인 시작", CLEARED: "이상 의심 해제",
-  FAILED: "안전 실패 확정", CORE_CHECK: "합성 심부온도 안전 판정",
+  FAILED: "안전 실패 확정", CORE_CHECK: "합성 심부온도 안전 판정", TONKATSU_REHEATED: "돈까스 추가 가열 기록",
   JEYUK_DISCHARGE_CHECK: "제육볶음 배출 표본 안전 판정",
   VALIDATION_CONTEXT_RECORDED: "제육볶음 재검증 조합 기록",
   PROCESS_SAMPLE_ASSESSED: "수집 온도 공정판정", PROCESS_FAILURE_DETECTED: "공정 실패 자동판정",
@@ -217,6 +217,9 @@ export function CookingWorkspace({ csrf }: Props) {
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [safetyReason, setSafetyReason] = useState("");
+  const [reheatStart, setReheatStart] = useState("");
+  const [reheatLifted, setReheatLifted] = useState("");
+  const [reheatReason, setReheatReason] = useState("");
   const [manualStopConfirmed, setManualStopConfirmed] = useState(false);
   const [probeSamples, setProbeSamples] = useState<unknown[] | null>(null);
   const [probeEvidence, setProbeEvidence] = useState<Record<string, unknown> | null>(null);
@@ -555,6 +558,19 @@ export function CookingWorkspace({ csrf }: Props) {
     }), "합성 심부온도 표본의 안전 판정을 기록했습니다.");
   }
 
+  async function recordTonkatsuReheat() {
+    if (!job) return;
+    const start = new Date(reheatStart), lifted = new Date(reheatLifted);
+    if (!reheatStart || !reheatLifted || Number.isNaN(start.getTime()) ||
+        Number.isNaN(lifted.getTime()) || !reheatReason.trim()) {
+      setError("추가 가열 시작·인양 시각과 사유를 입력해 주세요."); return;
+    }
+    await action(() => api<CookingJob>(jobPath(job.job_id) + "/safety/tonkatsu-reheat", csrf, {
+      expected_version: job.version, started_at: start.toISOString(), lifted_at: lifted.toISOString(),
+      reason: reheatReason.trim(),
+    }), "추가 가열을 기록했습니다. 인양 직후의 새 합성 탐침 표본으로 재검사해 주세요.");
+  }
+
   async function checkJeyukDischarge() {
     if (!job || job.menu !== "JEYUK") return;
     if (dischargeTemps.some((value) => !value.trim() || !Number.isFinite(Number(value)) ||
@@ -867,6 +883,14 @@ export function CookingWorkspace({ csrf }: Props) {
             </div>
             <div className="divider" />
             {job.menu === "TONKATSU" ? <>
+            {job.status === "COMPLETED" && job.safety_status === "FAILED" && <div>
+              <p>심부온도 실패 후 추가 가열 이력을 기록하고 같은 제품의 새 표본으로 재검사할 수 있습니다.</p>
+              <p className="small">새 Mock fixture의 measurementStart를 아래 인양 시각과 같게 설정하고, 60초가 지난 후 생성한 표본을 불러오세요.</p>
+              <div className="field-row"><label>추가 가열 시작<input type="datetime-local" step="0.001" value={reheatStart} onChange={event => setReheatStart(event.target.value)} /></label>
+              <label>추가 가열 후 인양<input type="datetime-local" step="0.001" value={reheatLifted} onChange={event => setReheatLifted(event.target.value)} /></label>
+              <label>사유<input maxLength={500} value={reheatReason} onChange={event => setReheatReason(event.target.value)} /></label>
+              <button type="button" disabled={busy} onClick={recordTonkatsuReheat}>추가 가열 구간 기록</button></div>
+            </div>}
             <h4>합성 심부온도 표본</h4>
             <p className="small">별도 Mock 프로그램에서 생성한 제품별 합성 표본 파일을 불러옵니다. 실제 측정값이 아닙니다.</p>
             <label>합성 탐침 표본 파일 <input type="file" accept="application/json,.json"

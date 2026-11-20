@@ -58,6 +58,61 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
 
+    async def test_tonkatsu_reheat_requires_fresh_samples_and_preserves_failure(self):
+        job = await self.create()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        start = datetime.now(timezone.utc) - timedelta(seconds=240)
+        job = await self.transition(job, "PREHEAT_COMPLETED")
+        for event, field, value in (("COOKING_STARTED", "actual_placed_at", start - timedelta(seconds=300)),
+                                    ("COOKING_COMPLETED", "actual_lifted_at", start)):
+            response = await self.client.post(path + "/transitions", headers=CSRF,
+                json={"event": event, "expected_version": job["version"], field: value.isoformat()})
+            self.assertEqual(response.status_code, 200, response.text)
+            job = response.json()
+        def measured(item, temperature, at):
+            return {**probe(item, temperature), "probe_id": "probe-" + item,
+                    "removal_sequence": int(item), "measurement_start": at.isoformat(),
+                    "measurement_end": (at + timedelta(seconds=60)).isoformat()}
+        initial = [measured("1", "74", start), measured("2", "75", start)]
+        failed = await self.client.post(path + "/safety/core-check", headers=CSRF,
+                                        json={"expected_version": job["version"], "probes": initial})
+        self.assertEqual(failed.status_code, 200, failed.text)
+        self.assertEqual(failed.json()["safety_status"], "FAILED")
+        reheated_at = start + timedelta(seconds=70)
+        lifted = start + timedelta(seconds=120)
+        request = {"expected_version": failed.json()["version"], "started_at": reheated_at.isoformat(),
+                   "lifted_at": lifted.isoformat(), "reason": "안전 실패 후 추가 가열"}
+        invalid = await self.client.post(path + "/safety/tonkatsu-reheat", headers=CSRF,
+                                         json={**request, "started_at": start.isoformat()})
+        self.assertEqual(invalid.status_code, 422)
+        result = await self.client.post(path + "/safety/tonkatsu-reheat", headers=CSRF, json=request)
+        self.assertEqual(result.status_code, 201, result.text)
+        current = result.json()
+        self.assertTrue(current["evaluation_blocked"])
+        self.assertEqual(current["safety_status"], "INCOMPLETE")
+        self.assertEqual((await self.client.post(path + "/safety/tonkatsu-reheat", headers=CSRF,
+                                                 json=request)).status_code, 409)
+        bad = await self.client.post(path + "/safety/core-check", headers=CSRF,
+            json={"expected_version": current["version"], "probes": [measured("1", "75", start), measured("2", "75", start)]})
+        self.assertEqual(bad.status_code, 422)
+        missing = [measured("1", "75", lifted), measured("2", "75", lifted)]
+        missing[0]["samples"][0]["celsius"] = None
+        incomplete = await self.client.post(path + "/safety/core-check", headers=CSRF,
+            json={"expected_version": current["version"], "probes": missing})
+        self.assertEqual(incomplete.status_code, 200, incomplete.text)
+        self.assertEqual(incomplete.json()["safety_status"], "INCOMPLETE")
+        self.assertTrue(incomplete.json()["evaluation_blocked"])
+        self.assertIsNotNone(incomplete.json()["pending_tonkatsu_reheat"])
+        passed = await self.client.post(path + "/safety/core-check", headers=CSRF,
+            json={"expected_version": incomplete.json()["version"], "probes": [measured("1", "75", lifted), measured("2", "75", lifted)]})
+        self.assertEqual(passed.status_code, 200, passed.text)
+        self.assertEqual(passed.json()["safety_status"], "PASSED")
+        events = (await self.client.get(path + "/events")).json()
+        safety = [event for event in events if event.get("domain") == "SAFETY_STATUS"]
+        self.assertEqual([event["trigger"] for event in safety], ["CORE_CHECK", "TONKATSU_REHEATED", "CORE_CHECK", "CORE_CHECK"])
+        self.assertEqual(safety[0]["to_status"], "FAILED")
+        self.assertEqual(safety[1]["segment"]["segment_id"], safety[3]["reheat_segment_id"])
+
     async def test_running_time_guidance_is_owned_read_only_and_uncached(self):
         job = await self.create()
         path = f"/api/customer/cooking-jobs/{job['job_id']}"

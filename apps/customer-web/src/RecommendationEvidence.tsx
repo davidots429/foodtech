@@ -35,6 +35,7 @@ const labels: Record<string, string> = {
   SAFETY_ASSESSMENT: "안전 판정", CURRENT_QUALITY_ASSESSMENT: "현재 유효한 품질평가",
   OBSERVATION_COVERAGE: "표본 관찰 범위", CURRENT_PROCESS_DERIVATION: "현재 작업에 맞는 공정 재계산",
   SOURCE_COMPLETENESS: "원천 데이터의 전체 완전성", DETECTED_PROCESS_GAP: "감지된 공정 데이터 결손",
+  REHEAT_HISTORY_NOT_ASSESSED: "추가 가열 전체 이력의 추천 적합성",
   INITIAL_CONTEXT_STALE: "변경된 배치에 맞는 재료·기름 정보",
   INITIAL_CONTEXT_DECLARED_UNVERIFIED: "입력된 재료·기름 정보의 검증",
   STORAGE_OUTSIDE_SCENARIO: "승인된 냉장 생제품 시나리오와 다른 보관 상태",

@@ -253,6 +253,13 @@ class CoreCheck(StrictModel):
         return self
 
 
+class TonkatsuReheat(StrictModel):
+    expected_version: StrictInt = Field(ge=1)
+    started_at: datetime
+    lifted_at: datetime
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class CustomerRestatementRequest(StrictModel):
     expected_version: StrictInt = Field(ge=1)
     request_id: uuid.UUID
@@ -907,6 +914,14 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
     required_probes = batch_context["product_count"] if batch_context else old["planned_portions"]
     if len(body.probes) != required_probes:
         raise HTTPException(422, "기록된 제품마다 독립 탐침 기록이 필요합니다.")
+    reheat = old.get("pending_tonkatsu_reheat")
+    if reheat:
+        lifted = datetime.fromisoformat(reheat["lifted_at"].replace("Z", "+00:00"))
+        previous_ids = set(reheat["item_ids"])
+        if set(ids) != previous_ids or any(probe.measurement_start != lifted or
+                probe.measurement_end is None or probe.measurement_end > datetime.now(timezone.utc)
+                for probe in body.probes):
+            raise HTTPException(422, "추가 가열한 같은 제품의 인양 직후 60초 표본을 기록해야 합니다.")
     failed = any(probe.calibration_status == "OK" and any(
         sample.celsius is not None and sample.celsius < 75 for sample in probe.samples)
         for probe in body.probes)
@@ -925,15 +940,59 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
     meta = {**old, "safety_status": status, "safety_version": old["safety_version"] + 1,
             "version": old["version"] + 1, "evaluation_blocked": status != "PASSED",
             "core_check": [probe.model_dump(mode="json") for probe in body.probes],
+            "core_check_safety_version": int(old["safety_version"]) + 1,
             "core_check_summary": [_probe_summary(probe) for probe in body.probes],
             "core_check_mock_evidence": body.mock_evidence.model_dump(mode="json") if body.mock_evidence else None,
-            "core_check_by": session.subject, "updated_at": _now()}
+            "core_check_by": session.subject,
+            "pending_tonkatsu_reheat": reheat if status == "INCOMPLETE" else None, "updated_at": _now()}
     event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}",
              "domain": "SAFETY_STATUS", "trigger": "CORE_CHECK",
              "from_status": old["safety_status"], "to_status": status,
              "probes": meta["core_check"], "mock_evidence": meta["core_check_mock_evidence"],
+             "reheat_segment_id": reheat["segment_id"] if reheat else None,
              "actor": session.subject, "occurred_at": _now()}
     await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
+    return meta
+
+
+@router.post("/{job_id}/safety/tonkatsu-reheat", status_code=201)
+async def tonkatsu_reheat(job_id: str, request: Request, body: TonkatsuReheat) -> dict:
+    session, store, pk, old, pointer = await _read(request, job_id, write=True)
+    if int(old["version"]) != body.expected_version:
+        raise _conflict()
+    probes = old.get("core_check")
+    if old.get("menu") != "TONKATSU" or old.get("status") != "COMPLETED" or \
+            old.get("safety_status") != "FAILED" or old.get("core_check_safety_version") != old.get("safety_version") or \
+            not isinstance(probes, list) or not probes:
+        raise HTTPException(409, "심부온도 안전 실패가 기록된 완료 작업에서만 추가 가열을 기록합니다.")
+    if not body.reason.strip() or any(value.utcoffset() is None for value in (body.started_at, body.lifted_at)):
+        raise HTTPException(422, "추가 가열 사유와 시간대가 포함된 시각이 필요합니다.")
+    try:
+        starts = [datetime.fromisoformat(probe["measurement_start"].replace("Z", "+00:00")) for probe in probes]
+        ends = [datetime.fromisoformat(probe["measurement_end"].replace("Z", "+00:00")) for probe in probes]
+        original_lifted = datetime.fromisoformat(old["actual_lifted_at"].replace("Z", "+00:00"))
+        if original_lifted.utcoffset() is None or any(value.utcoffset() is None for value in starts + ends) or \
+                any(start < original_lifted or end > datetime.now(timezone.utc) for start, end in zip(starts, ends)):
+            raise ValueError("timezone required")
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise HTTPException(409, "기존 안전 측정의 종료 시각을 확인할 수 없습니다.")
+    started, lifted = body.started_at.astimezone(timezone.utc), body.lifted_at.astimezone(timezone.utc)
+    if started < max(ends) or lifted <= started or lifted > datetime.now(timezone.utc):
+        raise HTTPException(422, "추가 가열은 이전 안전 측정 이후 시작하고 현재 이전에 인양해야 합니다.")
+    segment = {"segment_id": str(uuid.uuid4()), "started_at": started.isoformat().replace("+00:00", "Z"),
+               "lifted_at": lifted.isoformat().replace("+00:00", "Z"),
+               "duration_seconds": str(Decimal(str((lifted - started).total_seconds()))),
+               "reason": body.reason.strip(), "previous_safety_version": int(old["safety_version"]),
+               "item_ids": [probe["item_id"] for probe in probes]}
+    now = _now()
+    meta = {**old, "version": int(old["version"]) + 1, "safety_version": int(old["safety_version"]) + 1,
+            "safety_status": "INCOMPLETE", "evaluation_blocked": True, "pending_tonkatsu_reheat": segment,
+            "latest_tonkatsu_reheat": segment,
+            "core_check": None, "core_check_summary": None, "core_check_mock_evidence": None, "updated_at": now}
+    event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}", "domain": "SAFETY_STATUS",
+             "trigger": "TONKATSU_REHEATED", "from_status": "FAILED", "to_status": "INCOMPLETE",
+             "segment": segment, "actor": session.subject, "occurred_at": now}
+    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, "SAFETY_RECHECK_REQUIRED"), event=event)
     return meta
 
 
