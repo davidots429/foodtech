@@ -708,6 +708,9 @@ async def jeyuk_discharge_check(job_id: str, request: Request, body: JeyukDischa
     discharge_at = datetime.fromisoformat(old["actual_lifted_at"].replace("Z", "+00:00"))
     if any(sample.sampled_at.astimezone(timezone.utc) < discharge_at for sample in body.samples):
         raise HTTPException(422, "배출 시작 전 측정값은 사용할 수 없습니다.")
+    checked_at = datetime.now(timezone.utc)
+    if any(sample.sampled_at.astimezone(timezone.utc) > checked_at for sample in body.samples):
+        raise HTTPException(422, "미래 시각의 배출 표본은 사용할 수 없습니다.")
     if any(body.samples[i].sampled_at > body.samples[i + 1].sampled_at for i in range(len(body.samples) - 1)) or \
             phases != [phase for phase in ("EARLY", "MIDDLE", "LATE") if phase in phases]:
         raise HTTPException(422, "배출 초기·중간·말기 순서대로 측정해야 합니다.")

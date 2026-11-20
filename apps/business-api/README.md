@@ -122,6 +122,8 @@
 
 `POST /api/customer/cooking-jobs/{job_id}/safety/discharge-check`는 완료된 제육볶음 작업에 한해 초기·재검증 표본을 기록한다. 배출 초기·중간·말기의 서로 다른 육류 포함 표본, 가장 두껍거나 뭉친 육류 부분 선택, 탐침 ID·교정 상태·측정시각과 온도를 저장한다. 교정된 세 표본이 모두 75°C 이상이면 수동 판정은 `PASSED`, 유효한 값 하나라도 미달하면 `FAILED`, 누락·무효값은 `ASSESSMENT_INCOMPLETE`다. 작업 안전 상태 `PASSED`는 자동 혼합물 판정과 수동 표본 판정이 모두 통과한 경우에만 기록한다. 모든 재검증은 이전 사건을 보존하며 기존 평가 포인터는 자동 복원하지 않는다. 고객 화면의 표본값은 시연용 합성 입력이다.
 
+배출 표본 시각은 기록된 배출 시작 이후이면서 서버가 요청을 검사하는 시점 이하여야 한다. 시연 화면은 합성 표본 세 건에 같은 제출 시각을 사용하며 실제 시간 간격을 측정했다고 주장하지 않는다. 고객 단말의 시계가 서버보다 빠르면 시각 오류로 거부될 수 있다.
+
 제육볶음 완료 품질평가는 같은 `/assessments` API의 `jeyuk-common-v1` 척도를 사용한다. 7개 공통 5점 항목에 제육볶음 관찰 설명을 붙이고 모두 점수와 관찰 근거를 요구한다. 운영자가 `QUALITY_PASSED` 또는 `QUALITY_FAILED`를 선택하며 실패에는 승인된 메뉴 품질 사유코드 하나 이상이 필요하다. 점수 기준에 미달한 `QUALITY_PASSED`는 거부한다. 1.8kg 합성 권장 배치의 50% 이하를 `PARTIAL`, 50% 초과~100%를 `REFERENCE`, 100% 초과~3.0kg 정격 이내를 `OVER_RECOMMENDED`로 기록한다. 평가 결과·사유·실제 적재량·인분과 안전 버전은 수정·재평가마다 새 불변 버전으로 저장되고 현재 포인터를 원자적으로 전환한다. 2026-11-15 개발용 DynamoDB에서 합성 제육볶음 작업의 최초 평가·안전 차단·재검증·재평가·현재 포인터 전환을 확인하고 시험 항목을 정리했다. 재실행 명령은 `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev uv run --no-sync python tests/live/jeyuk_assessment_dynamodb_check.py`다. 제육볶음 집계와 레시피 버전 개선 확정은 별도 범위다.
 
 조리작업의 `POST /api/customer/cooking-jobs/{job_id}/source-binding`은 고객 세션·CSRF·작업 버전을 확인한 뒤 조리 시작 전 `synthetic-rest / mockprofile-100-a-001 / batch-a-...` 배치를 한 작업에만 연결한다. 같은 배치를 다른 작업에 다시 연결하지 않는다. 연결 정보는 작업 메타와 역방향 바인딩을 같은 DynamoDB 트랜잭션으로 기록한다. 고객 화면에서는 배치 연결 뒤 조리를 시작하고 새로고침으로 자동판정을 확인한다.

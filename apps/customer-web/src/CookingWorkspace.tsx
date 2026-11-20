@@ -538,10 +538,10 @@ export function CookingWorkspace({ csrf }: Props) {
       setError("배출 초기·중간·말기 합성 표본 온도를 모두 입력해 주세요."); return;
     }
     const phases = ["EARLY", "MIDDLE", "LATE"] as const;
-    const baseTime = Math.max(Date.now(), new Date(job.actual_lifted_at ?? 0).getTime());
+    const sampledAt = new Date().toISOString();
     const samples = phases.map((phase, index) => ({
       phase, probe_id: `synthetic-probe-${index + 1}`, meat_sample_id: `synthetic-meat-${index + 1}`,
-      thickest_or_clumped_part: true, sampled_at: new Date(baseTime + index * 1000).toISOString(),
+      thickest_or_clumped_part: true, sampled_at: sampledAt,
       calibration_status: dischargeExpired[index] ? "EXPIRED" : "OK",
       celsius: dischargeTemps[index],
     })).filter((sample) => !dischargeGap || sample.phase !== "MIDDLE");
