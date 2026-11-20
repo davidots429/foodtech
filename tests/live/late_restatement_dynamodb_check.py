@@ -9,6 +9,8 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.collection_evidence import CompletionTracker
+from foodtech_collection_adapter.aws_flow import DynamoOrderedIngestor
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 from foodtech_standardization_worker.process_restatement import DynamoProcessRestatement
@@ -62,6 +64,7 @@ def main() -> None:
         cooking.put_item(Item=job)
         cooking.put_item(Item={"pk": stream_pk, "sk": "BINDING", "job_pk": job_pk})
         late_assessment = None
+        tracker = CompletionTracker(0, "mockprofile-100", binding["device_id"])
         for name, sequence, second, late in (("first", 1, 0, False), ("late", 2, 5, True),
                                              ("third", 3, 10, False)):
             event_id = f"synthetic-restatement-{run_id}-{name}"
@@ -73,8 +76,12 @@ def main() -> None:
                                          "event_time": f"2026-11-14T00:00:{second:02d}Z",
                                          "device_status": "RUNNING",
                                          "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}}
+            source_record = {"sourceId": binding["source_id"], "deviceId": binding["device_id"],
+                             "batchId": binding["batch_id"], "sequenceNumber": sequence}
+            raw = json.dumps(source_record, separators=(",", ":"))
+            tracker.record(raw, source_record)
             data.put_item(Item={"pk": stream_pk, "sk": f"RAW#{event_id}",
-                                "ingestion_event_id": event_id})
+                                "ingestion_event_id": event_id, "raw": raw, "provenance": "SYNTHETIC"})
             data.put_item(Item=assessment)
             if late:
                 late_assessment = assessment
@@ -82,6 +89,10 @@ def main() -> None:
                 cooking.put_item(Item={"pk": job_pk, "sk": f"EVENT#PROCESS#{event_id}",
                                        "source_assessment_pk": f"EVENT#{event_id}"})
         assert late_assessment is not None
+        receipt = tracker.finish(next_cursor=3, complete=True, completion_explicit=True)
+        collector = DynamoOrderedIngestor.__new__(DynamoOrderedIngestor)
+        collector.table = data
+        collector.save_completion_receipt(receipt, "synthetic-live-check")
         with patch.dict(os.environ, {"FOODTECH_COOKING_TABLE": COOKING_TABLE}):
             worker = DynamoStandardizationWorker(DATA_TABLE, "unused", "unused")
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
@@ -94,6 +105,7 @@ def main() -> None:
         assert result["process_assessment"]["data_gap"] is False
         assert len(result["included_ingestion_event_ids"]) == 3
         assert result["source_raw_count"] == 3
+        assert result["collection_evidence"]["raw_snapshot_matches"] is True
         assert result["observation_coverage"]["before_first_us"] == 2_000_000
         assert result["observation_coverage"]["after_last_us"] == 10_000_000
         assert result["observation_coverage"]["internal_gap_detected"] is False
@@ -124,6 +136,7 @@ def main() -> None:
                                   ConsistentRead=True)["Item"]
         assert latest["version"] == 2 and latest["result_sk"] == next_result["sk"]
         assert len(next_result["included_ingestion_event_ids"]) == 4
+        assert next_result["collection_evidence"]["raw_snapshot_matches"] is False
         assert next_result["observation_coverage"]["after_last_us"] == 5_000_000
         assert cooking.get_item(Key={"pk": job_pk, "sk": result["sk"]},
                                 ConsistentRead=True)["Item"] == result
