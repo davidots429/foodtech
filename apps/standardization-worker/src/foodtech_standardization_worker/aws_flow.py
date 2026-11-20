@@ -58,7 +58,7 @@ class DynamoStandardizationWorker:
             if not request or request.get("reason") != "CUSTOMER_REFRESH" or request.get("request_id") != request_id:
                 raise ValueError("untrusted customer restatement reference")
             result = bridge.restatement.process(job_pk, request_id)
-            if result not in {"DERIVED", "ALREADY_COMPLETED"}:
+            if result not in {"DERIVED", "ALREADY_COMPLETED", "REQUEST_STALE"}:
                 raise RuntimeError(f"customer restatement must be retried: {result}")
             return {"request_id": request_id, "result": result}
         if reference.get("profile_id") == "mockprofile-110":

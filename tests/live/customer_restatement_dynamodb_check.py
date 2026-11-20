@@ -94,8 +94,24 @@ def main():
         result = asyncio.run(api_call(subject, job_id, request_id, url, status=True))
         assert result.status_code == 200 and result.json()["status"] == "COMPLETED"
         assert DynamoCookingStore(COOKING_TABLE).latest_process_result(pk)["source_revision"] == 2
+        stale_id = str(uuid4())
+        stale_request = asyncio.run(api_call(subject, job_id, stale_id, url))
+        assert stale_request.status_code == 202
+        messages = sqs.receive_message(QueueUrl=url, MaxNumberOfMessages=1, WaitTimeSeconds=5,
+                                       VisibilityTimeout=90).get("Messages", [])
+        assert len(messages) == 1
+        receipt_handle = messages[0]["ReceiptHandle"]
+        stale_reference = json.loads(messages[0]["Body"])
+        assert stale_reference["job_pk"] == pk and stale_reference["request_id"] == stale_id
+        jobs.update_item(Key={"pk": pk, "sk": "META"}, UpdateExpression="ADD #v :one",
+                         ExpressionAttributeNames={"#v": "version"}, ExpressionAttributeValues={":one": 1})
+        assert worker.process(stale_reference)["result"] == "REQUEST_STALE"
+        sqs.delete_message(QueueUrl=url, ReceiptHandle=receipt_handle)
+        receipt_handle = None
+        stale_status = asyncio.run(api_call(subject, job_id, stale_id, url, status=True))
+        assert stale_status.json()["status"] == "STALE"
         print(json.dumps({"customer_request": "COMPLETED", "worker_replay": "ALREADY_COMPLETED",
-                          "source_revision": 2, "cleanup_partitions": 4}))
+                          "changed_job_request": "STALE", "source_revision": 2, "cleanup_partitions": 4}))
     finally:
         if receipt_handle:
             sqs.delete_message(QueueUrl=url, ReceiptHandle=receipt_handle)

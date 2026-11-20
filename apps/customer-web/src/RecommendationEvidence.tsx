@@ -77,7 +77,7 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
       const result = await api<{ status: string }>(jobPath(jobId) + "/process-restatements", csrf,
         { request_id: requestId, expected_version: value.job_version });
       setRestatementStatus(result.status);
-      if (result.status === "COMPLETED") restatementId.current = null;
+      if (["COMPLETED", "STALE"].includes(result.status)) restatementId.current = null;
     } catch (cause) { setError(cause instanceof Error ? cause.message : "재계산 요청을 전달하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -87,7 +87,7 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
     try {
       const result = await api<{ status: string }>(jobPath(jobId) + "/process-restatements/" + restatementId.current);
       setRestatementStatus(result.status);
-      if (result.status === "COMPLETED") restatementId.current = null;
+      if (["COMPLETED", "STALE"].includes(result.status)) restatementId.current = null;
     } catch (cause) { setError(cause instanceof Error ? cause.message : "재계산 상태를 조회하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -134,7 +134,8 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
       {value.recorded.menu === "TONKATSU" && value.recorded.job_status && ["COMPLETED", "FAILED"].includes(value.recorded.job_status) && <div>
         <button type="button" disabled={busy} onClick={() => void requestRestatement()}>공정 근거 재계산 요청</button>
         {restatementId.current && <button type="button" disabled={busy} onClick={() => void checkRestatement()}>재계산 상태 확인</button>}
-        {restatementStatus && <p>재계산 요청: {restatementStatus === "COMPLETED" ? "완료 · 조리 근거를 다시 조회해 주세요" : "처리 대기"}</p>}
+        {restatementStatus && <p>재계산 요청: {restatementStatus === "COMPLETED" ? "완료 · 조리 근거를 다시 조회해 주세요" :
+          restatementStatus === "STALE" ? "작업이 변경되어 취소됨 · 조리 근거를 다시 조회해 주세요" : "처리 대기"}</p>}
       </div>}
       {!requested && <button type="button" onClick={() => void requestRecipe()}
         disabled={busy || value.completeness === "INSUFFICIENT"}>AI 권고 요청 기록</button>}

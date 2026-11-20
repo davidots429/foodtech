@@ -22,6 +22,8 @@ class CustomerRestatementDispatchTests(unittest.TestCase):
         self.restatement.process.assert_called_once_with(self.job_pk, self.request_id)
         self.restatement.process.return_value = "ALREADY_COMPLETED"
         self.assertEqual(self.worker.process(self.reference)["result"], "ALREADY_COMPLETED")
+        self.restatement.process.return_value = "REQUEST_STALE"
+        self.assertEqual(self.worker.process(self.reference)["result"], "REQUEST_STALE")
 
     def test_unknown_request_is_rejected_and_transient_result_retried(self):
         self.table.get_item.return_value = {}

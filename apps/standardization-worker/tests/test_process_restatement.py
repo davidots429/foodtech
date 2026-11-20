@@ -184,7 +184,8 @@ class ProcessRestatementTests(unittest.TestCase):
         source_pk = stream_binding_key(**self.binding)
         request_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         request = {"pk": "JOB#1", "sk": f"RESTATEMENT#REQUEST#{request_id}", "status": "PENDING",
-                   "reason": "CUSTOMER_REFRESH", "request_id": request_id, "source_stream_pk": source_pk}
+                   "reason": "CUSTOMER_REFRESH", "request_id": request_id, "source_stream_pk": source_pk,
+                   "job_version_at_detection": job["version"]}
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
         processor.cooking, processor.data, processor.client = Mock(), Mock(), Mock()
         processor.cooking.name, processor.data.name = "cooking", "data"
@@ -201,6 +202,11 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(processor.process("JOB#1", request_id), "DERIVED")
         request_put = processor.client.transact_write_items.call_args.kwargs["TransactItems"][2]["Put"]["Item"]
         self.assertEqual(request_put["status"]["S"], "COMPLETED")
+        request["job_version_at_detection"] = job["version"] - 1
+        processor.client.transact_write_items.reset_mock()
+        self.assertEqual(processor.process("JOB#1", request_id), "REQUEST_STALE")
+        processor.client.transact_write_items.assert_not_called()
+        self.assertEqual(processor.cooking.update_item.call_args.kwargs["ExpressionAttributeValues"][":stale"], "STALE")
 
     def test_refresh_dependents_uses_business_aggregate_refresh(self):
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)

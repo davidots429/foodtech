@@ -1,6 +1,6 @@
 # Business API 인증과 첫 조리 업무 흐름
 
-완료된 합성 돈까스 작업의 고객은 `POST /api/customer/cooking-jobs/{id}/process-restatements`로 현재 작업 버전과 요청 UUID를 제출해 공정 근거 재계산을 요청할 수 있다. 요청을 조건부 저장한 후 FIFO 큐에 전달하며, 전달 실패 시 같은 UUID로 재시도한다. 상태는 같은 고객의 `GET .../process-restatements/{request_id}`에서 확인한다. `FOODTECH_DATA_TABLE`, `FOODTECH_COOKING_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`과 원천 버전 읽기·요청 쓰기·큐 전송 권한이 필요하다. Worker가 처리하지 못하거나 DLQ로 이동한 요청을 자동으로 복구하는 운영 절차는 후속 검증이다.
+완료된 합성 돈까스 작업의 고객은 `POST /api/customer/cooking-jobs/{id}/process-restatements`로 현재 작업 버전과 요청 UUID를 제출해 공정 근거 재계산을 요청할 수 있다. 요청을 조건부 저장한 후 FIFO 큐에 전달하며, 전달 실패 시 같은 UUID로 재시도한다. 상태는 같은 고객의 `GET .../process-restatements/{request_id}`에서 확인한다. 처리 전에 작업 버전이 바뀐 요청은 `STALE`로 종료하므로 최신 근거를 조회한 뒤 다시 요청한다. `FOODTECH_DATA_TABLE`, `FOODTECH_COOKING_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`과 원천 버전 읽기·요청 쓰기·큐 전송 권한이 필요하다. Worker가 처리하지 못하거나 DLQ로 이동한 요청을 자동으로 복구하는 운영 절차는 후속 검증이다.
 
 `FOODTECH_DATA_TABLE`이 설정되고 재계산 결과에 스트림 버전이 있으면 권고 근거 조회 전후로 연결된 원본 버전을 강한 일관성으로 읽는다. 조회 시점에 일치한 경우만 `MATCHED_AT_READ`, 바뀌었다면 `CHANGED`, 연결이 다르면 `INCONSISTENT`로 보고한다. 변경·연결 불일치에는 새 권고 요청과 전환 동의를 차단한다. 데이터 테이블 읽기 권한이 필요하며, 일치는 조회 시점과 버전 계약을 따르는 작성자에만 한정되고 AI 실행을 허용하지 않는다.
 

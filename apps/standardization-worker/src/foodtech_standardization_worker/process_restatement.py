@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import boto3
 import rfc8785
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.collection_evidence import matches_snapshot
@@ -200,11 +200,27 @@ class DynamoProcessRestatement:
         if request["status"] == "COMPLETED":
             self._refresh_dependents(job_pk)
             return "ALREADY_COMPLETED"
+        if request["status"] == "STALE" and request.get("reason") == "CUSTOMER_REFRESH":
+            return "REQUEST_STALE"
         if request["status"] != "PENDING":
             return "REQUEST_NOT_PENDING"
         job = self.cooking.get_item(Key={"pk": job_pk, "sk": "META"},
                                     ConsistentRead=True).get("Item")
-        if not job or job.get("source_binding") is None:
+        if not job:
+            return "JOB_NOT_BOUND"
+        if request.get("reason") == "CUSTOMER_REFRESH" and \
+                int(request.get("job_version_at_detection", -1)) != int(job["version"]):
+            try:
+                self.cooking.update_item(Key=request_key, UpdateExpression="SET #status = :stale",
+                    ConditionExpression=Attr("status").eq("PENDING"), ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={":stale": "STALE"})
+            except self.cooking.meta.client.exceptions.ConditionalCheckFailedException:
+                current = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")
+                if not current or current.get("status") not in {"STALE", "COMPLETED"}:
+                    raise
+                return "REQUEST_STALE" if current["status"] == "STALE" else "ALREADY_COMPLETED"
+            return "REQUEST_STALE"
+        if job.get("source_binding") is None:
             return "JOB_NOT_BOUND"
         stream_pk = request.get("source_stream_pk")
         if not stream_pk:
