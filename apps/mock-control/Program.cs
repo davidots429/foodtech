@@ -21,7 +21,7 @@ if (args.Length > 0 && args[0] == "serve-opcua")
 if (args.Length > 0 && args[0] == "serve-mqtt")
 {
     await MqttMock.Run(Required(options, "fixture"), Required(options, "cert"),
-                       int.Parse(Required(options, "port")));
+                       int.Parse(Required(options, "port")), options.GetValueOrDefault("fault"));
     return;
 }
 if (args.Length > 0 && args[0] == "simulate-jeyuk")
