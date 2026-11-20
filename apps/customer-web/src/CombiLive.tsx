@@ -11,7 +11,10 @@ type Live = { state: "NOT_STARTED" | "COLLECTING" | "COMPLETED"; count: number; 
     low_total: number; high_total: number; failure_codes: string[]; warning_codes: string[] } | null;
   mackerel_monitor?: { last_second: number; complete_from_start: boolean; recovered_at_second: number | null;
     door_open_seconds: number; door_max_open_seconds: number; candidate_door: string | null;
-    failure_codes: string[]; warning_codes: string[] } | null };
+    failure_codes: string[]; warning_codes: string[] } | null;
+  transition_monitor?: { last_second: number; complete_from_start: boolean; humidity_source: string;
+    vent_status: string; stable_seconds: number; ready_observed_at_second: number | null;
+    ready_conditions_current: boolean; timeout: boolean } | null };
 
 export function CombiLive({ mealId }: { mealId: string }) {
   const [live, setLive] = useState<Live | null>(null);
@@ -51,6 +54,16 @@ export function CombiLive({ mealId }: { mealId: string }) {
       {!live.rice_monitor.complete_from_start && <p role="alert">처음부터 연속된 관찰이 아니거나 습도 출처가 변경되어 확인이 필요합니다.</p>}
       {live.rice_monitor.failure_codes.length > 0 && <p role="alert">공정 실패 조건 감지: {live.rice_monitor.failure_codes.join(", ")}</p>}
       {live.rice_monitor.warning_codes.length > 0 && <p>경고 조건 감지: {live.rice_monitor.warning_codes.join(", ")}</p>}
+    </div>}
+    {live?.transition_monitor && <div>
+      <p>건열 전환 수집 중 감지 · {live.transition_monitor.last_second}초까지
+        {" "}· 안정 조건 {live.transition_monitor.stable_seconds}초 · 습도 출처 {live.transition_monitor.humidity_source}
+        {" "}· 환기 {live.transition_monitor.vent_status}</p>
+      {!live.transition_monitor.complete_from_start && <p role="alert">시작 표본 또는 필요한 센서·알람·환기 정보가 불완전합니다.</p>}
+      {live.transition_monitor.ready_observed_at_second !== null && <p>준비 조건 관찰: {live.transition_monitor.ready_observed_at_second}초
+        {" "}· 마지막 전환 표본 조건 {live.transition_monitor.ready_conditions_current ? "충족" : "미충족"}</p>}
+      {live.transition_monitor.timeout && <p role="alert">건열 전환 300초 내 준비 실패 감지</p>}
+      <p>이 관찰만으로 고등어 투입을 허용하지 않습니다. 배치 전환 확인이 별도로 필요합니다.</p>
     </div>}
     {live?.mackerel_monitor && <div>
       <p>고등어 온도 복원·문 상태 수집 중 감지 · {live.mackerel_monitor.last_second}초까지
