@@ -84,11 +84,14 @@ def assess(samples: list[Sample], duration: int, time_status: str,
         failures.add("DOOR_OPEN_FAILURE")
     elif door.get("reason_code") == "DOOR_OPEN_WARNING":
         warnings.add("DOOR_OPEN_WARNING")
+    fan = observe_fan([sample.fan_level for sample in samples], 4)
+    if fan["reason_code"]:
+        warnings.add(fan["reason_code"])
     status = ("FAILED" if failures else "INSUFFICIENT_DATA" if humidity_source == "NOT_SUPPORTED" or
-              door["status"] in ("INSUFFICIENT_DATA", "NOT_MEASURED") else
+              door["status"] in ("INSUFFICIENT_DATA", "NOT_MEASURED") or fan["status"] != "MATCHED" else
               "WARNING" if warnings else "NORMAL")
     return {"status": status, "reason_codes": sorted(failures | warnings),
             "humidity_value_source": humidity_source, "anomaly_suspected_seconds": suspects,
             "low_temperature_total_seconds": low_total, "high_temperature_total_seconds": high_total,
             "sample_count": len(samples), "door_assessment": door,
-            "fan_observation": observe_fan([sample.fan_level for sample in samples], 4)}
+            "fan_observation": fan}

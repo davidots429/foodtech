@@ -65,7 +65,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         incomplete = await self.client.post(path + "/rice-safety", headers=headers, json=confirmation)
         self.assertEqual(incomplete.json()["step"]["safety_status"], "INCOMPLETE")
         rice = self.store.items[(pk, rice["sk"])]
-        rice["monitored_process_assessment"] = {"status": "NORMAL", "reason_codes": []}
+        rice["monitored_process_assessment"] = {"status": "NORMAL", "reason_codes": [], "fan_observation": {"status": "MATCHED"}}
         passed = await self.client.post(path + "/rice-safety", headers=headers,
                                         json={**confirmation, "expected_version": 2})
         self.assertEqual(passed.json()["step"]["safety_status"], "PASSED")
@@ -107,6 +107,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         step["monitored_process_assessment"] = {"status": "WARNING", "reason_codes": ["SENSOR_ANOMALY_SUSPECTED"]}
         response = await self.client.post(path, headers=headers, json={**body, "expected_version": 2})
         self.assertEqual(response.json()["step"]["safety_status"], "SUSPECTED")
+
         step = self.store.items[(pk, step["sk"])]
         step["monitored_process_assessment"] = {"status": "NORMAL", "reason_codes": []}
         self.store.items[(pk, "META")]["source"] = {"raw_sha256": "synthetic"}
@@ -120,6 +121,31 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         step.update(monitored_process_source={"raw_sha256": "synthetic"}, rice_critical_alarm_observed=True)
         response = await self.client.post(path, headers=headers, json={**body, "expected_version": 4})
         self.assertEqual(response.json()["step"]["safety_status"], "SUSPECTED")
+
+    async def test_legacy_rice_normal_without_fan_evidence_does_not_pass_safety(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        meta = created["meal"]
+        pk = combi_meal._pk(self.subject, meta["meal_batch_id"])
+        step = self.store.items[(pk, f"JOB#RICE#{meta['rice_cooking_job_id']}")]
+        step.update(status="UNLOADED", monitored_process_assessment={"status": "NORMAL", "reason_codes": []})
+        response = await self.client.post(f"/api/customer/combi-meals/{meta['meal_batch_id']}/rice-safety",
+            headers=headers, json={"expected_version": 1, "observation": "NO_ANOMALY", "note": "합성 확인"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["step"]["safety_status"], "INCOMPLETE")
+        stored = self.store.items[(pk, step["sk"])]
+        stored.update(safety_status="PASSED", quality_current={"version": 1, "usable": True})
+        snapshot = (await self.client.get(f"/api/customer/combi-meals/{meta['meal_batch_id']}")).json()
+        self.assertEqual(snapshot["rice"]["safety_status"], "INCOMPLETE")
+        self.assertFalse(snapshot["rice"]["quality_current"]["usable"])
+        self.assertEqual(self.store.items[(pk, step["sk"])]["safety_status"], "PASSED")
+        quality = {"expected_version": 2, "expected_current_version": 1, "kind": "REASSESSMENT", "reason": "확인",
+                   "scores": {key: 4 for key in cooking.SCORE_ITEMS},
+                   "observations": {key: "합성 관찰" for key in cooking.SCORE_ITEMS},
+                   "quality_decision": "QUALITY_PASSED", "planned_portions": 3, "actual_portions": 3}
+        denied = await self.client.post(f"/api/customer/combi-meals/{meta['meal_batch_id']}/quality/rice",
+                                        headers=headers, json=quality)
+        self.assertEqual(denied.status_code, 409)
 
     async def test_live_source_isolated_idempotent_and_checked_before_completion(self):
         headers = {"X-CSRF-Token": "csrf"}
@@ -380,7 +406,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["meal"]["status"], "MODE_TRANSITION")
         self.assertEqual(snapshot["rice"]["process_status"], "NOT_MEASURED")
         self.assertEqual(len(snapshot["events"]), 4)
-        samples = [{"second": second, "chamber_celsius": "100", "humidity_percent": "98", "door": "CLOSED"}
+        samples = [{"second": second, "chamber_celsius": "100", "humidity_percent": "98", "door": "CLOSED", "fan_level": 4}
                    for second in range(1, 1801)]
         process = await self.client.post(path + "/rice-process", headers=headers,
             json={"expected_version": 5, "humidity_source": "MEASURED", "samples": samples})
@@ -468,7 +494,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.json()["step"]["safety_status"], "PASSED")
         self.assertEqual(result.json()["step"]["batch_representative_core_temperature"], "75")
         self.assertEqual(result.json()["step"]["process_status"], "NOT_MEASURED")
-        process_samples = [{"second": i, "chamber_celsius": "220", "door": "CLOSED"}
+        process_samples = [{"second": i, "chamber_celsius": "220", "door": "CLOSED", "fan_level": 3}
                            for i in range(1, 721)]
         bad_process = await self.client.post(path + "/mackerel-process", headers=headers,
                                              json={"expected_version": 11, "samples": process_samples[:-1]})

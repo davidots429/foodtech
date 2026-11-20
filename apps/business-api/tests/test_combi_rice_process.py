@@ -6,10 +6,20 @@ from foodtech_contracts.combi_rice_process import Sample, assess
 
 
 def records(count=180, humidity=D("96")):
-    return [Sample(second, D("100"), humidity, "CLOSED") for second in range(1, count + 1)]
+    return [Sample(second, D("100"), humidity, "CLOSED", 4) for second in range(1, count + 1)]
 
 
 class RiceMonitorTests(unittest.TestCase):
+    def test_fan_missing_or_deviating_does_not_claim_normal_process(self):
+        for fan in (None, 3):
+            data = records(); data[10] = replace(data[10], fan_level=fan)
+            result = assess(data, 180, "NORMAL", "MEASURED")
+            self.assertEqual(result["status"], "INSUFFICIENT_DATA")
+            if fan == 3:
+                self.assertIn("FAN_DEVIATION", result["reason_codes"])
+        failed = [replace(item, fan_level=None, chamber_celsius=D("94")) for item in records()]
+        self.assertEqual(assess(failed, 180, "NORMAL", "MEASURED")["status"], "FAILED")
+
     def test_door_debounce_thresholds_and_missing_evidence(self):
         data = records()
         data[5] = replace(data[5], door="OPEN")
