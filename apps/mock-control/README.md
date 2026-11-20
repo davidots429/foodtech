@@ -28,6 +28,14 @@ C# Mock의 `simulate-jeyuk` 명령은 승인된 소형 볶음·교반 합성 fix
 
 `fixtures/combi-rice-low-v1.json`, `combi-transition-timeout-v1.json`, `combi-mackerel-low-v1.json`은 독립된 합성 장애 시험이다. 각각 밥 저온 60초, 건열 전환 미준비 300초, 고등어 온도 복원 후 저온 30초를 재현한다. Mock은 판정하지 않으며 `tests/integration/test_combi_mock.py`가 원표본을 플랫폼 규칙에 전달해 해당 실패와 전환 시 투입 차단을 확인한다. 전환 시간 초과 fixture 뒤의 고등어 원표본은 생성기의 세 단계 형식 유지를 위한 자료이며, 강제 투입 승인이나 정상 업무 진행을 뜻하지 않는다.
 
+생성한 식사 배치의 ID로 별도 Mock fixture를 만들려면 다음 명령의 값을 실제 합성 배치·작업 ID로 바꾼다. `--start-at`은 UTC 논리 시작 시각이며 식별자와 시나리오 구성을 검증한 뒤에만 새 파일을 생성한다. 기존 파일과 원본 fixture는 덮어쓰지 않는다.
+
+```sh
+dotnet run --project apps/mock-control -- bind-combi --fixture fixtures/combi-rice-low-v1.json --output /tmp/combi-bound.json --meal-id MEAL_ID --device-id DEVICE_ID --rice-id RICE_ID --transition-id TRANSITION_ID --mackerel-id MACKEREL_ID --start-at 2026-01-01T00:00:00Z
+```
+
+생성한 파일은 `simulate-combi` 또는 `serve --fixture`에 사용한다. 이 도구는 합성 데이터 생성만 하며 고객 서비스에서 Mock을 실행하거나 조리 장비를 제어하지 않는다.
+
 ```bash
 dotnet run --project apps/mock-control/MockControl.csproj -- simulate-jeyuk \
   --fixture fixtures/jeyuk-small-process-v1.json --output /tmp/foodtech-jeyuk.jsonl

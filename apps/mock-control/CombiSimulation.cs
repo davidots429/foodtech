@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 internal static class CombiSimulation
@@ -14,6 +15,30 @@ internal static class CombiSimulation
         string Phase, int PhaseSecond, decimal ChamberCelsius, decimal ClimateSetpointPercent,
         decimal? MeasuredHumidityPercent, string HumidityValueSource, int FanLevel, string DoorState,
         bool CriticalAlarm, bool VentSupported, string? VentEvent);
+
+    public static void Bind(string fixturePath, string outputPath, string meal, string device,
+                            string rice, string transition, string mackerel, string start)
+    {
+        if (Path.GetFullPath(fixturePath) == Path.GetFullPath(outputPath))
+            throw new ArgumentException("The source fixture must not be overwritten.");
+        var root = JsonNode.Parse(File.ReadAllText(fixturePath, Encoding.UTF8))?.AsObject()
+                   ?? throw new InvalidDataException("A fixture object is required.");
+        root["mealBatchId"] = meal;
+        root["deviceId"] = device;
+        root["logicalStartAt"] = start;
+        var phases = root["phases"]?.AsArray() ?? throw new InvalidDataException("Phases are required.");
+        if (phases.Count != 3) throw new InvalidDataException("Exactly three phases are required.");
+        phases[0]!["cookingJobId"] = rice;
+        phases[1]!["cookingJobId"] = transition;
+        phases[2]!["cookingJobId"] = mackerel;
+        var json = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        using var validated = JsonDocument.Parse(json);
+        Generate(validated.RootElement);
+        // CreateNew avoids overwriting an existing user's fixture or file.
+        using var stream = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write);
+        using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+        writer.Write(json);
+    }
 
     public static void Emit(string fixturePath, string outputPath, string aggregatePath)
     {

@@ -20,6 +20,34 @@ DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class CombiMockTests(unittest.TestCase):
+    def test_bind_scenario_to_meal_preserves_template_and_validates_ids(self):
+        template = ROOT / "fixtures/combi-rice-low-v1.json"
+        original = template.read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            bound = Path(directory) / "bound.json"
+            raw = Path(directory) / "raw.jsonl"
+            aggregate = Path(directory) / "aggregate.jsonl"
+            command = ["dotnet", str(DLL), "bind-combi", "--fixture", str(template), "--output", str(bound),
+                       "--meal-id", "meal-123", "--device-id", "device-123", "--rice-id", "rice-123",
+                       "--transition-id", "transition-123", "--mackerel-id", "fish-123",
+                       "--start-at", "2026-01-01T00:00:00Z"]
+            subprocess.run(command, capture_output=True, check=True)
+            subprocess.run(["dotnet", str(DLL), "simulate-combi", "--fixture", str(bound),
+                            "--output", str(raw), "--aggregates", str(aggregate)], capture_output=True, check=True)
+            rows = [json.loads(line) for line in raw.read_text().splitlines()]
+            self.assertTrue(all(row["mealBatchId"] == "meal-123" and row["deviceId"] == "device-123" for row in rows))
+            self.assertEqual({row["cookingJobId"] for row in rows}, {"rice-123", "transition-123", "fish-123"})
+            self.assertEqual(sum(row["chamberCelsius"] == 94 for row in rows if row["phase"] == "RICE"), 60)
+            before = bound.read_bytes()
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+            self.assertEqual(bound.read_bytes(), before)
+            invalid = command.copy()
+            invalid[invalid.index("--output") + 1] = str(Path(directory) / "invalid.json")
+            invalid[invalid.index("--transition-id") + 1] = "rice-123"
+            self.assertNotEqual(subprocess.run(invalid, capture_output=True).returncode, 0)
+            self.assertFalse(Path(invalid[invalid.index("--output") + 1]).exists())
+        self.assertEqual(template.read_bytes(), original)
+
     def test_failure_fixtures_produce_approved_platform_findings(self):
         for name in ("rice-low", "transition-timeout", "mackerel-low"):
             with self.subTest(scenario=name), tempfile.TemporaryDirectory() as directory:
