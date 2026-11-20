@@ -153,6 +153,7 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                                                json={"expected_version": 5})
                 self.assertEqual(assessment.status_code, 200, assessment.text)
                 self.assertEqual(assessment.json()["step"]["monitored_process_assessment"]["status"], "NORMAL")
+                self.assertEqual(assessment.json()["step"]["monitored_process_assessment"]["door_assessment"]["status"], "NORMAL")
                 self.assertEqual(assessment.json()["step"]["monitored_process_source"]["raw_sha256"],
                                  imported.json()["meal"]["source"]["raw_sha256"])
                 transition_started = await client.post(path + "/events", headers=headers, json={
