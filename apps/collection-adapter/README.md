@@ -54,3 +54,5 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 ### MQTT vendor-b·c 인스턴스
 
 MQTT 수집 명령의 `--instance mockprofile-300-b-001` 또는 `--instance mockprofile-300-c-001`로 각 합성 원천을 선택한다. 선택된 인스턴스의 정확한 Topic만 구독하며 원천 Schema·출처·장비 ID를 확인한다. vendor-b의 출력 비율과 vendor-c의 속도 단계는 서로와 RPM으로 환산하지 않는다. QoS 1 확인은 원본 수집 또는 격리 저장 후에만 보낸다. 현재 로컬 TLS 시험 범위이며 AWS 실저장과 다른 프로파일은 별도로 남아 있다.
+
+합성 Session-less Browse/Read 수집 명령의 `--instance mockprofile-200-b-001` 또는 `mockprofile-200-c-001`로 vendor 원천을 선택할 수 있다. 읽은 인스턴스 식별자와 원천 Schema를 검사하고 저장 실패 후 합성 이력에서 재조회한다. vendor-b의 출력 비율과 vendor-c의 속도 단계는 RPM으로 바꾸지 않는다. 이는 프로젝트 전용 HTTPS 계약이며 OPC UA 표준 JSON 서비스나 실제 제조사 호환 구현이 아니다. AWS 실저장은 후속이다.
