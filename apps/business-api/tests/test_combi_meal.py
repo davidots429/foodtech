@@ -90,6 +90,9 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post(path + "/source-observations", json=completion, headers=headers)).status_code, 409)
         rest = {"device_id": "combi-1", "expected_cursor": 1, "records": records[1:]}
         self.assertEqual((await self.client.post(path + "/source-live", json=rest, headers=headers)).status_code, 200)
+        monitor = (await self.client.get(path + "/source-live")).json()["mackerel_monitor"]
+        self.assertEqual((monitor["last_second"], monitor["complete_from_start"]), (1, True))
+        self.assertEqual(monitor["failure_codes"], [])
         altered = list(records); altered[0] = json.dumps(changed)
         self.assertEqual((await self.client.post(path + "/source-observations", json={**completion, "records": altered}, headers=headers)).status_code, 409)
         response = await self.client.post(path + "/source-observations", json=completion, headers=headers)
