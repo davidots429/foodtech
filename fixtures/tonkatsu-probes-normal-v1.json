@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "tonkatsu-core-fixture-v1",
+  "provenance": "SYNTHETIC",
+  "productCount": 4,
+  "scenario": "NORMAL",
+  "affectedProduct": 1,
+  "seed": 100,
+  "measurementStart": "2026-11-14T00:00:00.0000000+00:00"
+}

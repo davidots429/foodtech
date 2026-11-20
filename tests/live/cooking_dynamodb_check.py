@@ -30,7 +30,10 @@ OBSERVATIONS = {name: "SYNTHETIC live storage validation" for name in cooking.SC
 
 
 def probe(item_id: str, celsius: str = "75.0", missing_second: int | None = None) -> dict:
-    return {"item_id": item_id, "calibration_status": "OK", "samples": [
+    return {"item_id": item_id, "probe_id": "synthetic-probe-" + item_id,
+            "removal_sequence": int(item_id.rsplit("-", 1)[-1]),
+            "measurement_start": "2026-11-14T00:00:00Z", "measurement_end": "2026-11-14T00:01:00Z",
+            "calibration_status": "OK", "samples": [
         {"at_second": second, "celsius": celsius}
         for second in range(61) if second != missing_second
     ]}
@@ -127,6 +130,9 @@ async def main() -> None:
                     "probes": [probe("piece-1"), probe("piece-2")],
                 })
                 assert job["safety_status"] == "PASSED"
+                persisted, _ = store.read(pk)
+                assert persisted["core_check"][0]["probe_id"] == "synthetic-probe-piece-1"
+                assert persisted["core_check_summary"][0]["hold_seconds"] == 60
 
                 first = await checked_post(client, path + "/assessments", assessment(job), 201)
                 assert first["version"] == 1 and first["quality_target"]

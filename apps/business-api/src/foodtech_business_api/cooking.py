@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.cooking_live_time import observe as observe_live_time
 from foodtech_contracts.tonkatsu_process import (RULE_VERSION, TEMPERATURE_RULE_VERSION,
@@ -206,11 +206,47 @@ class Probe(StrictModel):
     item_id: str = Field(min_length=1, max_length=80)
     calibration_status: Literal["OK", "EXPIRED"]
     samples: list[CoreSample] = Field(min_length=1, max_length=61)
+    probe_id: str | None = Field(default=None, min_length=1, max_length=80)
+    removal_sequence: StrictInt | None = Field(default=None, ge=1, le=18)
+    measurement_start: datetime | None = None
+    measurement_end: datetime | None = None
+
+    @model_validator(mode="after")
+    def complete_measurement_metadata(self):
+        values = (self.probe_id, self.removal_sequence, self.measurement_start, self.measurement_end)
+        if any(value is not None for value in values):
+            if any(value is None for value in values):
+                raise ValueError("probe measurement metadata must be complete")
+            assert self.measurement_start is not None and self.measurement_end is not None
+            if self.measurement_start.utcoffset() is None or self.measurement_end.utcoffset() is None or \
+                    (self.measurement_end - self.measurement_start).total_seconds() != 60:
+                raise ValueError("probe measurement requires a timezone and a 60-second interval")
+        return self
 
 
 class CoreCheck(StrictModel):
     expected_version: int = Field(ge=1)
     probes: list[Probe] = Field(min_length=1, max_length=18)
+
+
+def _probe_summary(probe: Probe) -> dict:
+    values = [sample.celsius for sample in probe.samples if sample.celsius is not None]
+    complete = (probe.calibration_status == "OK" and len(probe.samples) == 61 and
+                [sample.at_second for sample in probe.samples] == list(range(61)) and len(values) == 61)
+    below = probe.calibration_status == "OK" and any(value < 75 for value in values)
+    longest = current = 0
+    previous = None
+    for sample in probe.samples:
+        if sample.celsius is not None and sample.celsius >= 75:
+            current = current + 1 if previous is not None and sample.at_second == previous + 1 else 1
+            longest = max(longest, current)
+        else:
+            current = 0
+        previous = sample.at_second
+    return {"item_id": probe.item_id, "probe_id": probe.probe_id, "removal_sequence": probe.removal_sequence,
+            "minimum_celsius": str(min(values)) if values else None,
+            "hold_seconds": max(longest - 1, 0) if probe.calibration_status == "OK" else None,
+            "status": "FAILED" if below else "PASSED" if complete else "INCOMPLETE"}
 
 
 class JeyukDischargeSample(StrictModel):
@@ -770,6 +806,11 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
     ids = [probe.item_id for probe in body.probes]
     if len(set(ids)) != len(ids):
         raise HTTPException(422, "제품별 탐침 기록이 중복되었습니다.")
+    identified = [probe for probe in body.probes if probe.probe_id is not None]
+    if identified and (len(identified) != len(body.probes) or
+            len({probe.probe_id for probe in identified}) != len(identified) or
+            sorted(probe.removal_sequence for probe in identified) != list(range(1, len(identified) + 1))):
+        raise HTTPException(422, "제품별 탐침 ID와 분리 순번을 모두 고유하게 기록해야 합니다.")
     batch_context = old.get("tonkatsu_batch")
     if old.get("equipment_profile") == "synthetic-fryer-approved-v2" and not batch_context:
         raise HTTPException(409, "해당 작업의 합성 배치 기록이 없습니다.")
@@ -794,6 +835,7 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
     meta = {**old, "safety_status": status, "safety_version": old["safety_version"] + 1,
             "version": old["version"] + 1, "evaluation_blocked": status != "PASSED",
             "core_check": [probe.model_dump(mode="json") for probe in body.probes],
+            "core_check_summary": [_probe_summary(probe) for probe in body.probes],
             "core_check_by": session.subject, "updated_at": _now()}
     event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}",
              "domain": "SAFETY_STATUS", "trigger": "CORE_CHECK",
