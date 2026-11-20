@@ -44,6 +44,11 @@ class OllamaClient:
         return await self._request("chat", {"model": model_id, "messages": [
             {"role": "system", "content": CHAT_SYSTEM}, *messages]}, chat=True)
 
+    async def structured_chat(self, model_id: str, messages: list[dict], schema: dict) -> OllamaResult:
+        """Request a schema-constrained reply; the caller must still validate it."""
+        return await self._request("chat", {"model": model_id, "messages": messages,
+                                             "format": schema}, chat=True)
+
     async def _request(self, endpoint: str, body: dict, *, chat: bool) -> OllamaResult:
         try:
             async with httpx.AsyncClient(timeout=self.timeout, trust_env=False,
