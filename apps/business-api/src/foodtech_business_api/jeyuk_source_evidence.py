@@ -6,11 +6,11 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
-from foodtech_contracts.jeyuk_process import ProcessMonitor, RULE_VERSION as PROCESS_RULE_VERSION
+from foodtech_contracts.jeyuk_process import ProcessMonitor, PROFILES, RULE_VERSION as PROCESS_RULE_VERSION
 from foodtech_contracts.jeyuk_safety import JeyukSafetyMonitor, RULE_VERSION as SAFETY_RULE_VERSION
 
 
-MAX_SECONDS = 600
+MAX_SECONDS = max(profile.time_bands[-1] for profile in PROFILES.values())
 
 
 def read_source_records(table_name: str, batch_id: str, last_second: int) -> tuple[list[dict], list[dict]]:
@@ -60,9 +60,12 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
               "source_process_span_covers_cooking": False}
     if not contiguous:
         return result
+    size = job.get("jeyuk_size_profile")
+    if size not in PROFILES or job.get("equipment_profile") != f"jeyuk-{size.lower()}":
+        return result
     expected_load = Decimal(context["actual_load_kg"])
     samples = []
-    process_monitor = ProcessMonitor("SMALL", expected_load)
+    process_monitor = ProcessMonitor(size, expected_load)
     safety_monitor = JeyukSafetyMonitor()
     process_readings = []
     for index, (assessment, raw) in enumerate(zip(assessments, raws), 1):
@@ -77,11 +80,11 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
         except InvalidOperation:
             return result
         if (sample.fixture_id != binding["batch_id"] or sample.second != index or
-                sample.profile != "SMALL" or sample.actual_load_kg != expected_load or
+                sample.profile != size or sample.actual_load_kg != expected_load or
                 assessment.get("fixture_id") != binding["batch_id"] or
                 assessment.get("second") != index or
                 assessment.get("profile_id") != "mockprofile-110" or
-                assessment.get("profile") != "SMALL" or
+                assessment.get("profile") != size or
                 assessed_load != expected_load or assessment.get("provenance") != "SYNTHETIC"):
             return result
         if sample.mixture_celsius is None:

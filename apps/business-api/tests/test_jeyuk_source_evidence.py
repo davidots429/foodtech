@@ -7,7 +7,7 @@ from foodtech_contracts.jeyuk_process import ProcessMonitor, RULE_VERSION as PRO
 from foodtech_contracts.jeyuk_safety import JeyukSafetyMonitor, RULE_VERSION as SAFETY_RULE_VERSION
 
 
-def fixture(count=61, *, warning_at=None, expired_at=None):
+def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL"):
     batch = "jeyuk-evidence-a"
     pk = f"JEYUK#{batch}"
     assessments = []
@@ -15,22 +15,24 @@ def fixture(count=61, *, warning_at=None, expired_at=None):
     identity = {"ingredientSpecId": "pork-v1", "ingredientLotId": "lot-v1", "supplierId": "supplier-v1",
                 "sensorId": "sensor-v1", "sensorCalibrationRecordId": "cal-v1",
                 "processConditionProfileId": "profile-v1", "processConditionVersion": "v1"}
-    process = ProcessMonitor("SMALL", Decimal("1.8"))
+    load, surface, rpm = {"SMALL": ("1.8", 200, 30), "MEDIUM": ("12", 180, 20),
+                          "LARGE": ("60", 160, 10)}[size]
+    process = ProcessMonitor(size, Decimal(load))
     safety = JeyukSafetyMonitor()
     for second in range(1, count + 1):
         raw_sk = f"RAW#{second:06d}"
         raw = {"fixtureId": batch, "provenance": "SYNTHETIC", "profileId": "mockprofile-110",
-               "instanceId": "mockprofile-110-a-001", "profile": "SMALL", "actualLoadKg": 1.8,
+               "instanceId": "mockprofile-110-a-001", "profile": size, "actualLoadKg": float(load),
                "second": second, "sampleIntervalSeconds": 1,
-               "surfaceCelsius": 190 if second == warning_at else 200,
-               "actualRpm": 30, "targetRpm": 30, "motorLoadPercent": 50,
+               "surfaceCelsius": surface - 10 if second == warning_at else surface,
+               "actualRpm": rpm, "targetRpm": rpm, "motorLoadPercent": 50,
                "mixtureCelsius": 75, "calibrationStatus": "EXPIRED" if second == expired_at else "OK",
                "safetySensorPosition": "LOWEST_MIXTURE_POINT",
                "validationIdentity": identity,
                "lastIngredientAdditionCompleted": second == 1}
         raws.append({"pk": pk, "sk": raw_sk, "raw": json.dumps(raw)})
         process_reading = process.observe(second, surface_celsius=Decimal(raw["surfaceCelsius"]),
-                                          actual_rpm=Decimal(30), target_rpm=Decimal(30),
+                                          actual_rpm=Decimal(rpm), target_rpm=Decimal(rpm),
                                           motor_load_percent=Decimal(50))
         safety_reading = safety.observe(second, mixture_celsius=Decimal(75),
                                        calibration_status=raw["calibrationStatus"],
@@ -38,7 +40,7 @@ def fixture(count=61, *, warning_at=None, expired_at=None):
                                        last_ingredient_addition_completed=second == 1)
         assessments.append({"pk": pk, "sk": f"ASSESSMENT#{second:06d}", "raw_sk": raw_sk,
                             "fixture_id": batch, "second": second, "profile_id": "mockprofile-110",
-                            "profile": "SMALL", "actual_load_kg": "1.8", "provenance": "SYNTHETIC",
+                            "profile": size, "actual_load_kg": load, "provenance": "SYNTHETIC",
                             "process_status": process_reading.status,
                             "reason_codes": list(process_reading.reason_codes),
                             "surface_band": process_reading.surface_band,
@@ -49,8 +51,9 @@ def fixture(count=61, *, warning_at=None, expired_at=None):
                             "last_addition_second": safety_reading.last_addition_second,
                             "safety_passed_at_second": safety_reading.passed_at_second,
                             "safety_rule_version": SAFETY_RULE_VERSION})
-    job = {"source_binding": {"batch_id": batch},
-           "validation_context": {"actual_load_kg": "1.80", "ingredient_spec_id": "pork-v1",
+    job = {"source_binding": {"batch_id": batch}, "jeyuk_size_profile": size,
+           "equipment_profile": f"jeyuk-{size.lower()}",
+           "validation_context": {"actual_load_kg": load, "ingredient_spec_id": "pork-v1",
                                   "ingredient_lot_id": "lot-v1", "supplier_id": "supplier-v1",
                                   "sensor_id": "sensor-v1", "sensor_calibration_record_id": "cal-v1",
                                   "process_condition_profile_id": "profile-v1", "process_condition_version": "v1"},
@@ -65,6 +68,14 @@ def fixture(count=61, *, warning_at=None, expired_at=None):
 
 
 class JeyukSourceEvidenceTests(unittest.TestCase):
+    def test_medium_and_large_full_spans_and_mismatched_profile(self):
+        for size, count in (("MEDIUM", 920), ("LARGE", 1680)):
+            with self.subTest(size=size):
+                job, assessments, raws = fixture(count, size=size)
+                self.assertTrue(all(audit_source_records(job, assessments, raws).values()))
+                job["jeyuk_size_profile"] = "SMALL"
+                self.assertFalse(audit_source_records(job, assessments, raws)["source_records_match_binding"])
+
     def test_complete_source_range_matches_without_activating_validation(self):
         job, assessments, raws = fixture()
         self.assertTrue(all(audit_source_records(job, assessments, raws).values()))

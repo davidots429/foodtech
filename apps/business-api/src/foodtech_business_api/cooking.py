@@ -19,7 +19,7 @@ from foodtech_contracts.tonkatsu_process import (RULE_VERSION, TEMPERATURE_RULE_
 from foodtech_contracts.tonkatsu_batch import batch as approved_tonkatsu_batch, RATED_KG
 from foodtech_contracts.jeyuk_process import (RULE_VERSION as JEYUK_RULE_VERSION,
                                               cooking_time_status as jeyuk_cooking_time_status,
-                                              load_status as jeyuk_load_status)
+                                              load_status as jeyuk_load_status, PROFILES as JEYUK_PROFILES)
 
 from .auth import _csrf, _session
 from .cooking_store import Conflict, MemoryCookingStore, get_cooking_store
@@ -27,7 +27,7 @@ from .cooking_store import Conflict, MemoryCookingStore, get_cooking_store
 router = APIRouter(prefix="/api/customer/cooking-jobs", tags=["cooking-jobs"])
 logger = logging.getLogger(__name__)
 SYNTHETIC_FRYER_BATCH_KG = Decimal("0.8")
-SYNTHETIC_JEYUK_RECOMMENDED_KG = Decimal("1.8")
+JEYUK_EQUIPMENT = {"jeyuk-small": "SMALL", "jeyuk-medium": "MEDIUM", "jeyuk-large": "LARGE"}
 JEYUK_QUALITY_REASONS = frozenset({
     "UNDERCOOKED", "EXCESS_MOISTURE", "OVERCOOKED", "UNEVEN_COOK", "BAD_SMELL",
     "BURNT_BOTTOM", "UNEVEN_MIX", "INGREDIENT_DAMAGE", "SAUCE_NOT_COATED",
@@ -133,7 +133,7 @@ class StrictModel(BaseModel):
 
 
 class NewJob(StrictModel):
-    planned_portions: int = Field(gt=0, le=18)
+    planned_portions: int = Field(gt=0, le=1000)
     recipe_version: str = Field(min_length=1, max_length=80)
     thickness_cm: Decimal | None = Field(default=None, gt=0, max_digits=4, decimal_places=2)
     actual_load_kg: Decimal | None = Field(default=None, gt=0, max_digits=5, decimal_places=2)
@@ -314,8 +314,8 @@ class CompletedAssessment(StrictModel):
     quality_reason_codes: list[str] = Field(default_factory=list, max_length=9)
     quality_note: str | None = Field(default=None, max_length=500)
     planned_portions: int = Field(gt=0, le=1000)
-    actual_portions: int = Field(gt=0, le=18)
-    actual_mass_kg: Decimal = Field(gt=0, le=3)
+    actual_portions: int = Field(gt=0, le=1000)
+    actual_mass_kg: Decimal = Field(gt=0, le=100)
     load_percent: Decimal = Field(gt=0, le=167)
     load_band: Literal["PARTIAL", "REFERENCE", "OVER_RECOMMENDED"]
 
@@ -329,7 +329,7 @@ class Recook(StrictModel):
 async def create_job(request: Request, body: NewJob) -> dict:
     session, store = await _context(request, write=True)
     if body.equipment_profile in {"synthetic-fryer", "synthetic-fryer-approved-v2"}:
-        if body.thickness_cm is None or body.actual_load_kg is not None:
+        if body.thickness_cm is None or body.actual_load_kg is not None or body.planned_portions > 18:
             raise HTTPException(422, "합성 돈까스 작업에는 두께만 입력해야 합니다.")
         if body.equipment_profile == "synthetic-fryer" and body.planned_portions > 4:
             raise HTTPException(422, "이전 합성 fixture는 최대 4인분입니다.")
@@ -337,12 +337,14 @@ async def create_job(request: Request, body: NewJob) -> dict:
         if thickness_status == "ABOVE_RANGE":
             raise HTTPException(422, "PROFILE_REJECTED: 두께가 합성 돈까스 프로파일 상한 2.0cm를 넘습니다.")
         menu, load_status = "TONKATSU", None
-    elif body.equipment_profile == "jeyuk-small":
-        if body.actual_load_kg is None or body.thickness_cm is not None or body.planned_portions > 4:
+    elif body.equipment_profile in JEYUK_EQUIPMENT:
+        jeyuk_size = JEYUK_EQUIPMENT[body.equipment_profile]
+        if body.actual_load_kg is None or body.thickness_cm is not None or \
+                (jeyuk_size == "SMALL" and body.planned_portions > 4):
             raise HTTPException(422, "합성 제육볶음 작업에는 실제 투입량만 입력해야 합니다.")
-        load_status = jeyuk_load_status("SMALL", body.actual_load_kg)
+        load_status = jeyuk_load_status(jeyuk_size, body.actual_load_kg)
         if load_status == "RATED_LOAD_EXCEEDED":
-            raise HTTPException(422, "PROFILE_REJECTED: 합성 소형 볶음·교반기의 정격 하중을 넘습니다.")
+            raise HTTPException(422, "PROFILE_REJECTED: 합성 볶음·교반기의 정격 하중을 넘습니다.")
         menu, thickness_status, thickness_band = "JEYUK", "NOT_APPLICABLE", None
     else:
         raise HTTPException(422, "지원되지 않는 합성 장비 프로파일입니다.")
@@ -355,7 +357,7 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "thickness_profile": thickness_band,
         "thickness_time_rule_version": RULE_VERSION if menu == "TONKATSU" else None,
         "jeyuk_rule_version": JEYUK_RULE_VERSION if menu == "JEYUK" else None,
-        "jeyuk_size_profile": "SMALL" if menu == "JEYUK" else None,
+        "jeyuk_size_profile": JEYUK_EQUIPMENT[body.equipment_profile] if menu == "JEYUK" else None,
         "actual_load_kg": str(body.actual_load_kg) if body.actual_load_kg is not None else None,
         "process_load_status": load_status,
         "status": "PENDING", "version": 1, "job_state_version": 1,
@@ -568,7 +570,8 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                      "source_validation_identity_matches": False,
                      "source_process_span_covers_cooking": False}
     source_table = os.getenv("FOODTECH_DATA_TABLE", "")
-    if process_linked and context_matches_job and source_table and second <= 600:
+    if process_linked and context_matches_job and source_table and second <= max(
+            profile.time_bands[-1] for profile in JEYUK_PROFILES.values()):
         from .jeyuk_source_evidence import audit_source_records
         try:
             assessments, raws = await _read_jeyuk_source_records(source_table, binding["batch_id"], second)
@@ -1083,7 +1086,7 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
             body.actual_portions > old["planned_portions"] or body.quality_decision is not None or \
             body.quality_reason_codes or body.quality_note:
         raise HTTPException(422, "돈까스 첫 척도에는 합성 튀김기 적재량만 적용합니다.")
-    reference_kg = (SYNTHETIC_JEYUK_RECOMMENDED_KG if old["menu"] == "JEYUK" else
+    reference_kg = (JEYUK_PROFILES[old["jeyuk_size_profile"]].recommended_load_kg if old["menu"] == "JEYUK" else
                     RATED_KG if old.get("tonkatsu_batch") else SYNTHETIC_FRYER_BATCH_KG)
     calculated_load = (body.actual_mass_kg / reference_kg * 100).quantize(Decimal("0.01"))
     expected_band = (old["tonkatsu_batch"]["mode"] if old.get("tonkatsu_batch") else
