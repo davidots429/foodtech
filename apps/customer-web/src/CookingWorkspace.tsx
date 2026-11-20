@@ -735,6 +735,12 @@ export function CookingWorkspace({ csrf }: Props) {
             </div>
             {processView?.view === "LATEST_RESTATED" && <p className="small">늦은 수집값을 반영한 파생 판정입니다. 최초 처리 판정: {processLabels[job.process_assessment_status]}. 원 기록은 유지됩니다.
               {processView.job_version_changed && " 파생 이후 작업 기록이 변경되어 재검토가 필요합니다."}</p>}
+            {processView?.view === "LATEST_RESTATED" && (processView.observation_coverage ? <p className="small">
+              관찰 표본 {processView.observation_coverage.sample_count}건 ({timeLabel(processView.observation_coverage.first_sample_at)} ~ {timeLabel(processView.observation_coverage.last_sample_at)})
+              {" "}· 첫 표본 전 {processView.observation_coverage.before_first_us == null ? "미확인" : `${processView.observation_coverage.before_first_us / 1_000_000}초`}
+              {" "}· 마지막 표본 후 {processView.observation_coverage.after_last_us == null ? "미확인" : `${processView.observation_coverage.after_last_us / 1_000_000}초`}
+              {" "}· 표본 사이 결손 {processView.observation_coverage.internal_gap_detected ? "감지" : "미감지"}. 이 정보만으로 전체 조리 구간의 완전성을 보장하지 않습니다.
+            </p> : <p className="small">이전 파생 결과에는 관찰 범위가 기록되지 않았습니다.</p>)}
             <p className="small">레시피 {job.recipe_version} · 계획 {job.planned_portions}인분 · 마지막 변경 {timeLabel(job.updated_at)}</p>
             {job.menu === "TONKATSU" ? <p className="small">두께 {job.thickness_cm ?? "미기록"}cm · {job.thickness_profile ?? "프로파일 없음"}
               {" "}({thicknessLabels[job.process_thickness_status ?? ""] ?? "미판정"})</p>

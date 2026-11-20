@@ -14,7 +14,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.cooking_live_time import observe as observe_live_time
-from foodtech_contracts.tonkatsu_process import RULE_VERSION, cooking_time_status, process_status, thickness_profile
+from foodtech_contracts.tonkatsu_process import (RULE_VERSION, TEMPERATURE_RULE_VERSION,
+                                                 cooking_time_status, process_status, thickness_profile)
 from foodtech_contracts.jeyuk_process import (RULE_VERSION as JEYUK_RULE_VERSION,
                                               cooking_time_status as jeyuk_cooking_time_status,
                                               load_status as jeyuk_load_status)
@@ -461,12 +462,14 @@ async def get_job(job_id: str, request: Request,
                if process_view == "LATEST_RESTATED" else None)
     process = ({"view": "LATEST_RESTATED", "status": derived["process_assessment_status"],
                 "assessment": derived["process_assessment"], "result_sk": derived["sk"],
+                "observation_coverage": derived.get("observation_coverage"),
                 "created_at": derived["created_at"],
                 "job_version_at_derivation": derived["job_version_at_derivation"],
                 "job_version_changed": int(meta["version"]) != int(derived["job_version_at_derivation"])}
                if derived else
                {"view": "AS_PROCESSED", "status": meta["process_assessment_status"],
                 "assessment": meta.get("process_assessment"), "result_sk": None,
+                "observation_coverage": None,
                 "created_at": None, "job_version_at_derivation": None,
                 "job_version_changed": False})
     return {"job": meta, "current_assessment": pointer, "process_assessment_view": process}
@@ -551,7 +554,8 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
         else:
             assessment = old.get("process_assessment")
             gap_or_unknown = ((assessment.get("data_gap") is not False or
-                               assessment.get("gap_history_verified") is not True)
+                               assessment.get("gap_history_verified") is not True or
+                               assessment.get("rule_version") != TEMPERATURE_RULE_VERSION)
                               if isinstance(assessment, dict) else
                               old.get("process_temperature_status", "NOT_MEASURED") != "NOT_MEASURED")
             meta["process_assessment_status"] = process_status(

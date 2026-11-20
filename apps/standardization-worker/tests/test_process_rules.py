@@ -59,6 +59,9 @@ class ProcessRuleTests(unittest.TestCase):
         self.assertFalse(state["gap_history_verified"])
         self.assertEqual(state["status"], "WARNING")
         self.assertFalse(self.step(state, 10, 170)["gap_history_verified"])
+        previous = self.step(None, 0, 170)
+        previous["rule_version"] = "tonkatsu-temperature-v2"
+        self.assertFalse(self.step(previous, 5, 170)["gap_history_verified"])
 
     def test_low_continuous_and_recovery_boundary(self):
         state = None
