@@ -168,6 +168,20 @@ class DynamoRegistry:
             fields["calls_remaining"] = calls_remaining
         self._put_new("LIMIT", f"{self.period}#{scope}#{identifier}", fields)
 
+    def ensure_trial_tenant_limit(self, tenant_id: str, remaining_usd: Decimal, calls: int) -> None:
+        """Create an absent monthly tenant limit once; never refill or overwrite it."""
+        if (not tenant_id or not remaining_usd.is_finite() or remaining_usd < 0 or
+                isinstance(calls, bool) or not isinstance(calls, int) or calls < 1):
+            raise ValueError("invalid free-trial limit")
+        identifier = f"{self.period}#TENANT#{tenant_id}"
+        try:
+            self._put_new("LIMIT", identifier, {"remaining_usd": remaining_usd, "period": self.period,
+                                               "calls_remaining": calls, "origin": "FREE_TRIAL"})
+        except self.client.exceptions.ConditionalCheckFailedException:
+            # A concurrent request or administrator already created the limit.
+            # Preserve its current balances and version, including an exhausted limit.
+            return
+
     def execution(self, execution_id: str) -> Execution | None:
         item = self._get("EXEC", execution_id)
         if not item:

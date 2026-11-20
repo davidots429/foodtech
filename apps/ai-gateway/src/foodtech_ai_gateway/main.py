@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -72,10 +72,32 @@ def _service(request: Request) -> GatewayService:
     return GatewayService(registry, vault=vault, provider=LiteLLMProvider() if vault else None)
 
 
+def _trial_limits() -> tuple[Decimal, int] | None:
+    if os.getenv("FOODTECH_FREE_TRIAL_AUTO_PROVISION") != "true":
+        return None
+    try:
+        calls_text = os.environ["FOODTECH_FREE_TRIAL_MONTHLY_CALLS"]
+        usd_text = os.environ["FOODTECH_FREE_TRIAL_MONTHLY_USD"]
+        if not calls_text.isascii() or not calls_text.isdigit():
+            raise ValueError("invalid call limit")
+        calls = int(calls_text)
+        usd = Decimal(usd_text)
+        if not 1 <= calls <= 1_000_000 or not usd.is_finite() or not Decimal("0") <= usd <= Decimal("1000000"):
+            raise ValueError("invalid free-trial limit")
+        if len(usd.as_tuple().digits) > 38 or (usd and usd.adjusted() < -128):
+            raise ValueError("free-trial limit cannot be stored exactly")
+        return (Decimal("0") if not usd else usd), calls
+    except (KeyError, ValueError, InvalidOperation):
+        raise HTTPException(503, "FREE_TRIAL_LIMIT_CONFIGURATION_INVALID") from None
+
+
 @app.post("/internal/ai/executions", status_code=201)
 async def create_execution(request: Request, body: NewExecution) -> dict:
     _internal(request)
     service = _service(request)
+    trial = _trial_limits()
+    if trial is not None:
+        service.registry.ensure_trial_tenant_limit(body.tenant_id, *trial)
     execution_id = str(uuid4())
     execution = Execution(execution_id, body.tenant_id, Feature.GENERAL_GUIDE,
                           "llama3.1:8b", None, "CUSTOMER", Decimal("0"))
