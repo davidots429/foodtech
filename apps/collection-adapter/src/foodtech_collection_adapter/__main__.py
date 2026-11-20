@@ -89,6 +89,11 @@ def main() -> int:
                         invalid = ("SCHEMA_VIOLATION", [])
                 else:
                     invalid = failure(raw)
+                    if invalid is None:
+                        try:
+                            record = decode_record(raw)
+                        except (ValueError, etree.Error, jsonschema.ValidationError):
+                            invalid = ("SCHEMA_VIOLATION", [])
                 if invalid is not None:
                     completion.reject()
                     bucket = os.getenv("FOODTECH_INGESTION_DLQ_BUCKET")

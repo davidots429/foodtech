@@ -1,5 +1,6 @@
 import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -9,6 +10,56 @@ from foodtech_collection_adapter.rest import PollResult
 
 
 class QuarantineTests(unittest.TestCase):
+    def test_mqtt_json_schema_violations_are_preserved_before_ack(self):
+        from foodtech_collection_adapter.mqtt import accept_message, topic_for
+        root = Path(__file__).resolve().parents[3]
+        calls = []
+        class Client:
+            def ack(self, mid, qos): calls.append("ack"); return 0
+        class Sink:
+            def preserve_mqtt(self, payload, **kwargs):
+                calls.append((payload, kwargs["reason"], kwargs["profile_id"]))
+        class Ingestor:
+            def ingest(self, raw): raise AssertionError("invalid JSON entered normal pipeline")
+        for vendor in "abc":
+            instance = f"mockprofile-300-{vendor}-001"
+            record = json.loads((root / f"fixtures/{instance}.json").read_text())["records"][0]
+            if vendor == "a": record["measurements"]["temperatureCelsius"] = "invalid"
+            elif vendor == "b": record["temperature_f"] = "invalid"
+            else: record["Readings"]["TempC"] = "invalid"
+            payload = json.dumps(record).encode()
+            message = SimpleNamespace(topic=topic_for(instance), qos=1, retain=False, payload=payload, mid=7)
+            with self.subTest(vendor=vendor):
+                self.assertIsNone(accept_message(Client(), message, Ingestor(), Sink(), "collector", instance))
+                self.assertEqual(calls, [(payload, "SCHEMA_VIOLATION", "mockprofile-300"), "ack"])
+                calls.clear()
+                with patch.object(Sink, "preserve_mqtt", side_effect=RuntimeError("storage failed")):
+                    with self.assertRaisesRegex(RuntimeError, "storage failed"):
+                        accept_message(Client(), message, Ingestor(), Sink(), "collector", instance)
+                self.assertEqual(calls, [])
+
+    def test_mqtt_valid_json_enters_pipeline_but_wrong_identity_is_not_acknowledged(self):
+        from foodtech_collection_adapter.mqtt import accept_message, topic_for
+        root = Path(__file__).resolve().parents[3]
+        calls = []
+        class Client:
+            def ack(self, mid, qos): calls.append("ack"); return 0
+        class Sink:
+            def preserve_mqtt(self, payload, **kwargs): raise AssertionError("valid JSON quarantined")
+        class Ingestor:
+            def ingest(self, raw): calls.append("ingest")
+        record = json.loads((root / "fixtures/mockprofile-300-a-001.json").read_text())["records"][0]
+        msg = SimpleNamespace(topic=topic_for("mockprofile-300-a-001"), qos=1, retain=False,
+                              payload=json.dumps(record).encode(), mid=7)
+        self.assertIsNotNone(accept_message(Client(), msg, Ingestor(), Sink(), "collector"))
+        self.assertEqual(calls, ["ingest", "ack"])
+        calls.clear()
+        record["sourceId"] = "unexpected-source"
+        msg.payload = json.dumps(record).encode()
+        with self.assertRaisesRegex(ValueError, "unexpected synthetic source"):
+            accept_message(Client(), msg, Ingestor(), Sink(), "collector")
+        self.assertEqual(calls, [])
+
     def test_opcua_history_preservation_is_idempotent_and_fails_on_conflict(self):
         class Collision(Exception): pass
         class S3:
@@ -108,6 +159,42 @@ class QuarantineTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
                 cli.main()
         self.assertEqual(calls, [])
+
+    def test_rest_json_schema_failure_preserves_each_vendor_before_cursor(self):
+        root = Path(__file__).resolve().parents[3]
+        calls = []
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def poll(self, cursor): return PollResult((payload,), cursor + 1)
+            def close(self): pass
+        class Ingestor:
+            def __init__(self, *args): pass
+            def cursor_state(self, key): return 0, set()
+            def ingest(self, raw): raise AssertionError("invalid input entered normal pipeline")
+            def save_cursor(self, *args): calls.append("cursor")
+        class Sink:
+            def __init__(self, *args): pass
+            def preserve(self, raw, **kwargs): calls.append((raw, kwargs["reason"], kwargs["instance_id"]))
+        config = {name: "test" for name in ("FOODTECH_MOCK_BASE_URL", "FOODTECH_MOCK_CLIENT_ID",
+            "FOODTECH_MOCK_CLIENT_SECRET", "FOODTECH_MOCK_CA_FILE", "FOODTECH_DATA_TABLE",
+            "FOODTECH_ORDERED_QUEUE_URL", "FOODTECH_INGESTION_DLQ_BUCKET")}
+        for vendor in "abc":
+            instance = f"mockprofile-100-{vendor}-001"
+            record = json.loads((root / f"fixtures/{instance}.json").read_text())["records"][0]
+            if vendor == "a": record["measurements"]["temperatureCelsius"] = "invalid"
+            elif vendor == "b": record["temperature_f"] = "invalid"
+            else: record["Readings"]["TempC"] = "invalid"
+            payload = json.dumps(record)
+            with self.subTest(vendor=vendor), patch.dict("os.environ", config), \
+                 patch.object(cli, "RestMockClient", Client), patch.object(cli, "DynamoOrderedIngestor", Ingestor), \
+                 patch.object(cli, "IngestionQuarantine", Sink), patch("sys.argv", ["collector", "--instance", instance]):
+                self.assertEqual(cli.main(), 0)
+                self.assertEqual(calls, [(payload, "SCHEMA_VIOLATION", instance), "cursor"])
+                calls.clear()
+                with patch.object(Sink, "preserve", side_effect=RuntimeError("storage unavailable")):
+                    with self.assertRaisesRegex(RuntimeError, "storage unavailable"):
+                        cli.main()
+                self.assertEqual(calls, [])
 
 class MqttQuarantineTests(unittest.TestCase):
     def test_raw_bytes_are_preserved_and_each_delivery_has_distinct_id(self):
