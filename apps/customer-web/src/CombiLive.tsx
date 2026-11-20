@@ -8,7 +8,10 @@ type Live = { state: "NOT_STARTED" | "COLLECTING" | "COMPLETED"; count: number; 
     current_celsius: string; minimum_celsius: string; maximum_celsius: string;
     average_celsius: string; outside_target_seconds: number } | null;
   rice_monitor?: { last_second: number; complete_from_start: boolean; humidity_source: string;
-    low_total: number; high_total: number; failure_codes: string[]; warning_codes: string[] } | null };
+    low_total: number; high_total: number; failure_codes: string[]; warning_codes: string[] } | null;
+  mackerel_monitor?: { last_second: number; complete_from_start: boolean; recovered_at_second: number | null;
+    door_open_seconds: number; door_max_open_seconds: number; candidate_door: string | null;
+    failure_codes: string[]; warning_codes: string[] } | null };
 
 export function CombiLive({ mealId }: { mealId: string }) {
   const [live, setLive] = useState<Live | null>(null);
@@ -48,6 +51,15 @@ export function CombiLive({ mealId }: { mealId: string }) {
       {!live.rice_monitor.complete_from_start && <p role="alert">처음부터 연속된 관찰이 아니거나 습도 출처가 변경되어 확인이 필요합니다.</p>}
       {live.rice_monitor.failure_codes.length > 0 && <p role="alert">공정 실패 조건 감지: {live.rice_monitor.failure_codes.join(", ")}</p>}
       {live.rice_monitor.warning_codes.length > 0 && <p>경고 조건 감지: {live.rice_monitor.warning_codes.join(", ")}</p>}
+    </div>}
+    {live?.mackerel_monitor && <div>
+      <p>고등어 온도 복원·문 상태 수집 중 감지 · {live.mackerel_monitor.last_second}초까지
+        {" "}· 온도 복원 {live.mackerel_monitor.recovered_at_second === null ? "미확인" : `${live.mackerel_monitor.recovered_at_second}초`}
+        {" "}· 문 개방 누적 {live.mackerel_monitor.door_open_seconds}초 · 최대 {live.mackerel_monitor.door_max_open_seconds}초</p>
+      {!live.mackerel_monitor.complete_from_start && <p role="alert">처음부터 연속된 표본 또는 최초 문 닫힘 확인이 없어 감지할 수 없습니다.</p>}
+      {live.mackerel_monitor.candidate_door && <p>문 상태 확인 중</p>}
+      {live.mackerel_monitor.failure_codes.length > 0 && <p role="alert">공정 실패 조건 감지: {live.mackerel_monitor.failure_codes.join(", ")}</p>}
+      {live.mackerel_monitor.warning_codes.length > 0 && <p>경고 조건 감지: {live.mackerel_monitor.warning_codes.join(", ")}</p>}
     </div>}
     <p>수집 중 감지는 합성 관찰값에 대한 부분 결과이며 최종 공정·안전 판정이 아닙니다.</p>
   </div>;

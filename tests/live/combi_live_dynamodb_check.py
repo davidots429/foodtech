@@ -32,7 +32,7 @@ def records_for(meal):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     records = []
     for phase, job in phases:
-        count = 60 if phase == "RICE" else 1
+        count = 60 if phase == "RICE" else 61 if phase == "MACKEREL" else 1
         for phase_second in range(1, count + 1):
             index = len(records) + 1
             at = (start + timedelta(seconds=index - 1)).isoformat()
@@ -41,7 +41,7 @@ def records_for(meal):
                 "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": index,
                 "schemaVersion": "synthetic-combi-v1", "programVersion": "v1", "provenance": "SYNTHETIC",
                 "dataQuality": "VALID", "phase": phase, "phaseSecond": phase_second,
-                "chamberCelsius": 94 if phase == "RICE" else 220,
+                "chamberCelsius": 94 if phase == "RICE" else 199 if phase == "MACKEREL" and phase_second > 31 else 220,
                 "climateSetpointPercent": 100, "measuredHumidityPercent": 98,
                 "humidityValueSource": "MEASURED", "fanLevel": 4, "doorState": "CLOSED"}, separators=(",", ":")))
     return records
@@ -103,15 +103,25 @@ async def run_scenario(store, subject, created_partitions):
             monitor = (await client.get(path + "/source-live")).json()["rice_monitor"]
             assert monitor["last_second"] == 60 and monitor["low_total"] == 60
             assert "LOW_TEMPERATURE_PROCESS_FAILURE" in monitor["failure_codes"]
+            fish = (await client.get(path + "/source-live")).json()["mackerel_monitor"]
+            assert fish["recovered_at_second"] == 31 and fish["last_second"] == 61
+            assert "LOW_TEMPERATURE_PROCESS_FAILURE" in fish["failure_codes"]
             completion = await client.post(path + "/source-observations", headers=headers, json={
                 "expected_version": 1, "device_id": "synthetic-combi-validation", "records": records})
             assert completion.status_code == 201, completion.text
             assert (await client.get(path + "/source-live")).json()["state"] == "COMPLETED"
-            saved = await client.get(path + "/source-observations")
-            assert saved.status_code == 200 and saved.json()["records"] == records
+            saved_records, cursor = [], 0
+            while cursor is not None:
+                saved = await client.get(path + "/source-observations", params={"cursor": cursor})
+                assert saved.status_code == 200
+                page = saved.json()
+                saved_records.extend(page["records"])
+                cursor = page["next_cursor"]
+            assert saved_records == records
             return {"competing_appends": statuses, "idempotent_replay": True,
                     "customer_isolation": isolated.status_code, "rice_monitor_second": monitor["last_second"],
-                    "low_temperature_failure_detected": True, "final_record_count": len(records)}
+                    "low_temperature_failure_detected": True, "mackerel_recovered_second": fish["recovered_at_second"],
+                    "mackerel_low_failure_detected": True, "final_record_count": len(records)}
 
 
 def remove_and_verify(table, partitions):

@@ -168,7 +168,10 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                                 "event": "RICE_STARTED", "observed_at": fixture["logicalStartAt"]})
                             self.assertEqual(step.status_code, 200, step.text)
                             result = await task
-                            self.assertEqual((await api.get(live_path)).json()["state"], "COMPLETED")
+                            final_live = (await api.get(live_path)).json()
+                            self.assertEqual(final_live["state"], "COMPLETED")
+                            self.assertEqual(final_live["mackerel_monitor"]["last_second"], 5)
+                            self.assertEqual(final_live["mackerel_monitor"]["failure_codes"], [])
                         finally:
                             mock.close()
                         self.assertEqual(result["phase_counts"], {"RICE": 5, "TRANSITION": 5, "MACKEREL": 5})
