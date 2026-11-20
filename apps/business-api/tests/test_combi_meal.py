@@ -317,3 +317,51 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
                                         json={**body, "expected_version": 2, "probes": probes})
         self.assertEqual(failed.json()["step"]["safety_status"], "FAILED")
         self.assertEqual(failed.json()["meal"]["status"], "MACKEREL_SAFETY_FAILED")
+
+    async def test_sampling_coverage_is_required_for_safe_result(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        meal = created["meal"]
+        path = "/api/customer/combi-meals/" + meal["meal_batch_id"]
+        pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal['meal_batch_id']}"
+        unloaded = datetime.now(timezone.utc) - timedelta(seconds=120)
+        self.store.items[(pk, "META")]["status"] = "MACKEREL_UNLOADED"
+        fish = self.store.items[(pk, f"JOB#MACKEREL#{meal['mackerel_cooking_job_id']}")]
+        fish.update(food_unloaded_at=unloaded.isoformat(), products=[
+            {"product_id": f"fish-{n}", "rack_id": "rack-1", "shelf": 1, "pan_id": "pan-1",
+             "mass_kg": "0.13", "thickness_cm": "1.5"} for n in (1, 2, 3)])
+        probes = [{"probe_id": f"probe-{n}", "product_id": f"fish-{n}", "calibration_status": "OK",
+                   "readings": [{"second": i, "celsius": "75"} for i in range(60)]} for n in (1, 2, 3)]
+        result = await self.client.post(path + "/mackerel-safety", headers=headers,
+            json={"expected_version": 1, "measured_at": unloaded.isoformat(), "probes": probes})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["step"]["safety_status"], "ASSESSMENT_INCOMPLETE")
+        self.assertIn("SINGLE_SHELF_POSITIONS_INCOMPLETE", result.json()["event"]["selection_issues"])
+
+    async def test_two_shelf_inventory_selects_three_of_four_products(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        meal = created["meal"]
+        path = "/api/customer/combi-meals/" + meal["meal_batch_id"]
+        pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal['meal_batch_id']}"
+        self.store.items[(pk, "META")]["status"] = "MACKEREL_READY"
+        transition = self.store.items[(pk, f"TRANSITION#{meal['mode_transition_id']}")]
+        transition.update(status="DRY_HEAT_READY", mackerel_load_allowed=True)
+        products = [{"product_id": f"fish-{n}", "rack_id": "rack-1", "shelf": 1 if n < 3 else 2,
+                     "pan_id": "lower" if n < 3 else "upper", "position": "LEFT" if n % 2 else "RIGHT",
+                     "mass_kg": "0.13", "thickness_cm": "2.0" if n == 4 else "1.5"} for n in range(1, 5)]
+        start = datetime.now(timezone.utc) - timedelta(seconds=1000)
+        added = await self.client.post(path + "/events", headers=headers, json={"expected_version": 1,
+            "event": "MACKEREL_STARTED", "observed_at": start.isoformat(), "products": products})
+        self.assertEqual(added.status_code, 200, added.text)
+        for version, event, offset in ((2, "MACKEREL_PROGRAM_COMPLETED", 720), (3, "MACKEREL_UNLOADED", 720)):
+            result = await self.client.post(path + "/events", headers=headers, json={"expected_version": version,
+                "event": event, "observed_at": (start + timedelta(seconds=offset)).isoformat()})
+            self.assertEqual(result.status_code, 200, result.text)
+        probes = [{"probe_id": f"probe-{n}", "product_id": f"fish-{n}", "calibration_status": "OK",
+                   "readings": [{"second": i, "celsius": "75"} for i in range(60)]} for n in (1, 3, 4)]
+        result = await self.client.post(path + "/mackerel-safety", headers=headers, json={"expected_version": 4,
+            "measured_at": (start + timedelta(seconds=720)).isoformat(), "probes": probes})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["step"]["safety_status"], "PASSED")
+        self.assertEqual(result.json()["event"]["selection_issues"], [])

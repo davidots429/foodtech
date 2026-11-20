@@ -23,7 +23,7 @@ type Meal = {
     monitored_process_assessment?: { status: string; recovered_at_second: number | null;
       door_open_seconds: number; reason_codes: string[]; fan_observation?: FanObservation };
     products?: { product_id: string }[] };
-  events?: { event: string; observed_at: string }[];
+  events?: { event: string; observed_at: string; selection_issues?: string[] }[];
 };
 
 const mealSteps: Record<string, { event: string; label: string }> = {
@@ -58,6 +58,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
   const [observedAt, setObservedAt] = useState("");
   const [sourceDevice, setSourceDevice] = useState("synthetic-combi-medium");
   const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [sampleLayout, setSampleLayout] = useState("THREE_SHELVES");
   const requestActive = useRef(false);
 
   async function create() {
@@ -123,9 +124,13 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     try {
       const event = mealSteps[meal.meal.status].event;
-      const products = event === "MACKEREL_STARTED" ? [1, 2, 3].map(shelf => ({
-        product_id: `synthetic-fish-${shelf}`, rack_id: "synthetic-rack-1", shelf,
-        pan_id: `synthetic-pan-${shelf}`, mass_kg: "0.13", thickness_cm: shelf === 2 ? "2.0" : "1.5",
+      const locations = sampleLayout === "ONE_SHELF" ? [[1, 1, "LEFT"], [1, 1, "CENTER"], [1, 1, "RIGHT"]] :
+        sampleLayout === "TWO_SHELVES" ? [[1, 1, "LEFT"], [1, 2, "LEFT"], [1, 2, "RIGHT"]] :
+        sampleLayout === "TWO_RACKS" ? [[1, 1, "LEFT"], [1, 2, "LEFT"], [2, 3, "LEFT"]] :
+        [[1, 1, "LEFT"], [1, 2, "CENTER"], [1, 3, "RIGHT"]];
+      const products = event === "MACKEREL_STARTED" ? locations.map(([rack, shelf, position], index) => ({
+        product_id: `synthetic-fish-${index + 1}`, rack_id: `synthetic-rack-${rack}`, shelf,
+        pan_id: `synthetic-pan-${rack}-${shelf}`, position, mass_kg: "0.13", thickness_cm: index === 1 ? "2.0" : "1.5",
       })) : undefined;
       await api(path + "/events", csrf, { expected_version: meal.meal.version,
         event, observed_at: observed.toISOString(), ...(products ? { products } : {}) });
@@ -219,7 +224,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     <div className="field-grid">
       <label>장비 규모<select value={size} onChange={event => {
         const large = event.target.value === "LARGE_ROLL_IN_RACK_20";
-        setSize(event.target.value); setRacks(large ? "2" : "1"); setPans(large ? "20" : "10");
+        setSize(event.target.value); setSampleLayout("THREE_SHELVES"); setRacks(large ? "2" : "1"); setPans(large ? "20" : "10");
         setDry(large ? "40" : "20"); setDrained(large ? "48" : "24"); setWater(large ? "40" : "20");
         setPanTare(large ? "20" : "10"); setRackTare(large ? "30" : "0");
       }}><option value="MEDIUM_FIXED_RACK_10">중형 고정 랙</option><option value="LARGE_ROLL_IN_RACK_20">대형 이동식 랙</option></select></label>
@@ -258,7 +263,12 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {" "}· 목표 4 · 다른 단계 {meal.rice.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.rice.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
       {meal.mackerel.time_status && <p>고등어 프로그램 시간 {meal.mackerel.program_cooking_duration}초 · 시간 판정 {meal.mackerel.time_status}
         {meal.mackerel.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.mackerel.thermal_exposure_duration}초</>}</p>}
-      {meal.meal.status === "MACKEREL_READY" && <p>합성 제품 세 개를 한 랙의 서로 다른 세 선반에 투입합니다. 제품은 각 130g, 두께 1.5~2.0cm입니다.</p>}
+      {meal.meal.status === "MACKEREL_READY" && <div><p>합성 제품 세 개를 각 130g, 두께 1.5~2.0cm로 투입합니다.</p>
+        <label>합성 적재 위치<select value={sampleLayout} onChange={event => setSampleLayout(event.target.value)}>
+          <option value="THREE_SHELVES">한 랙 · 세 선반</option><option value="TWO_SHELVES">한 랙 · 두 선반</option>
+          <option value="ONE_SHELF">한 랙 · 한 선반</option>
+          {meal.meal.equipment_size === "LARGE_ROLL_IN_RACK_20" && <option value="TWO_RACKS">두 랙</option>}
+        </select></label></div>}
       {mealSteps[meal.meal.status] && <div className="field-row"><label>합성 관찰시각
         <input type="datetime-local" step="0.001" value={observedAt} onChange={event => setObservedAt(event.target.value)} /></label>
         {meal.meal.source?.first_observed_at && <button type="button" className="secondary" disabled={busy} onClick={useSourceTime}>원표본 시각 입력</button>}
@@ -279,6 +289,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {" "}· 목표 3 · 다른 단계 {meal.mackerel.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.mackerel.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
       {meal.mackerel.safety_status !== "NOT_MEASURED" && <p>고등어 합성 안전 표본: {meal.mackerel.safety_status}
         {meal.mackerel.batch_representative_core_temperature && <> · 최저 {meal.mackerel.batch_representative_core_temperature}°C</>}</p>}
+      {meal.events?.filter(event => event.event === "MACKEREL_CORE_CHECK").slice(-1)[0]?.selection_issues?.length ?
+        <p role="alert">표본 선정 확인 필요: {meal.events.filter(event => event.event === "MACKEREL_CORE_CHECK").slice(-1)[0].selection_issues?.join(", ")}</p> : null}
       {(["rice", "mackerel"] as const).map(menu => <CombiQuality key={`${meal.meal.meal_batch_id}-${menu}`}
         menu={menu} mealId={meal.meal.meal_batch_id} version={meal.meal.version}
         safety={meal[menu].safety_status} jobStatus={meal[menu].status} current={meal[menu].quality_current}

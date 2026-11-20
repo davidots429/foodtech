@@ -14,6 +14,7 @@ from foodtech_contracts.combi_transition import TransitionSample, assess_transit
 from foodtech_contracts.combi_mackerel_process import Sample, assess as assess_mackerel_process
 from foodtech_contracts.combi_rice_process import Sample as RiceSample, assess as assess_rice_process
 from foodtech_contracts.combi_stream import CombiStreamValidator
+from foodtech_contracts.combi_sampling import selection_issues
 
 from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
@@ -39,6 +40,7 @@ class MackerelProduct(BaseModel):
     rack_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
     shelf: int = Field(ge=1, le=10, strict=True)
     pan_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    position: Literal["LEFT", "CENTER", "RIGHT"] | None = None
     mass_kg: Decimal = Field(ge=Decimal("0.12"), le=Decimal("0.15"), max_digits=4, decimal_places=3)
     thickness_cm: Decimal = Field(ge=Decimal("1.5"), le=Decimal("2.0"), max_digits=3, decimal_places=1)
 
@@ -49,7 +51,7 @@ class MealEvent(BaseModel):
     event: Literal["RICE_STARTED", "RICE_PROGRAM_COMPLETED", "RICE_UNLOADED", "MODE_TRANSITION_STARTED",
                    "MACKEREL_STARTED", "MACKEREL_PROGRAM_COMPLETED", "MACKEREL_UNLOADED"]
     observed_at: datetime
-    products: list[MackerelProduct] | None = Field(default=None, min_length=3, max_length=3)
+    products: list[MackerelProduct] | None = Field(default=None, min_length=1, max_length=200)
 
 
 class TransitionObservation(BaseModel):
@@ -90,6 +92,7 @@ class MackerelSafetyCheck(BaseModel):
     expected_version: int = Field(ge=1)
     measured_at: datetime
     probes: list[MackerelProbe] = Field(min_length=1, max_length=3)
+    selection_note: str | None = Field(default=None, max_length=500)
 
 
 class MackerelProcessSample(BaseModel):
@@ -333,11 +336,16 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
         if not transition or transition.get("status") != "DRY_HEAT_READY" or not transition.get("mackerel_load_allowed"):
             raise HTTPException(409, "건열 전환 준비를 먼저 확인해야 합니다.")
         products = body.products
-        if not products or len({item.product_id for item in products}) != 3 or \
-                len({item.rack_id for item in products}) != 1 or \
-                len({item.shelf for item in products}) != 3 or \
-                len({item.pan_id for item in products}) != 3:
-            raise HTTPException(422, "초기 합성 시연에는 한 랙의 서로 다른 세 선반에 제품 세 개가 필요합니다.")
+        if not products or len({item.product_id for item in products}) != len(products):
+            raise HTTPException(422, "서로 다른 고등어 제품이 필요합니다.")
+        racks = {item.rack_id for item in products}
+        pan_locations = {item.pan_id: (item.rack_id, item.shelf) for item in products}
+        shelf_pans = {(item.rack_id, item.shelf): item.pan_id for item in products}
+        if (len(racks) > (2 if old["equipment_size"] == "LARGE_ROLL_IN_RACK_20" else 1) or
+                any(pan_locations[p.pan_id] != (p.rack_id, p.shelf) or
+                    shelf_pans[(p.rack_id, p.shelf)] != p.pan_id for p in products) or
+                any(sum(p.pan_id == pan for p in products) > 10 for pan in pan_locations)):
+            raise HTTPException(422, "장비의 랙·선반·팬 위치 또는 팬당 제품 수를 확인해 주세요.")
         updated.update(status="RUNNING", active_cooking_started_at=at,
                        products=[item.model_dump(mode="json") for item in products])
     elif body.event == "RICE_STARTED":
@@ -440,7 +448,8 @@ async def record_mackerel_safety(meal_id: UUID, request: Request, body: Mackerel
         raise HTTPException(422, "서로 다른 적재 제품과 탐침을 선택해야 합니다.")
     low = any(p.calibration_status == "OK" and r.celsius is not None and r.celsius < 75
               for p in body.probes for r in p.readings)
-    complete = (len(body.probes) == 3 and {p.product_id for p in body.probes} == set(products) and
+    issues = selection_issues(step["products"], {p.product_id for p in body.probes}, body.selection_note)
+    complete = (not issues and
                 all(p.calibration_status == "OK" and len(p.readings) == 60 and
                     [r.second for r in p.readings] == list(range(60)) and
                     all(r.celsius is not None for r in p.readings) for p in body.probes))
@@ -457,7 +466,7 @@ async def record_mackerel_safety(meal_id: UUID, request: Request, body: Mackerel
              "to_status": next_status, "observed_at": start.isoformat().replace("+00:00", "Z"),
              "recorded_at": _now(), "actor": session.subject, "safety_status": safety,
              "probes": [probe.model_dump(mode="json") for probe in body.probes],
-             "products": step["products"]}
+             "products": step["products"], "selection_issues": issues, "selection_note": body.selection_note}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:
