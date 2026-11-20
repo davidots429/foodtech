@@ -25,6 +25,22 @@ class OpcUaRecoveryTests(unittest.TestCase):
             validate_history(json.dumps([json.dumps(changed), *self.records[1:]]), self.device, seen, batch)
         with self.assertRaisesRegex(ValueError, "sequence"):
             validate_history(json.dumps([self.records[0], self.records[2]]), self.device, {}, None)
+        with self.assertRaisesRegex(ValueError, "moved backwards"):
+            validate_history(json.dumps(self.records[:1]), self.device, seen, batch)
+
+    def test_truncated_binary_history_is_quarantined_without_changing_prior_progress(self):
+        parsed, batch = validate_history(json.dumps(self.records[:2]), self.device, {}, None)
+        seen = {number: digest for number, _raw, _record, digest in parsed}
+        before = dict(seen)
+        rejected = json.dumps(self.records[:1])
+        saved = []
+        class Sink:
+            def preserve_opcua_history(self, payload, **kwargs): saved.append((payload, kwargs))
+        with self.assertRaisesRegex(ValueError, "moved backwards"):
+            validate_or_quarantine(rejected, self.device, seen, batch, source_id="synthetic-opcua",
+                                   profile_id="mockprofile-203", quarantine=Sink())
+        self.assertEqual(seen, before)
+        self.assertEqual(saved[0][0], rejected.encode())
 
     def test_foreign_batch_is_rejected(self):
         changed = json.loads(self.records[1]); changed["batchId"] = "batch-a-foreign"

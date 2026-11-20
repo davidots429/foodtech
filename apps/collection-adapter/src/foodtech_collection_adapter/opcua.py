@@ -54,6 +54,8 @@ def validate_history(value: str, device_id: str, seen: dict[int, str], batch: st
     records = json.loads(value)
     if not isinstance(records, list) or not 1 <= len(records) <= 5000:
         raise ValueError("invalid synthetic OPC UA recovery buffer")
+    if seen and len(records) < max(seen):
+        raise ValueError("synthetic source history moved backwards")
     parsed = []
     for number, raw in enumerate(records, 1):
         if not isinstance(raw, str) or len(raw.encode("utf-8")) > 2048:
