@@ -1,10 +1,10 @@
 import os
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from typing import Literal
 
 from .ollama import OllamaClient
@@ -14,6 +14,7 @@ from .service import GatewayService
 from .provider import LiteLLMProvider
 from .vault import DynamoCredentialVault
 from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
+from .downgrade_flow import DowngradeFlow, DowngradeError
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -57,6 +58,17 @@ class ExternalPreview(StrictBody):
 class ExternalConfirm(StrictBody):
     tenant_id: str = Field(min_length=1, max_length=128)
     notice_version: str = Field(min_length=1, max_length=64)
+
+
+class DowngradePreview(StrictBody):
+    tenant_id: str = Field(min_length=1, max_length=128)
+    parent_execution_id: UUID
+
+
+class DowngradeConfirm(StrictBody):
+    tenant_id: str = Field(min_length=1, max_length=128)
+    notice_version: str = Field(min_length=1, max_length=64)
+    quality_warning_acknowledged: StrictBool
 
 
 def _external_enabled() -> None:
@@ -142,6 +154,26 @@ async def invoke_execution(request: Request, execution_id: str, body: InvokeExec
         raise HTTPException(403, outcome.error_code)
     return {"execution_id": outcome.execution_id, "state": outcome.state,
             "response_text": outcome.response_text, "error_code": outcome.error_code}
+
+
+@app.post("/internal/ai/recipe-downgrades/preview", status_code=201)
+async def downgrade_preview(request: Request, body: DowngradePreview) -> dict:
+    _internal(request)
+    try:
+        return DowngradeFlow(_service(request).registry).preview(body.tenant_id, str(body.parent_execution_id))
+    except DowngradeError as error:
+        raise HTTPException(409, error.code) from None
+
+
+@app.post("/internal/ai/recipe-downgrades/{quote_id}/confirm", status_code=201)
+async def downgrade_confirm(request: Request, quote_id: UUID, body: DowngradeConfirm) -> dict:
+    _internal(request)
+    try:
+        execution_id = DowngradeFlow(_service(request).registry).confirm(
+            body.tenant_id, str(quote_id), body.notice_version, body.quality_warning_acknowledged)
+        return {"execution_id": execution_id, "state": "PENDING"}
+    except DowngradeError as error:
+        raise HTTPException(409, error.code) from None
 
 
 @app.post("/internal/ai/external/preview", status_code=201)
