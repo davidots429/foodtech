@@ -35,3 +35,15 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-jeyuk \
 
 `jeyuk-small-safety-v1.json`은 C# Mock이 혼합물 온도·교정 상태·최저온도 센서 위치·마지막 재료 투입 완료 사건을 원표본에 담는 별도 합성 시나리오다. 기존 걸림 fixture의 필드 계약은 유지한다. 자동 안전판정은 Mock이 아닌 플랫폼에서 수행하며, Mock 값은 실제 식품 안전을 보증하지 않는다.
 
+## 콤비오븐 합성 시뮬레이션
+
+`simulate-combi`는 하나의 합성 식사 배치에 서로 다른 밥·전환·고등어 작업 ID를 지정하고, 각 단계의 온도·기후 설정·습도 출처·팬·문을 1초 원표본과 5초 온도 요약으로 출력한다. 원표본에는 고정 논리 시작시각, 사건 ID, 발생·수신시각, 전체 순번, 단계별 초, 스키마·프로그램 버전과 `SYNTHETIC` 출처가 들어간다. 요약에는 현재·최소·최대·평균 온도와 목표 구간 이탈 초가 들어간다. 생성기 버전과 seed는 실행 결과에 기록하며 현재 정상 fixture는 난수를 사용하지 않는다.
+
+```bash
+dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
+  --fixture fixtures/combi-normal-medium-v1.json --output /tmp/combi-raw.jsonl \
+  --aggregates /tmp/combi-5s.jsonl
+```
+
+정상 중형 fixture는 밥 1,800초, 습도 미지원 건열 전환 180초, 고등어 720초를 순서대로 재현한다. 이 명령은 파일 생성 단계이며 HTTPS 수집·실제 전송·고객 작업 연결 및 다른 크기·장애 fixture는 후속 작업이다. 판정은 플랫폼에서 수행하며 실제 제조사 규격이나 식품 안전을 주장하지 않는다.
+
