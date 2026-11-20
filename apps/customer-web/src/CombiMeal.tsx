@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { api } from "./cookingApi";
 import { CombiQuality } from "./CombiQuality";
 
+type FanObservation = { status: string; target_level: number; deviation_seconds: number; missing_seconds: number };
 type Meal = {
   meal: { meal_batch_id: string; status: string; equipment_size: string; version: number;
     source?: { device_id: string; record_count: number; raw_sha256: string; first_observed_at?: string;
@@ -12,7 +13,7 @@ type Meal = {
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     monitored_process_assessment?: { status: string; humidity_value_source: string; reason_codes: string[];
-      door_assessment?: { status: string; door_open_seconds?: number } } };
+      door_assessment?: { status: string; door_open_seconds?: number }; fan_observation?: FanObservation } };
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
     humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null };
   mackerel: { job_id: string; status: string; safety_status: string; food_unloaded_at?: string;
@@ -20,7 +21,7 @@ type Meal = {
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     batch_representative_core_temperature?: string | null;
     monitored_process_assessment?: { status: string; recovered_at_second: number | null;
-      door_open_seconds: number; reason_codes: string[] };
+      door_open_seconds: number; reason_codes: string[]; fan_observation?: FanObservation };
     products?: { product_id: string }[] };
   events?: { event: string; observed_at: string }[];
 };
@@ -168,7 +169,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     const samples = Array.from({ length: duration }, (_, index) => ({ second: index + 1,
-      chamber_celsius: "220", door: "CLOSED" }));
+      chamber_celsius: "220", door: "CLOSED", fan_level: 3 }));
     try {
       await api(path + "/mackerel-process", csrf, { expected_version: meal.meal.version, samples });
       setMeal(await api<Meal>(path));
@@ -182,7 +183,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     const samples = Array.from({ length: duration }, (_, index) => ({ second: index + 1,
-      chamber_celsius: "100", humidity_percent: humiditySupported ? "98" : null, door: "CLOSED" }));
+      chamber_celsius: "100", humidity_percent: humiditySupported ? "98" : null, door: "CLOSED", fan_level: 4 }));
     try {
       await api(path + "/rice-process", csrf, { expected_version: meal.meal.version,
         humidity_source: humiditySupported ? "MEASURED" : "NOT_SUPPORTED", samples });
@@ -253,6 +254,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {" "}· 습도 출처 {meal.rice.monitored_process_assessment.humidity_value_source}
         {" "}· 문 상태 {meal.rice.monitored_process_assessment.door_assessment?.status ?? "NOT_MEASURED"}
         {meal.rice.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.rice.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
+      {meal.rice.monitored_process_assessment?.fan_observation && <p>밥 팬 단계 관찰: {meal.rice.monitored_process_assessment.fan_observation.status}
+        {" "}· 목표 4 · 다른 단계 {meal.rice.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.rice.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
       {meal.mackerel.time_status && <p>고등어 프로그램 시간 {meal.mackerel.program_cooking_duration}초 · 시간 판정 {meal.mackerel.time_status}
         {meal.mackerel.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.mackerel.thermal_exposure_duration}초</>}</p>}
       {meal.meal.status === "MACKEREL_READY" && <p>합성 제품 세 개를 한 랙의 서로 다른 세 선반에 투입합니다. 제품은 각 130g, 두께 1.5~2.0cm입니다.</p>}
@@ -272,6 +275,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
           <button type="button" disabled={busy} onClick={simulateMackerelProcess}>합성 공정 표본 확인</button></div>}
       {meal.mackerel.monitored_process_assessment && <p>고등어 온도 복원·문·시간 부분 판정: {meal.mackerel.monitored_process_assessment.status}
         {meal.mackerel.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.mackerel.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
+      {meal.mackerel.monitored_process_assessment?.fan_observation && <p>고등어 팬 단계 관찰: {meal.mackerel.monitored_process_assessment.fan_observation.status}
+        {" "}· 목표 3 · 다른 단계 {meal.mackerel.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.mackerel.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
       {meal.mackerel.safety_status !== "NOT_MEASURED" && <p>고등어 합성 안전 표본: {meal.mackerel.safety_status}
         {meal.mackerel.batch_representative_core_temperature && <> · 최저 {meal.mackerel.batch_representative_core_temperature}°C</>}</p>}
       {(["rice", "mackerel"] as const).map(menu => <CombiQuality key={`${meal.meal.meal_batch_id}-${menu}`}

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
 from .combi_door import assess as assess_door
+from .combi_fan import observe as observe_fan
 
 
 @dataclass(frozen=True)
@@ -12,6 +13,7 @@ class Sample:
     chamber_celsius: Decimal
     humidity_percent: Decimal | None
     door: str | None = None
+    fan_level: int | None = None
 
 
 def assess(samples: list[Sample], duration: int, time_status: str,
@@ -88,4 +90,5 @@ def assess(samples: list[Sample], duration: int, time_status: str,
     return {"status": status, "reason_codes": sorted(failures | warnings),
             "humidity_value_source": humidity_source, "anomaly_suspected_seconds": suspects,
             "low_temperature_total_seconds": low_total, "high_temperature_total_seconds": high_total,
-            "sample_count": len(samples), "door_assessment": door}
+            "sample_count": len(samples), "door_assessment": door,
+            "fan_observation": observe_fan([sample.fan_level for sample in samples], 4)}
