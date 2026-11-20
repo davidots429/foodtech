@@ -71,3 +71,7 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
 MQTT `serve-mqtt`에 `--fault invalid-utf8` 또는 `--fault invalid-json`을 더하면 첫 번째 전송에서 합성 인코딩·JSON 오류를 재현한다. 정상 fixture와 별도 오류 시나리오이며 장비 제어를 제공하지 않는다.
 
 REST 기본 프로파일의 `serve`에 `--fault invalid-utf8`을 지정하면 첫 NDJSON 레코드에 합성 UTF-8 오류를 재현한다.
+
+### 두 번째 합성 REST 표현
+
+`serve --fixture fixtures/mockprofile-100-b-001.json --cert <PFX> --port <포트>`는 vendor-b 평면 snake_case, 화씨, Unix 밀리초, 정수 상태, 출력 비율 및 밀리초 경과값을 제공한다. 이는 실제 제조사 규격이 아니다. 화씨 입력은 섭씨 0.1°C 단위로 정확히 되돌릴 수 있는 값만 허용하는 합성 초기 계약이다. 출력 비율을 RPM으로 환산하지 않는다.

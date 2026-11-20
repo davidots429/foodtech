@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from decimal import Decimal
+import json
 
 from foodtech_contracts import canonical_record, decode_record, dedup_key, legacy_dedup_key, payload_hash
 
@@ -39,6 +40,7 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
     record = decode_record(raw)
     canonical = canonical_record(record)
     temperature = Decimal(canonical["temperature_celsius"])
+    vendor_b_raw = json.loads(raw, parse_float=Decimal) if "output_percent" in canonical else None
     findings = []
     if temperature < ABSOLUTE_ZERO_C:
         findings.append(Finding(
@@ -66,7 +68,9 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         "event_time": canonical["event_time"],
         "device_status": "RUNNING" if canonical["device_status"] == "running" else "STOPPED",
         "CHAMBER_TEMPERATURE": {"value": canonical["temperature_celsius"], "unit": "°C"},
-        "ROTATIONAL_SPEED_RPM": {"value": canonical["speed_rpm"], "unit": "rpm"},
+        **({"OUTPUT_PERCENT": {"value": canonical["output_percent"], "unit": "%"}}
+           if "output_percent" in canonical else
+           {"ROTATIONAL_SPEED_RPM": {"value": canonical["speed_rpm"], "unit": "rpm"}}),
         "DURATION": {"value": canonical["elapsed_seconds"], "unit": "s"},
     } if quality != "QUARANTINED" else None
     return Assessment(
@@ -77,22 +81,30 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         quality_status=quality,
         findings=tuple(findings),
         normalized=normalized,
-        raw_values={
+        raw_values=({
+            "temperature_f": str(vendor_b_raw["temperature_f"]),
+            "output_percent": canonical["output_percent"],
+            "elapsed_ms": vendor_b_raw["elapsed_ms"],
+            "device_status": vendor_b_raw["device_status"],
+            "event_time_ms": vendor_b_raw["event_time_ms"],
+        } if "output_percent" in canonical else {
             "temperatureCelsius": canonical["temperature_celsius"],
             "speedRpm": canonical["speed_rpm"],
             "elapsedSeconds": canonical["elapsed_seconds"],
             "deviceStatus": canonical["device_status"],
             "eventTime": record["eventTime"],
-        },
+        }),
         corrected_values={
             "temperature_celsius": canonical["temperature_celsius"],
-            "speed_rpm": canonical["speed_rpm"],
+            **({"output_percent": canonical["output_percent"]} if "output_percent" in canonical
+               else {"speed_rpm": canonical["speed_rpm"]}),
             "elapsed_seconds": canonical["elapsed_seconds"],
             "device_status": "RUNNING" if canonical["device_status"] == "running" else "STOPPED",
             "event_time": canonical["event_time"],
         },
-        correction_rule_id="FT-MAP-VENDOR-A-1",
-        mapping_version={"mockprofile-300-a-001": "mockprofile-300-a-map-v1",
+        correction_rule_id="FT-MAP-VENDOR-B-1" if "output_percent" in canonical else "FT-MAP-VENDOR-A-1",
+        mapping_version={"mockprofile-100-b-001": "mockprofile-100-b-map-v1",
+                         "mockprofile-300-a-001": "mockprofile-300-a-map-v1",
                          "mockprofile-203-a-001": "mockprofile-203-a-map-v1",
                          "mockprofile-200-a-001": "mockprofile-200-a-map-v1"}.get(record["deviceId"], MAPPING_VERSION),
     )
