@@ -116,8 +116,22 @@ NORMALIZED_MQTT_XML_C["properties"]["deviceId"] = {"const": "mockprofile-301-c-0
 NORMALIZED_MQTT_XML_C_VALIDATOR = jsonschema.Draft202012Validator(NORMALIZED_MQTT_XML_C, format_checker=jsonschema.FormatChecker())
 
 
+CSV_A_NORMALIZED = json.loads(json.dumps(SCHEMA))
+CSV_A_NORMALIZED["properties"]["deviceId"] = {"const": "mockprofile-302-a-001"}
+CSV_A_NORMALIZED_VALIDATOR = jsonschema.Draft202012Validator(CSV_A_NORMALIZED, format_checker=jsonschema.FormatChecker())
+CSV_B_NORMALIZED = json.loads(json.dumps(NORMALIZED_B_SCHEMA))
+CSV_B_NORMALIZED["properties"]["deviceId"] = {"const": "mockprofile-302-b-001"}
+CSV_B_NORMALIZED_VALIDATOR = jsonschema.Draft202012Validator(CSV_B_NORMALIZED, format_checker=jsonschema.FormatChecker())
+CSV_B_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-302-b-v1.schema.json").read_text())
+CSV_B_VALIDATOR = jsonschema.Draft202012Validator(CSV_B_SCHEMA, format_checker=jsonschema.FormatChecker())
+CSV_C_NORMALIZED = json.loads(json.dumps(NORMALIZED_C_SCHEMA))
+CSV_C_NORMALIZED["properties"]["deviceId"] = {"const": "mockprofile-302-c-001"}
+CSV_C_NORMALIZED_VALIDATOR = jsonschema.Draft202012Validator(CSV_C_NORMALIZED, format_checker=jsonschema.FormatChecker())
+CSV_C_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-302-c-v1.schema.json").read_text())
+CSV_C_VALIDATOR = jsonschema.Draft202012Validator(CSV_C_SCHEMA, format_checker=jsonschema.FormatChecker())
+
 def _validate(record: dict) -> None:
-    validator = {"mockprofile-301-a-001": NORMALIZED_MQTT_XML_A_VALIDATOR,
+    validator = {"mockprofile-302-a-001": CSV_A_NORMALIZED_VALIDATOR, "mockprofile-302-b-001": CSV_B_NORMALIZED_VALIDATOR, "mockprofile-302-c-001": CSV_C_NORMALIZED_VALIDATOR, "mockprofile-301-a-001": NORMALIZED_MQTT_XML_A_VALIDATOR,
                  "mockprofile-301-b-001": NORMALIZED_MQTT_XML_B_VALIDATOR,
                  "mockprofile-301-c-001": NORMALIZED_MQTT_XML_C_VALIDATOR, "mockprofile-101-b-001": NORMALIZED_XML_B_VALIDATOR,
                  "mockprofile-101-c-001": NORMALIZED_XML_C_VALIDATOR, "mockprofile-101-a-001": NORMALIZED_XML_A_VALIDATOR, "mockprofile-203-b-001": NORMALIZED_UA_BINARY_B_VALIDATOR,
@@ -140,7 +154,11 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
 def decode_record(raw: str | bytes) -> dict:
     """Preserve decimal precision and reject ambiguous duplicate JSON keys."""
     is_xml = raw.lstrip().startswith(b"<") if isinstance(raw, bytes) else raw.lstrip().startswith("<")
-    if is_xml:
+    from .csv302 import is_csv, parse_record as parse_csv
+    csv_source = is_csv(raw)
+    if csv_source:
+        record = parse_csv(raw)
+    elif is_xml:
         from .xml101 import parse_record
         record = parse_record(raw)
     else:
@@ -152,12 +170,14 @@ def decode_record(raw: str | bytes) -> dict:
                                           "mockprofile-301-a-001", "mockprofile-301-b-001", "mockprofile-301-c-001"}
                           for key in ("deviceId", "device_id", "DeviceId")):
         raise ValueError("XML source profile requires XML input")
-    if record.get("deviceId") in {"mockprofile-100-c-001", "mockprofile-101-c-001", "mockprofile-301-c-001", "mockprofile-200-c-001", "mockprofile-203-c-001", "mockprofile-300-c-001"} and record.get("DeviceId") != record.get("deviceId"):
+    if not csv_source and any(isinstance(record.get(key), str) and record[key] in {"mockprofile-302-a-001", "mockprofile-302-b-001", "mockprofile-302-c-001"} for key in ("deviceId", "device_id", "DeviceId")):
+        raise ValueError("CSV source profile requires CSV input")
+    if record.get("deviceId") in {"mockprofile-302-c-001", "mockprofile-100-c-001", "mockprofile-101-c-001", "mockprofile-301-c-001", "mockprofile-200-c-001", "mockprofile-203-c-001", "mockprofile-300-c-001"} and record.get("DeviceId") != record.get("deviceId"):
         raise ValueError("vendor-c input must use its source schema")
-    if record.get("deviceId") in {"mockprofile-100-b-001", "mockprofile-101-b-001", "mockprofile-301-b-001", "mockprofile-200-b-001", "mockprofile-203-b-001", "mockprofile-300-b-001"} and record.get("device_id") != record.get("deviceId"):
+    if record.get("deviceId") in {"mockprofile-302-b-001", "mockprofile-100-b-001", "mockprofile-101-b-001", "mockprofile-301-b-001", "mockprofile-200-b-001", "mockprofile-203-b-001", "mockprofile-300-b-001"} and record.get("device_id") != record.get("deviceId"):
         raise ValueError("vendor-b input must use its source schema")
-    if record.get("device_id") in {"mockprofile-100-b-001", "mockprofile-101-b-001", "mockprofile-301-b-001", "mockprofile-200-b-001", "mockprofile-203-b-001", "mockprofile-300-b-001"}:
-        ({"mockprofile-301-b-001": MQTT_XML_B_VALIDATOR, "mockprofile-101-b-001": XML_B_MAPPED_VALIDATOR, "mockprofile-300-b-001": MQTT_B_VALIDATOR, "mockprofile-200-b-001": UA_JSON_B_VALIDATOR,
+    if record.get("device_id") in {"mockprofile-302-b-001", "mockprofile-100-b-001", "mockprofile-101-b-001", "mockprofile-301-b-001", "mockprofile-200-b-001", "mockprofile-203-b-001", "mockprofile-300-b-001"}:
+        ({"mockprofile-302-b-001": CSV_B_VALIDATOR, "mockprofile-301-b-001": MQTT_XML_B_VALIDATOR, "mockprofile-101-b-001": XML_B_MAPPED_VALIDATOR, "mockprofile-300-b-001": MQTT_B_VALIDATOR, "mockprofile-200-b-001": UA_JSON_B_VALIDATOR,
           "mockprofile-203-b-001": UA_BINARY_B_VALIDATOR}
          .get(record["device_id"], VENDOR_B_VALIDATOR)).validate(record)
         temperature_f = Decimal(record["temperature_f"])
@@ -174,8 +194,8 @@ def decode_record(raw: str | bytes) -> dict:
                   "measurements": {"temperatureCelsius": temperature_c, "outputPercent": record["output_percent"],
                                    "elapsedSeconds": Decimal(record["elapsed_ms"]) / 1000},
                   "extensions": {key: value for key, value in record.items() if key.startswith("ext_")}}
-    elif record.get("DeviceId") in {"mockprofile-100-c-001", "mockprofile-101-c-001", "mockprofile-301-c-001", "mockprofile-200-c-001", "mockprofile-203-c-001", "mockprofile-300-c-001"}:
-        ({"mockprofile-301-c-001": MQTT_XML_C_VALIDATOR, "mockprofile-101-c-001": XML_C_MAPPED_VALIDATOR, "mockprofile-300-c-001": MQTT_C_VALIDATOR, "mockprofile-200-c-001": UA_JSON_C_VALIDATOR,
+    elif record.get("DeviceId") in {"mockprofile-302-c-001", "mockprofile-100-c-001", "mockprofile-101-c-001", "mockprofile-301-c-001", "mockprofile-200-c-001", "mockprofile-203-c-001", "mockprofile-300-c-001"}:
+        ({"mockprofile-302-c-001": CSV_C_VALIDATOR, "mockprofile-301-c-001": MQTT_XML_C_VALIDATOR, "mockprofile-101-c-001": XML_C_MAPPED_VALIDATOR, "mockprofile-300-c-001": MQTT_C_VALIDATOR, "mockprofile-200-c-001": UA_JSON_C_VALIDATOR,
           "mockprofile-203-c-001": UA_BINARY_C_VALIDATOR}
          .get(record["DeviceId"], VENDOR_C_VALIDATOR)).validate(record)
         reading = record["Readings"]

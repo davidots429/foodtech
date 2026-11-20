@@ -39,3 +39,5 @@
 
 승인된 정책과 후속 계약은 로컬의 `AGENTS.md`, `implementation_guidelines.md`, `pending_decisions.md`에서 관리한다. 내부 관리 문서·원본 참고자료·`output/` 산출물과 `.env`·AWS 로컬 인증자료·빌드 결과·작업 임시 파일은 Git 추적 대상에서 제외한다.
 
+
+- 합성 MQTT CSV 기본 장비 프로파일 `mockprofile-302`는 vendor-a/b/c 열 계약으로 수집한다. CSV 셀이 `=`, `+`, `-`, `@`, 탭 또는 CR로 시작하면 음수 표기를 포함해 격리하며 원본과 격리 결과를 보존한 후에만 MQTT 메시지를 확인한다.
