@@ -87,3 +87,5 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 합성 기본 XML 원천은 `serve --fixture fixtures/mockprofile-101-a-001.json --cert <PFX> --port <포트>`로 실행한다. 각 인증된 GET은 커서 위치의 `application/xml` 문서 한 건과 다음 커서를 반환한다. 원천 계약은 `packages/contracts/src/foodtech_contracts/mockprofile-101-a-v1.xsd`이며 실제 제조사 사양이 아니다.
 
 같은 `serve` 명령은 `fixtures/mockprofile-101-b-001.json`과 `fixtures/mockprofile-101-c-001.json`도 제공한다. 각 XML 표현은 별도 XSD로 검증하며 합성 데이터다.
+
+`serve-mqtt`는 `fixtures/mockprofile-301-{a,b,c}-001.json` 합성 XML도 지원한다. 인스턴스별 Topic에 XML을 전송하며 `--fault invalid-xml`로 오류를 재현할 수 있다. 실제 제조사 사양은 아니다.

@@ -118,7 +118,10 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         },
         correction_rule_id=("FT-MAP-VENDOR-B-1" if "output_percent" in canonical else
                             "FT-MAP-VENDOR-C-1" if "speed_level" in canonical else "FT-MAP-VENDOR-A-1"),
-        mapping_version={"mockprofile-101-b-001": "mockprofile-101-b-map-v1",
+        mapping_version={"mockprofile-301-a-001": "mockprofile-301-a-map-v1",
+                         "mockprofile-301-b-001": "mockprofile-301-b-map-v1",
+                         "mockprofile-301-c-001": "mockprofile-301-c-map-v1",
+                         "mockprofile-101-b-001": "mockprofile-101-b-map-v1",
                          "mockprofile-101-c-001": "mockprofile-101-c-map-v1",
                          "mockprofile-101-a-001": "mockprofile-101-a-map-v1",
                          "mockprofile-203-b-001": "mockprofile-203-b-map-v1",

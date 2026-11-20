@@ -3,8 +3,8 @@ from decimal import Decimal
 from importlib.resources import files
 from lxml import etree
 
-_SCHEMAS = {v: etree.XMLSchema(etree.fromstring(files("foodtech_contracts").joinpath(
-    f"mockprofile-101-{v}-v1.xsd").read_bytes())) for v in ("a", "b", "c")}
+_SCHEMAS = {(profile, v): etree.XMLSchema(etree.fromstring(files("foodtech_contracts").joinpath(
+    f"mockprofile-{profile}-{v}-v1.xsd").read_bytes())) for profile in ("101", "301") for v in ("a", "b", "c")}
 
 
 def _extension(element):
@@ -34,8 +34,12 @@ def parse_record(raw: str | bytes) -> dict:
     if len(tags) != len(set(tags)):
         raise ValueError("duplicate XML root field")
     vendor = "b" if root.find("device_id") is not None else "c" if root.find("DeviceId") is not None else "a"
-    _SCHEMAS[vendor].assertValid(root)
     text = root.findtext
+    instance = text({"a": "deviceId", "b": "device_id", "c": "DeviceId"}[vendor])
+    profiles = {f"mockprofile-{profile}-{vendor}-001": profile for profile in ("101", "301")}
+    if instance not in profiles:
+        raise ValueError("unsupported synthetic XML instance")
+    _SCHEMAS[(profiles[instance], vendor)].assertValid(root)
     if vendor == "b":
         result = {"schema_version": text("schema_version"), "source_id": text("source_id"),
                   "device_id": text("device_id"), "batch_id": text("batch_id"), "record_id": text("record_id"),

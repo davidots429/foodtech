@@ -61,4 +61,8 @@ OPC UA Binary 수집 명령의 `--instance mockprofile-203-b-001` 또는 `mockpr
 
 ### 합성 REST XML
 
-`--profile mockprofile-101 --instance mockprofile-101-a-001 --polls 4`는 인증된 HTTPS에서 요청마다 XML 레코드 한 건을 읽는다. 원천 XML은 XSD로 검증하고 DTD·외부 엔터티를 차단하며 UTF-8만 허용한다. 유효 원본은 XML 형태 그대로 수신 기록에 보존하고 표준화하며, 순번 복원과 품질 격리는 JSON 경로와 같다. 파싱·XSD 실패는 수집 격리 저장이 끝난 뒤 커서를 갱신한다. 기본 XML vendor-a·b·c를 `--instance`로 선택하며 커서는 서로 분리된다. vendor-b는 화씨·밀리초·정수 상태·출력 비율, vendor-c는 오프셋 시각·분·축약 상태·속도 단계와 중첩 확장을 적용한다. 출력 비율과 단계값을 RPM으로 환산하지 않는다. MQTT XML과 AWS 실저장은 후속이다.
+`--profile mockprofile-101 --instance mockprofile-101-a-001 --polls 4`는 인증된 HTTPS에서 요청마다 XML 레코드 한 건을 읽는다. 원천 XML은 XSD로 검증하고 DTD·외부 엔터티를 차단하며 UTF-8만 허용한다. 유효 원본은 XML 형태 그대로 수신 기록에 보존하고 표준화하며, 순번 복원과 품질 격리는 JSON 경로와 같다. 파싱·XSD 실패는 수집 격리 저장이 끝난 뒤 커서를 갱신한다. 기본 XML vendor-a·b·c를 `--instance`로 선택하며 커서는 서로 분리된다. vendor-b는 화씨·밀리초·정수 상태·출력 비율, vendor-c는 오프셋 시각·분·축약 상태·속도 단계와 중첩 확장을 적용한다. 출력 비율과 단계값을 RPM으로 환산하지 않는다. AWS 실저장은 후속이다.
+
+### 합성 MQTT XML
+
+`--instance mockprofile-301-a-001`, `mockprofile-301-b-001`, `mockprofile-301-c-001`은 인스턴스별 Topic으로 XML 메시지를 수집한다. 각 원천의 XSD와 UTF-8을 검사하고 DTD·외부 엔터티를 차단한다. 정상 원본은 XML 그대로 기록하며 스키마 오류는 격리 저장 후 QoS 1 확인 응답을 보낸다. 저장이 실패하면 확인하지 않아 재전달을 허용한다. 로컬 TLS 검증 범위이며 AWS 실저장과 나머지 프로파일은 후속이다.
