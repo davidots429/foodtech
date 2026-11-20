@@ -49,7 +49,7 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         assessment_sk = "ASSESSMENT#REV#000000000001"
         self.store.items[(pk, "META")] = {
             "job_id": job_id, "version": 3, "status": "COMPLETED", "safety_status": "PASSED",
-            "safety_version": 1, "evaluation_blocked": False, "menu": "TONKATSU",
+            "safety_version": 1, "evaluation_blocked": False, "menu": "TONKATSU", "provenance": "SYNTHETIC",
             "equipment_profile": equipment, "recipe_version": recipe,
         }
         self.store.items[(pk, "ASSESSMENT#CURRENT")] = {
@@ -94,6 +94,53 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         stored = await self.client.get(self._path() + "/" + result["comparison_id"])
         self.assertEqual(stored.json()["score_total_delta"], 7)
         self.assertEqual((await self.client.get(self._path() + "/" + "x" * 64)).status_code, 400)
+
+    async def test_selected_previous_comparison_is_owned_current_and_not_claimed_immediate(self):
+        baseline_pk = cooking._pk(self.subject, self.baseline_id)
+        candidate_pk = cooking._pk(self.subject, self.candidate_id)
+        self.store.items[(baseline_pk, "META")]["actual_lifted_at"] = "2026-11-14T00:00:00Z"
+        self.store.items[(candidate_pk, "META")]["actual_lifted_at"] = "2026-11-14T01:00:00Z"
+        comparison = (await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                      headers={"X-CSRF-Token": "test-csrf"})).json()
+        path = f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence"
+        response = await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        selected = response.json()["selected_comparison"]
+        self.assertEqual((selected["baseline_job_id"], selected["baseline_score_percent"]), (self.baseline_id, "60.00"))
+        self.assertFalse(selected["immediately_previous_verified"])
+        self.assertIn("COMPARABLE_PREVIOUS_JOB", response.json()["unverified_categories"])
+        self.store.items[(baseline_pk, "META")]["version"] += 1
+        self.assertEqual((await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})).status_code, 409)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})).status_code, 404)
+
+    async def test_selected_comparison_rejects_later_or_undated_baseline(self):
+        comparison = (await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                      headers={"X-CSRF-Token": "test-csrf"})).json()
+        baseline = self.store.items[(cooking._pk(self.subject, self.baseline_id), "META")]
+        candidate = self.store.items[(cooking._pk(self.subject, self.candidate_id), "META")]
+        candidate["actual_lifted_at"] = "2026-11-14T00:00:00Z"
+        path = f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence"
+        self.assertEqual((await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})).status_code, 409)
+        baseline["actual_lifted_at"] = "2026-11-14T01:00:00Z"
+        self.assertEqual((await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})).status_code, 409)
+
+    async def test_selected_comparison_rejects_baseline_change_during_read(self):
+        baseline_pk = cooking._pk(self.subject, self.baseline_id)
+        candidate_pk = cooking._pk(self.subject, self.candidate_id)
+        self.store.items[(baseline_pk, "META")]["actual_lifted_at"] = "2026-11-14T00:00:00Z"
+        self.store.items[(candidate_pk, "META")]["actual_lifted_at"] = "2026-11-14T01:00:00Z"
+        comparison = (await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                      headers={"X-CSRF-Token": "test-csrf"})).json()
+        original = self.store.current_comparison
+        def race(pk, baseline_id):
+            result = original(pk, baseline_id)
+            self.store.items[(baseline_pk, "META")]["version"] += 1
+            return result
+        path = f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence"
+        with patch.object(self.store, "current_comparison", side_effect=race):
+            response = await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})
+        self.assertEqual(response.status_code, 409)
 
     async def test_current_comparison_list_is_scoped_and_paginated(self):
         other_baseline_id = str(uuid4())

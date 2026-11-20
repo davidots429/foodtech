@@ -775,7 +775,8 @@ export function CookingWorkspace({ csrf }: Props) {
             {["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) && <CookingTimeMonitor jobId={job.job_id} />}
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
             <LocalChat key={job.job_id} csrf={csrf} jobId={job.job_id} />
-            <RecommendationEvidence key={`${job.job_id}-${job.version}`} jobId={job.job_id} csrf={csrf} />
+            <RecommendationEvidence key={`${job.job_id}-${job.version}-${comparisonFreshness === "CURRENT" ? comparison?.comparison_id ?? "" : ""}`}
+              jobId={job.job_id} csrf={csrf} comparisonId={comparisonFreshness === "CURRENT" ? comparison?.comparison_id : undefined} />
             {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuBatch key={job.job_id} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}
             {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuInitialContext
               key={`${job.job_id}-${job.tonkatsu_batch_version ?? 0}`} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}
