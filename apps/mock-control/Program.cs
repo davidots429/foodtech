@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Encodings.Web;
 using System.Globalization;
+using System.Diagnostics;
 
 const string programVersion = "1.0.0";
 var options = ParseArgs(args);
@@ -102,6 +103,9 @@ var accessToken = "";
 var tokenExpires = DateTimeOffset.MinValue;
 var disconnectOnce = options.ContainsKey("disconnect-once");
 var disconnected = false;
+var realtime = options.ContainsKey("realtime");
+if (realtime && !combi) throw new ArgumentException("Real-time replay is only supported for the combi profile.");
+var replayClock = Stopwatch.StartNew();
 var fault = options.GetValueOrDefault("fault");
 if (fault is not (null or "invalid-utf8") || (fault is not null && profileId != "mockprofile-100"))
     throw new ArgumentException("Unsupported REST fault scenario.");
@@ -132,10 +136,16 @@ app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
         return Results.Empty;
     }
     var start = cursor ?? 0;
+    // Reveal only complete five-second source windows; the cursor permits replay after disconnect.
+    var available = realtime ? Math.Min(recordLines.Length, (int)(replayClock.Elapsed.TotalSeconds / 5) * 5)
+                             : recordLines.Length;
+    if (start > available) return Results.Conflict(new { error = "cursor_not_yet_available" });
+    var end = xml ? Math.Min(start + 1, available) : available;
+    context.Response.Headers["X-Stream-Complete"] = (end == recordLines.Length ? "true" : "false");
     context.Response.Headers["X-Contract-Version"] = "1.0";
     context.Response.Headers["X-Profile-ID"] = profileId;
     context.Response.Headers["X-Provenance"] = "SYNTHETIC";
-    context.Response.Headers["X-Next-Cursor"] = (xml ? Math.Min(start + 1, recordLines.Length) : recordLines.Length).ToString();
+    context.Response.Headers["X-Next-Cursor"] = end.ToString();
     if (xml) return Results.Text(start == recordLines.Length ? "" : recordLines[start], "application/xml", Encoding.UTF8);
     if (fault == "invalid-utf8" && start == 0)
     {
@@ -144,7 +154,7 @@ app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
         var bytes = new byte[] { 0xff, 0xfe, 0x80, 0x0a }.Concat(remaining).ToArray();
         return Results.Bytes(bytes, "application/x-ndjson");
     }
-    var lines = string.Join("\n", recordLines.Skip(start));
+    var lines = string.Join("\n", recordLines.Skip(start).Take(end - start));
     return Results.Text(lines.Length == 0 ? "" : lines + "\n", "application/x-ndjson", Encoding.UTF8);
 });
 
@@ -158,7 +168,7 @@ static Dictionary<string, string> ParseArgs(string[] args)
     {
         if (!args[i].StartsWith("--", StringComparison.Ordinal)) throw new ArgumentException("Unexpected argument.");
         var name = args[i][2..];
-        result[name] = name == "disconnect-once" ? "true" : i + 1 < args.Length ? args[++i] : throw new ArgumentException($"Missing value for {name}.");
+        result[name] = name is "disconnect-once" or "realtime" ? "true" : i + 1 < args.Length ? args[++i] : throw new ArgumentException($"Missing value for {name}.");
     }
     return result;
 }

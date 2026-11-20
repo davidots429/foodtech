@@ -10,6 +10,7 @@ import httpx
 class PollResult:
     records: tuple[str | bytes, ...]
     next_cursor: int
+    complete: bool = True
 
 
 class RestMockClient:
@@ -57,6 +58,10 @@ class RestMockClient:
                         or response.headers.get("X-Profile-ID") != self.profile_id
                         or response.headers.get("X-Provenance") != "SYNTHETIC"):
                     raise ValueError("unexpected Mock contract")
+                stream_complete = response.headers.get("X-Stream-Complete", "true")
+                if stream_complete not in ("true", "false"):
+                    raise ValueError("invalid stream completion state")
+                complete = stream_complete == "true"
                 next_cursor = int(response.headers["X-Next-Cursor"])
                 if next_cursor < cursor:
                     raise ValueError("cursor moved backwards")
@@ -66,14 +71,14 @@ class RestMockClient:
                     if not response.content:
                         if next_cursor != cursor:
                             raise ValueError("Mock cursor does not match returned records")
-                        return PollResult((), next_cursor)
+                        return PollResult((), next_cursor, complete)
                     if next_cursor != cursor + 1:
                         raise ValueError("Mock cursor does not match returned records")
                     try:
                         record = response.content.decode("utf-8", errors="strict")
                     except UnicodeDecodeError:
                         record = response.content
-                    return PollResult((record,), next_cursor)
+                    return PollResult((record,), next_cursor, complete)
                 # Split on wire-level NDJSON separators before strict UTF-8 decoding.
                 # Invalid records retain their exact bytes for the ingestion quarantine.
                 parts = response.content.split(b"\n") if response.content else []
@@ -90,7 +95,7 @@ class RestMockClient:
                         records.append(part)
                 if next_cursor != cursor + len(records):
                     raise ValueError("Mock cursor does not match returned records")
-                return PollResult(tuple(records), next_cursor)
+                return PollResult(tuple(records), next_cursor, complete)
             except (httpx.TransportError, httpx.TimeoutException):
                 if attempt:
                     raise

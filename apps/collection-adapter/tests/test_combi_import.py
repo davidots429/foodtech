@@ -1,6 +1,7 @@
 import json
+import itertools
 import unittest
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
@@ -44,6 +45,24 @@ class ImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source["record_count"], 3)
         self.assertEqual(self.posts[0].headers["X-CSRF-Token"], "csrf")
         self.assertEqual(json.loads(self.posts[0].content)["expected_version"], 1)
+
+    async def test_waits_for_pending_stream_before_submitting(self):
+        mock = Mock()
+        mock.poll.side_effect = [PollResult((), 0, False), PollResult(self.records[:1], 1, False),
+                                 PollResult((), 1, False), PollResult(self.records[1:], 3, True),
+                                 PollResult((), 3, True)]
+        with patch("foodtech_collection_adapter.combi_import.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            source = await import_meal(mock, self.api, MEAL, "combi-1", "csrf")
+        self.assertEqual(source["record_count"], 3)
+        self.assertEqual(sleep.await_count, 2)
+
+    async def test_pending_stream_timeout_never_submits_partial_records(self):
+        mock = Mock()
+        mock.poll.side_effect = itertools.chain([PollResult(self.records[:1], 1, False)],
+                                                itertools.repeat(PollResult((), 1, False)))
+        with self.assertRaises(TimeoutError):
+            await import_meal(mock, self.api, MEAL, "combi-1", "csrf", timeout_seconds=0.001)
+        self.assertFalse(self.posts)
 
     async def test_foreign_or_bad_cursor_is_not_submitted(self):
         for records, cursor in ((self.records, 4), ((self.records[0], self.records[1],
