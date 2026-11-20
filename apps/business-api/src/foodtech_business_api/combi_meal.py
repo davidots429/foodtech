@@ -17,6 +17,7 @@ from foodtech_contracts.combi_stream import CombiStreamValidator
 from foodtech_contracts.combi_rice_live import observe as observe_rice_live
 from foodtech_contracts.combi_mackerel_live import observe as observe_mackerel_live
 from foodtech_contracts.combi_transition_live import observe as observe_transition_live
+from foodtech_contracts.combi_live_events import events_for
 from foodtech_contracts.combi_sampling import selection_issues
 from foodtech_contracts.combi_probe import summarize as summarize_probe
 
@@ -189,6 +190,48 @@ async def get_combi_live(meal_id: UUID, request: Request) -> dict:
             "updated_at": state["updated_at"], "provenance": "SYNTHETIC"}
 
 
+@router.get("/{meal_id}/source-live/events")
+async def get_combi_live_events(meal_id: UUID, request: Request, response: Response,
+                                cursor: int = Query(0, ge=0, le=50000)) -> dict:
+    """Read a bounded, customer-owned snapshot of recorded partial observation events."""
+    session, store = await _context(request)
+    pk = _pk(session.subject, str(meal_id))
+    meal, _ = await _store_call(store, store.read, pk)
+    if not meal:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    state = await _store_call(store, store.read_meal_live, pk)
+    response.headers["Cache-Control"] = "no-store"
+    if not state:
+        return {"events": [], "next_cursor": None, "history_from_sequence": None}
+    count = int(state["count"])
+    chunks = await _store_call(store, store.read_meal_live_chunks, pk)
+    all_events, position = [], 0
+    for chunk in chunks:
+        if position == count:
+            break
+        part = chunk.get("records")
+        if (chunk.get("sk") != f"CHUNK#{position:06d}" or chunk.get("device_id") != state["device_id"] or
+                not isinstance(part, list) or not 1 <= len(part) <= 5 or position + len(part) > count or
+                any(not isinstance(line, str) for line in part)):
+            raise HTTPException(503, "수집 이력을 검증하지 못했습니다.")
+        encoded = [line.encode("utf-8") for line in part]
+        if hashlib.sha256(b"\n".join(encoded) + b"\n").hexdigest() != chunk.get("sha256"):
+            raise HTTPException(503, "수집 이력을 검증하지 못했습니다.")
+        events = chunk.get("events", [])
+        if not isinstance(events, list) or any(not isinstance(event, dict) or
+                type(event.get("sequence")) is not int or not position < event["sequence"] <= position + len(part)
+                for event in events):
+            raise HTTPException(503, "수집 이력을 검증하지 못했습니다.")
+        all_events.extend(events)
+        position += len(part)
+    if position != count:
+        raise HTTPException(503, "수집 이력이 불완전합니다.")
+    all_events.reverse()
+    page = all_events[cursor:cursor + 25]
+    return {"events": page, "next_cursor": cursor + 25 if cursor + 25 < len(all_events) else None,
+            "history_from_sequence": int(state.get("event_history_from_sequence", count + 1))}
+
+
 @router.get("/{meal_id}/source-live/records")
 async def get_combi_live_records(meal_id: UUID, request: Request, response: Response) -> dict:
     """Return one bounded, verified snapshot for resuming a customer-owned synthetic stream."""
@@ -269,13 +312,28 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
     rice_monitor = (state or {}).get("rice_monitor")
     mackerel_monitor = (state or {}).get("mackerel_monitor")
     transition_monitor = (state or {}).get("transition_monitor")
+    previous_phase = (state or {}).get("phase")
+    previous_door = ((state or {}).get("latest") or {}).get("door_state")
+    previous_alarm = (state or {}).get("last_critical_alarm")
+    event_history_from = int((state or {}).get("event_history_from_sequence", count + 1))
+    events = []
     for observation in observations:
         if observation["phase"] == "RICE":
+            before = rice_monitor
             rice_monitor = observe_rice_live(rice_monitor, observation)
+            after = rice_monitor
         elif observation["phase"] == "MACKEREL":
+            before = mackerel_monitor
             mackerel_monitor = observe_mackerel_live(mackerel_monitor, observation)
-        elif observation["phase"] == "TRANSITION":
+            after = mackerel_monitor
+        else:
+            before = transition_monitor
             transition_monitor = observe_transition_live(transition_monitor, observation)
+            after = transition_monitor
+        events.extend(events_for(observation, previous_phase=previous_phase, previous_door=previous_door,
+                                 previous_alarm=previous_alarm, before=before, after=after))
+        previous_phase, previous_door = observation["phase"], observation["doorState"]
+        previous_alarm = observation.get("criticalAlarm")
         second = observation["phaseSecond"]
         phase = observation["phase"]
         if second % 5 == 1:
@@ -303,10 +361,12 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
                   "previous_time": validator.previous_time.isoformat(), "schema_version": validator.schema_version,
                   "latest": latest, "latest_window": latest_window, "pending_window": pending,
                   "rice_monitor": rice_monitor, "mackerel_monitor": mackerel_monitor,
-                  "transition_monitor": transition_monitor,
+                  "transition_monitor": transition_monitor, "last_critical_alarm": previous_alarm,
+                  "event_history_from_sequence": event_history_from,
                   "updated_at": now, "byte_count": int((state or {}).get("byte_count", 0)) + sum(len(line) + 1 for line in encoded)}
     chunk = {"sk": f"CHUNK#{count:06d}", "device_id": body.device_id,
-             "records": body.records, "sha256": digest}
+             "records": body.records, "sha256": digest,
+             "events": [{**event, "recorded_at": now} for event in events]}
     try:
         await _store_call(store, store.append_meal_live, pk, count, next_state, chunk)
     except Conflict as exc:

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./cookingApi";
 
 type Live = { state: "NOT_STARTED" | "COLLECTING" | "COMPLETED"; count: number; updated_at?: string;
@@ -16,13 +16,28 @@ type Live = { state: "NOT_STARTED" | "COLLECTING" | "COMPLETED"; count: number; 
     vent_status: string; stable_seconds: number; ready_observed_at_second: number | null;
     ready_conditions_current: boolean; timeout: boolean } | null };
 
+type EventPage = { history_from_sequence: number | null; next_cursor: number | null;
+  events: { sequence: number; phase: string; phase_second: number; occurred_at: string;
+    recorded_at: string; code: string; severity: string }[] };
+
 export function CombiLive({ mealId }: { mealId: string }) {
   const [live, setLive] = useState<Live | null>(null);
   const [error, setError] = useState(false);
+  const [events, setEvents] = useState<EventPage | null>(null);
+  const [eventError, setEventError] = useState(false);
+  const activeMeal = useRef(mealId);
+  activeMeal.current = mealId;
+  async function loadEvents() {
+    const requestedMeal = mealId;
+    try {
+      const result = await api<EventPage>(`/api/customer/combi-meals/${encodeURIComponent(mealId)}/source-live/events`);
+      if (activeMeal.current === requestedMeal) { setEvents(result); setEventError(false); }
+    } catch { if (activeMeal.current === requestedMeal) setEventError(true); }
+  }
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
-    setLive(null); setError(false);
+    setLive(null); setError(false); setEvents(null); setEventError(false);
     async function poll() {
       try {
         const value = await api<Live>(`/api/customer/combi-meals/${encodeURIComponent(mealId)}/source-live`);
@@ -73,6 +88,19 @@ export function CombiLive({ mealId }: { mealId: string }) {
       {live.mackerel_monitor.candidate_door && <p>문 상태 확인 중</p>}
       {live.mackerel_monitor.failure_codes.length > 0 && <p role="alert">공정 실패 조건 감지: {live.mackerel_monitor.failure_codes.join(", ")}</p>}
       {live.mackerel_monitor.warning_codes.length > 0 && <p>경고 조건 감지: {live.mackerel_monitor.warning_codes.join(", ")}</p>}
+    </div>}
+    {live && live.state !== "NOT_STARTED" && <div>
+      <button type="button" onClick={() => void loadEvents()}>최근 수집 이력 조회</button>
+      {eventError && <p role="alert">수집 이력을 불러오지 못했습니다.</p>}
+      {events && <div>
+        {events.history_from_sequence !== null && events.history_from_sequence > 1 &&
+          <p>이전 표본의 이력은 기록되지 않았습니다. 원표본 {events.history_from_sequence}번부터 기록합니다.</p>}
+        {events.events.length === 0 ? <p>기록된 수집 이력이 없습니다.</p> :
+          <ul>{events.events.map((event, index) => <li key={`${event.sequence}-${event.code}-${index}`}>
+            {event.phase} {event.phase_second}초 · {event.severity} · {event.code} · 논리 시각 {event.occurred_at}
+          </li>)}</ul>}
+        {events.next_cursor !== null && <p>최근 25건을 표시합니다.</p>}
+      </div>}
     </div>}
     <p>수집 중 감지는 합성 관찰값에 대한 부분 결과이며 최종 공정·안전 판정이 아닙니다.</p>
   </div>;
