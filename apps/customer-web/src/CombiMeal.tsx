@@ -6,7 +6,8 @@ type Meal = {
   rice: { job_id: string; water_ratio_status: string; effective_water_ratio: string;
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number };
-  transition: { transition_id: string; mackerel_load_allowed: boolean };
+  transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
+    humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null };
   mackerel: { job_id: string; safety_status: string };
   events?: { event: string; observed_at: string }[];
 };
@@ -18,7 +19,8 @@ const mealSteps: Record<string, { event: string; label: string }> = {
   RICE_UNLOADED: { event: "MODE_TRANSITION_STARTED", label: "건열 전환 시작 기록" },
 };
 const mealLabels: Record<string, string> = { PREPARING_RICE: "밥 준비", RICE_COOKING: "밥 조리 중",
-  RICE_AWAITING_UNLOAD: "밥 인양 대기", RICE_UNLOADED: "밥 인양 완료", MODE_TRANSITION: "건열 전환 중" };
+  RICE_AWAITING_UNLOAD: "밥 인양 대기", RICE_UNLOADED: "밥 인양 완료", MODE_TRANSITION: "건열 전환 중",
+  MACKEREL_READY: "고등어 투입 준비", TRANSITION_TIMEOUT: "전환 시간 초과" };
 
 export function CombiMeal({ csrf }: { csrf: string }) {
   const [size, setSize] = useState("MEDIUM_FIXED_RACK_10");
@@ -71,6 +73,21 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "단계를 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
+  async function simulateTransition(humiditySupported: boolean) {
+    if (!meal || requestActive.current) return;
+    requestActive.current = true; setBusy(true); setError("");
+    const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
+    const count = humiditySupported ? 30 : 180;
+    const samples = Array.from({ length: count }, (_, index) => ({ second: index + 1,
+      chamber_celsius: "220", climate_setpoint_percent: "10", door_closed: true,
+      critical_alarm: false, humidity_percent: humiditySupported ? "10" : null, vent_event: null }));
+    try {
+      await api(path + "/transition-evidence", csrf, { expected_version: meal.meal.version,
+        humidity_supported: humiditySupported, vent_supported: false, samples });
+      setMeal(await api<Meal>(path));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "전환 표본을 기록하지 못했습니다."); }
+    finally { requestActive.current = false; setBusy(false); }
+  }
   return <section><h2>밥·고등어 합성 식사 배치</h2>
     <p>밥을 인양한 뒤 오븐을 건열로 전환하고 고등어를 조리하는 시연입니다. 장비를 제어하지 않습니다.</p>
     <div className="field-grid">
@@ -99,7 +116,12 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       {mealSteps[meal.meal.status] && <div className="field-row"><label>합성 관찰시각
         <input type="datetime-local" step="1" value={observedAt} onChange={event => setObservedAt(event.target.value)} /></label>
         <button type="button" disabled={busy} onClick={recordStep}>{mealSteps[meal.meal.status].label}</button></div>}
-      <p>고등어 투입은 전환 검증 전까지 허용되지 않습니다. 시간 판정은 전체 공정·안전 판정과 별도입니다.</p>
+      {meal.meal.status === "MODE_TRANSITION" && <div><p>합성 표본으로 전환 조건을 시험합니다. 전환 시작 시각 이후 30초 또는 180초가 경과해야 합니다.</p>
+        <button type="button" disabled={busy} onClick={() => simulateTransition(true)}>습도 지원 합성 표본</button>{" "}
+        <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></div>}
+      <p>고등어 투입: {meal.transition.mackerel_load_allowed ? "허용" : "차단"}
+        {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>
+      <p>시간 판정은 전체 공정·안전 판정과 별도입니다. 화면의 전환 자료는 합성 표본입니다.</p>
       {meal.events && <ul>{meal.events.map((event, index) => <li key={index}>{event.event} · {new Date(event.observed_at).toLocaleString()}</li>)}</ul>}
     </div>}
   </section>;
