@@ -72,8 +72,21 @@ NORMALIZED_UA_JSON_C["properties"]["deviceId"] = {"const": "mockprofile-200-c-00
 NORMALIZED_UA_JSON_C_VALIDATOR = jsonschema.Draft202012Validator(NORMALIZED_UA_JSON_C, format_checker=jsonschema.FormatChecker())
 
 
+UA_BINARY_B_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-203-b-v1.schema.json").read_text())
+UA_BINARY_B_VALIDATOR = jsonschema.Draft202012Validator(UA_BINARY_B_SCHEMA, format_checker=jsonschema.FormatChecker())
+UA_BINARY_C_SCHEMA = json.loads(files("foodtech_contracts").joinpath("mockprofile-203-c-v1.schema.json").read_text())
+UA_BINARY_C_VALIDATOR = jsonschema.Draft202012Validator(UA_BINARY_C_SCHEMA, format_checker=jsonschema.FormatChecker())
+NORMALIZED_UA_BINARY_B = json.loads(json.dumps(NORMALIZED_B_SCHEMA))
+NORMALIZED_UA_BINARY_B["properties"]["deviceId"] = {"const": "mockprofile-203-b-001"}
+NORMALIZED_UA_BINARY_B_VALIDATOR = jsonschema.Draft202012Validator(NORMALIZED_UA_BINARY_B, format_checker=jsonschema.FormatChecker())
+NORMALIZED_UA_BINARY_C = json.loads(json.dumps(NORMALIZED_C_SCHEMA))
+NORMALIZED_UA_BINARY_C["properties"]["deviceId"] = {"const": "mockprofile-203-c-001"}
+NORMALIZED_UA_BINARY_C_VALIDATOR = jsonschema.Draft202012Validator(NORMALIZED_UA_BINARY_C, format_checker=jsonschema.FormatChecker())
+
+
 def _validate(record: dict) -> None:
-    validator = {"mockprofile-200-b-001": NORMALIZED_UA_JSON_B_VALIDATOR,
+    validator = {"mockprofile-203-b-001": NORMALIZED_UA_BINARY_B_VALIDATOR,
+                 "mockprofile-203-c-001": NORMALIZED_UA_BINARY_C_VALIDATOR, "mockprofile-200-b-001": NORMALIZED_UA_JSON_B_VALIDATOR,
                  "mockprofile-200-c-001": NORMALIZED_UA_JSON_C_VALIDATOR, "mockprofile-300-b-001": NORMALIZED_MQTT_B_VALIDATOR,
                  "mockprofile-300-c-001": NORMALIZED_MQTT_C_VALIDATOR, "mockprofile-100-c-001": NORMALIZED_C_VALIDATOR, "mockprofile-100-b-001": NORMALIZED_B_VALIDATOR, "mockprofile-300-a-001": MQTT_VALIDATOR, "mockprofile-203-a-001": UA_VALIDATOR, "mockprofile-200-a-001": UA_JSON_VALIDATOR}.get(
         record.get("deviceId"), VALIDATOR)
@@ -94,12 +107,13 @@ def decode_record(raw: str | bytes) -> dict:
     record = json.loads(raw, parse_float=Decimal, object_pairs_hook=_unique_pairs)
     if not isinstance(record, dict):
         raise ValueError("record must be a JSON object")
-    if record.get("deviceId") in {"mockprofile-100-c-001", "mockprofile-200-c-001", "mockprofile-300-c-001"} and record.get("DeviceId") != record.get("deviceId"):
+    if record.get("deviceId") in {"mockprofile-100-c-001", "mockprofile-200-c-001", "mockprofile-203-c-001", "mockprofile-300-c-001"} and record.get("DeviceId") != record.get("deviceId"):
         raise ValueError("vendor-c input must use its source schema")
-    if record.get("deviceId") in {"mockprofile-100-b-001", "mockprofile-200-b-001", "mockprofile-300-b-001"} and record.get("device_id") != record.get("deviceId"):
+    if record.get("deviceId") in {"mockprofile-100-b-001", "mockprofile-200-b-001", "mockprofile-203-b-001", "mockprofile-300-b-001"} and record.get("device_id") != record.get("deviceId"):
         raise ValueError("vendor-b input must use its source schema")
-    if record.get("device_id") in {"mockprofile-100-b-001", "mockprofile-200-b-001", "mockprofile-300-b-001"}:
-        ({"mockprofile-300-b-001": MQTT_B_VALIDATOR, "mockprofile-200-b-001": UA_JSON_B_VALIDATOR}
+    if record.get("device_id") in {"mockprofile-100-b-001", "mockprofile-200-b-001", "mockprofile-203-b-001", "mockprofile-300-b-001"}:
+        ({"mockprofile-300-b-001": MQTT_B_VALIDATOR, "mockprofile-200-b-001": UA_JSON_B_VALIDATOR,
+          "mockprofile-203-b-001": UA_BINARY_B_VALIDATOR}
          .get(record["device_id"], VENDOR_B_VALIDATOR)).validate(record)
         temperature_f = Decimal(record["temperature_f"])
         tenths = (temperature_f - 32) * 50
@@ -115,8 +129,9 @@ def decode_record(raw: str | bytes) -> dict:
                   "measurements": {"temperatureCelsius": temperature_c, "outputPercent": record["output_percent"],
                                    "elapsedSeconds": Decimal(record["elapsed_ms"]) / 1000},
                   "extensions": {key: value for key, value in record.items() if key.startswith("ext_")}}
-    elif record.get("DeviceId") in {"mockprofile-100-c-001", "mockprofile-200-c-001", "mockprofile-300-c-001"}:
-        ({"mockprofile-300-c-001": MQTT_C_VALIDATOR, "mockprofile-200-c-001": UA_JSON_C_VALIDATOR}
+    elif record.get("DeviceId") in {"mockprofile-100-c-001", "mockprofile-200-c-001", "mockprofile-203-c-001", "mockprofile-300-c-001"}:
+        ({"mockprofile-300-c-001": MQTT_C_VALIDATOR, "mockprofile-200-c-001": UA_JSON_C_VALIDATOR,
+          "mockprofile-203-c-001": UA_BINARY_C_VALIDATOR}
          .get(record["DeviceId"], VENDOR_C_VALIDATOR)).validate(record)
         reading = record["Readings"]
         record = {"schemaVersion": record["SchVer"], "sourceId": record["SrcId"],

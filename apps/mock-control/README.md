@@ -81,3 +81,5 @@ REST 기본 프로파일의 `serve`에 `--fault invalid-utf8`을 지정하면 �
 MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprofile-300-c-001.json`도 지원한다. 인스턴스별 Topic에만 구독을 허용하며 각 vendor의 원천 표현을 그대로 전송한다. 실제 장비 호환 사양은 아니다.
 
 `serve-ua-json`은 `fixtures/mockprofile-200-b-001.json`과 `fixtures/mockprofile-200-c-001.json`도 지원한다. 각 합성 원천의 이력을 읽기 전용으로 제공하며 표준 OPC UA JSON 서비스라는 의미는 아니다.
+
+`serve-opcua`는 `fixtures/mockprofile-203-b-001.json`과 `fixtures/mockprofile-203-c-001.json`도 지원한다. vendor별 합성 namespace와 읽기 전용 Node를 제공하며 온도는 섭씨로 표현하고 출력 비율·속도 단계·RPM Node는 서로 구분한다. 이 Node는 프로젝트 합성 정보모델이다. 실수 Node는 IEEE 754 값이며 정확한 원천 값과 변환 검증은 원본 이력을 기준으로 한다.
