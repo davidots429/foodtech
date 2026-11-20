@@ -3,8 +3,10 @@
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,6 +18,8 @@ from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app
+from foodtech_collection_adapter.combi_import import import_meal
+from foodtech_collection_adapter.rest import RestMockClient
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "fixtures/combi-normal-medium-v1.json"
@@ -24,6 +28,70 @@ DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_https_mock_imports_to_authenticated_meal(self):
+        async def session(_request, _surface):
+            return Session("customer", "test-customer", None, "csrf", 9999999999, 0)
+
+        store = MemoryCookingStore()
+        with patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false"}), \
+             patch.object(cooking, "_session", side_effect=session), \
+             patch.object(cooking, "get_cooking_store", return_value=store):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api:
+                created = await api.post("/api/customer/combi-meals", headers={"X-CSRF-Token": "csrf"}, json={
+                    "equipment_size": "MEDIUM_FIXED_RACK_10", "rack_count": 1, "pan_count": 10,
+                    "dry_rice_kg": "20", "drained_rice_kg": "24", "added_water_kg": "20",
+                    "pan_tare_kg": "10", "rack_tare_kg": "0"})
+                self.assertEqual(created.status_code, 201, created.text)
+                meal = created.json()["meal"]
+                fixture = json.loads(FIXTURE.read_text())
+                fixture["mealBatchId"] = meal["meal_batch_id"]
+                for phase, key in zip(fixture["phases"],
+                                      ("rice_cooking_job_id", "mode_transition_id", "mackerel_cooking_job_id")):
+                    phase["cookingJobId"] = meal[key]
+                with tempfile.TemporaryDirectory() as directory:
+                    temp = Path(directory)
+                    source, key, cert, pfx = (temp / name for name in ("fixture.json", "key.pem", "cert.pem", "cert.pfx"))
+                    source.write_text(json.dumps(fixture))
+                    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
+                                    "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
+                                    "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key),
+                                    "-in", str(cert), "-password", "pass:test-password"],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    with socket.socket() as probe:
+                        probe.bind(("127.0.0.1", 0))
+                        port = probe.getsockname()[1]
+                    env = {**os.environ, "FOODTECH_MOCK_CLIENT_ID": "test-client",
+                           "FOODTECH_MOCK_CLIENT_SECRET": "test-secret", "FOODTECH_MOCK_CERT_PASSWORD": "test-password"}
+                    server = subprocess.Popen(["dotnet", str(DLL), "serve", "--fixture", str(source),
+                                               "--cert", str(pfx), "--port", str(port)], env=env,
+                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    try:
+                        base = f"https://localhost:{port}"
+                        for _ in range(50):
+                            if server.poll() is not None:
+                                self.fail("Mock exited before becoming healthy")
+                            try:
+                                if httpx.get(base + "/health", verify=str(cert), timeout=0.3).status_code == 200:
+                                    break
+                            except httpx.TransportError:
+                                time.sleep(0.1)
+                        else:
+                            self.fail("Mock health did not become available")
+                        mock = RestMockClient(base, "test-client", "test-secret", str(cert), profile_id="mockprofile-120")
+                        try:
+                            result = await import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"], "csrf")
+                        finally:
+                            mock.close()
+                        self.assertEqual(result["phase_counts"], {"RICE": 1800, "TRANSITION": 180, "MACKEREL": 720})
+                        fetched = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}")
+                        self.assertEqual(fetched.json()["meal"]["source"]["raw_sha256"], result["raw_sha256"])
+                        self.assertEqual(fetched.json()["mackerel"]["safety_status"], "NOT_MEASURED")
+                    finally:
+                        server.terminate()
+                        server.wait(timeout=5)
+
     async def test_csharp_source_attaches_only_to_matching_meal(self):
         async def session(_request, _surface):
             return Session("customer", "test-customer", None, "csrf", 9999999999, 0)
