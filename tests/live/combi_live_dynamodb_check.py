@@ -31,15 +31,19 @@ def records_for(meal):
               ("MACKEREL", meal["mackerel_cooking_job_id"]))
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     records = []
-    for index, (phase, job) in enumerate(phases, 1):
-        at = (start + timedelta(seconds=index - 1)).isoformat()
-        records.append(json.dumps({"eventId": f"{meal_id}-{index:06d}", "mealBatchId": meal_id,
-            "cookingJobId": job, "deviceId": "synthetic-combi-validation", "mockInstanceId": "mockprofile-120-a-001",
-            "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": index,
-            "schemaVersion": "synthetic-combi-v1", "programVersion": "v1", "provenance": "SYNTHETIC",
-            "dataQuality": "VALID", "phase": phase, "phaseSecond": 1, "chamberCelsius": 100,
-            "climateSetpointPercent": 100, "measuredHumidityPercent": 98,
-            "humidityValueSource": "MEASURED", "fanLevel": 4, "doorState": "CLOSED"}, separators=(",", ":")))
+    for phase, job in phases:
+        count = 60 if phase == "RICE" else 1
+        for phase_second in range(1, count + 1):
+            index = len(records) + 1
+            at = (start + timedelta(seconds=index - 1)).isoformat()
+            records.append(json.dumps({"eventId": f"{meal_id}-{index:06d}", "mealBatchId": meal_id,
+                "cookingJobId": job, "deviceId": "synthetic-combi-validation", "mockInstanceId": "mockprofile-120-a-001",
+                "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": index,
+                "schemaVersion": "synthetic-combi-v1", "programVersion": "v1", "provenance": "SYNTHETIC",
+                "dataQuality": "VALID", "phase": phase, "phaseSecond": phase_second,
+                "chamberCelsius": 94 if phase == "RICE" else 220,
+                "climateSetpointPercent": 100, "measuredHumidityPercent": 98,
+                "humidityValueSource": "MEASURED", "fanLevel": 4, "doorState": "CLOSED"}, separators=(",", ":")))
     return records
 
 
@@ -69,7 +73,7 @@ async def run_scenario(store, subject, created_partitions):
                 raise AssertionError("Unexpected synthetic meal ID")
             path = f"/api/customer/combi-meals/{meal_id}"
             records = records_for(meal)
-            variant = json.loads(records[0]); variant["chamberCelsius"] = 101
+            variant = json.loads(records[0]); variant["chamberCelsius"] = 93
             variant = json.dumps(variant, separators=(",", ":"))
             def batch(record):
                 return {"device_id": "synthetic-combi-validation", "expected_cursor": 0, "records": [record]}
@@ -88,9 +92,17 @@ async def run_scenario(store, subject, created_partitions):
             current_subject = subject
             live = await client.get(path + "/source-live")
             assert live.json()["count"] == 1 and live.json()["state"] == "COLLECTING"
-            rest = await client.post(path + "/source-live", headers=headers, json={
-                "device_id": "synthetic-combi-validation", "expected_cursor": 1, "records": records[1:]})
-            assert rest.status_code == 200 and rest.json()["next_cursor"] == 3, rest.text
+            monitor = live.json()["rice_monitor"]
+            assert monitor["last_second"] == 1 and monitor["complete_from_start"]
+            assert monitor["failure_codes"] == [] and monitor["low_total"] == 1
+            for cursor in range(1, len(records), 5):
+                part = records[cursor:cursor + 5]
+                rest = await client.post(path + "/source-live", headers=headers, json={
+                    "device_id": "synthetic-combi-validation", "expected_cursor": cursor, "records": part})
+                assert rest.status_code == 200 and rest.json()["next_cursor"] == cursor + len(part), rest.text
+            monitor = (await client.get(path + "/source-live")).json()["rice_monitor"]
+            assert monitor["last_second"] == 60 and monitor["low_total"] == 60
+            assert "LOW_TEMPERATURE_PROCESS_FAILURE" in monitor["failure_codes"]
             completion = await client.post(path + "/source-observations", headers=headers, json={
                 "expected_version": 1, "device_id": "synthetic-combi-validation", "records": records})
             assert completion.status_code == 201, completion.text
@@ -98,7 +110,8 @@ async def run_scenario(store, subject, created_partitions):
             saved = await client.get(path + "/source-observations")
             assert saved.status_code == 200 and saved.json()["records"] == records
             return {"competing_appends": statuses, "idempotent_replay": True,
-                    "customer_isolation": isolated.status_code, "final_record_count": 3}
+                    "customer_isolation": isolated.status_code, "rice_monitor_second": monitor["last_second"],
+                    "low_temperature_failure_detected": True, "final_record_count": len(records)}
 
 
 def remove_and_verify(table, partitions):
