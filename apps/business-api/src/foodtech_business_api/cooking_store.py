@@ -36,6 +36,13 @@ def _only_result_already_exists(exc: Exception, operation_count: int) -> bool:
             reasons[-1].get("Code") == "ConditionalCheckFailed")
 
 
+def _is_transaction_contention(exc: Exception) -> bool:
+    reasons = exc.response.get("CancellationReasons", [])
+    codes = {reason.get("Code") for reason in reasons}
+    expected = {"ConditionalCheckFailed", "TransactionConflict"}
+    return bool(codes & expected) and codes <= expected | {None, "None"}
+
+
 def _api_numbers(value):
     """Keep DynamoDB numeric values consistent with the local API contract."""
     if isinstance(value, Decimal):
@@ -491,8 +498,7 @@ class DynamoCookingStore:
         try:
             self.client.transact_write_items(TransactItems=operations)
         except self.client.exceptions.TransactionCanceledException as exc:
-            if any(reason.get("Code") == "ConditionalCheckFailed"
-                   for reason in exc.response.get("CancellationReasons", [])):
+            if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
@@ -543,7 +549,7 @@ class DynamoCookingStore:
         try:
             self.client.transact_write_items(TransactItems=operations)
         except self.client.exceptions.TransactionCanceledException as exc:
-            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in exc.response.get("CancellationReasons", [])):
+            if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
