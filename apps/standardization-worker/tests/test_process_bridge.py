@@ -49,6 +49,50 @@ class FakeClient:
 
 
 class ProcessBridgeTests(unittest.TestCase):
+    def test_gap_remains_a_warning_after_subsequent_normal_samples(self):
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001", "batch_id": "gap"}
+        stream_pk = stream_binding_key(**binding)
+        job_pk = "SCOPE#USER#customer-1#JOB#gap"
+        table = FakeTable({
+            (stream_pk, "BINDING"): {"job_pk": job_pk},
+            (job_pk, "META"): {"pk": job_pk, "sk": "META", "source_binding": binding,
+                "status": "RUNNING", "version": 1, "job_state_version": 1,
+                "process_thickness_status": "IN_RANGE", "process_time_status": "NORMAL",
+                "process_assessment_status": "INSUFFICIENT_DATA"},
+        })
+        bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
+        for index, seconds in enumerate((0, 10, 15), 1):
+            assessment = {"pk": f"EVENT#{index}", "ingestion_event_id": str(index),
+                "dedup_status": "UNIQUE", "quality_status": "VALID", "finding_codes": [],
+                "normalized": {**binding, "device_status": "RUNNING",
+                    "event_time": f"2026-11-02T00:00:{seconds:02d}Z",
+                    "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}}
+            bridge.apply(assessment)
+        meta = table.items[(job_pk, "META")]
+        self.assertTrue(meta["process_assessment"]["data_gap"])
+        self.assertEqual(meta["process_assessment_status"], "WARNING")
+
+    def test_legacy_gap_history_remains_unverified(self):
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001", "batch_id": "legacy"}
+        stream_pk = stream_binding_key(**binding)
+        job_pk = "SCOPE#USER#customer-1#JOB#legacy"
+        table = FakeTable({(stream_pk, "BINDING"): {"job_pk": job_pk},
+            (job_pk, "META"): {"pk": job_pk, "sk": "META", "source_binding": binding,
+                "status": "RUNNING", "version": 1, "process_thickness_status": "IN_RANGE",
+                "process_time_status": "NORMAL", "process_assessment_status": "NORMAL",
+                "process_assessment": {"rule_version": "tonkatsu-temperature-v1", "status": "NORMAL",
+                    "data_gap": False, "last_event_time": "2026-11-02T00:00:00Z"}}})
+        bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
+        bridge.apply({"pk": "EVENT#next", "ingestion_event_id": "next", "dedup_status": "UNIQUE",
+            "quality_status": "VALID", "finding_codes": [], "normalized": {**binding,
+                "device_status": "RUNNING", "event_time": "2026-11-02T00:00:05Z",
+                "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}})
+        meta = table.items[(job_pk, "META")]
+        self.assertFalse(meta["process_assessment"]["gap_history_verified"])
+        self.assertEqual(meta["process_assessment_status"], "WARNING")
+
     def test_standardized_samples_fail_only_bound_running_job_and_replay_once(self):
         binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
                    "batch_id": "batch-a-process-high-001"}

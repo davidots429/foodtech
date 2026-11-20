@@ -72,7 +72,8 @@ class DynamoProcessBridge:
                 return "REPLAYED"
             overall_status = process_status(
                 state["temperature_status"], old.get("process_thickness_status", "NOT_MEASURED"),
-                old.get("process_time_status", "NOT_MEASURED"), data_gap=state["data_gap"],
+                old.get("process_time_status", "NOT_MEASURED"),
+                data_gap=state["data_gap"] or not state["gap_history_verified"],
             )
             failed = overall_status == "FAILED"
             new = {**old, "version": int(old["version"]) + 1,
