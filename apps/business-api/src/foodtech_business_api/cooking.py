@@ -627,10 +627,11 @@ async def get_job(job_id: str, request: Request,
 
 
 @router.get("/{job_id}/recommendation-evidence")
-async def recommendation_evidence(job_id: str, request: Request, response: Response) -> dict:
+async def recommendation_evidence(job_id: str, request: Request, response: Response,
+                                  comparison_id: str | None = None) -> dict:
     from .recommendation_evidence import read_evidence
     response.headers["Cache-Control"] = "no-store"
-    return await read_evidence(request, job_id)
+    return await read_evidence(request, job_id, comparison_id)
 
 
 @router.post("/{job_id}/process-restatements", status_code=202)

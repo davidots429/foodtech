@@ -16,6 +16,8 @@ type Evidence = {
   completeness_reasons: string[];
   collection_snapshot_matches_receipt: boolean;
   source_revision_status: "NOT_TRACKED" | "NOT_CONFIGURED" | "INCONSISTENT" | "MATCHED_AT_READ" | "CHANGED";
+  selected_comparison: { baseline_job_id: string; baseline_recipe_version: string; baseline_score_percent: string;
+    candidate_score_percent: string; immediately_previous_verified: boolean } | null;
 };
 
 const completenessLabels: Record<string, string> = {
@@ -48,7 +50,7 @@ type RecipeRequest = { execution_id: string; state: string; reason: string };
 type LocalNotice = { quote_id: string; notice_version: string; model_id: string; quality_notice: string;
   transmission_location: "LOCAL"; estimated_cost_usd: string; expires_at: string };
 
-export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: string }) {
+export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: string; csrf: string; comparisonId?: string }) {
   const [value, setValue] = useState<Evidence | null>(null);
   const [requested, setRequested] = useState<RecipeRequest | null>(null);
   const [notice, setNotice] = useState<LocalNotice | null>(null);
@@ -62,7 +64,8 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
     if (busy) return;
     setBusy(true); setError(""); setValue(null); setRequested(null); setNotice(null); setConfirmed(false); setAcknowledged(false);
     try {
-      const next = await api<Evidence>(jobPath(jobId) + "/recommendation-evidence");
+      const next = await api<Evidence>(jobPath(jobId) + "/recommendation-evidence" +
+        (comparisonId ? "?comparison_id=" + encodeURIComponent(comparisonId) : ""));
       if (!value || value.job_version !== next.job_version) { restatementId.current = null; setRestatementStatus(""); }
       setValue(next);
     }
@@ -120,10 +123,14 @@ export function RecommendationEvidence({ jobId, csrf }: { jobId: string; csrf: s
   return <section className="binding-box" aria-labelledby="recommendation-evidence-title">
     <h4 id="recommendation-evidence-title">AI 권고에 사용할 조리 기록 확인</h4>
     <p className="small">기록된 정보와 필수 근거의 일부를 확인합니다. 전체 데이터 완전성과 AI 권고는 아직 판정하지 않습니다.</p>
+    <p className="small">아래에서 비교 기록을 선택하고 최신성을 확인하면 다음 근거 조회에 포함됩니다.</p>
     <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "조회 중" : "조리 근거 조회"}</button>
     {error && <p role="alert">{error}</p>}
     {value && <div aria-live="polite">
       <p>조회한 작업 v{value.job_version} · 레시피 {value.recorded.recipe_version ?? "미기록"}</p>
+      {value.selected_comparison && <div><p>선택한 이전 비교 작업: {value.selected_comparison.baseline_job_id} ·
+        레시피 {value.selected_comparison.baseline_recipe_version} · 평가 {value.selected_comparison.baseline_score_percent}점</p>
+        <p className="small">선택한 비교는 현재 작업보다 이전입니다. 비교 가능한 작업 중 가장 직전인지는 확인하지 않았습니다.</p></div>}
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}
         {" "}· 품질평가 {value.recorded.quality?.score_percent == null ? "현재 유효 평가 없음" : `${value.recorded.quality.score_percent}점`}</p>
       {value.process_stale && <p className="warning">공정 재계산 이후 작업이 변경되어 다시 확인해야 합니다.</p>}

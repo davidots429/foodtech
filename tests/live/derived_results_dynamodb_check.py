@@ -142,6 +142,10 @@ async def verify() -> None:
                 comparison_record = comparison_path + "/" + comparison["comparison_id"]
                 comparison_current = (comparison_path + f"/from/{baseline['job_id']}/current")
                 assert (await get(client, comparison_record + "/status"))["status"] == "CURRENT"
+                evidence_path = candidate_path + "/recommendation-evidence?comparison_id=" + comparison["comparison_id"]
+                selected = (await get(client, evidence_path))["selected_comparison"]
+                assert selected["baseline_job_id"] == baseline["job_id"]
+                assert selected["immediately_previous_verified"] is False
                 assert (await get(client, comparison_current))["comparison_id"] == comparison["comparison_id"]
                 comparison_list = await get(client, comparison_path + "?limit=1")
                 assert comparison_list["items"] == [{"baseline_job_id": baseline["job_id"],
@@ -258,6 +262,7 @@ async def verify() -> None:
                 })
                 assert revised["version"] == 2
                 assert (await get(client, comparison_record + "/status"))["status"] == "STALE"
+                assert (await client.get(evidence_path)).status_code == 409
                 assert (await get(client, aggregate_record + "/status"))["status"] == "STALE"
                 auto_aggregate = await get(client, aggregate_current)
                 assert auto_aggregate["result_id"] != restated_aggregate["result_id"]

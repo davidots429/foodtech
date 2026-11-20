@@ -4,9 +4,11 @@ The result describes recorded facts, not evidence completeness or authorization
 to call a model. Free-text notes, ownership IDs and raw probe values stay out.
 """
 import os
+from datetime import datetime
+from uuid import UUID
 
 from foodtech_contracts import stream_binding_key
-from .cooking import _read, _store_call
+from .cooking import _pk, _read, _store_call
 from .recommendation_completeness import preliminary
 from .source_revision import read_source_revision
 
@@ -129,14 +131,92 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
             "completeness_rule_version": completeness["rule_version"], "recommendation_execution_available": False}
 
 
-async def read_evidence(request, job_id: str) -> dict:
+def _comparison_usable(job: dict | None, pointer: dict | None, record: dict, role: str) -> bool:
+    return bool(job and pointer and job.get("status") == "COMPLETED" and job.get("safety_status") == "PASSED" and
+                not job.get("evaluation_blocked", True) and pointer.get("usable") is True and
+                type(job.get("version")) is int and job["version"] > 0 and
+                type(job.get("safety_version")) is int and job["safety_version"] > 0 and
+                type(pointer.get("version")) is int and pointer["version"] > 0 and
+                pointer.get("safety_version") == job.get("safety_version") == record.get(f"{role}_safety_version") and
+                pointer.get("version") == record.get(f"{role}_assessment_version") and
+                job.get("version") == record.get(f"{role}_job_version"))
+
+
+def _instant(value):
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.utcoffset() is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _comparison_assessment(job: dict, pointer: dict, assessment: dict | None, record: dict, role: str) -> bool:
+    return bool(assessment and assessment.get("status") == "COMPLETED" and
+                assessment.get("sk") == pointer.get("assessment_sk") and
+                assessment.get("version") == pointer.get("version") and
+                assessment.get("safety_version") == job.get("safety_version") and
+                assessment.get("menu") == job.get("menu") and
+                assessment.get("equipment_profile") == job.get("equipment_profile") and
+                assessment.get("scale_version") == record.get("scale_version") and
+                type(assessment.get("quality_passed")) is bool and
+                assessment.get("quality_passed") == pointer.get("quality_passed") == record.get(f"{role}_quality_passed") and
+                assessment.get("score_percent") is not None and
+                assessment.get("score_percent") == pointer.get("score_percent") == record.get(f"{role}_score_percent"))
+
+
+async def read_evidence(request, job_id: str, comparison_id: str | None = None) -> dict:
     from fastapi import HTTPException
-    _, store, pk, job, pointer = await _read(request, job_id)
+    session, store, pk, job, pointer = await _read(request, job_id)
     first_process_pointer = await _store_call(store, store.process_pointer, pk)
     derived = await _store_call(store, store.latest_process_result, pk)
     assessment = None
     if pointer and type(pointer.get("version")) is int and pointer["version"] > 0:
         assessment = await _store_call(store, store.assessment, pk, pointer["version"])
+    comparison_result = None
+    comparison_check = None
+    if comparison_id is not None:
+        if len(comparison_id) != 64 or any(char not in "0123456789abcdef" for char in comparison_id):
+            raise HTTPException(400, "비교 기록 ID가 올바르지 않습니다.")
+        selected = await _store_call(store, store.comparison, pk, comparison_id)
+        if not selected or selected.get("comparison_id") != comparison_id or selected.get("candidate_job_id") != job_id:
+            raise HTTPException(404, "비교 기록을 찾을 수 없습니다.")
+        try:
+            baseline_id = str(UUID(selected["baseline_job_id"]))
+            if baseline_id != selected["baseline_job_id"] or baseline_id == job_id:
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(409, "비교 기록의 연결이 올바르지 않습니다.") from None
+        baseline_pk = _pk(session.subject, baseline_id)
+        baseline, baseline_pointer = await _store_call(store, store.read, baseline_pk)
+        selected_pointer = await _store_call(store, store.current_comparison, pk, baseline_id)
+        baseline_assessment = (await _store_call(store, store.assessment, baseline_pk, baseline_pointer["version"])
+                               if baseline_pointer and type(baseline_pointer.get("version")) is int else None)
+        if not selected_pointer or selected_pointer.get("comparison_id") != comparison_id or \
+                not _comparison_usable(job, pointer, selected, "candidate") or \
+                not _comparison_usable(baseline, baseline_pointer, selected, "baseline") or \
+                any(not isinstance(selected.get(key), str) or not selected[key] for key in
+                    ("menu", "equipment_profile", "scale_version")) or \
+                selected.get("provenance") != "SYNTHETIC" or job.get("provenance") != "SYNTHETIC" or \
+                not baseline or baseline.get("provenance") != "SYNTHETIC" or \
+                selected.get("menu") != job.get("menu") or baseline.get("menu") != job.get("menu") or \
+                selected.get("equipment_profile") != job.get("equipment_profile") or \
+                baseline.get("equipment_profile") != job.get("equipment_profile") or \
+                not _comparison_assessment(job, pointer, assessment, selected, "candidate") or \
+                not _comparison_assessment(baseline, baseline_pointer, baseline_assessment, selected, "baseline"):
+            raise HTTPException(409, "선택한 비교의 평가 또는 조리작업이 변경되었습니다.")
+        baseline_end, candidate_end = _instant(baseline.get("actual_lifted_at")), _instant(job.get("actual_lifted_at"))
+        try:
+            earlier = bool(baseline_end and candidate_end and baseline_end < candidate_end)
+        except (ValueError, OverflowError):
+            earlier = False
+        if not earlier:
+            raise HTTPException(409, "선택한 비교가 현재 작업보다 이전인지 확인할 수 없습니다.")
+        comparison_result = {key: selected.get(key) for key in ("comparison_id", "baseline_job_id",
+            "baseline_recipe_version", "baseline_actual_mass_kg", "baseline_actual_portions", "baseline_load_band",
+            "baseline_score_percent", "baseline_quality_passed", "candidate_score_percent", "score_total_delta")}
+        comparison_result.update({"status": "SELECTED_COMPARABLE", "baseline_lifted_at": baseline_end.isoformat(),
+                                  "immediately_previous_verified": False})
+        comparison_check = (baseline_pk, baseline, baseline_pointer, baseline_id, selected_pointer)
     source_status = "NOT_TRACKED"
     source_pk = None
     first_revision = None
@@ -160,6 +240,13 @@ async def read_evidence(request, job_id: str) -> dict:
                 raise HTTPException(503, "원천 버전을 조회하지 못했습니다.") from exc
     current_job, current_pointer = await _store_call(store, store.read, pk)
     last_process_pointer = await _store_call(store, store.process_pointer, pk)
+    if comparison_check:
+        baseline_pk, baseline, baseline_pointer, baseline_id, selected_pointer = comparison_check
+        latest_baseline, latest_baseline_pointer = await _store_call(store, store.read, baseline_pk)
+        latest_selected_pointer = await _store_call(store, store.current_comparison, pk, baseline_id)
+        if latest_baseline != baseline or latest_baseline_pointer != baseline_pointer or \
+                latest_selected_pointer != selected_pointer:
+            raise HTTPException(409, "선택한 비교가 조회 중 변경되었습니다. 다시 조회해 주세요.")
     if source_pk:
         try:
             last_revision = await read_source_revision(table, source_pk)
@@ -173,4 +260,5 @@ async def read_evidence(request, job_id: str) -> dict:
             first_process_pointer != last_process_pointer or \
             (first_process_pointer and (not derived or derived.get("sk") != first_process_pointer.get("result_sk"))):
         raise HTTPException(409, "조리 근거가 변경되었습니다. 다시 조회해 주세요.")
-    return {**_snapshot(job, pointer, assessment, derived), "source_revision_status": source_status}
+    return {**_snapshot(job, pointer, assessment, derived), "source_revision_status": source_status,
+            "selected_comparison": comparison_result}
