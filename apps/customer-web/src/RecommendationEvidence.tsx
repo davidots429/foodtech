@@ -16,6 +16,9 @@ type Evidence = {
   completeness_reasons: string[];
   collection_snapshot_matches_receipt: boolean;
   source_revision_status: "NOT_TRACKED" | "NOT_CONFIGURED" | "INCONSISTENT" | "MATCHED_AT_READ" | "CHANGED";
+  reheat_history_status: "NOT_RECORDED" | "RECORDED" | "INCONSISTENT";
+  reheat_history: { segment_id: string; started_at: string; lifted_at: string; duration_seconds: string;
+    rechecks: { status: string; recorded_at: string | null }[] }[];
   selected_comparison: { baseline_job_id: string; baseline_recipe_version: string; baseline_score_percent: string;
     candidate_score_percent: string; immediately_previous_verified: boolean } | null;
 };
@@ -134,6 +137,12 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
         <p className="small">선택한 비교는 현재 작업보다 이전입니다. 비교 가능한 작업 중 가장 직전인지는 확인하지 않았습니다.</p></div>}
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}
         {" "}· 품질평가 {value.recorded.quality?.score_percent == null ? "현재 유효 평가 없음" : `${value.recorded.quality.score_percent}점`}</p>
+      {value.reheat_history_status === "INCONSISTENT" && <p className="warning">추가 가열 이력의 연결을 확인할 수 없습니다.</p>}
+      {value.reheat_history.length > 0 && <div><p>기록된 추가 가열 구간</p><ul>
+        {value.reheat_history.map(segment => <li key={segment.segment_id}>{segment.started_at} ~ {segment.lifted_at}
+          {" "}({segment.duration_seconds}초) · 재측정 {segment.rechecks.length ?
+            segment.rechecks.map(check => check.status).join(", ") : "없음"}</li>)}
+      </ul><p className="small">구간 이력의 추천 적합성은 아직 판정하지 않았습니다.</p></div>}
       {value.process_stale && <p className="warning">공정 재계산 이후 작업이 변경되어 다시 확인해야 합니다.</p>}
       {value.recorded.preplacement_temperature_observation?.status === "OBSERVED" &&
         typeof value.recorded.preplacement_temperature_observation.age_before_placement_us === "number" && <p>

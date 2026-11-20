@@ -66,6 +66,33 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "another-customer"
         self.assertEqual((await self.client.get(path)).status_code, 404)
 
+    async def test_reheat_history_links_rechecks_without_private_content(self):
+        meta = self.store.items[(self.pk, "META")]
+        for number in (1, 2):
+            segment = {"segment_id": f"segment-{number}", "started_at": f"2026-01-01T00:0{number}:00Z",
+                "lifted_at": f"2026-01-01T00:0{number}:30Z", "duration_seconds": "30",
+                "previous_safety_version": number, "reason": "private reason", "item_ids": ["private-id"]}
+            self.store.items[(self.pk, f"EVENT#SAFETY#{number * 2:012d}")] = {
+                "sk": f"EVENT#SAFETY#{number * 2:012d}", "trigger": "TONKATSU_REHEATED",
+                "segment": segment, "occurred_at": f"2026-01-01T00:0{number}:30Z"}
+            self.store.items[(self.pk, f"EVENT#SAFETY#{number * 2 + 1:012d}")] = {
+                "sk": f"EVENT#SAFETY#{number * 2 + 1:012d}", "trigger": "CORE_CHECK",
+                "reheat_segment_id": segment["segment_id"], "to_status": "FAILED" if number == 1 else "PASSED",
+                "occurred_at": f"2026-01-01T00:0{number}:40Z", "probes": ["private-probe"]}
+        meta["latest_tonkatsu_reheat"] = segment
+        path = f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence"
+        response = await self.client.get(path)
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["reheat_history_status"], "RECORDED")
+        self.assertEqual([item["rechecks"][0]["status"] for item in data["reheat_history"]], ["FAILED", "PASSED"])
+        self.assertIn("REHEAT_HISTORY_NOT_ASSESSED", data["unverified_categories"])
+        self.assertNotIn("private reason", response.text)
+        self.assertNotIn("private-id", response.text)
+        self.assertNotIn("private-probe", response.text)
+        del self.store.items[(self.pk, "EVENT#SAFETY#000000000004")]
+        self.assertEqual((await self.client.get(path)).json()["reheat_history_status"], "INCONSISTENT")
+
     async def test_stale_quality_and_derived_result_are_not_presented_as_current(self):
         self.store.items[(self.pk, "META")]["safety_version"] = 3
         self.store.items[(self.pk, "META")]["version"] = 8
