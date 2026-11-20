@@ -1,13 +1,13 @@
 """Synthetic rice and mackerel meal batches with separate linked work records."""
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 import hashlib
 from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
 from foodtech_contracts.combi_transition import TransitionSample, assess_transition
@@ -15,7 +15,7 @@ from foodtech_contracts.combi_mackerel_process import Sample, assess as assess_m
 from foodtech_contracts.combi_rice_process import Sample as RiceSample, assess as assess_rice_process
 from foodtech_contracts.combi_stream import CombiStreamValidator
 
-from .cooking import _context, _now, _store_call
+from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
 
 router = APIRouter(prefix="/api/customer/combi-meals", tags=["combi-meals"])
@@ -124,6 +124,22 @@ class CombiSourceImport(BaseModel):
     expected_version: int = Field(ge=1)
     device_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
     records: list[str] = Field(min_length=3, max_length=5000)
+
+
+class CombiQualityAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    expected_current_version: int = Field(ge=0)
+    kind: Literal["INITIAL", "REVISION", "REASSESSMENT"]
+    reason: str | None = Field(default=None, max_length=500)
+    scores: dict[str, StrictInt]
+    observations: dict[str, str]
+    quality_decision: Literal["QUALITY_PASSED", "QUALITY_FAILED"]
+    quality_reason_codes: list[str] = Field(default_factory=list, max_length=8)
+    quality_note: str | None = Field(default=None, max_length=500)
+    overall_satisfaction: StrictInt | None = Field(default=None, ge=1, le=5)
+    planned_portions: int = Field(gt=0, le=1000, strict=True)
+    actual_portions: int = Field(gt=0, le=1000, strict=True)
 
 
 def _pk(subject: str, meal_id: str) -> str:
@@ -636,3 +652,85 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
+
+
+@router.post("/{meal_id}/quality/{menu}", status_code=201)
+async def assess_combi_quality(meal_id: UUID, menu: Literal["rice", "mackerel"],
+                               request: Request, body: CombiQualityAssessment) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {key: value for key, value in row.items() if key != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.")
+    kind = "RICE" if menu == "rice" else "MACKEREL"
+    job_id = old["rice_cooking_job_id"] if menu == "rice" else old["mackerel_cooking_job_id"]
+    step = rows.get(f"JOB#{kind}#{job_id}")
+    if not step or step.get("status") != "UNLOADED" or step.get("safety_status") != "PASSED":
+        raise HTTPException(409, "인양과 유효한 안전 확인 후에만 품질평가를 완료할 수 있습니다.")
+    current = int(step.get("quality_version", 0))
+    if current != body.expected_current_version:
+        raise HTTPException(409, "현재 품질평가가 변경되었습니다. 다시 조회해 주세요.")
+    if ((current == 0) != (body.kind == "INITIAL") or
+            (current > 0 and (body.reason is None or not body.reason.strip()))):
+        raise HTTPException(422, "최초 평가와 수정 유형 또는 사유를 확인해 주세요.")
+    if (set(body.scores) != set(SCORE_ITEMS) or any(not 1 <= value <= 5 for value in body.scores.values()) or
+            set(body.observations) != set(SCORE_ITEMS) or
+            any(not value.strip() or len(value) > 500 for value in body.observations.values())):
+        raise HTTPException(422, "7개 항목에 각각 1~5점과 관찰 근거가 필요합니다.")
+    common_reasons = {"UNDERCOOKED", "EXCESS_MOISTURE", "OVERCOOKED", "UNEVEN_COOK", "BAD_SMELL"}
+    menu_reasons = {"BURNT_BOTTOM", "RICE_CLUMPED"} if menu == "rice" else \
+                   {"BURNT_SURFACE", "DRY_TEXTURE", "SKIN_NOT_CRISP"}
+    reasons = body.quality_reason_codes
+    if (len(reasons) != len(set(reasons)) or set(reasons) - (common_reasons | menu_reasons) or
+            ((body.quality_decision == "QUALITY_FAILED") != bool(reasons))):
+        raise HTTPException(422, "메뉴에 맞는 품질 실패 사유를 확인해 주세요.")
+    if body.actual_portions > body.planned_portions or \
+            (menu == "mackerel" and body.actual_portions > len(step.get("products", []))):
+        raise HTTPException(422, "실제 인분이 계획 또는 합성 제품 수를 초과합니다.")
+    total = sum(body.scores.values())
+    score = (Decimal(total) / Decimal(35) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    score_passed = min(body.scores.values()) >= 3 and score >= 60
+    if body.quality_decision == "QUALITY_PASSED" and not score_passed:
+        raise HTTPException(422, "품질 합격 점수 기준에 미달했습니다.")
+    passed = score_passed and body.quality_decision == "QUALITY_PASSED"
+    event_version = int(old["version"]) + 1
+    quality_version = current + 1
+    event_sk = f"EVENT#{event_version:012d}"
+    now = _now()
+    assessment = {"version": quality_version, "previous_version": current or None,
+                  "kind": body.kind, "reason": body.reason, "status": "COMPLETED",
+                  "menu": kind, "scale_version": f"{menu}-common-v1", "formula_version": "quality-v1",
+                  "scores": body.scores, "observations": body.observations, "score_total": total,
+                  "score_percent": str(score), "quality_passed": passed,
+                  "quality_target": passed and min(body.scores.values()) >= 4 and score >= 80,
+                  "quality_status": "QUALITY_PASSED" if passed else "QUALITY_FAILED",
+                  "quality_reason_codes": reasons, "quality_note": body.quality_note,
+                  "overall_satisfaction": body.overall_satisfaction,
+                  "planned_portions": body.planned_portions, "actual_portions": body.actual_portions,
+                  "safety_status": step["safety_status"], "safety_version": int(step.get("safety_version", 0)),
+                  "equipment_size": old["equipment_size"], "assessed_by": session.subject, "completed_at": now}
+    if menu == "mackerel":
+        mass = sum(Decimal(product["mass_kg"]) for product in step["products"])
+        assessment.update(actual_mass_kg=str(mass), mass_per_portion_kg=str(
+            (mass / body.actual_portions).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)))
+    else:
+        assessment.update(actual_mass_kg=step["ingredient_kg"], rack_count=step["rack_count"],
+                          pan_count=step["pan_count"], load_ratio=step["load_ratio"])
+    pointer = {"version": quality_version, "event_sk": event_sk, "quality_status": assessment["quality_status"],
+               "score_percent": str(score), "quality_target": assessment["quality_target"],
+               "safety_version": assessment["safety_version"]}
+    updated = {**step, "quality_status": assessment["quality_status"], "quality_version": quality_version,
+               "quality_current": pointer}
+    meta = {**old, "version": event_version, "updated_at": now}
+    event = {"sk": event_sk, "event": f"{kind}_QUALITY_ASSESSED", "from_status": old["status"],
+             "to_status": old["status"], "observed_at": now, "recorded_at": now,
+             "actor": session.subject, "assessment": assessment}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "assessment": assessment}
