@@ -9,6 +9,7 @@ from dataclasses import asdict
 import boto3
 from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
+from foodtech_contracts import decode_record, dedup_key, legacy_dedup_key, payload_hash
 
 from .process import Assessment, Finding, QUALITY_RULE_VERSION, assess
 from .process_bridge import DynamoProcessBridge
@@ -117,21 +118,55 @@ class DynamoStandardizationWorker:
     def _deduplicate(self, evaluation: Assessment) -> str:
         key_hash = hashlib.sha256(evaluation.business_dedup_key.encode("utf-8")).hexdigest()
         key = {"pk": f"DEDUP#{key_hash}", "sk": "CANONICAL"}
-        try:
-            self.table.put_item(
-                Item={**key, "business_dedup_key": evaluation.business_dedup_key,
-                      "payload_hash": evaluation.payload_hash,
-                      "first_ingestion_event_id": evaluation.ingestion_event_id},
-                ConditionExpression=Attr("pk").not_exists(),
-            )
+        existing = self.table.get_item(Key=key, ConsistentRead=True).get("Item")
+        if existing is None:
+            legacy_hash = hashlib.sha256(evaluation.legacy_business_dedup_key.encode("utf-8")).hexdigest()
+            legacy = self.table.get_item(Key={"pk": f"DEDUP#{legacy_hash}", "sk": "CANONICAL"},
+                                         ConsistentRead=True).get("Item")
+            first_id = evaluation.ingestion_event_id
+            first_hash = evaluation.payload_hash
+            if legacy is not None:
+                if legacy.get("business_dedup_key") != evaluation.legacy_business_dedup_key:
+                    raise ValueError("legacy business key hash collision")
+                legacy_id = legacy["first_ingestion_event_id"]
+                # If this exact event reserved v1 before crashing, the caller has its raw payload.
+                if legacy_id == first_id:
+                    if legacy["payload_hash"] != first_hash:
+                        raise ValueError("legacy event payload changed")
+                    first_id, first_hash = legacy_id, legacy["payload_hash"]
+                else:
+                    old_assessment = self.table.get_item(
+                        Key={"pk": f"EVENT#{legacy_id}", "sk": "ASSESSMENT#v1"},
+                        ConsistentRead=True).get("Item")
+                    if old_assessment is None:
+                        raise ValueError("legacy dedup owner assessment is unavailable")
+                    old_raw = self.table.get_item(
+                        Key={"pk": old_assessment["source_pk"], "sk": old_assessment["raw_sk"]},
+                        ConsistentRead=True).get("Item")
+                    if old_raw is None:
+                        raise ValueError("legacy dedup owner raw input is unavailable")
+                    old_record = decode_record(old_raw["raw"])
+                    if (legacy_dedup_key(old_record) != evaluation.legacy_business_dedup_key or
+                            payload_hash(old_record) != legacy["payload_hash"]):
+                        raise ValueError("legacy dedup owner does not match stored raw input")
+                    if dedup_key(old_record) == evaluation.business_dedup_key:
+                        first_id, first_hash = legacy_id, legacy["payload_hash"]
+            try:
+                self.table.put_item(
+                    Item={**key, "business_dedup_key": evaluation.business_dedup_key,
+                          "payload_hash": first_hash, "first_ingestion_event_id": first_id,
+                          "key_version": "v2"},
+                    ConditionExpression=Attr("pk").not_exists(),
+                )
+                existing = {"business_dedup_key": evaluation.business_dedup_key,
+                            "payload_hash": first_hash, "first_ingestion_event_id": first_id}
+            except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+                existing = self.table.get_item(Key=key, ConsistentRead=True)["Item"]
+        if existing["business_dedup_key"] != evaluation.business_dedup_key:
+            raise ValueError("business key hash collision")
+        if existing["first_ingestion_event_id"] == evaluation.ingestion_event_id:
             return "UNIQUE"
-        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
-            existing = self.table.get_item(Key=key, ConsistentRead=True)["Item"]
-            if existing["business_dedup_key"] != evaluation.business_dedup_key:
-                raise ValueError("business key hash collision")
-            if existing["first_ingestion_event_id"] == evaluation.ingestion_event_id:
-                return "UNIQUE"
-            return "DUPLICATE" if existing["payload_hash"] == evaluation.payload_hash else "CONFLICT"
+        return "DUPLICATE" if existing["payload_hash"] == evaluation.payload_hash else "CONFLICT"
 
     def _send_dlq(self, reference: dict, assessment: dict) -> None:
         self.sqs.send_message(

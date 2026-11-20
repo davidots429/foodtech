@@ -103,8 +103,26 @@ def _component(value: str) -> str:
     return f"{len(value.encode('utf-8'))}:{value}"
 
 
-def dedup_key(record: dict) -> str:
+def legacy_dedup_key(record: dict) -> str:
+    """The v1 key is used only to find historical canonical records."""
     return "|".join(_component(record[key]) for key in ("sourceId", "schemaVersion", "recordId"))
+
+
+def dedup_key(record: dict) -> str:
+    """Versioned key includes the device as required by the common event contract."""
+    source, device = record.get("sourceId"), record.get("deviceId")
+    if not isinstance(source, str) or not source or not isinstance(device, str) or not device:
+        raise ValueError("source and device are required for business deduplication")
+    record_id = record.get("recordId")
+    if record_id is not None and record_id != "":
+        version = record.get("schemaVersion")
+        if not isinstance(record_id, str) or not isinstance(version, str) or not version:
+            raise ValueError("invalid business deduplication key")
+        return "v2|R|" + "|".join(_component(value) for value in (source, device, version, record_id))
+    sequence, event_time = record.get("sequenceNumber"), record.get("eventTime")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1 or not isinstance(event_time, str):
+        raise ValueError("fallback business deduplication components are missing")
+    return "v2|F|" + "|".join(_component(value) for value in (source, device, str(sequence), _utc(event_time)))
 
 
 def stream_binding_key(source_id: str, device_id: str, batch_id: str) -> str:
