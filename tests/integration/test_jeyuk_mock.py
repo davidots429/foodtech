@@ -19,10 +19,15 @@ DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class JeyukMockTests(unittest.TestCase):
     def test_one_second_output_reaches_approved_warning_and_failure(self):
+        for size in ("small", "medium", "large"):
+            with self.subTest(size=size):
+                self.check_failure_fixture(ROOT / f"fixtures/jeyuk-{size}-process-v1.json", size)
+
+    def check_failure_fixture(self, fixture, size):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "jeyuk.jsonl"
             completed = subprocess.run(
-                ["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(FIXTURE),
+                ["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(fixture),
                  "--output", str(output)], check=True, capture_output=True, text=True,
             )
             metadata = json.loads(completed.stdout)
@@ -33,6 +38,7 @@ class JeyukMockTests(unittest.TestCase):
         self.assertEqual({item["profileId"] for item in records}, {"mockprofile-110"})
         self.assertEqual({item["instanceId"] for item in records}, {"mockprofile-110-a-001"})
         self.assertEqual({item["provenance"] for item in records}, {"SYNTHETIC"})
+        self.assertEqual({item["profile"] for item in records}, {size.upper()})
         monitor = ProcessMonitor(records[0]["profile"], Decimal(str(records[0]["actualLoadKg"])))
         readings = {}
         for record in records:
@@ -42,7 +48,7 @@ class JeyukMockTests(unittest.TestCase):
                 target_rpm=Decimal(str(record["targetRpm"])),
                 motor_load_percent=Decimal(str(record["motorLoadPercent"])),
             )
-        for checkpoint in json.loads(FIXTURE.read_text())["checkpoints"]:
+        for checkpoint in json.loads(fixture.read_text())["checkpoints"]:
             reading = readings[checkpoint["second"]]
             self.assertEqual(reading.status, checkpoint["status"])
             self.assertIn(checkpoint["reasonCode"], reading.reason_codes)

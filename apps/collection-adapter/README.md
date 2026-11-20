@@ -16,6 +16,8 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 
 `--profile mockprofile-110 --cursor-key <fixture-key>`는 C# 제육볶음 Mock의 HTTPS/OAuth 응답을 별도 계약으로 검증한다. 수집된 1초 원표본은 기존 데이터 테이블의 `JEYUK#<fixtureId>` 파티션에 불변 원본으로 저장하고 FIFO Ordered 큐에 참조를 보낸다. 같은 fixture·초의 원본 내용이 바뀌면 거부하며, 동일 원본의 재전송은 같은 SQS 중복 ID를 사용한다. 커서는 `mockprofile-100`과 분리한다. 제육볶음 경로는 순번 재배열을 하지 않으며 Worker가 연속 초 순서대로 판정한다. 2026-11-15 개발용 AWS에서 C# 생성 표본 30건의 DynamoDB 저장·SQS FIFO 전달과 합성 항목 정리를 확인했다. HTTPS 수집과 AWS 저장을 한 번의 실행으로 결합한 검증은 후속 범위다.
 
+실시간 제육볶음 Mock은 `--profile mockprofile-110 --cursor-key <fixture-key> --until-complete`로 수집한다. 기본 5초마다 새로 공개된 1초 원표본을 저장하고 Mock의 명시적 종료 표시까지 계속한다. 기본 제한시간은 1,800초이며 `--max-runtime`으로 조정한다. 시간 초과나 저장 실패 시 마지막으로 저장한 커서를 유지한다. Mock을 재시작해 재생 시점이 이전 커서보다 앞서면 충돌로 중단하며, 재시작 후 이력 자동 복구를 뜻하지 않는다.
+
 기존 개발용 AWS 테이블·큐에서 실제 C# Mock의 HTTPS/OAuth 응답을 수집하려면 .NET 10 Mock을 Release로 빌드하고 `AWS_PROFILE=foodtech .venv/bin/python tests/live/process_flow_dynamodb_check.py --mock-wire`를 실행한다. 이 검증은 임시 인증서와 고유 합성 배치를 만들고 Mock의 첫 연결 단절 후 재시도, DynamoDB·SQS FIFO 저장, Worker 공정판정, 조리작업 실패 전이 및 재전달 멱등성을 확인한 뒤 합성 항목을 정리한다. 공유 개발용 FIFO 큐가 비어 있어야 시작한다. 2026-11-15 개발용 AWS에서 5건이 처리되어 `HIGH_PROCESS_FAILURE`와 작업 `FAILED`가 기록됐고 합성 항목 정리가 완료됐다. 배포된 Worker Task 역할·부하·장기 복구 검증은 별도다.
 
 ## 콤비오븐 합성 배치 연결

@@ -1,0 +1,58 @@
+{
+  "fixtureId": "jeyuk-large-process-v1",
+  "provenance": "SYNTHETIC",
+  "profile": "LARGE",
+  "actualLoadKg": "60",
+  "samples": [
+    {
+      "seconds": 4,
+      "surfaceCelsius": "160",
+      "actualRpm": "6",
+      "targetRpm": "10",
+      "motorLoadPercent": "95"
+    },
+    {
+      "seconds": 1,
+      "surfaceCelsius": "160",
+      "actualRpm": "6",
+      "targetRpm": "10",
+      "motorLoadPercent": "95"
+    },
+    {
+      "seconds": 24,
+      "surfaceCelsius": "160",
+      "actualRpm": "6",
+      "targetRpm": "10",
+      "motorLoadPercent": "95"
+    },
+    {
+      "seconds": 1,
+      "surfaceCelsius": "160",
+      "actualRpm": "6",
+      "targetRpm": "10",
+      "motorLoadPercent": "95"
+    }
+  ],
+  "checkpoints": [
+    {
+      "second": 4,
+      "status": "WARNING",
+      "reasonCode": "HIGH_MOTOR_LOAD_WARNING"
+    },
+    {
+      "second": 5,
+      "status": "WARNING",
+      "reasonCode": "AGITATOR_JAM_WARNING"
+    },
+    {
+      "second": 29,
+      "status": "WARNING",
+      "reasonCode": "AGITATOR_JAM_WARNING"
+    },
+    {
+      "second": 30,
+      "status": "FAILED",
+      "reasonCode": "AGITATOR_FAILURE"
+    }
+  ]
+}

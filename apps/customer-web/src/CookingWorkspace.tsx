@@ -6,6 +6,7 @@ import {
 } from "./cookingApi";
 import { AssessmentAggregate } from "./AssessmentAggregate";
 import { CookingTimeMonitor } from "./CookingTimeMonitor";
+import { JeyukLiveProcess } from "./JeyukLiveProcess";
 import { LocalChat } from "./LocalChat";
 import { RecommendationEvidence } from "./RecommendationEvidence";
 import { TonkatsuBatch } from "./TonkatsuBatch";
@@ -798,6 +799,10 @@ export function CookingWorkspace({ csrf }: Props) {
             <p className="small">실제 조리시간 {job.actual_cooking_seconds == null ? "완료 전" : `${job.actual_cooking_seconds}초`}
               {" "}· 시간 판정 {timeLabels[job.process_time_status ?? "NOT_MEASURED"] ?? "미판정"}</p>
             {["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) && <CookingTimeMonitor jobId={job.job_id} />}
+            {job.menu === "JEYUK" && ["RUNNING", "PAUSED", "SAFETY_HOLD"].includes(job.status) &&
+              <JeyukLiveProcess key={job.job_id} jobId={job.job_id} knownVersion={job.version}
+                refreshDisabled={busy || loadingJob}
+                onRefresh={() => { void refresh(job.job_id).catch(() => setError("최신 작업을 불러오지 못했습니다.")); }} />}
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
             <LocalChat key={job.job_id} csrf={csrf} jobId={job.job_id} />
             <RecommendationEvidence key={`${job.job_id}-${job.version}-${comparisonFreshness === "CURRENT" ? comparison?.comparison_id ?? "" : ""}`}
