@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import httpx
@@ -65,3 +66,35 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(warning.json()["rice"]["water_ratio_status"], "WATER_RATIO_OUT_OF_RANGE")
         denied = await self.client.post("/api/customer/combi-meals", json=self.body)
         self.assertEqual(denied.status_code, 403)
+
+    async def test_rice_sequence_times_and_optimistic_conflict(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        path = "/api/customer/combi-meals/" + created["meal"]["meal_batch_id"]
+        start = datetime.now(timezone.utc) - timedelta(seconds=1900)
+
+        async def send(event, version, at):
+            return await self.client.post(path + "/events", headers=headers,
+                                          json={"event": event, "expected_version": version,
+                                                "observed_at": at.isoformat()})
+
+        self.assertEqual((await send("MODE_TRANSITION_STARTED", 1, start)).status_code, 409)
+        started = await send("RICE_STARTED", 1, start)
+        self.assertEqual(started.status_code, 200, started.text)
+        self.assertEqual((await send("RICE_STARTED", 1, start)).status_code, 409)
+        self.assertEqual((await send("RICE_PROGRAM_COMPLETED", 2, start - timedelta(seconds=1))).status_code, 422)
+        completed = await send("RICE_PROGRAM_COMPLETED", 2, start + timedelta(seconds=1800))
+        self.assertEqual(completed.status_code, 200, completed.text)
+        self.assertEqual((completed.json()["step"]["time_status"],
+                          completed.json()["step"]["program_cooking_duration"]), ("NORMAL", 1800))
+        unloaded = await send("RICE_UNLOADED", 3, start + timedelta(seconds=1830))
+        self.assertEqual(unloaded.json()["step"]["thermal_exposure_duration"], 1830)
+        transition = await send("MODE_TRANSITION_STARTED", 4, start + timedelta(seconds=1840))
+        self.assertEqual(transition.status_code, 200, transition.text)
+        self.assertFalse(transition.json()["step"]["mackerel_load_allowed"])
+        snapshot = (await self.client.get(path)).json()
+        self.assertEqual(snapshot["meal"]["status"], "MODE_TRANSITION")
+        self.assertEqual(snapshot["rice"]["process_status"], "NOT_MEASURED")
+        self.assertEqual(len(snapshot["events"]), 4)
+        self.subject = "customer-two"
+        self.assertEqual((await send("RICE_STARTED", 5, start)).status_code, 404)

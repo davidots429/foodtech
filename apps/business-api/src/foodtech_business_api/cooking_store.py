@@ -50,6 +50,8 @@ def _api_numbers(value):
 class CookingStore(Protocol):
     def create_meal(self, pk: str, records: list[dict]) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
+    def advance_meal(self, pk: str, expected_version: int, meta: dict,
+                     step: dict, event: dict) -> None: ...
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
@@ -100,6 +102,16 @@ class MemoryCookingStore:
     def read_meal(self, pk: str) -> list[dict]:
         with self.lock:
             return [item.copy() for (item_pk, _), item in sorted(self.items.items()) if item_pk == pk]
+
+    def advance_meal(self, pk: str, expected_version: int, meta: dict,
+                     step: dict, event: dict) -> None:
+        with self.lock:
+            current = self.items.get((pk, "META"))
+            if (not current or current["version"] != expected_version or
+                    (pk, step["sk"]) not in self.items or (pk, event["sk"]) in self.items):
+                raise Conflict
+            for row in (meta, step, event):
+                self.items[(pk, row["sk"])] = {"pk": pk, **row}
 
     def read(self, pk: str) -> tuple[dict | None, dict | None]:
         with self.lock:
@@ -385,6 +397,26 @@ class DynamoCookingStore:
             start = page.get("LastEvaluatedKey")
             if not start:
                 return _api_numbers(rows)
+
+    def advance_meal(self, pk: str, expected_version: int, meta: dict,
+                     step: dict, event: dict) -> None:
+        operations = [
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
+                     "ConditionExpression": "#v = :expected",
+                     "ExpressionAttributeNames": {"#v": "version"},
+                     "ExpressionAttributeValues": {":expected": {"N": str(expected_version)}}}},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **step}),
+                     "ConditionExpression": "attribute_exists(pk)"}},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **event}),
+                     "ConditionExpression": "attribute_not_exists(pk)"}},
+        ]
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get("Code") == "ConditionalCheckFailed"
+                   for reason in exc.response.get("CancellationReasons", [])):
+                raise Conflict from exc
+            raise
 
     def read(self, pk: str) -> tuple[dict | None, dict | None]:
         meta = self.table.get_item(Key={"pk": pk, "sk": "META"}, ConsistentRead=True).get("Item")
