@@ -3,12 +3,22 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
 
-from .policy import Caller, Decision, GatewayPolicy
+from foodtech_contracts.recommendation_guard import Evidence
+from foodtech_contracts.recommendation_output import JeyukBaseline, TonkatsuBaseline
+
+from .policy import Caller, Decision, Feature, GatewayPolicy
 from .ollama import OllamaClient, OllamaFailure
 from .registry import DynamoRegistry, RegistryConflict
 from .provider import LiteLLMProvider, ProviderFailure
 from .vault import DynamoCredentialVault, VaultFailure
+from .recommendation_generation import generate_candidate
+
+
+class _RecommendationDenied(Exception):
+    def __init__(self, code: str):
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -27,7 +37,7 @@ class GatewayService:
         self.vault = vault
         self.provider = provider
 
-    def prepare(self, caller: Caller, execution_id: str) -> Decision:
+    def prepare(self, caller: Caller, execution_id: str, *, local_recipe: bool = False) -> Decision:
         # The caller supplies no model, credential, consent or cost fields.
         self.registry.begin_request()
         decision = self.policy.authorize(caller, execution_id)
@@ -41,6 +51,9 @@ class GatewayService:
         model = self.registry.model(decision.model_id) if decision.model_id else None
         if not execution or not model or execution.tenant_id != caller.tenant_id:
             return Decision(False, "EXECUTION_NOT_FOUND")
+        if local_recipe and (execution.feature != Feature.RECIPE_CORRECTION or not model.local or
+                             model.provider != "ollama" or execution.estimated_cost_usd != 0):
+            return Decision(False, "LOCAL_RECIPE_REQUIRED")
         if self.registry.snapshot_versions() != authorized_versions:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         try:
@@ -48,6 +61,81 @@ class GatewayService:
         except RegistryConflict:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         return decision
+
+    def prepare_local_recipe_retry(self, caller: Caller, execution_id: str, attempt: int) -> Decision:
+        """Reauthorize and reserve a single additional local provider request."""
+        self.registry.begin_request()
+        decision = self.policy.authorize(caller, execution_id)
+        if not decision.allowed:
+            return decision
+        versions = self.registry.snapshot_versions()
+        execution = self.registry.execution(execution_id)
+        model = self.registry.model(decision.model_id) if decision.model_id else None
+        if not execution or execution.tenant_id != caller.tenant_id or \
+                execution.feature != Feature.RECIPE_CORRECTION or not model or not model.local or \
+                model.provider != "ollama" or execution.estimated_cost_usd != 0:
+            return Decision(False, "LOCAL_RECIPE_RETRY_NOT_ALLOWED")
+        if self.registry.snapshot_versions() != versions:
+            return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
+        try:
+            self.registry.reserve_local_retry(execution, attempt)
+        except RegistryConflict:
+            return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
+        return decision
+
+    async def execute_local_recipe(self, caller: Caller, execution_id: str, *,
+                                   evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline,
+                                   context: dict, ollama: OllamaClient) -> ExecutionOutcome:
+        """Internal only: caller supplies verified, tenant-scoped server records.
+
+        No HTTP route accepts these arguments. Each provider request is reserved
+        independently and only a validated candidate is stored on success.
+        """
+        execution = self.registry.execution(execution_id)
+        model = self.registry.model(execution.model_id) if execution else None
+        if not execution or execution.tenant_id != caller.tenant_id:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="EXECUTION_NOT_FOUND")
+        if execution.feature != Feature.RECIPE_CORRECTION or not model or not model.local or \
+                model.provider != "ollama" or execution.estimated_cost_usd != 0:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="LOCAL_RECIPE_REQUIRED")
+        attempts = 0
+        reserved = False
+
+        async def invoke(messages, schema):
+            nonlocal attempts, reserved
+            attempts += 1
+            decision = (self.prepare(caller, execution_id, local_recipe=True) if attempts == 1 else
+                        self.prepare_local_recipe_retry(caller, execution_id, attempts))
+            if not decision.allowed:
+                raise _RecommendationDenied(decision.code)
+            reserved = True
+            return (await ollama.structured_chat(decision.model_id, messages, schema)).text
+
+        try:
+            result = await generate_candidate(invoke, evidence=evidence, baseline=baseline, context=context)
+            if not reserved:
+                return ExecutionOutcome(execution_id, "INDETERMINATE", error_code="EVIDENCE_INSUFFICIENT")
+        except _RecommendationDenied as error:
+            if not reserved:
+                return ExecutionOutcome(execution_id, "DENIED", error_code=error.code)
+            code = error.code
+        except OllamaFailure as error:
+            code = error.code
+        except (ValueError, TypeError):
+            code = "RECOMMENDATION_INPUT_INVALID"
+        except Exception:
+            code = "RECOMMENDATION_EXECUTION_FAILED"
+        else:
+            if result["status"] == "NEEDS_REVIEW":
+                response = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+                self.registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal("0"),
+                                     response_text=response)
+                return ExecutionOutcome(execution_id, "SUCCEEDED", response_text=response)
+            code = result["error_code"]
+        if reserved:
+            self.registry.finish(execution_id, succeeded=False, actual_cost_usd=Decimal("0"), error_code=code)
+            return ExecutionOutcome(execution_id, "FAILED", error_code=code)
+        return ExecutionOutcome(execution_id, "DENIED", error_code=code)
 
     async def execute_local(self, caller: Caller, execution_id: str, prompt: str | None,
                             ollama: OllamaClient, *, messages: list[dict] | None = None) -> ExecutionOutcome:

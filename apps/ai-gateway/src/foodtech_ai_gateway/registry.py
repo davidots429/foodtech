@@ -9,7 +9,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import boto3
 from boto3.dynamodb.conditions import Attr
@@ -305,6 +305,58 @@ class DynamoRegistry:
             self.client.transact_write_items(TransactItems=items, ClientRequestToken=token)
         except self.client.exceptions.TransactionCanceledException as error:
             raise RegistryConflict("execution or authorization record changed, or limit exhausted") from error
+
+    def reserve_local_retry(self, execution: Execution, attempt: int) -> None:
+        """Atomically record a local recipe retry and consume one additional call.
+
+        Authorization, model, consent and budget must have been read through a
+        fresh policy check. An uncertain transaction result must not be treated
+        as permission to invoke the model.
+        """
+        if type(attempt) is not int or attempt not in (2, 3) or \
+                execution.feature != Feature.RECIPE_CORRECTION or execution.estimated_cost_usd != 0:
+            raise ValueError("only local zero-cost recipe retries are supported")
+        execution_key = _key("EXEC", execution.execution_id)
+        tenant_key = _key("LIMIT", self._limit_id("TENANT", execution.tenant_id))
+        execution_version = self._read_versions.get(execution_key["pk"])
+        tenant_version = self._read_versions.get(tenant_key["pk"])
+        if execution_version is None or tenant_version is None:
+            raise RegistryConflict("execution or tenant limit was not read consistently")
+        values = {":v": execution_version, ":reserved": "RESERVED", ":tenant": execution.tenant_id,
+                  ":provider": "ollama", ":feature": Feature.RECIPE_CORRECTION.value,
+                  ":retry": attempt - 1, ":one": 1}
+        retry_condition = "attribute_not_exists(retry_count)" if attempt == 2 else "retry_count = :previous"
+        if attempt == 3:
+            values[":previous"] = 1
+        expires = int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
+        items = [
+            {"Update": {"TableName": self.table_name, "Key": self._av(execution_key),
+                "UpdateExpression": "SET #v = #v + :one, retry_count = :retry",
+                "ConditionExpression": "#v = :v AND #s = :reserved AND tenant_id = :tenant AND "
+                    "reserved_provider = :provider AND feature = :feature AND " + retry_condition,
+                "ExpressionAttributeNames": {"#v": "version", "#s": "state"},
+                "ExpressionAttributeValues": self._av(values)}},
+            {"Update": {"TableName": self.table_name, "Key": self._av(tenant_key),
+                "UpdateExpression": "SET #v = #v + :one, calls_remaining = calls_remaining - :one",
+                "ConditionExpression": "#v = :v AND calls_remaining >= :one",
+                "ExpressionAttributeNames": {"#v": "version"},
+                "ExpressionAttributeValues": self._av({":v": tenant_version, ":one": 1})}},
+            {"Put": {"TableName": self.table_name,
+                "Item": self._av({"pk": execution_key["pk"], "sk": f"CALL#{attempt}",
+                                  "attempt": attempt, "state": "RESERVED", "provider": "ollama",
+                                  "model_id": execution.model_id, "expires": expires}),
+                "ConditionExpression": "attribute_not_exists(pk)"}},
+        ]
+        for kind, identifier in (("MODEL", execution.model_id),
+                                 ("CONSENT", execution.downgrade_consent_id),
+                                 ("LIMIT", self._limit_id("PROVIDER", "ollama")),
+                                 ("LIMIT", self._limit_id("PROJECT", "GLOBAL"))):
+            if identifier:
+                items.append(self._condition(kind, identifier))
+        try:
+            self.client.transact_write_items(TransactItems=items, ClientRequestToken=str(uuid4()))
+        except self.client.exceptions.TransactionCanceledException as error:
+            raise RegistryConflict("retry conflict or call limit exhausted") from error
 
     def finish(self, execution_id: str, *, succeeded: bool, actual_cost_usd: Decimal,
                response_text: str | None = None, error_code: str | None = None) -> None:
