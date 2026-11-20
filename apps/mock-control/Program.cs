@@ -120,7 +120,15 @@ if (realtime)
         var door = observation.GetProperty("doorState").GetString();
         var alarm = observation.GetProperty("criticalAlarm").GetBoolean();
         var ventEvent = observation.GetProperty("ventEvent").ValueKind != JsonValueKind.Null;
-        var priority = i == 0 || phase != previousPhase || door != previousDoor || alarm != previousAlarm || ventEvent;
+        var temperature = observation.GetProperty("chamberCelsius").GetDecimal();
+        var humidityValue = observation.GetProperty("measuredHumidityPercent");
+        var riceDeviation = phase == "RICE" && (temperature < 95 || temperature > 105 ||
+            (humidityValue.ValueKind != JsonValueKind.Null && humidityValue.GetDecimal() <= 95));
+        var fishDeviation = phase == "MACKEREL" &&
+            (temperature < 200 || observation.GetProperty("phaseSecond").GetInt32() == 122);
+        // Forward abnormal source samples, not a device-side process or safety judgment.
+        var priority = i == 0 || phase != previousPhase || door != previousDoor || alarm != previousAlarm ||
+            ventEvent || door == "OPEN" || riceDeviation || fishDeviation;
         priorityThrough[i + 1] = priority ? i + 1 : priorityThrough[i];
         previousPhase = phase; previousDoor = door; previousAlarm = alarm;
     }
