@@ -65,7 +65,7 @@ export function LocalChat({ csrf }: { csrf: string }) {
   return <section className="chat" aria-labelledby="local-chat-title">
     <div className="section-heading"><h2 id="local-chat-title">조리 상담 챗봇</h2>
       <span className="tag">로컬 AI</span></div>
-    <p className="small">이 대화는 현재 브라우저 화면에만 유지되며 새로고침하면 사라집니다. 최근 대화만 다음 질문의 맥락으로 보냅니다.</p>
+    <p className="small">화면의 대화 내역은 새로고침하면 사라집니다. 최근 대화는 답변 생성을 위해 전송되며, 생성된 답변은 실행 결과로 저장됩니다.</p>
     <p className="small">답변은 운영자 검토용 권고입니다. 장비 설정을 자동 변경하지 않으며 안전 이상은 현장에서 확인해야 합니다.</p>
     <div className="chat-messages" role="log" aria-label="챗봇 대화" aria-live="polite">
       {messages.length === 0 && !pending && <p className="muted">예: 합성 돈까스 작업에서 온도 경고를 어떻게 확인하나요?</p>}

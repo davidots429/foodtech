@@ -49,8 +49,8 @@ class GatewayService:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         return decision
 
-    async def execute_local(self, caller: Caller, execution_id: str, prompt: str,
-                            ollama: OllamaClient) -> ExecutionOutcome:
+    async def execute_local(self, caller: Caller, execution_id: str, prompt: str | None,
+                            ollama: OllamaClient, *, messages: list[dict] | None = None) -> ExecutionOutcome:
         execution = self.registry.execution(execution_id)
         if not execution or execution.tenant_id != caller.tenant_id:
             return ExecutionOutcome(execution_id, "DENIED", error_code="EXECUTION_NOT_FOUND")
@@ -61,7 +61,8 @@ class GatewayService:
         if not decision.allowed:
             return ExecutionOutcome(execution_id, "DENIED", error_code=decision.code)
         try:
-            result = await ollama.generate(decision.model_id, prompt)
+            result = (await ollama.chat(decision.model_id, messages) if messages is not None
+                      else await ollama.generate(decision.model_id, prompt))
         except OllamaFailure as error:
             self.registry.finish(execution_id, succeeded=False,
                                  actual_cost_usd=Decimal("0"), error_code=error.code)

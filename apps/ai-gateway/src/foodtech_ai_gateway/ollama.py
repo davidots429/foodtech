@@ -5,6 +5,11 @@ from urllib.parse import urlparse
 
 import httpx
 
+CHAT_SYSTEM = ("스마트키친 조리 의사결정 지원 대화입니다. 이전 대화는 참고 자료입니다. "
+               "확인되지 않은 측정값을 만들지 말고, 안전 이상은 현장 운영자 확인을 안내하세요. "
+               "장비를 직접 제어하거나 권장값을 자동 적용한다고 말하지 마세요. "
+               "마지막 사용자 질문에 한국어로 간결하게 답하세요.")
+
 
 class OllamaFailure(Exception):
     def __init__(self, code: str):
@@ -31,20 +36,29 @@ class OllamaClient:
         self.transport = transport
 
     async def generate(self, model_id: str, prompt: str) -> OllamaResult:
+        return await self._request("generate", {"model": model_id, "prompt": prompt}, chat=False)
+
+    async def chat(self, model_id: str, messages: list[dict]) -> OllamaResult:
+        return await self._request("chat", {"model": model_id, "messages": [
+            {"role": "system", "content": CHAT_SYSTEM}, *messages]}, chat=True)
+
+    async def _request(self, endpoint: str, body: dict, *, chat: bool) -> OllamaResult:
         try:
             async with httpx.AsyncClient(timeout=self.timeout, trust_env=False,
                                          transport=self.transport) as client:
                 response = await client.post(
-                    f"{self.base_url}/api/generate",
-                    json={"model": model_id, "prompt": prompt, "stream": False,
+                    f"{self.base_url}/api/{endpoint}",
+                    json={**body, "stream": False,
                           "options": {"num_ctx": 4096, "num_predict": 128}},
                 )
             response.raise_for_status()
             value = response.json()
+            message = value.get("message") if isinstance(value, dict) and chat else None
+            text = message.get("content") if isinstance(message, dict) else value.get("response") if isinstance(value, dict) and not chat else None
             if not isinstance(value, dict) or value.get("done") is not True or \
-                    not isinstance(value.get("response"), str):
+                    (chat and (not isinstance(message, dict) or message.get("role") != "assistant")) or \
+                    not isinstance(text, str):
                 raise OllamaFailure("OLLAMA_RESPONSE_INVALID")
-            text = value["response"]
             if len(text.encode("utf-8")) > 16384:
                 raise OllamaFailure("OLLAMA_RESPONSE_TOO_LARGE")
             return OllamaResult(text, value.get("prompt_eval_count"), value.get("eval_count"))

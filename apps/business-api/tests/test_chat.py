@@ -53,9 +53,8 @@ class ChatBffTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(gateway.calls[0][1], {"tenant_id": "customer-actual"})
                 invocation = gateway.calls[1][1]
                 self.assertEqual(invocation["tenant_id"], "customer-actual")
-                self.assertIn("다음 질문", invocation["prompt"])
-                self.assertIn("첫 답변", invocation["prompt"])
-                self.assertNotIn("csrf-test", invocation["prompt"])
+                self.assertEqual(invocation["messages"], body["messages"])
+                self.assertNotIn("prompt", invocation)
 
     async def test_gateway_denials_are_sanitized_and_distinguish_limits(self):
         class DeniedGateway(GatewayClient):
