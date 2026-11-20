@@ -43,7 +43,7 @@ class CombiMockTests(unittest.TestCase):
         self.assertTrue(all(item["lastSequence"] - item["firstSequence"] == 4 and
                             item["outsideTargetSeconds"] == 0 for item in aggregates))
         rice_result = assess_rice([RiceSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
-                                             Decimal(item["measuredHumidityPercent"])) for item in rice],
+                                             Decimal(item["measuredHumidityPercent"]), item["doorState"]) for item in rice],
                                   1800, "NORMAL", "MEASURED")
         self.assertEqual(rice_result["status"], "NORMAL")
         transition_result = assess_transition([TransitionSample(item["phaseSecond"],
