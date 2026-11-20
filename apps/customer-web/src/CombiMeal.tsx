@@ -8,7 +8,10 @@ type Meal = {
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number };
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
     humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null };
-  mackerel: { job_id: string; safety_status: string };
+  mackerel: { job_id: string; safety_status: string; food_unloaded_at?: string;
+    time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
+    batch_representative_core_temperature?: string | null;
+    products?: { product_id: string }[] };
   events?: { event: string; observed_at: string }[];
 };
 
@@ -17,10 +20,16 @@ const mealSteps: Record<string, { event: string; label: string }> = {
   RICE_COOKING: { event: "RICE_PROGRAM_COMPLETED", label: "밥 프로그램 완료 기록" },
   RICE_AWAITING_UNLOAD: { event: "RICE_UNLOADED", label: "밥 인양 기록" },
   RICE_UNLOADED: { event: "MODE_TRANSITION_STARTED", label: "건열 전환 시작 기록" },
+  MACKEREL_READY: { event: "MACKEREL_STARTED", label: "고등어 합성 제품 투입·조리 시작" },
+  MACKEREL_COOKING: { event: "MACKEREL_PROGRAM_COMPLETED", label: "고등어 프로그램 완료 기록" },
+  MACKEREL_AWAITING_UNLOAD: { event: "MACKEREL_UNLOADED", label: "고등어 인양 기록" },
 };
 const mealLabels: Record<string, string> = { PREPARING_RICE: "밥 준비", RICE_COOKING: "밥 조리 중",
   RICE_AWAITING_UNLOAD: "밥 인양 대기", RICE_UNLOADED: "밥 인양 완료", MODE_TRANSITION: "건열 전환 중",
-  MACKEREL_READY: "고등어 투입 준비", TRANSITION_TIMEOUT: "전환 시간 초과" };
+  MACKEREL_READY: "고등어 투입 준비", TRANSITION_TIMEOUT: "전환 시간 초과",
+  MACKEREL_COOKING: "고등어 조리 중", MACKEREL_AWAITING_UNLOAD: "고등어 인양 대기",
+  MACKEREL_UNLOADED: "고등어 안전 확인 대기", MACKEREL_SAFETY_PASSED: "고등어 안전 표본 통과",
+  MACKEREL_SAFETY_FAILED: "고등어 안전 표본 실패" };
 
 export function CombiMeal({ csrf }: { csrf: string }) {
   const [size, setSize] = useState("MEDIUM_FIXED_RACK_10");
@@ -67,8 +76,13 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     try {
+      const event = mealSteps[meal.meal.status].event;
+      const products = event === "MACKEREL_STARTED" ? [1, 2, 3].map(shelf => ({
+        product_id: `synthetic-fish-${shelf}`, rack_id: "synthetic-rack-1", shelf,
+        pan_id: `synthetic-pan-${shelf}`, mass_kg: "0.13", thickness_cm: shelf === 2 ? "2.0" : "1.5",
+      })) : undefined;
       await api(path + "/events", csrf, { expected_version: meal.meal.version,
-        event: mealSteps[meal.meal.status].event, observed_at: observed.toISOString() });
+        event, observed_at: observed.toISOString(), ...(products ? { products } : {}) });
       setMeal(await api<Meal>(path)); setObservedAt("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "단계를 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
@@ -86,6 +100,20 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         humidity_supported: humiditySupported, vent_supported: false, samples });
       setMeal(await api<Meal>(path));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "전환 표본을 기록하지 못했습니다."); }
+    finally { requestActive.current = false; setBusy(false); }
+  }
+  async function simulateMackerelSafety() {
+    if (!meal?.mackerel.food_unloaded_at || !meal.mackerel.products || requestActive.current) return;
+    requestActive.current = true; setBusy(true); setError("");
+    const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
+    const probes = meal.mackerel.products.map((product, index) => ({ product_id: product.product_id,
+      probe_id: `synthetic-probe-${index + 1}`, calibration_status: "OK",
+      readings: Array.from({ length: 60 }, (_, second) => ({ second, celsius: "75" })) }));
+    try {
+      await api(path + "/mackerel-safety", csrf, { expected_version: meal.meal.version,
+        measured_at: meal.mackerel.food_unloaded_at, probes });
+      setMeal(await api<Meal>(path));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "안전 표본을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
   return <section><h2>밥·고등어 합성 식사 배치</h2>
@@ -113,12 +141,19 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       <p>밥 작업 <code>{meal.rice.job_id}</code> → 모드 전환 <code>{meal.transition.transition_id}</code> → 고등어 작업 <code>{meal.mackerel.job_id}</code></p>
       {meal.rice.time_status && <p>밥 프로그램 시간 {meal.rice.program_cooking_duration}초 · 시간 판정 {meal.rice.time_status}
         {meal.rice.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.rice.thermal_exposure_duration}초</>}</p>}
+      {meal.mackerel.time_status && <p>고등어 프로그램 시간 {meal.mackerel.program_cooking_duration}초 · 시간 판정 {meal.mackerel.time_status}
+        {meal.mackerel.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.mackerel.thermal_exposure_duration}초</>}</p>}
+      {meal.meal.status === "MACKEREL_READY" && <p>합성 제품 세 개를 한 랙의 서로 다른 세 선반에 투입합니다. 제품은 각 130g, 두께 1.5~2.0cm입니다.</p>}
       {mealSteps[meal.meal.status] && <div className="field-row"><label>합성 관찰시각
         <input type="datetime-local" step="1" value={observedAt} onChange={event => setObservedAt(event.target.value)} /></label>
         <button type="button" disabled={busy} onClick={recordStep}>{mealSteps[meal.meal.status].label}</button></div>}
       {meal.meal.status === "MODE_TRANSITION" && <div><p>합성 표본으로 전환 조건을 시험합니다. 전환 시작 시각 이후 30초 또는 180초가 경과해야 합니다.</p>
         <button type="button" disabled={busy} onClick={() => simulateTransition(true)}>습도 지원 합성 표본</button>{" "}
         <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></div>}
+      {meal.meal.status === "MACKEREL_UNLOADED" && <div><p>인양 즉시 시작한 세 탐침의 75°C 합성 표본을 60초간 확인합니다. 인양 후 60초가 경과해야 합니다.</p>
+        <button type="button" disabled={busy} onClick={simulateMackerelSafety}>합성 심부온도 확인</button></div>}
+      {meal.mackerel.safety_status !== "NOT_MEASURED" && <p>고등어 합성 안전 표본: {meal.mackerel.safety_status}
+        {meal.mackerel.batch_representative_core_temperature && <> · 최저 {meal.mackerel.batch_representative_core_temperature}°C</>}</p>}
       <p>고등어 투입: {meal.transition.mackerel_load_allowed ? "허용" : "차단"}
         {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>
       <p>시간 판정은 전체 공정·안전 판정과 별도입니다. 화면의 전환 자료는 합성 표본입니다.</p>

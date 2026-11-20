@@ -29,11 +29,23 @@ class CreateMeal(BaseModel):
     rack_tare_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
 
 
+class MackerelProduct(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    product_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    rack_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    shelf: int = Field(ge=1, le=10, strict=True)
+    pan_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    mass_kg: Decimal = Field(ge=Decimal("0.12"), le=Decimal("0.15"), max_digits=4, decimal_places=3)
+    thickness_cm: Decimal = Field(ge=Decimal("1.5"), le=Decimal("2.0"), max_digits=3, decimal_places=1)
+
+
 class MealEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
-    event: Literal["RICE_STARTED", "RICE_PROGRAM_COMPLETED", "RICE_UNLOADED", "MODE_TRANSITION_STARTED"]
+    event: Literal["RICE_STARTED", "RICE_PROGRAM_COMPLETED", "RICE_UNLOADED", "MODE_TRANSITION_STARTED",
+                   "MACKEREL_STARTED", "MACKEREL_PROGRAM_COMPLETED", "MACKEREL_UNLOADED"]
     observed_at: datetime
+    products: list[MackerelProduct] | None = Field(default=None, min_length=3, max_length=3)
 
 
 class TransitionObservation(BaseModel):
@@ -53,6 +65,27 @@ class TransitionEvidence(BaseModel):
     humidity_supported: StrictBool
     vent_supported: StrictBool
     samples: list[TransitionObservation] = Field(min_length=1, max_length=300)
+
+
+class CoreReading(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    second: int = Field(ge=0, le=59, strict=True)
+    celsius: Decimal | None = Field(default=None, ge=Decimal("-50"), le=Decimal("150"))
+
+
+class MackerelProbe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    probe_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    product_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    calibration_status: Literal["OK", "EXPIRED"]
+    readings: list[CoreReading] = Field(min_length=1, max_length=60)
+
+
+class MackerelSafetyCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+    measured_at: datetime
+    probes: list[MackerelProbe] = Field(min_length=1, max_length=3)
 
 
 def _pk(subject: str, meal_id: str) -> str:
@@ -152,26 +185,45 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
         ("RICE_COOKING", "RICE_PROGRAM_COMPLETED"): ("RICE_AWAITING_UNLOAD", "RICE"),
         ("RICE_AWAITING_UNLOAD", "RICE_UNLOADED"): ("RICE_UNLOADED", "RICE"),
         ("RICE_UNLOADED", "MODE_TRANSITION_STARTED"): ("MODE_TRANSITION", "TRANSITION"),
+        ("MACKEREL_READY", "MACKEREL_STARTED"): ("MACKEREL_COOKING", "MACKEREL"),
+        ("MACKEREL_COOKING", "MACKEREL_PROGRAM_COMPLETED"): ("MACKEREL_AWAITING_UNLOAD", "MACKEREL"),
+        ("MACKEREL_AWAITING_UNLOAD", "MACKEREL_UNLOADED"): ("MACKEREL_UNLOADED", "MACKEREL"),
     }
     route = routes.get((old["status"], body.event))
     if not route:
         raise HTTPException(409, "현재 단계에서는 이 사건을 기록할 수 없습니다.")
     next_status, target = route
     step_key = (f"JOB#RICE#{old['rice_cooking_job_id']}" if target == "RICE" else
+                f"JOB#MACKEREL#{old['mackerel_cooking_job_id']}" if target == "MACKEREL" else
                 f"TRANSITION#{old['mode_transition_id']}")
     step = rows.get(step_key)
     if not step:
         raise HTTPException(503, "연결된 작업을 찾을 수 없습니다.")
     at = observed.isoformat().replace("+00:00", "Z")
     updated = {**step}
-    if body.event == "RICE_STARTED":
+    if body.event != "MACKEREL_STARTED" and body.products is not None:
+        raise HTTPException(422, "고등어 투입 단계에서만 제품을 기록할 수 있습니다.")
+    if body.event == "MACKEREL_STARTED":
+        transition = rows.get(f"TRANSITION#{old['mode_transition_id']}")
+        if not transition or transition.get("status") != "DRY_HEAT_READY" or not transition.get("mackerel_load_allowed"):
+            raise HTTPException(409, "건열 전환 준비를 먼저 확인해야 합니다.")
+        products = body.products
+        if not products or len({item.product_id for item in products}) != 3 or \
+                len({item.rack_id for item in products}) != 1 or \
+                len({item.shelf for item in products}) != 3 or \
+                len({item.pan_id for item in products}) != 3:
+            raise HTTPException(422, "초기 합성 시연에는 한 랙의 서로 다른 세 선반에 제품 세 개가 필요합니다.")
+        updated.update(status="RUNNING", active_cooking_started_at=at,
+                       products=[item.model_dump(mode="json") for item in products])
+    elif body.event == "RICE_STARTED":
         updated.update(status="RUNNING", active_cooking_started_at=at)
-    elif body.event == "RICE_PROGRAM_COMPLETED":
+    elif body.event in {"RICE_PROGRAM_COMPLETED", "MACKEREL_PROGRAM_COMPLETED"}:
         start = datetime.fromisoformat(step["active_cooking_started_at"].replace("Z", "+00:00"))
         seconds = int((observed - start).total_seconds())
         updated.update(status="AWAITING_UNLOAD", program_completed_at=at,
-                       program_cooking_duration=seconds, time_status=cooking_time_status("RICE", seconds))
-    elif body.event == "RICE_UNLOADED":
+                       program_cooking_duration=seconds,
+                       time_status=cooking_time_status("RICE" if target == "RICE" else "MACKEREL", seconds))
+    elif body.event in {"RICE_UNLOADED", "MACKEREL_UNLOADED"}:
         start = datetime.fromisoformat(step["active_cooking_started_at"].replace("Z", "+00:00"))
         completed = datetime.fromisoformat(step["program_completed_at"].replace("Z", "+00:00"))
         _, exposure = cooking_durations(start, completed, observed)
@@ -229,6 +281,58 @@ async def record_transition_evidence(meal_id: UUID, request: Request, body: Tran
     event = {"sk": f"EVENT#{version:012d}", "event": "MODE_TRANSITION_ASSESSED",
              "from_status": old["status"], "to_status": status, "observed_at": observed_at,
              "recorded_at": _now(), "actor": session.subject, "assessment": result}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}
+
+
+@router.post("/{meal_id}/mackerel-safety")
+async def record_mackerel_safety(meal_id: UUID, request: Request, body: MackerelSafetyCheck) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {k: v for k, v in row.items() if k != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version or old["status"] != "MACKEREL_UNLOADED":
+        raise HTTPException(409, "인양된 작업의 안전 확인 단계가 아닙니다.")
+    step = rows.get(f"JOB#MACKEREL#{old['mackerel_cooking_job_id']}")
+    if not step or not step.get("food_unloaded_at") or not step.get("products"):
+        raise HTTPException(409, "인양 및 제품 정보가 필요합니다.")
+    if body.measured_at.tzinfo is None or body.measured_at.utcoffset() is None:
+        raise HTTPException(422, "측정 시작시각에 시간대가 필요합니다.")
+    start = body.measured_at.astimezone(timezone.utc)
+    unloaded = datetime.fromisoformat(step["food_unloaded_at"].replace("Z", "+00:00"))
+    if start != unloaded or start + timedelta(seconds=60) > datetime.now(timezone.utc):
+        raise HTTPException(422, "측정은 인양 즉시 시작하고 60초가 경과해야 합니다.")
+    products = {item["product_id"]: item for item in step["products"]}
+    if (len({p.product_id for p in body.probes}) != len(body.probes) or
+            len({p.probe_id for p in body.probes}) != len(body.probes) or
+            any(p.product_id not in products for p in body.probes)):
+        raise HTTPException(422, "서로 다른 적재 제품과 탐침을 선택해야 합니다.")
+    low = any(p.calibration_status == "OK" and r.celsius is not None and r.celsius < 75
+              for p in body.probes for r in p.readings)
+    complete = (len(body.probes) == 3 and {p.product_id for p in body.probes} == set(products) and
+                all(p.calibration_status == "OK" and len(p.readings) == 60 and
+                    [r.second for r in p.readings] == list(range(60)) and
+                    all(r.celsius is not None for r in p.readings) for p in body.probes))
+    safety = "FAILED" if low else "PASSED" if complete else "ASSESSMENT_INCOMPLETE"
+    minimum = (str(min(r.celsius for p in body.probes for r in p.readings)) if complete else None)
+    version = int(old["version"]) + 1
+    safety_version = int(step.get("safety_version", 0)) + 1
+    updated = {**step, "safety_status": safety, "safety_version": safety_version,
+               "batch_representative_core_temperature": minimum}
+    next_status = "MACKEREL_SAFETY_PASSED" if safety == "PASSED" else \
+                  "MACKEREL_SAFETY_FAILED" if safety == "FAILED" else "MACKEREL_UNLOADED"
+    meta = {**old, "status": next_status, "version": version, "updated_at": _now()}
+    event = {"sk": f"EVENT#{version:012d}", "event": "MACKEREL_CORE_CHECK", "from_status": old["status"],
+             "to_status": next_status, "observed_at": start.isoformat().replace("+00:00", "Z"),
+             "recorded_at": _now(), "actor": session.subject, "safety_status": safety,
+             "probes": [probe.model_dump(mode="json") for probe in body.probes],
+             "products": step["products"]}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:
