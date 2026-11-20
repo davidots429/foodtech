@@ -26,7 +26,8 @@ type Meal = {
     safety_probe_summaries?: ProbeSummary[];
     monitored_process_assessment?: { status: string; recovered_at_second: number | null;
       door_open_seconds: number; reason_codes: string[]; fan_observation?: FanObservation };
-    products?: { product_id: string }[] };
+    products?: { product_id: string; rack_id: string; shelf: number; pan_id: string;
+      position?: string | null; mass_kg: string; thickness_cm: string }[] };
   events?: { event: string; observed_at: string; selection_issues?: string[] }[];
 };
 
@@ -63,6 +64,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
   const [sourceDevice, setSourceDevice] = useState("synthetic-combi-medium");
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sampleLayout, setSampleLayout] = useState("THREE_SHELVES");
+  const [selectedProducts, setSelectedProducts] = useState<string[] | null>(null);
+  const [selectionNote, setSelectionNote] = useState("");
   const [reheatStart, setReheatStart] = useState("");
   const [reheatEnd, setReheatEnd] = useState("");
   const [reheatReason, setReheatReason] = useState("");
@@ -78,7 +81,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         dry_rice_kg: dry, drained_rice_kg: drained, added_water_kg: water,
         pan_tare_kg: panTare, rack_tare_kg: rackTare,
       });
-      setMeal(result); setLookup(result.meal.meal_batch_id); setSourceFile(null);
+      setMeal(result); setLookup(result.meal.meal_batch_id); setSourceFile(null); setSelectedProducts(null); setSelectionNote(""); setSampleLayout("THREE_SHELVES");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "배치를 생성하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
@@ -119,7 +122,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     if (requestActive.current) return;
     requestActive.current = true;
     setBusy(true); setError("");
-    try { setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(lookup.trim())}`)); }
+    try { setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(lookup.trim())}`)); setSelectedProducts(null); setSelectionNote(""); setSampleLayout("THREE_SHELVES"); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "배치를 찾지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
@@ -131,7 +134,10 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     try {
       const event = mealSteps[meal.meal.status].event;
-      const locations = sampleLayout === "ONE_SHELF" ? [[1, 1, "LEFT"], [1, 1, "CENTER"], [1, 1, "RIGHT"]] :
+      const locations = sampleLayout === "ONE_SHELF_TWO" ? [[1, 1, "LEFT"], [1, 1, "RIGHT"]] :
+        sampleLayout === "ONE_SHELF" ? [[1, 1, "LEFT"], [1, 1, "CENTER"], [1, 1, "RIGHT"]] :
+        sampleLayout === "TWO_SHELVES_FOUR" ? [[1, 1, "LEFT"], [1, 2, "LEFT"], [1, 2, "RIGHT"], [1, 1, "RIGHT"]] :
+        sampleLayout === "TWO_RACKS_EQUAL" ? [[1, 1, "LEFT"], [1, 2, "LEFT"], [2, 2, "LEFT"], [2, 3, "LEFT"]] :
         sampleLayout === "TWO_SHELVES" ? [[1, 1, "LEFT"], [1, 2, "LEFT"], [1, 2, "RIGHT"]] :
         sampleLayout === "TWO_RACKS" ? [[1, 1, "LEFT"], [1, 2, "LEFT"], [2, 3, "LEFT"]] :
         [[1, 1, "LEFT"], [1, 2, "CENTER"], [1, 3, "RIGHT"]];
@@ -142,6 +148,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       await api(path + "/events", csrf, { expected_version: meal.meal.version,
         event, observed_at: observed.toISOString(), ...(products ? { products } : {}) });
       setMeal(await api<Meal>(path)); setObservedAt("");
+      if (event === "MACKEREL_STARTED") { setSelectedProducts(null); setSelectionNote(""); }
     } catch (cause) { setError(cause instanceof Error ? cause.message : "단계를 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
@@ -162,14 +169,19 @@ export function CombiMeal({ csrf }: { csrf: string }) {
   }
   async function simulateMackerelSafety() {
     if (!meal?.mackerel.food_unloaded_at || !meal.mackerel.products || requestActive.current) return;
+    const chosen = selectedProducts ?? meal.mackerel.products.slice(0, 3).map(product => product.product_id);
+    if (chosen.length !== Math.min(3, meal.mackerel.products.length)) {
+      setError(`표본 ${Math.min(3, meal.mackerel.products.length)}개를 선택해 주세요.`); return;
+    }
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
-    const probes = meal.mackerel.products.map((product, index) => ({ product_id: product.product_id,
+    const probes = chosen.map((productId, index) => ({ product_id: productId,
       probe_id: `synthetic-probe-${index + 1}`, calibration_status: "OK",
       readings: Array.from({ length: 60 }, (_, second) => ({ second, celsius: "75" })) }));
     try {
       await api(path + "/mackerel-safety", csrf, { expected_version: meal.meal.version,
-        measured_at: meal.mackerel.current_unloaded_at ?? meal.mackerel.food_unloaded_at, probes });
+        measured_at: meal.mackerel.current_unloaded_at ?? meal.mackerel.food_unloaded_at, probes,
+        selection_note: selectionNote.trim() || null });
       setMeal(await api<Meal>(path));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "안전 표본을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
@@ -241,6 +253,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     const value = new Date(new Date(source.first_observed_at).getTime() + offsets[step] * 1000);
     setObservedAt(new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 23));
   }
+  const products = meal?.mackerel.products ?? [];
+  const chosen = selectedProducts ?? products.slice(0, 3).map(product => product.product_id);
   return <section><h2>밥·고등어 합성 식사 배치</h2>
     <p>밥을 인양한 뒤 오븐을 건열로 전환하고 고등어를 조리하는 시연입니다. 장비를 제어하지 않습니다.</p>
     <div className="field-grid">
@@ -285,11 +299,13 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {" "}· 목표 4 · 다른 단계 {meal.rice.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.rice.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
       {meal.mackerel.time_status && <p>고등어 프로그램 시간 {meal.mackerel.program_cooking_duration}초 · 시간 판정 {meal.mackerel.time_status}
         {meal.mackerel.thermal_exposure_duration !== undefined && <> · 인양까지 열 노출 {meal.mackerel.thermal_exposure_duration}초</>}</p>}
-      {meal.meal.status === "MACKEREL_READY" && <div><p>합성 제품 세 개를 각 130g, 두께 1.5~2.0cm로 투입합니다.</p>
+      {meal.meal.status === "MACKEREL_READY" && <div><p>합성 제품을 각 130g, 두께 1.5~2.0cm로 투입합니다.</p>
         <label>합성 적재 위치<select value={sampleLayout} onChange={event => setSampleLayout(event.target.value)}>
           <option value="THREE_SHELVES">한 랙 · 세 선반</option><option value="TWO_SHELVES">한 랙 · 두 선반</option>
-          <option value="ONE_SHELF">한 랙 · 한 선반</option>
+          <option value="TWO_SHELVES_FOUR">한 랙 · 두 선반 · 네 제품</option>
+          <option value="ONE_SHELF">한 랙 · 한 선반</option><option value="ONE_SHELF_TWO">한 랙 · 한 선반 · 두 제품</option>
           {meal.meal.equipment_size === "LARGE_ROLL_IN_RACK_20" && <option value="TWO_RACKS">두 랙</option>}
+          {meal.meal.equipment_size === "LARGE_ROLL_IN_RACK_20" && <option value="TWO_RACKS_EQUAL">두 랙 · 동일 적재량 · 네 제품</option>}
         </select></label></div>}
       {mealSteps[meal.meal.status] && <div className="field-row"><label>합성 관찰시각
         <input type="datetime-local" step="0.001" value={observedAt} onChange={event => setObservedAt(event.target.value)} /></label>
@@ -299,7 +315,19 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {meal.meal.source && <button type="button" disabled={busy} onClick={() => assessSource("transition")}>연결된 전환 원표본 판정</button>}{" "}
         <button type="button" disabled={busy} onClick={() => simulateTransition(true)}>습도 지원 합성 표본</button>{" "}
         <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></div>}
-      {meal.meal.status === "MACKEREL_UNLOADED" && <div><p>인양 즉시 시작한 세 탐침의 75°C 합성 표본을 60초간 확인합니다. 인양 후 60초가 경과해야 합니다.</p>
+      {meal.meal.status === "MACKEREL_UNLOADED" && <div><p>인양 후 제품 {Math.min(3, products.length)}개를 선택해 각 75°C 합성 표본을 60초간 확인합니다. 인양 후 60초가 경과해야 합니다.</p>
+        <fieldset><legend>합성 안전 표본 선택</legend>
+          {products.map(product => <label key={product.product_id} style={{ display: "block" }}>
+            <input type="checkbox" checked={chosen.includes(product.product_id)}
+              disabled={busy || (!chosen.includes(product.product_id) && chosen.length >= 3)}
+              onChange={event => setSelectedProducts(event.target.checked ? [...chosen, product.product_id] : chosen.filter(id => id !== product.product_id))} />
+            {product.product_id} · {product.rack_id} / {product.shelf}단 / {product.pan_id} · 위치 {product.position ?? "미기록"}
+            {" "}· {product.mass_kg}kg · 두께 {product.thickness_cm}cm
+          </label>)}
+        </fieldset>
+        <label>표본 선정 근거 (두 랙의 적재량이 같으면 필수)
+          <input maxLength={500} value={selectionNote} onChange={event => setSelectionNote(event.target.value)} /></label>
+        <p>선반·랙·두께와 위치 기준은 서버에서 확인하며, 기준에 맞지 않으면 안전 결과는 미완료입니다.</p>
         <button type="button" disabled={busy} onClick={simulateMackerelSafety}>합성 심부온도 확인</button></div>}
       {meal.meal.status === "MACKEREL_SAFETY_FAILED" && <div><p>실패 이력을 보존하고 별도의 추가 가열 구간을 기록한 뒤 안전 표본을 다시 확인합니다.</p>
         <div className="field-row"><label>추가 가열 시작<input type="datetime-local" step="0.001" value={reheatStart} onChange={event => setReheatStart(event.target.value)} /></label>
