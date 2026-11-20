@@ -93,6 +93,9 @@ var accessToken = "";
 var tokenExpires = DateTimeOffset.MinValue;
 var disconnectOnce = options.ContainsKey("disconnect-once");
 var disconnected = false;
+var fault = options.GetValueOrDefault("fault");
+if (fault is not (null or "invalid-utf8") || (fault is not null && profileId != "mockprofile-100"))
+    throw new ArgumentException("Unsupported REST fault scenario.");
 
 app.MapPost("/oauth2/token", async (HttpContext context) =>
 {
@@ -124,6 +127,13 @@ app.MapGet("/v1/records", (HttpContext context, int? cursor) =>
     context.Response.Headers["X-Profile-ID"] = profileId;
     context.Response.Headers["X-Provenance"] = "SYNTHETIC";
     context.Response.Headers["X-Next-Cursor"] = recordLines.Length.ToString();
+    if (fault == "invalid-utf8" && start == 0)
+    {
+        var remaining = Encoding.UTF8.GetBytes(string.Join("\n", recordLines.Skip(1)) +
+                                               (recordLines.Length > 1 ? "\n" : ""));
+        var bytes = new byte[] { 0xff, 0xfe, 0x80, 0x0a }.Concat(remaining).ToArray();
+        return Results.Bytes(bytes, "application/x-ndjson");
+    }
     var lines = string.Join("\n", recordLines.Skip(start));
     return Results.Text(lines.Length == 0 ? "" : lines + "\n", "application/x-ndjson", Encoding.UTF8);
 });
