@@ -32,3 +32,7 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 
 로컬 시험은 부분 저장 실패 뒤 재실행과 서버 프로세스 종료·재시작 후 세 합성 원표본을 확인한다. 이는 합성 Mock이 원본 fixture를 보존하고 동일 인증서로 복귀하는 조건에서의 복구이며, 일반 OPC UA 서버의 이력·UA Republish·장애 시 정확히 한 번 처리를 보장하지 않는다. 장기 장애, 서버 원본의 유실·변경, 실제 AWS 저장, 부하·나머지 프로파일과 인증서 발급·교체·폐기 절차는 후속 구현·검증이다.
 
+
+### 합성 Session-less Browse/Read
+
+`python -m foodtech_collection_adapter.opcua_json --count 3 --timeout 30`은 `FOODTECH_UA_JSON_URL`, `FOODTECH_MOCK_CLIENT_ID`, `FOODTECH_MOCK_CLIENT_SECRET`, `FOODTECH_MOCK_CA`, `FOODTECH_DATA_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`을 사용한다. 인증된 프로젝트 전용 HTTPS Browse/Read로 합성 프로파일 `mockprofile-200-a-001`을 수집하고 `mockprofile-200-a-map-v1`으로 표준화한다. 원본 이력을 다시 읽어 저장 실패 후 재시도하며 기존 중복 판정에 의존한다. 서버 프로세스가 유지하는 합성 이력으로, 표준 OPC UA 이력 서비스나 실제 제조사 호환성을 뜻하지 않는다.

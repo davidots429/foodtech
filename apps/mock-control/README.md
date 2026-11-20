@@ -63,3 +63,7 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
 
 `AvailableSnapshots` 읽기 전용 문자열 Node는 현재까지 발생한 합성 원표본만 JSON 문자열 배열로 반환한다. 전체 배열의 UTF-8 크기는 최대 2,000,000바이트다. 서버 재시작 시 동일 fixture를 처음부터 재생하므로 수집기는 이미 처리한 순번을 대조하고 누락된 자료를 다시 읽을 수 있다. 이 Node는 프로젝트 합성 복구 계약이며 OPC UA 표준 HistoryRead 서비스나 실제 장비의 이력 제공을 뜻하지 않는다.
 
+
+### 합성 Session-less Browse/Read (프로파일 200)
+
+`serve-ua-json --fixture fixtures/mockprofile-200-a-001.json --cert <PFX> --port <포트>`는 프로젝트 전용 HTTPS JSON 계약을 제공한다. `FOODTECH_MOCK_CERT_PASSWORD`, `FOODTECH_MOCK_CLIENT_ID`, `FOODTECH_MOCK_CLIENT_SECRET`을 환경변수로 설정한다. OAuth client credentials 후 `/ua-json/v1/browse`와 `/ua-json/v1/read?node=DeviceId` 또는 `AvailableSnapshots`를 읽는다. 쓰기와 제어는 제공하지 않는다. 첫 이력 조회 이후 합성 표본을 5초 간격으로 공개한다. 이는 UA 세션이 없는 프로젝트 시험 계약이며 OPC UA 표준 JSON 서비스나 제조사 호환 서버라는 의미가 아니다. 이력은 프로세스 메모리에만 존재한다.

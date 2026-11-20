@@ -128,7 +128,8 @@ class MinimalFlowTests(unittest.TestCase):
         with patch.dict("os.environ", config), patch.object(collector_cli, "RestMockClient", Client), \
              patch.object(collector_cli, "DynamoOrderedIngestor", Ingestor), patch("sys.argv", ["collector"]):
             for device, source in (("mockprofile-300-a-001", "synthetic-mqtt"),
-                                   ("mockprofile-203-a-001", "synthetic-opcua")):
+                                   ("mockprofile-203-a-001", "synthetic-opcua"),
+                                   ("mockprofile-200-a-001", "synthetic-opcua-json")):
                 raw = json.dumps({**FIXTURE["records"][0], "deviceId": device, "sourceId": source})
                 with self.assertRaisesRegex(ValueError, "unexpected REST Mock device"):
                     collector_cli.main()
