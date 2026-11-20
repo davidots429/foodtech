@@ -50,3 +50,7 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 ### vendor-c 기본 REST 인스턴스
 
 `--instance mockprofile-100-c-001`로 PascalCase·약어와 중첩 측정값을 쓰는 세 번째 합성 원천을 수집한다. 원천 Schema 검증 후 오프셋 시각을 UTC로 정규화하고 분 단위 경과값을 초로 변환한다. `0~10` 순서형 속도는 `SPEED_LEVEL`로 기록하며 출력 비율이나 RPM으로 환산하지 않는다. `Y/N` 알람과 빈 오류 문자열은 명시적으로 변환하고 원본 JSON은 유지한다. fixture의 분 단위 값은 표시 정밀도 때문에 변환 결과가 5초와 미세하게 다를 수 있으며 이를 보간하지 않는다. vendor별 커서는 분리된다. 실제 AWS 저장과 나머지 연계 방식·프로파일 검증은 후속이다.
+
+### MQTT vendor-b·c 인스턴스
+
+MQTT 수집 명령의 `--instance mockprofile-300-b-001` 또는 `--instance mockprofile-300-c-001`로 각 합성 원천을 선택한다. 선택된 인스턴스의 정확한 Topic만 구독하며 원천 Schema·출처·장비 ID를 확인한다. vendor-b의 출력 비율과 vendor-c의 속도 단계는 서로와 RPM으로 환산하지 않는다. QoS 1 확인은 원본 수집 또는 격리 저장 후에만 보낸다. 현재 로컬 TLS 시험 범위이며 AWS 실저장과 다른 프로파일은 별도로 남아 있다.

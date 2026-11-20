@@ -77,3 +77,5 @@ REST 기본 프로파일의 `serve`에 `--fault invalid-utf8`을 지정하면 �
 `serve --fixture fixtures/mockprofile-100-b-001.json --cert <PFX> --port <포트>`는 vendor-b 평면 snake_case, 화씨, Unix 밀리초, 정수 상태, 출력 비율 및 밀리초 경과값을 제공한다. 이는 실제 제조사 규격이 아니다. 화씨 입력은 섭씨 0.1°C 단위로 정확히 되돌릴 수 있는 값만 허용하는 합성 초기 계약이다. 출력 비율을 RPM으로 환산하지 않는다.
 
 `serve --fixture fixtures/mockprofile-100-c-001.json --cert <PFX> --port <포트>`는 PascalCase/약어, 중첩 측정값, 오프셋 시각, 분 단위 경과값, `Y/N`과 순서형 `0~10` 속도 단계를 사용하는 합성 vendor-c 원천을 제공한다. 실제 제조사 호환 사양이 아니다.
+
+MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprofile-300-c-001.json`도 지원한다. 인스턴스별 Topic에만 구독을 허용하며 각 vendor의 원천 표현을 그대로 전송한다. 실제 장비 호환 사양은 아니다.
