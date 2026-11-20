@@ -909,6 +909,7 @@ async def record_rice_process(meal_id: UUID, request: Request, body: RiceProcess
 class SourceAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
+    reassess_legacy_fan: bool = Field(default=False, strict=True)
 
 
 @router.post("/{meal_id}/source-assessment/{phase}")
@@ -930,10 +931,16 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
     job_id = {"rice": old["rice_cooking_job_id"], "transition": old["mode_transition_id"],
                         "mackerel": old["mackerel_cooking_job_id"]}[phase]
     step = rows.get(f"TRANSITION#{job_id}" if phase == "transition" else f"JOB#{kind}#{job_id}")
+    prior_assessment = step.get("monitored_process_assessment") if step else None
+    prior_source = step.get("monitored_process_source") if step else None
+    if body.reassess_legacy_fan and (phase != "rice" or not prior_assessment or
+            "fan_observation" in prior_assessment or not prior_source or
+            prior_source.get("raw_sha256") != source.get("raw_sha256") or prior_source.get("phase") != "RICE"):
+        raise HTTPException(409, "팬 관찰이 없는 기존 밥 원천 판정만 같은 원표본으로 다시 계산할 수 있습니다.")
     if phase == "transition":
         if not step or step.get("status") != "IN_PROGRESS" or step.get("samples") or old["status"] != "MODE_TRANSITION":
             raise HTTPException(409, "표본이 없는 진행 중인 전환에서만 원천 판정을 적용할 수 있습니다.")
-    elif not step or step.get("status") != "UNLOADED" or step.get("monitored_process_assessment"):
+    elif not step or step.get("status") != "UNLOADED" or (prior_assessment and not body.reassess_legacy_fan):
         raise HTTPException(409, "인양 후 아직 공정 판정이 없는 작업에만 적용할 수 있습니다.")
     jobs = {"RICE": old["rice_cooking_job_id"], "TRANSITION": old["mode_transition_id"],
             "MACKEREL": old["mackerel_cooking_job_id"]}
@@ -1017,13 +1024,23 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
         updated = {**step, "monitored_process_assessment": assessment, "monitored_process_source": lineage}
         if phase == "rice":
             updated["rice_critical_alarm_observed"] = any(item.get("criticalAlarm") is True for item in selected)
+            if body.reassess_legacy_fan:
+                if step.get("safety_status") == "PASSED":
+                    updated["safety_status"] = "INCOMPLETE"
+                    updated["safety_version"] = int(step.get("safety_version", 0)) + 1
+                if step.get("quality_current"):
+                    updated["quality_current"] = {**step["quality_current"], "usable": False,
+                                                  "blocked_reason": "RICE_PROCESS_REASSESSED"}
     meta = {**old, "status": next_status, "version": version, "updated_at": _now()}
     if phase == "transition":
         meta["last_observed_at"] = observed_at
-    event = {"sk": f"EVENT#{version:012d}", "event": f"{kind}_SOURCE_ASSESSED",
+    event = {"sk": f"EVENT#{version:012d}", "event": "RICE_SOURCE_REASSESSED" if body.reassess_legacy_fan else f"{kind}_SOURCE_ASSESSED",
              "from_status": old["status"], "to_status": next_status,
              "observed_at": observed_at, "recorded_at": _now(),
              "actor": session.subject, "assessment": assessment, "source_sha256": digest}
+    if body.reassess_legacy_fan:
+        event["previous_assessment"] = prior_assessment
+        event["previous_source"] = prior_source
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:
