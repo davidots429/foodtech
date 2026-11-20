@@ -158,6 +158,20 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["safety_status"], "PASSED")
         return response.json()
 
+    async def test_core_check_rejects_values_outside_synthetic_input_range(self):
+        job = await self.create()
+        for event in ("PREHEAT_COMPLETED", "COOKING_STARTED", "COOKING_COMPLETED"):
+            job = await self.transition(job, event)
+        path = f"/api/customer/cooking-jobs/{job['job_id']}"
+        for temperature in ("300.1", "-273.16"):
+            result = await self.client.post(path + "/safety/core-check", headers=CSRF,
+                json={"expected_version": job["version"],
+                      "probes": [probe("piece-1", temperature), probe("piece-2")]})
+            self.assertEqual(result.status_code, 422)
+            current = (await self.client.get(path)).json()["job"]
+            self.assertEqual(current["version"], job["version"])
+            self.assertTrue(current["evaluation_blocked"])
+
     def assessment_body(self, job, current=0, kind="INITIAL", reason=None):
         return {"expected_version": job["version"], "expected_current_version": current,
                 "kind": kind, "reason": reason, "scores": SCORES.copy(), "observations": OBSERVATIONS.copy(),
