@@ -31,6 +31,8 @@
 
 공통 계약 `foodtech_contracts.recommendation_guard`는 합성 돈까스·제육볶음 후보의 승인된 온도·시간·RPM·하중 경계와 직전 안전 실패·걸림 이후 금지 변경을 검사한다. 필수 증거나 이전 기준이 없으면 `INDETERMINATE`, 위반은 `REJECTED`다. `WITHIN_ENCODED_LIMITS`는 구현된 제한을 통과했다는 뜻이며 전체 안전성이나 권고 승인이 아니다. 이 계약은 아직 모델 출력·업무 증거·후보 레시피 저장에 연결되지 않았으며 기존 상담 답변을 자동으로 검증하지 않는다.
 
+`foodtech_contracts.recommendation_output`은 모델 출력 JSON의 중복·추가 필드, 타입, 크기 및 비유한 수를 검사하고 호출자가 별도로 제공한 신뢰된 이전 기준·증거로 위 제한을 적용한다. 실패·판단 불가·제한 위반은 상태 envelope와 빈 `data`를 반환하며 제한 통과값도 `NEEDS_REVIEW`다. 모델 호출·재시도·Tier 승인·업무 증거 조회·후보 저장 경로는 아직 연결되지 않았다.
+
 로컬 검사는 `uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v`로 실행한다. 자격증명 값·암호문·프롬프트 원문을 시험 입력에 넣지 않는다.
 
 ## 저장 자격증명과 외부 공급자 첫 실행 경계
