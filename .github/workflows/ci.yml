@@ -81,4 +81,13 @@ jobs:
           file: infra/containers/ai-service.Dockerfile
           build-args: FOODTECH_PACKAGE=${{ matrix.package }}
           push: false
+          load: true
+          tags: foodtech-ci/${{ matrix.package }}:test
+      - name: Verify service imports inside the runtime image
+        run: |
+          case '${{ matrix.package }}' in
+            foodtech-ai-gateway) module=foodtech_ai_gateway.serve ;;
+            foodtech-credential-registration) module=foodtech_credential_registration.serve ;;
+          esac
+          docker run --rm --entrypoint python foodtech-ci/${{ matrix.package }}:test -c "import importlib; importlib.import_module('$module')"
 
