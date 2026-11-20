@@ -14,6 +14,7 @@ from foodtech_contracts.combi_transition import TransitionSample, assess_transit
 from foodtech_contracts.combi_mackerel_process import Sample, assess as assess_mackerel_process
 from foodtech_contracts.combi_rice_process import Sample as RiceSample, assess as assess_rice_process
 from foodtech_contracts.combi_stream import CombiStreamValidator
+from foodtech_contracts.combi_rice_live import observe as observe_rice_live
 from foodtech_contracts.combi_sampling import selection_issues
 from foodtech_contracts.combi_probe import summarize as summarize_probe
 
@@ -181,6 +182,7 @@ async def get_combi_live(meal_id: UUID, request: Request) -> dict:
     return {"state": "COMPLETED" if meal.get("source") else "COLLECTING",
             "count": int(state["count"]), "device_id": state["device_id"],
             "latest": state["latest"], "latest_window": state.get("latest_window"),
+            "rice_monitor": state.get("rice_monitor"),
             "updated_at": state["updated_at"], "provenance": "SYNTHETIC"}
 
 
@@ -225,7 +227,10 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
     # Retain an incomplete phase-local window across requests; never fill missing values.
     pending = list((state or {}).get("pending_window", []))
     latest_window = (state or {}).get("latest_window")
+    rice_monitor = (state or {}).get("rice_monitor")
     for observation in observations:
+        if observation["phase"] == "RICE":
+            rice_monitor = observe_rice_live(rice_monitor, observation)
         second = observation["phaseSecond"]
         phase = observation["phase"]
         if second % 5 == 1:
@@ -252,6 +257,7 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
                   "phase": validator.phase, "phase_second": validator.phase_second,
                   "previous_time": validator.previous_time.isoformat(), "schema_version": validator.schema_version,
                   "latest": latest, "latest_window": latest_window, "pending_window": pending,
+                  "rice_monitor": rice_monitor,
                   "updated_at": now, "byte_count": int((state or {}).get("byte_count", 0)) + sum(len(line) + 1 for line in encoded)}
     chunk = {"sk": f"CHUNK#{count:06d}", "device_id": body.device_id,
              "records": body.records, "sha256": digest}

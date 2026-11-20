@@ -161,6 +161,8 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(live["latest_window"]["sample_count"], 5)
                             self.assertEqual(live["latest_window"]["average_celsius"], "100")
                             self.assertEqual(live["latest_window"]["outside_target_seconds"], 0)
+                            self.assertEqual(live["rice_monitor"]["last_second"], 5)
+                            self.assertEqual(live["rice_monitor"]["failure_codes"], [])
                             step = await api.post(f"/api/customer/combi-meals/{meal['meal_batch_id']}/events",
                                 headers={"X-CSRF-Token": "csrf"}, json={"expected_version": 1,
                                 "event": "RICE_STARTED", "observed_at": fixture["logicalStartAt"]})

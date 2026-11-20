@@ -122,6 +122,8 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.status_code, 200, result.text)
             live = (await self.client.get(path + "/source-live")).json()
             window = live["latest_window"]
+            self.assertEqual(live["rice_monitor"]["last_second"], min(end, 5))
+            self.assertTrue(live["rice_monitor"]["complete_from_start"])
             if end == 2:
                 self.assertIsNone(window)
             elif end in (5, 7):
