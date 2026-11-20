@@ -30,7 +30,8 @@ def advance(previous: dict | None, normalized: dict, *, ingestion_event_id: str,
     has_gap = before.get("data_gap") is True or gap
     # Older state may already have forgotten a gap; only a full replay can
     # establish complete history for an existing legacy job.
-    history_verified = not before or before.get("gap_history_verified") is True
+    history_verified = not before or (before.get("gap_history_verified") is True and
+                                      type(before.get("data_gap")) is bool)
     low = temperature < 160
     high = temperature > 180
     below_normal = temperature < 165

@@ -549,10 +549,15 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
                 else "WARNING" if prior == "WARNING" or time_status != "NORMAL"
                 else "NORMAL")
         else:
+            assessment = old.get("process_assessment")
+            gap_or_unknown = ((assessment.get("data_gap") is not False or
+                               assessment.get("gap_history_verified") is not True)
+                              if isinstance(assessment, dict) else
+                              old.get("process_temperature_status", "NOT_MEASURED") != "NOT_MEASURED")
             meta["process_assessment_status"] = process_status(
                 old.get("process_temperature_status", "NOT_MEASURED"),
                 old.get("process_thickness_status", "NOT_MEASURED"), time_status,
-                data_gap=bool(old.get("process_assessment", {}).get("data_gap")),
+                data_gap=gap_or_unknown,
             )
         if next_status == "FAILED":
             meta["last_transition_reason"] = time_status
