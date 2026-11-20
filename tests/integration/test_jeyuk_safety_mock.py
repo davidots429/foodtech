@@ -29,6 +29,7 @@ class JeyukSafetyMockTests(unittest.TestCase):
         readings = {}
         for raw in raws:
             sample = decode_jeyuk_mock_sample(raw)
+            self.assertEqual(sample.validation_identity, json.loads(FIXTURE.read_text())["validationIdentity"])
             readings[sample.second] = monitor.observe(
                 sample.second, mixture_celsius=sample.mixture_celsius,
                 calibration_status=sample.calibration_status,

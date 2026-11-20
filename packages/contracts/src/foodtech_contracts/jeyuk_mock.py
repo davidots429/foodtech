@@ -20,6 +20,7 @@ class JeyukMockSample:
     calibration_status: str | None
     safety_sensor_position: str | None
     last_ingredient_addition_completed: bool | None
+    validation_identity: dict[str, str] | None
 
 
 def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
@@ -50,7 +51,10 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
     }
     safety_fields = {"mixtureCelsius", "calibrationStatus", "safetySensorPosition",
                      "lastIngredientAdditionCompleted"}
-    if not isinstance(record, dict) or set(record) not in (required, required | safety_fields):
+    identity_fields = {"ingredientSpecId", "ingredientLotId", "supplierId", "sensorId",
+                       "sensorCalibrationRecordId", "processConditionProfileId", "processConditionVersion"}
+    if not isinstance(record, dict) or set(record) not in (
+            required, required | safety_fields, required | safety_fields | {"validationIdentity"}):
         raise ValueError("unexpected Jeyuk Mock sample fields")
     if (record["provenance"] != "SYNTHETIC" or record["profileId"] != "mockprofile-110"
             or record["instanceId"] != "mockprofile-110-a-001"
@@ -67,6 +71,11 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
                        or record["safetySensorPosition"] != "LOWEST_MIXTURE_POINT"
                        or type(record["lastIngredientAdditionCompleted"]) is not bool):
         raise ValueError("unexpected Jeyuk safety sensor contract")
+    identity = record.get("validationIdentity")
+    if identity is not None and (not isinstance(identity, dict) or set(identity) != identity_fields or
+            any(not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", value) is None
+                for value in identity.values())):
+        raise ValueError("unexpected Jeyuk validation identity")
     return JeyukMockSample(
         record["fixtureId"], record["profile"], _decimal(record, "actualLoadKg", positive=True),
         record["second"], _decimal(record, "surfaceCelsius"),
@@ -76,4 +85,5 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
         record["calibrationStatus"] if has_safety else None,
         record["safetySensorPosition"] if has_safety else None,
         record["lastIngredientAdditionCompleted"] if has_safety else None,
+        identity,
     )

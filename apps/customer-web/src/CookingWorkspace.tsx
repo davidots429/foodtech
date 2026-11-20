@@ -62,6 +62,7 @@ const validationCheckLabels: Record<string, string> = {
   source_derived_results_match_raw: "저장 판정과 원표본 재계산 일치",
   source_process_conditions_normal: "원천 공정판정 전 구간 정상",
   source_safety_samples_valid: "원천 안전 표본의 교정·위치 확인",
+  source_validation_identity_matches: "원천의 합성 원재료·센서·공정 ID 일치",
   source_process_span_covers_cooking: "원천 기록이 전체 조리시간을 포함",
 };
 
@@ -767,7 +768,7 @@ export function CookingWorkspace({ csrf }: Props) {
                   {validationCheckLabels[key] ?? key}: {passed ? "확인" : "미확인"}
                 </li>)}</ul>
                 {validationEvidence.process_reference && <p>자동 판정 참조: <code>{validationEvidence.process_reference.pk} / {validationEvidence.process_reference.sk}</code></p>}
-                <p>센서·교정 ID, 원재료 추적, 공정조건 프로파일 ID는 원천 레코드에 없어 아직 대조되지 않았습니다. 이 조회로 72시간 유효성이 시작되지 않습니다.</p>
+                <p>식별값은 합성 fixture의 선언값입니다. 이 조회로 실제 원재료 이력이나 교정 증명, 72시간 유효성이 확인되는 것은 아닙니다.</p>
               </div>}
             </div>}
             {job.source_job_id && <p className="small">원 작업 ID: <code>{job.source_job_id}</code> · 재조리 사유: {job.recook_reason}{" "}

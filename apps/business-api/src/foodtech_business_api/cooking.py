@@ -405,6 +405,7 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                      "source_derived_results_match_raw": False,
                      "source_process_conditions_normal": False,
                      "source_safety_samples_valid": False,
+                     "source_validation_identity_matches": False,
                      "source_process_span_covers_cooking": False}
     source_table = os.getenv("FOODTECH_DATA_TABLE", "")
     if process_linked and context_matches_job and source_table and second <= 600:

@@ -154,6 +154,7 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             "source_records_contiguous", "source_records_match_binding",
             "source_derived_results_match_raw",
             "source_process_conditions_normal", "source_safety_samples_valid",
+            "source_validation_identity_matches",
             "source_process_span_covers_cooking")}
         with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
              patch.object(cooking, "_read_jeyuk_source_records",

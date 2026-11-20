@@ -3,6 +3,15 @@
   "provenance": "SYNTHETIC",
   "profile": "SMALL",
   "actualLoadKg": "1.8",
+  "validationIdentity": {
+    "ingredientSpecId": "synthetic-pork-v1",
+    "ingredientLotId": "synthetic-lot-v1",
+    "supplierId": "synthetic-supplier",
+    "sensorId": "synthetic-probe",
+    "sensorCalibrationRecordId": "synthetic-cal-v1",
+    "processConditionProfileId": "jeyuk-small-safety",
+    "processConditionVersion": "v1"
+  },
   "samples": [
     {"seconds": 1, "surfaceCelsius": "200", "actualRpm": "30", "targetRpm": "30", "motorLoadPercent": "50", "mixtureCelsius": "70", "calibrationStatus": "OK", "safetySensorPosition": "LOWEST_MIXTURE_POINT", "lastIngredientAdditionCompleted": true},
     {"seconds": 59, "surfaceCelsius": "200", "actualRpm": "30", "targetRpm": "30", "motorLoadPercent": "50", "mixtureCelsius": "75", "calibrationStatus": "OK", "safetySensorPosition": "LOWEST_MIXTURE_POINT", "lastIngredientAdditionCompleted": false},

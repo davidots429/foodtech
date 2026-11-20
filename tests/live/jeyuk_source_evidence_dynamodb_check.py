@@ -60,6 +60,7 @@ def main() -> int:
                        "mixtureCelsius": float(segment["mixtureCelsius"]),
                        "calibrationStatus": segment["calibrationStatus"],
                        "safetySensorPosition": segment["safetySensorPosition"],
+                       "validationIdentity": fixture["validationIdentity"],
                        "lastIngredientAdditionCompleted": segment["lastIngredientAdditionCompleted"]}
                 raw_sk = f"RAW#{second:06d}"
                 table.put_item(Item={"pk": pk, "sk": raw_sk, "raw": json.dumps(raw)})
@@ -68,7 +69,11 @@ def main() -> int:
         assessments, raws = read_source_records(TABLE, batch_id, second)
         last = assessments[-1]
         job = {"source_binding": {"batch_id": batch_id},
-               "validation_context": {"actual_load_kg": "1.80"},
+               "validation_context": {"actual_load_kg": "1.80", "ingredient_spec_id": "synthetic-pork-v1",
+                                      "ingredient_lot_id": "synthetic-lot-v1", "supplier_id": "synthetic-supplier",
+                                      "sensor_id": "synthetic-probe", "sensor_calibration_record_id": "synthetic-cal-v1",
+                                      "process_condition_profile_id": "jeyuk-small-safety",
+                                      "process_condition_version": "v1"},
                "process_assessment": {"second": second, "source_assessment_sk": last["sk"],
                                       "status": last["process_status"],
                                       "rule_version": PROCESS_RULE_VERSION},
