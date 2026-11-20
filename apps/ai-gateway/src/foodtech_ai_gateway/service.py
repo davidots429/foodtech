@@ -37,7 +37,8 @@ class GatewayService:
         self.vault = vault
         self.provider = provider
 
-    def prepare(self, caller: Caller, execution_id: str, *, local_recipe: bool = False) -> Decision:
+    def prepare(self, caller: Caller, execution_id: str, *, local_recipe: bool = False,
+                disallow_recipe: bool = False) -> Decision:
         # The caller supplies no model, credential, consent or cost fields.
         self.registry.begin_request()
         decision = self.policy.authorize(caller, execution_id)
@@ -54,6 +55,8 @@ class GatewayService:
         if local_recipe and (execution.feature != Feature.RECIPE_CORRECTION or not model.local or
                              model.provider != "ollama" or execution.estimated_cost_usd != 0):
             return Decision(False, "LOCAL_RECIPE_REQUIRED")
+        if disallow_recipe and execution.feature == Feature.RECIPE_CORRECTION:
+            return Decision(False, "STRUCTURED_RECIPE_REQUIRED")
         if self.registry.snapshot_versions() != authorized_versions:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         try:
@@ -142,10 +145,12 @@ class GatewayService:
         execution = self.registry.execution(execution_id)
         if not execution or execution.tenant_id != caller.tenant_id:
             return ExecutionOutcome(execution_id, "DENIED", error_code="EXECUTION_NOT_FOUND")
+        if execution.feature == Feature.RECIPE_CORRECTION:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="STRUCTURED_RECIPE_REQUIRED")
         model = self.registry.model(execution.model_id)
         if not model or not model.local:
             return ExecutionOutcome(execution_id, "DENIED", error_code="LOCAL_MODEL_REQUIRED")
-        decision = self.prepare(caller, execution_id)
+        decision = self.prepare(caller, execution_id, disallow_recipe=True)
         if not decision.allowed:
             return ExecutionOutcome(execution_id, "DENIED", error_code=decision.code)
         try:
@@ -172,10 +177,12 @@ class GatewayService:
         execution = self.registry.execution(execution_id)
         if not execution or execution.tenant_id != caller.tenant_id:
             return ExecutionOutcome(execution_id, "DENIED", error_code="EXECUTION_NOT_FOUND")
+        if execution.feature == Feature.RECIPE_CORRECTION:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="STRUCTURED_RECIPE_REQUIRED")
         model = self.registry.model(execution.model_id)
         if not model or model.local or not execution.credential_id:
             return ExecutionOutcome(execution_id, "DENIED", error_code="EXTERNAL_MODEL_REQUIRED")
-        decision = self.prepare(caller, execution_id)
+        decision = self.prepare(caller, execution_id, disallow_recipe=True)
         if not decision.allowed:
             return ExecutionOutcome(execution_id, "DENIED", error_code=decision.code)
         secret: bytearray | None = None

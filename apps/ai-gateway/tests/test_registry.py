@@ -242,6 +242,17 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(missing.state, "INDETERMINATE")
         self.assertEqual(self.registry.execution_state("recipe-3"), "PENDING")
 
+    def test_general_execution_paths_cannot_bypass_recipe_output_guard(self):
+        self.registry.create_execution(Execution("recipe-guard", "tenant-a", Feature.RECIPE_CORRECTION,
+                                                  "local-model", None, "SYNTHETIC", Decimal("0")))
+        caller = Caller("business-api", "tenant-a")
+        result = asyncio.run(self.service.execute_local(caller, "recipe-guard", "prompt", None))
+        self.assertEqual((result.state, result.error_code), ("DENIED", "STRUCTURED_RECIPE_REQUIRED"))
+        external = GatewayService(self.registry, vault=object(), provider=object())
+        result = asyncio.run(external.execute_external(caller, "recipe-guard", "prompt"))
+        self.assertEqual((result.state, result.error_code), ("DENIED", "STRUCTURED_RECIPE_REQUIRED"))
+        self.assertEqual(self.registry.execution_state("recipe-guard"), "PENDING")
+
     def test_retry_limit_and_safety_rejection_never_return_raw_output(self):
         self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
                                          True, NOW, NOW))
