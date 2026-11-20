@@ -147,9 +147,12 @@ async def import_combi_source(meal_id: UUID, request: Request, body: CombiSource
             "MACKEREL": old["mackerel_cooking_job_id"]}
     validator = CombiStreamValidator(str(meal_id), body.device_id, jobs)
     counts = {key: 0 for key in jobs}
+    first_observed_at = None
     try:
         for line in body.records:
             item = validator.accept(line)
+            if first_observed_at is None:
+                first_observed_at = item["occurredAt"]
             counts[item["phase"]] += 1
     except (ValueError, TypeError, KeyError) as exc:
         raise HTTPException(422, "원천 표본이 배치 계약과 일치하지 않습니다.") from exc
@@ -164,6 +167,7 @@ async def import_combi_source(meal_id: UUID, request: Request, body: CombiSource
     meta.update(version=version, updated_at=now,
                 source={"device_id": body.device_id, "profile_id": "mockprofile-120", "provenance": "SYNTHETIC",
                         "record_count": len(body.records), "phase_counts": counts,
+                        "first_observed_at": first_observed_at,
                         "raw_sha256": digest, "imported_at": now})
     event = {"sk": f"EVENT#{version:012d}", "event": "COMBI_SOURCE_IMPORTED",
              "from_status": old["status"], "to_status": old["status"],
@@ -505,6 +509,84 @@ async def record_rice_process(meal_id: UUID, request: Request, body: RiceProcess
              "from_status": old["status"], "to_status": old["status"],
              "observed_at": step["program_completed_at"], "recorded_at": _now(),
              "actor": session.subject, "assessment": assessment}
+    try:
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+    except Conflict as exc:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
+    return {"meal": meta, "step": updated, "event": event}
+
+
+class SourceAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: int = Field(ge=1)
+
+
+@router.post("/{meal_id}/source-assessment/{phase}")
+async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "mackerel"],
+                              request: Request, body: SourceAssessment) -> dict:
+    session, store = await _context(request, write=True)
+    pk = _pk(session.subject, str(meal_id))
+    rows = {row["sk"]: {key: value for key, value in row.items() if key != "pk"}
+            for row in await _store_call(store, store.read_meal, pk)}
+    old = rows.get("META")
+    if not old:
+        raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
+    if int(old["version"]) != body.expected_version:
+        raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.")
+    source = old.get("source")
+    if not source:
+        raise HTTPException(409, "연결된 합성 원표본이 필요합니다.")
+    kind = "RICE" if phase == "rice" else "MACKEREL"
+    job_id = old["rice_cooking_job_id"] if phase == "rice" else old["mackerel_cooking_job_id"]
+    step = rows.get(f"JOB#{kind}#{job_id}")
+    if not step or step.get("status") != "UNLOADED" or step.get("monitored_process_assessment"):
+        raise HTTPException(409, "인양 후 아직 공정 판정이 없는 작업에만 적용할 수 있습니다.")
+    jobs = {"RICE": old["rice_cooking_job_id"], "TRANSITION": old["mode_transition_id"],
+            "MACKEREL": old["mackerel_cooking_job_id"]}
+    validator = CombiStreamValidator(str(meal_id), source["device_id"], jobs)
+    records, selected = [], []
+    total = int(source["record_count"])
+    try:
+        for index in range((total + 99) // 100):
+            chunk = await _store_call(store, store.read_meal_source_chunk, pk, index)
+            if not chunk or int(chunk["first_sequence"]) != index * 100 + 1:
+                raise ValueError("source chunk missing or out of order")
+            for line in chunk["records"]:
+                item = validator.accept(line)
+                records.append(line)
+                if item["phase"] == kind:
+                    selected.append(item)
+        digest = hashlib.sha256(b"\n".join(line.encode("utf-8") for line in records) + b"\n").hexdigest()
+        if len(records) != total or digest != source["raw_sha256"] or not selected:
+            raise ValueError("source integrity check failed")
+        started = datetime.fromisoformat(step["active_cooking_started_at"].replace("Z", "+00:00"))
+        first = datetime.fromisoformat(selected[0]["occurredAt"].replace("Z", "+00:00"))
+        if started != first or int(step["program_cooking_duration"]) != len(selected):
+            raise ValueError("source time span differs from the recorded cooking interval")
+        if phase == "rice":
+            sources = {item["humidityValueSource"] for item in selected}
+            if len(sources) != 1:
+                raise ValueError("humidity source changes during the cooking interval")
+            assessment = assess_rice_process([
+                RiceSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
+                           Decimal(item["measuredHumidityPercent"]) if item["measuredHumidityPercent"] is not None else None)
+                for item in selected], len(selected), step["time_status"], sources.pop())
+        else:
+            assessment = assess_mackerel_process([
+                Sample(item["phaseSecond"], Decimal(item["chamberCelsius"]), item["doorState"])
+                for item in selected], len(selected), step["time_status"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(422, "원표본의 무결성이나 조리 시간 범위를 확인할 수 없습니다.") from exc
+    version = int(old["version"]) + 1
+    updated = {**step, "monitored_process_assessment": assessment,
+               "monitored_process_source": {"raw_sha256": digest, "phase": kind,
+                                            "first_sequence": selected[0]["sequence"],
+                                            "last_sequence": selected[-1]["sequence"]}}
+    meta = {**old, "version": version, "updated_at": _now()}
+    event = {"sk": f"EVENT#{version:012d}", "event": f"{kind}_SOURCE_ASSESSED",
+             "from_status": old["status"], "to_status": old["status"],
+             "observed_at": step["program_completed_at"], "recorded_at": _now(),
+             "actor": session.subject, "assessment": assessment, "source_sha256": digest}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:
