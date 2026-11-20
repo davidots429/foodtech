@@ -21,8 +21,20 @@ async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str
     response = await api.get(path)
     response.raise_for_status()
     meal = response.json()["meal"]
-    if meal["meal_batch_id"] != meal_id or meal["status"] != "PREPARING_RICE" or meal.get("source"):
+    if meal["meal_batch_id"] != meal_id or meal.get("source"):
         raise ValueError("meal is not available for source import")
+    saved = []
+    if publish_live:
+        response = await api.get(path + "/source-live/records")
+        response.raise_for_status()
+        snapshot = response.json()
+        saved = snapshot.get("records")
+        if (not isinstance(saved, list) or any(not isinstance(line, str) for line in saved) or
+                snapshot.get("count") != len(saved) or len(saved) > 5000 or
+                (saved and snapshot.get("device_id") != device_id)):
+            raise ValueError("live source snapshot is invalid or belongs to a different device")
+    if meal["status"] != "PREPARING_RICE" and not saved:
+        raise ValueError("meal is not available for a new source import")
     jobs = {"RICE": meal["rice_cooking_job_id"], "TRANSITION": meal["mode_transition_id"],
             "MACKEREL": meal["mackerel_cooking_job_id"]}
     validator = CombiStreamValidator(meal_id, device_id, jobs)
@@ -48,13 +60,17 @@ async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str
             if length > 2048 or size > 2_500_000 or len(records) >= 5000:
                 raise ValueError("Mock stream exceeds import limits")
             item = validator.accept(line)
+            position = len(records)
+            if position < len(saved) and line != saved[position]:
+                raise ValueError("Mock source differs from the saved live snapshot")
             counts[item["phase"]] += 1
             records.append(line)
-            pending.append(line)
+            if position >= len(saved):
+                pending.append(line)
         if publish_live:
             for offset in range(0, len(pending), 5):
                 chunk = pending[offset:offset + 5]
-                expected = cursor + offset
+                expected = max(cursor, len(saved)) + offset
                 body = {"device_id": device_id, "expected_cursor": expected, "records": chunk}
                 for attempt in range(2):
                     try:
@@ -67,6 +83,8 @@ async def import_meal(mock: RestMockClient, api: httpx.AsyncClient, meal_id: str
                 if response.json().get("next_cursor") != expected + len(chunk):
                     raise ValueError("live source cursor does not match submitted records")
         cursor = result.next_cursor
+    if len(records) < len(saved):
+        raise ValueError("Mock source ended before the saved live snapshot")
     if any(count == 0 for count in counts.values()):
         raise ValueError("all three phases must be present")
     response = await api.get(path)

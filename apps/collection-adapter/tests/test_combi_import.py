@@ -85,6 +85,42 @@ class ImportTests(unittest.IsolatedAsyncioTestCase):
                 await import_meal(mock, self.api, MEAL, "combi-1", "csrf")
             self.assertFalse(self.posts)
 
+    async def test_resume_verifies_saved_prefix_independent_of_batch_boundaries(self):
+        self.meal["status"] = "RICE_COOKING"
+        writes = []
+        def handler(request):
+            if request.method == "GET" and request.url.path.endswith("/source-live/records"):
+                return httpx.Response(200, json={"count": 2, "device_id": "combi-1", "records": self.records[:2]})
+            if request.method == "GET":
+                return httpx.Response(200, json={"meal": self.meal})
+            body = json.loads(request.content)
+            writes.append((request.url.path, body))
+            if request.url.path.endswith("/source-live"):
+                return httpx.Response(200, json={"next_cursor": body["expected_cursor"] + len(body["records"])})
+            return httpx.Response(201, json={"meal": {"source": {"record_count": 3}}})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test") as api:
+            mock = Mock()
+            mock.poll.side_effect = [PollResult(self.records, 3), PollResult((), 3)]
+            result = await import_meal(mock, api, MEAL, "combi-1", "csrf", publish_live=True)
+        self.assertEqual(result["record_count"], 3)
+        self.assertEqual(writes[0][1], {"device_id": "combi-1", "expected_cursor": 2, "records": [self.records[2]]})
+        self.assertEqual(writes[1][1]["records"], list(self.records))
+
+    async def test_resume_rejects_changed_or_truncated_saved_source(self):
+        writes = []
+        def handler(request):
+            if request.method == "GET" and request.url.path.endswith("/source-live/records"):
+                return httpx.Response(200, json={"count": 2, "device_id": "combi-1", "records": self.records[:2]})
+            if request.method == "GET": return httpx.Response(200, json={"meal": self.meal})
+            writes.append(request)
+            return httpx.Response(200, json={})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test") as api:
+            for first in ((self.records[0] + " ",), self.records[:1]):
+                mock = Mock(); mock.poll.side_effect = [PollResult(first, len(first)), PollResult((), len(first))]
+                with self.assertRaisesRegex(ValueError, "saved live snapshot"):
+                    await import_meal(mock, api, MEAL, "combi-1", "csrf", publish_live=True)
+        self.assertFalse(writes)
+
     async def test_existing_source_is_not_polled(self):
         self.meal["source"] = {"record_count": 3}
         mock = Mock()
