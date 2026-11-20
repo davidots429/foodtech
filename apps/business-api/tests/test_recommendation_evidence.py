@@ -25,8 +25,10 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
             "evaluation_blocked": False, "process_assessment_status": "NORMAL",
             "private_note": "not-for-model"}
         self.store.items[(self.pk, "ASSESSMENT#CURRENT")] = {"version": 1, "usable": True,
-            "safety_version": 2, "assessment_sk": "ASSESSMENT#REV#000000000001"}
+            "safety_version": 2, "assessment_sk": "ASSESSMENT#REV#000000000001",
+            "quality_passed": True, "score_percent": "80"}
         self.store.items[(self.pk, "ASSESSMENT#REV#000000000001")] = {"version": 1,
+            "sk": "ASSESSMENT#REV#000000000001", "status": "COMPLETED",
             "safety_version": 2, "quality_passed": True, "score_percent": "80",
             "scale_version": "tonkatsu-common-v1", "observations": {"note": "not-for-model"}}
         result_sk = "RESTATEMENT#RESULT#test"
@@ -101,3 +103,9 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(value["observation_coverage"])
         self.assertEqual(value["process_view"], "AS_PROCESSED")
         self.assertIn("OBSERVATION_COVERAGE", value["unverified_categories"])
+
+    async def test_inconsistent_assessment_pointer_is_not_trusted(self):
+        self.store.items[(self.pk, "ASSESSMENT#CURRENT")]["score_percent"] = "100"
+        response = await self.client.get(f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence")
+        self.assertIsNone(response.json()["recorded"]["quality"])
+        self.assertIn("CURRENT_QUALITY_ASSESSMENT", response.json()["unverified_categories"])

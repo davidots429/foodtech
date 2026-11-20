@@ -11,6 +11,11 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
                   and job.get("safety_status") == "PASSED"
                   and pointer.get("safety_version") == job.get("safety_version")
                   and assessment and assessment.get("version") == pointer.get("version")
+                  and pointer.get("assessment_sk") == assessment.get("sk")
+                  and assessment.get("status") == "COMPLETED"
+                  and type(pointer.get("quality_passed")) is bool and pointer.get("score_percent") is not None
+                  and pointer.get("quality_passed") == assessment.get("quality_passed")
+                  and pointer.get("score_percent") == assessment.get("score_percent")
                   and assessment.get("safety_version") == job.get("safety_version"))
     process = derived if derived else job
     process_detail = process.get("process_assessment") or {}
