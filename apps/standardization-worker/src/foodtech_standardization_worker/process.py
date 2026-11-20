@@ -40,7 +40,14 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
     record = decode_record(raw)
     canonical = canonical_record(record)
     temperature = Decimal(canonical["temperature_celsius"])
-    source_raw = json.loads(raw, parse_float=Decimal) if "output_percent" in canonical or "speed_level" in canonical else None
+    if "output_percent" in canonical or "speed_level" in canonical:
+        if raw.lstrip().startswith("<"):
+            from foodtech_contracts.xml101 import parse_record
+            source_raw = parse_record(raw)
+        else:
+            source_raw = json.loads(raw, parse_float=Decimal)
+    else:
+        source_raw = None
     findings = []
     if temperature < ABSOLUTE_ZERO_C:
         findings.append(Finding(
@@ -111,7 +118,9 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         },
         correction_rule_id=("FT-MAP-VENDOR-B-1" if "output_percent" in canonical else
                             "FT-MAP-VENDOR-C-1" if "speed_level" in canonical else "FT-MAP-VENDOR-A-1"),
-        mapping_version={"mockprofile-101-a-001": "mockprofile-101-a-map-v1",
+        mapping_version={"mockprofile-101-b-001": "mockprofile-101-b-map-v1",
+                         "mockprofile-101-c-001": "mockprofile-101-c-map-v1",
+                         "mockprofile-101-a-001": "mockprofile-101-a-map-v1",
                          "mockprofile-203-b-001": "mockprofile-203-b-map-v1",
                          "mockprofile-203-c-001": "mockprofile-203-c-map-v1",
                          "mockprofile-200-b-001": "mockprofile-200-b-map-v1",

@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lxml import etree
-from foodtech_contracts import decode_record
+import jsonschema
+from foodtech_contracts import canonical_record, decode_record
 from foodtech_collection_adapter import __main__ as cli
 from foodtech_collection_adapter.rest import PollResult
 from foodtech_standardization_worker.process import assess
@@ -27,6 +28,27 @@ class XmlSourceTests(unittest.TestCase):
                           self.raw.replace('synthetic-rest-xml', '&x;'))
         with self.assertRaisesRegex(ValueError, "UTF-8"):
             decode_record('<?xml version="1.0" encoding="ISO-8859-1"?>' + self.raw)
+
+    def test_vendor_schemas_preserve_values_and_validate_extensions(self):
+        for vendor in ("b", "c"):
+            raw = json.loads((ROOT / f"fixtures/mockprofile-101-{vendor}-001.json").read_text())["records"][0]
+            record = decode_record(raw)
+            self.assertEqual(record["deviceId"], f"mockprofile-101-{vendor}-001")
+            result = assess("event", raw)
+            self.assertEqual(result.mapping_version, f"mockprofile-101-{vendor}-map-v1")
+            self.assertNotIn("ROTATIONAL_SPEED_RPM", result.normalized)
+            if vendor == "b":
+                augmented = raw.replace("</record>", "<ext_custom>original</ext_custom><unknown>value</unknown></record>")
+                self.assertEqual(canonical_record(decode_record(augmented))["extensions"]["ext_custom"], "original")
+                with self.assertRaises(jsonschema.ValidationError):
+                    decode_record(raw.replace("<device_status>1</device_status>", "<device_status>9</device_status>"))
+            else:
+                augmented = raw.replace("</Extension>", "<Nested><Code>v</Code></Nested></Extension>")
+                self.assertEqual(canonical_record(decode_record(augmented))["extensions"]["vendor_extension"]["Nested"], {"Code": "v"})
+                with self.assertRaises(jsonschema.ValidationError):
+                    decode_record(raw.replace("<Alarm>N</Alarm>", "<Alarm>invalid</Alarm>"))
+            with self.assertRaisesRegex(ValueError, "requires XML"):
+                decode_record(json.dumps({"deviceId": f"mockprofile-101-{vendor}-001"}))
 
     def test_invalid_xml_is_quarantined_before_cursor(self):
         calls = []

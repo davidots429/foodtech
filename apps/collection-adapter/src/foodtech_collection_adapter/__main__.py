@@ -22,7 +22,7 @@ def main() -> int:
     parser.add_argument("--cursor-key", default="default", help="separate cursor for each Mock fixture")
     parser.add_argument("--profile", choices=("mockprofile-100", "mockprofile-101", "mockprofile-110"),
                         default="mockprofile-100")
-    parser.add_argument("--instance", choices=("mockprofile-100-a-001", "mockprofile-100-b-001", "mockprofile-100-c-001", "mockprofile-101-a-001"),
+    parser.add_argument("--instance", choices=("mockprofile-100-a-001", "mockprofile-100-b-001", "mockprofile-100-c-001", "mockprofile-101-a-001", "mockprofile-101-b-001", "mockprofile-101-c-001"),
                         default="mockprofile-100-a-001")
     args = parser.parse_args()
     if args.polls < 1 or args.interval < 0:
@@ -36,8 +36,8 @@ def main() -> int:
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         parser.error("missing configuration: " + ", ".join(missing))
-    if ((args.profile == "mockprofile-101" and args.instance != "mockprofile-101-a-001") or
-        (args.profile == "mockprofile-100" and args.instance == "mockprofile-101-a-001") or
+    if ((args.profile == "mockprofile-101" and args.instance not in {"mockprofile-101-a-001", "mockprofile-101-b-001", "mockprofile-101-c-001"}) or
+        (args.profile == "mockprofile-100" and args.instance in {"mockprofile-101-a-001", "mockprofile-101-b-001", "mockprofile-101-c-001"}) or
         (args.profile == "mockprofile-110" and args.instance != "mockprofile-100-a-001")):
         parser.error("instance does not match the requested profile")
     client_kwargs = {"profile_id": args.profile} if args.profile != "mockprofile-100" else {}
@@ -66,7 +66,7 @@ def main() -> int:
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
     quarantine = None
     cursor_key = (args.cursor_key if args.instance == "mockprofile-100-a-001" else
-                  ("xml-a#" if args.profile == "mockprofile-101" else
+                  (f"xml-{args.instance.split('-')[2]}#" if args.profile == "mockprofile-101" else
                    "vendor-b#" if args.instance == "mockprofile-100-b-001" else "vendor-c#") + args.cursor_key)
     try:
         cursor, streams = ingestor.cursor_state(cursor_key)
