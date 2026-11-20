@@ -10,6 +10,7 @@ from foodtech_contracts import decode_record, stream_key
 from .aws_flow import DynamoOrderedIngestor
 from .jeyuk_aws import DynamoJeyukIngestor
 from .rest import RestMockClient
+from .ingestion_quarantine import IngestionQuarantine, failure
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -54,12 +55,23 @@ def main() -> int:
         finally:
             client.close()
     ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
+    quarantine = None
     try:
         cursor, streams = ingestor.cursor_state(args.cursor_key)
         for index in range(args.polls):
             result = client.poll(cursor)
             released = []
-            for raw in result.records:
+            for offset, raw in enumerate(result.records):
+                invalid = failure(raw)
+                if invalid is not None:
+                    bucket = os.getenv("FOODTECH_INGESTION_DLQ_BUCKET")
+                    if not bucket:
+                        raise ValueError("ingestion quarantine bucket is required for malformed input")
+                    if quarantine is None:
+                        quarantine = IngestionQuarantine(bucket, os.environ["FOODTECH_DATA_TABLE"])
+                    quarantine.preserve(raw, cursor_key=args.cursor_key, position=cursor + offset,
+                                        reason=invalid[0], missing=invalid[1])
+                    continue
                 record = decode_record(raw)
                 if record["deviceId"] != "mockprofile-100-a-001":
                     raise ValueError("unexpected REST Mock device")

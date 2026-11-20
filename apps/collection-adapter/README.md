@@ -6,7 +6,7 @@
 
 Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`처럼 별도 커서 키를 지정한다. 기본 키 `default`는 기존 커서와 호환된다. 커서 항목에는 발견한 `Source + Device + Batch` 스트림을 함께 기록하여 다음 실행에서도 그 스트림의 순번 결손 만료를 확인한다. 수집 CLI는 특정 배치 하나로 고정된 drain 대신 실제 받은 레코드의 스트림을 사용한다.
 
-첫 구현은 단일 합성 스트림의 최소 흐름이다. REST timeout 5초, 전송 오류 1회 재시도, 순번 결손 대기 5초, lease 30초를 초기 계약으로 둔다. 동시 다중 Task·장기 보류 상태·실패 복구·대규모 부하는 후속 적합성 검증 대상이다. 비정상 JSON과 식별자 누락의 S3 Ingestion DLQ는 이 슬라이스에 포함하지 않는다.
+첫 구현은 단일 합성 스트림의 최소 흐름이다. REST timeout 5초, 전송 오류 1회 재시도, 순번 결손 대기 5초, lease 30초를 초기 계약으로 둔다. 동시 다중 Task·장기 보류 상태·실패 복구·대규모 부하는 후속 적합성 검증 대상이다. REST 기본 프로파일의 비정상 JSON과 순서·업무 식별자 누락은 아래 수집 격리 경로로 보존한다.
 
 `--profile mockprofile-110 --cursor-key <fixture-key>`는 C# 제육볶음 Mock의 HTTPS/OAuth 응답을 별도 계약으로 검증한다. 수집된 1초 원표본은 기존 데이터 테이블의 `JEYUK#<fixtureId>` 파티션에 불변 원본으로 저장하고 FIFO Ordered 큐에 참조를 보낸다. 같은 fixture·초의 원본 내용이 바뀌면 거부하며, 동일 원본의 재전송은 같은 SQS 중복 ID를 사용한다. 커서는 `mockprofile-100`과 분리한다. 제육볶음 경로는 순번 재배열을 하지 않으며 Worker가 연속 초 순서대로 판정한다. 2026-11-15 개발용 AWS에서 C# 생성 표본 30건의 DynamoDB 저장·SQS FIFO 전달과 합성 항목 정리를 확인했다. HTTPS 수집과 AWS 저장을 한 번의 실행으로 결합한 검증은 후속 범위다.
 
@@ -36,3 +36,7 @@ Mock fixture를 바꿔 시험할 때는 `--cursor-key tonkatsu-process-high-v1`�
 ### 합성 Session-less Browse/Read
 
 `python -m foodtech_collection_adapter.opcua_json --count 3 --timeout 30`은 `FOODTECH_UA_JSON_URL`, `FOODTECH_MOCK_CLIENT_ID`, `FOODTECH_MOCK_CLIENT_SECRET`, `FOODTECH_MOCK_CA`, `FOODTECH_DATA_TABLE`, `FOODTECH_ORDERED_QUEUE_URL`을 사용한다. 인증된 프로젝트 전용 HTTPS Browse/Read로 합성 프로파일 `mockprofile-200-a-001`을 수집하고 `mockprofile-200-a-map-v1`으로 표준화한다. 원본 이력을 다시 읽어 저장 실패 후 재시도하며 기존 중복 판정에 의존한다. 서버 프로세스가 유지하는 합성 이력으로, 표준 OPC UA 이력 서비스나 실제 제조사 호환성을 뜻하지 않는다.
+
+### 수집 전 격리 (REST 기본 프로파일)
+
+`FOODTECH_INGESTION_DLQ_BUCKET`에 전용 버킷을 설정하면 JSON 구문·중복 키 오류와 필수 식별자 누락 원본을 S3에 암호화 저장하고 수집 테이블에 별도 `INGESTION_DLQ#.../MANIFEST`를 기록한다. 두 저장이 모두 성공한 뒤에만 커서를 갱신한다. 같은 fixture 커서 위치와 바이트의 재시도는 같은 manifest에 연결된다. 원본은 2 MB 이하이며 이를 초과하거나 버킷 설정·저장이 실패하면 커서를 전진시키지 않는다. 일반 이벤트나 품질 평가 레코드를 만들지 않는다. 이 구현은 `mockprofile-100`의 UTF-8 JSON 레코드만 대상이며 파일 전체·인코딩·압축 오류와 MQTT/OPC UA 격리, recordId가 없는 fallback 처리, 실행 역할과 AWS 실환경 검증은 후속 범위다.

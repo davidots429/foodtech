@@ -8,6 +8,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 
@@ -108,6 +109,12 @@ class MinimalDataFlowStack extends Stack {
       enforceSSL: true,
       visibilityTimeout: Duration.seconds(30),
     });
+    const ingestionDlq = new s3.Bucket(this, "IngestionDlq", {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
     const processingDlq = queue("ProcessingDlq");
     const quarantine = queue("StandardizationDlq");
     const ordered = new sqs.Queue(this, "Ordered", {
@@ -137,6 +144,7 @@ class MinimalDataFlowStack extends Stack {
     cookingTable.grant(workerRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
     ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
     quarantine.grant(workerRole, "sqs:SendMessage");
+    new CfnOutput(this, "IngestionDlqBucketName", { value: ingestionDlq.bucketName });
     new CfnOutput(this, "DataTableName", { value: table.tableName });
     new CfnOutput(this, "OrderedQueueUrl", { value: ordered.queueUrl });
     new CfnOutput(this, "StandardizationDlqUrl", { value: quarantine.queueUrl });
