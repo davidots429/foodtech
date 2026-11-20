@@ -228,7 +228,7 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
                 job = await self.bind(job, f"jeyuk-{size}-safety-v1")
                 pk = cooking._pk("jeyuk-customer", job["job_id"])
                 self.store.items[(pk, "META")].update(status="COMPLETED", safety_status="PASSED",
-                                                       evaluation_blocked=False)
+                                                       evaluation_blocked=False, jeyuk_feed_safety_aligned=True)
                 assessment = {"expected_version": job["version"], "expected_current_version": 0,
                     "kind": "INITIAL", "scores": {item: 4 for item in cooking.SCORE_ITEMS},
                     "observations": {item: "합성 관찰" for item in cooking.SCORE_ITEMS},
@@ -369,6 +369,11 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         blocked = await self.client.post(path + "/assessments", headers=CSRF,
                                          json=assessment(job["version"]))
         self.assertEqual(blocked.status_code, 409)
+        self.store.items[(pk, "META")].update(safety_status="PASSED", evaluation_blocked=False)
+        legacy = await self.client.post(path + "/assessments", headers=CSRF,
+                                        json=assessment(job["version"]))
+        self.assertEqual(legacy.status_code, 409)
+        self.store.items[(pk, "META")].update(safety_status="NOT_MEASURED", evaluation_blocked=True)
         samples = [{"phase": phase, "probe_id": f"probe-{index}",
                     "meat_sample_id": f"meat-{index}", "thickest_or_clumped_part": True,
                     "sampled_at": f"2026-01-01T00:00:0{index}Z",
@@ -413,7 +418,7 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         job = await self.create("2.5")
         pk = cooking._pk("jeyuk-customer", job["job_id"])
         self.store.items[(pk, "META")].update(status="COMPLETED", safety_status="PASSED",
-                                                evaluation_blocked=False, safety_version=1)
+                                                evaluation_blocked=False, safety_version=1, jeyuk_feed_safety_aligned=True)
         path = f"/api/customer/cooking-jobs/{job['job_id']}/assessments"
         body = {"expected_version": job["version"], "expected_current_version": 0,
                 "kind": "INITIAL", "scores": {item: 4 for item in cooking.SCORE_ITEMS},

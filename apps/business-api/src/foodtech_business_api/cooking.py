@@ -1220,6 +1220,8 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
         raise _conflict()
     if old["status"] != "COMPLETED" or old["safety_status"] != "PASSED" or old["evaluation_blocked"]:
         raise HTTPException(409, "작업 완료와 유효한 안전 판정 후에만 평가를 완료할 수 있습니다.")
+    if old["menu"] == "JEYUK" and old.get("jeyuk_feed_safety_aligned") is not True:
+        raise HTTPException(409, "재료 투입과 원천 안전 표본의 일치 확인이 필요합니다.")
     if old.get("equipment_profile") == "synthetic-fryer-approved-v2" and not old.get("tonkatsu_batch"):
         raise HTTPException(409, "해당 작업의 합성 배치 기록이 없습니다.")
     if set(body.scores) != set(SCORE_ITEMS) or any(type(score) is not int or score < 1 or score > 5
