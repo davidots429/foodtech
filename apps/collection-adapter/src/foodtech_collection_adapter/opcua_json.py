@@ -14,14 +14,17 @@ from .opcua import validate_or_quarantine
 from .ingestion_quarantine import IngestionQuarantine
 
 
-INSTANCES = ("mockprofile-200-a-001", "mockprofile-200-b-001", "mockprofile-200-c-001")
+INSTANCES = tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("200", "210") for vendor in "abc")
 
 
 class UaJsonClient:
-    def __init__(self, base_url: str, client_id: str, client_secret: str, ca_file: str):
+    def __init__(self, base_url: str, client_id: str, client_secret: str, ca_file: str, *, profile_id: str = "mockprofile-200"):
         parsed = urlsplit(base_url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or not ca_file:
             raise ValueError("HTTPS endpoint and trusted CA required")
+        if profile_id not in {"mockprofile-200", "mockprofile-210"}:
+            raise ValueError("unsupported synthetic profile")
+        self.profile_id = profile_id
         self.client = httpx.Client(base_url=base_url, verify=ssl.create_default_context(cafile=ca_file), timeout=5, follow_redirects=False)
         self.authorization = "Basic " + base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         self.token = None
@@ -48,7 +51,7 @@ class UaJsonClient:
                 continue
             response.raise_for_status()
             if (response.headers.get("X-Contract-Version") != "1.0" or
-                response.headers.get("X-Profile-ID") != "mockprofile-200" or
+                response.headers.get("X-Profile-ID") != self.profile_id or
                 response.headers.get("X-Provenance") != "SYNTHETIC"):
                 raise ValueError("unexpected synthetic contract")
             return response.json()
@@ -65,7 +68,8 @@ def collect(base_url: str, client_id: str, client_secret: str, ca_file: str, ing
             count: int, timeout_seconds: int, instance: str = INSTANCES[0], quarantine=None) -> int:
     if instance not in INSTANCES or not 1 <= count <= 5000 or timeout_seconds < 1:
         raise ValueError("invalid collection limits")
-    client = UaJsonClient(base_url, client_id, client_secret, ca_file)
+    profile_id = "-".join(instance.split("-")[:2])
+    client = UaJsonClient(base_url, client_id, client_secret, ca_file, profile_id=profile_id)
     try:
         if client.get("/ua-json/v1/browse").get("nodes") != ["DeviceId", "AvailableSnapshots"]:
             raise ValueError("unexpected synthetic nodes")
@@ -87,10 +91,10 @@ def collect(base_url: str, client_id: str, client_secret: str, ca_file: str, ing
             if not isinstance(values, list):
                 if quarantine is not None:
                     quarantine.preserve_opcua_history(json.dumps(values, ensure_ascii=False).encode("utf-8"),
-                        instance_id=device, profile_id="mockprofile-200")
+                        instance_id=device, profile_id=profile_id)
                 raise ValueError("invalid synthetic source history")
             parsed, batch = validate_or_quarantine(json.dumps(values, ensure_ascii=False), device, seen, batch,
-                source_id="synthetic-opcua-json", profile_id="mockprofile-200", quarantine=quarantine)
+                source_id="synthetic-opcua-json", profile_id=profile_id, quarantine=quarantine)
             for number, raw, record, digest in parsed:
                 if number not in seen:
                     ingestor.ingest(raw)

@@ -77,7 +77,7 @@ class OpcUaRecoveryTests(unittest.TestCase):
         values = [json.dumps(fixture["records"][0]), "{broken"]
         calls = []
         class Client:
-            def __init__(self, *args): pass
+            def __init__(self, *args, **kwargs): pass
             def get(self, path): return {"nodes": ["DeviceId", "AvailableSnapshots"]}
             def read(self, node): return fixture["instanceId"] if node == "DeviceId" else values
             def close(self): calls.append("closed")
@@ -97,7 +97,7 @@ class OpcUaRecoveryTests(unittest.TestCase):
         records = [json.dumps(record) for record in fixture["records"]]
         calls = []
         class Client:
-            def __init__(self, *args): self.snapshots = iter([records[:2], records[:1], records])
+            def __init__(self, *args, **kwargs): self.snapshots = iter([records[:2], records[:1], records])
             def get(self, path): return {"nodes": ["DeviceId", "AvailableSnapshots"]}
             def read(self, node): return fixture["instanceId"] if node == "DeviceId" else next(self.snapshots)
             def close(self): calls.append("closed")

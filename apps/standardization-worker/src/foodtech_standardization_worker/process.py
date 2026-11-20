@@ -77,7 +77,8 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         "sequence_number": canonical["sequence_number"],
         "event_time": canonical["event_time"],
         "device_status": "RUNNING" if canonical["device_status"] == "running" else "STOPPED",
-        "CHAMBER_TEMPERATURE": {"value": canonical["temperature_celsius"], "unit": "°C"},
+        ("POT_TEMPERATURE" if canonical["device_id"] in {f"mockprofile-210-{vendor}-001" for vendor in "abc"}
+         else "CHAMBER_TEMPERATURE"): {"value": canonical["temperature_celsius"], "unit": "°C"},
         **({"OUTPUT_PERCENT": {"value": canonical["output_percent"], "unit": "%"}}
            if "output_percent" in canonical else
            {"SPEED_LEVEL": {"value": canonical["speed_level"], "unit": None}} if "speed_level" in canonical else
@@ -121,7 +122,10 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         },
         correction_rule_id=("FT-MAP-VENDOR-B-1" if "output_percent" in canonical else
                             "FT-MAP-VENDOR-C-1" if "speed_level" in canonical else "FT-MAP-VENDOR-A-1"),
-        mapping_version={"mockprofile-302-a-001": "mockprofile-302-a-map-v1",
+        mapping_version={"mockprofile-210-a-001": "mockprofile-210-a-map-v1",
+                         "mockprofile-210-b-001": "mockprofile-210-b-map-v1",
+                         "mockprofile-210-c-001": "mockprofile-210-c-map-v1",
+                         "mockprofile-302-a-001": "mockprofile-302-a-map-v1",
                          "mockprofile-302-b-001": "mockprofile-302-b-map-v1",
                          "mockprofile-302-c-001": "mockprofile-302-c-map-v1",
                          "mockprofile-301-a-001": "mockprofile-301-a-map-v1",
