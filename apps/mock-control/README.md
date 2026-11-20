@@ -1,6 +1,6 @@
 # C# 합성 Mock: 첫 REST/JSON 프로파일
 
-`simulate-tonkatsu-probes --fixture fixtures/tonkatsu-probes-normal-v1.json --output <파일>`은 제품마다 독립 탐침 ID와 인양 후 0~60초의 합성 심부온도 표본을 만든다. fixture의 `productCount`는 1~18이며 `scenario`는 `NORMAL`, `LOW_CORE`, `MISSING_SAMPLE`, `EXPIRED_CALIBRATION` 중 하나다. 생성기는 판정하지 않으며 고객 안전 API가 표본을 판정하고 탐침 ID·분리 순번·논리 측정시간을 함께 보존한다. 실제 측정 또는 제조사 호환 사양이 아니다.
+`simulate-tonkatsu-probes --fixture fixtures/tonkatsu-probes-normal-v1.json --output <파일>`은 제품마다 독립 탐침 ID와 인양 후 0~60초의 합성 심부온도 표본을 만든다. fixture의 `productCount`는 1~18이며 `scenario`는 `NORMAL`, `LOW_CORE`, `MISSING_SAMPLE`, `EXPIRED_CALIBRATION` 중 하나다. 고객 화면에서 이 결과 파일을 불러오며 생성기는 판정하지 않는다. 고객 안전 API가 판정하고 탐침 ID·분리 순번·논리 측정시간·생성기 버전·seed를 보존한다. 실제 측정 또는 제조사 호환 사양이 아니다.
 
 `mockprofile-100-a-001`은 실제 제조사 호환 구현이 아닌 `SYNTHETIC` 시험 프로파일이다. .NET 10의 ASP.NET Core 공유 프레임워크로 HTTPS GET과 OAuth 2.0 Client Credentials의 필요한 부분만 제공한다. 장비 제어·쓰기 기능과 GUI는 없다.
 

@@ -224,9 +224,33 @@ class Probe(StrictModel):
         return self
 
 
+class CoreMockEvidence(StrictModel):
+    schema_version: Literal["tonkatsu-core-samples-v1"]
+    provenance: Literal["SYNTHETIC"]
+    generator_version: str = Field(min_length=1, max_length=40)
+    fixture_version: str = Field(min_length=1, max_length=80)
+    seed: StrictInt = Field(ge=0)
+    scenario: Literal["NORMAL", "LOW_CORE", "MISSING_SAMPLE", "EXPIRED_CALIBRATION"]
+    measurement_start_utc: datetime
+    measurement_end_utc: datetime
+
+
 class CoreCheck(StrictModel):
     expected_version: int = Field(ge=1)
     probes: list[Probe] = Field(min_length=1, max_length=18)
+    mock_evidence: CoreMockEvidence | None = None
+
+    @model_validator(mode="after")
+    def matches_mock_measurements(self):
+        if self.mock_evidence:
+            source = self.mock_evidence
+            if source.measurement_start_utc.utcoffset() is None or source.measurement_end_utc.utcoffset() is None or \
+                    (source.measurement_end_utc - source.measurement_start_utc).total_seconds() != 60 or \
+                    any(probe.measurement_start != source.measurement_start_utc or
+                        probe.measurement_end != source.measurement_end_utc or not probe.probe_id
+                        for probe in self.probes):
+                raise ValueError("mock evidence does not match the probe measurement interval")
+        return self
 
 
 def _probe_summary(probe: Probe) -> dict:
@@ -836,11 +860,13 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
             "version": old["version"] + 1, "evaluation_blocked": status != "PASSED",
             "core_check": [probe.model_dump(mode="json") for probe in body.probes],
             "core_check_summary": [_probe_summary(probe) for probe in body.probes],
+            "core_check_mock_evidence": body.mock_evidence.model_dump(mode="json") if body.mock_evidence else None,
             "core_check_by": session.subject, "updated_at": _now()}
     event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}",
              "domain": "SAFETY_STATUS", "trigger": "CORE_CHECK",
              "from_status": old["safety_status"], "to_status": status,
-             "probes": meta["core_check"], "actor": session.subject, "occurred_at": _now()}
+             "probes": meta["core_check"], "mock_evidence": meta["core_check_mock_evidence"],
+             "actor": session.subject, "occurred_at": _now()}
     await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
     return meta
 

@@ -38,6 +38,8 @@ class TonkatsuProbeMockTests(unittest.IsolatedAsyncioTestCase):
                                "--output", str(output)]
                     subprocess.run(command, check=True, capture_output=True)
                     generated = json.loads(output.read_text())
+                    evidence = {key: generated[key] for key in ("schema_version", "provenance", "generator_version",
+                        "fixture_version", "seed", "scenario", "measurement_start_utc", "measurement_end_utc")}
                     self.assertEqual(generated["provenance"], "SYNTHETIC")
                     self.assertEqual(len(generated["probes"]), 4)
                     self.assertEqual(len({p["probe_id"] for p in generated["probe_manifest"]}), 4)
@@ -70,11 +72,12 @@ class TonkatsuProbeMockTests(unittest.IsolatedAsyncioTestCase):
                                 self.assertEqual(rejected.status_code, 422)
                             response = await client.post(path,
                                 headers={"X-CSRF-Token": "token"},
-                                json={"expected_version": 7, "probes": generated["probes"]})
+                                json={"expected_version": 7, "probes": generated["probes"], "mock_evidence": evidence})
                     self.assertEqual(response.status_code, 200, response.text)
                     self.assertEqual(response.json()["safety_status"], expected)
                     self.assertEqual(response.json()["core_check"][1]["probe_id"], "synthetic-probe-02")
                     self.assertEqual(response.json()["core_check"][1]["removal_sequence"], 2)
+                    self.assertEqual(response.json()["core_check_mock_evidence"]["seed"], 100)
                     summary = response.json()["core_check_summary"][1]
                     self.assertEqual(summary["status"], expected)
                     if scenario == "NORMAL": self.assertEqual(summary["hold_seconds"], 60)
