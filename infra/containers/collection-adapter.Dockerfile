@@ -14,5 +14,6 @@ FROM python:3.12-slim
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
+COPY infra/containers/collection_entrypoint.py /app/collection_entrypoint.py
 USER 10001:10001
-ENTRYPOINT ["python", "-m", "foodtech_collection_adapter"]
+ENTRYPOINT ["python", "/app/collection_entrypoint.py"]
