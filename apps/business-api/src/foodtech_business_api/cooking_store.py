@@ -44,11 +44,15 @@ def _meal_aggregate_dirty(pk, expected_version, meta):
     if type(expected_version) is not int or expected_version < 1 or not isinstance(meta, dict) or \
             type(meta.get('version')) is not int or meta['version'] != expected_version + 1:
         raise ValueError('invalid meal revision for aggregate refresh')
+    return {'sk': 'MEAL_AGGREGATE#DIRTY', 'version': meta['version'], 'state': 'PENDING',
+            'aggregate_refresh_shard': meal_aggregate_shard(pk)}
+
+
+def meal_aggregate_shard(pk: str) -> str:
     if not isinstance(pk, str) or not pk:
         raise ValueError('invalid meal partition')
     shard = hashlib.sha256(pk.encode('utf-8')).digest()[0] % 16
-    return {'sk': 'MEAL_AGGREGATE#DIRTY', 'version': meta['version'], 'state': 'PENDING',
-            'aggregate_refresh_shard': f'PENDING#{shard:02x}'}
+    return f'PENDING#{shard:02x}'
 
 
 def _meal_dirty_scope(pk, version, subject, expected_epoch):

@@ -69,3 +69,33 @@ class CombiRefreshDiscoveryTests(unittest.TestCase):
             with self.subTest(shard=shard, limit=limit), self.assertRaises(ValueError):
                 process_pending_page(store, object(), shard, limit=limit)
         store.table.query.assert_not_called()
+
+
+class CombiRefreshSweepTests(unittest.TestCase):
+    def test_visits_all_shards_and_pages_and_preserves_failures(self):
+        from foodtech_business_api.combi_refresh_worker import sweep_pending
+        calls = []
+        def page(_store, _auth, shard, cursor, *, limit):
+            calls.append((shard, cursor))
+            if shard == 2 and cursor is None:
+                return {'processed': 1, 'failed': 1, 'next_cursor': {'pk': 'next'}}
+            return {'processed': 0, 'failed': 0, 'next_cursor': None}
+        with patch('foodtech_business_api.combi_refresh_worker.process_pending_page', side_effect=page):
+            result = sweep_pending(object(), object())
+        self.assertEqual(result, {'processed': 1, 'failed': 1, 'pages': 17})
+        self.assertEqual([shard for shard, _ in calls], [0, 1, 2, 2, *range(3, 16)])
+        self.assertEqual(calls[3][1], {'pk': 'next'})
+
+    def test_repeated_cursor_and_page_limit_fail_closed(self):
+        from foodtech_business_api.combi_refresh_worker import sweep_pending
+        page = {'processed': 0, 'failed': 0, 'next_cursor': {'pk': 'repeat'}}
+        with patch('foodtech_business_api.combi_refresh_worker.process_pending_page', return_value=page):
+            with self.assertRaisesRegex(RuntimeError, 'did not advance'):
+                sweep_pending(object(), object())
+            with self.assertRaisesRegex(RuntimeError, 'page limit'):
+                sweep_pending(object(), object(), max_pages_per_shard=1)
+
+    def test_entry_requires_explicit_table_names(self):
+        from foodtech_business_api.combi_refresh_worker import main
+        with patch.dict('os.environ', {}, clear=True), patch('sys.stderr'):
+            self.assertEqual(main(), 2)

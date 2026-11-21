@@ -84,3 +84,59 @@ def process_pending_page(store, auth_table, shard: int, cursor: dict | None = No
             # The marker remains pending; never log customer keys or exception values.
             counts['failed'] += 1
     return {**counts, 'next_cursor': page.get('LastEvaluatedKey')}
+
+
+def sweep_pending(store, auth_table, *, page_size: int = 25, max_pages_per_shard: int = 10000) -> dict:
+    """Visit every shard and page once; a future sweep retries retained markers."""
+    import json
+
+    if type(max_pages_per_shard) is not int or not 1 <= max_pages_per_shard <= 10000:
+        raise ValueError('invalid sweep page limit')
+    totals = {'processed': 0, 'failed': 0, 'pages': 0}
+    for shard in range(16):
+        cursor, seen = None, set()
+        for _ in range(max_pages_per_shard):
+            page = process_pending_page(store, auth_table, shard, cursor, limit=page_size)
+            totals['processed'] += page['processed']
+            totals['failed'] += page['failed']
+            totals['pages'] += 1
+            cursor = page['next_cursor']
+            if cursor is None:
+                break
+            token = json.dumps(cursor, sort_keys=True, separators=(',', ':'))
+            if token in seen:
+                raise RuntimeError('pending index pagination did not advance')
+            seen.add(token)
+        else:
+            raise RuntimeError('pending index sweep page limit exceeded')
+    return totals
+
+
+def main() -> int:
+    """Run one explicitly configured sweep; scheduling and IAM remain external."""
+    import json
+    import os
+    import re
+    import sys
+
+    from .auth_store import DynamoAuthStore
+    from .cooking_store import DynamoCookingStore
+
+    cooking_table = os.getenv('FOODTECH_COOKING_TABLE', '')
+    auth_table = os.getenv('FOODTECH_AUTH_TABLE', '')
+    if not re.fullmatch(r'foodtech-cooking-jobs-[a-z0-9-]{1,32}', cooking_table) or \
+            not re.fullmatch(r'foodtech-auth-sessions-[a-z0-9-]{1,32}', auth_table):
+        print('Explicit cooking and authentication table names are required.', file=sys.stderr)
+        return 2
+    try:
+        result = sweep_pending(DynamoCookingStore(cooking_table), DynamoAuthStore(auth_table).table)
+    except Exception:
+        # Do not emit request payloads, table keys, or SDK exception details.
+        print('Pending aggregate sweep failed.', file=sys.stderr)
+        return 1
+    print(json.dumps(result, sort_keys=True))
+    return 1 if result['failed'] else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

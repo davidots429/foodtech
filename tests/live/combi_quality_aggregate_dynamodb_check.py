@@ -12,6 +12,8 @@ from foodtech_business_api import cooking
 from foodtech_business_api.assessment_aggregate import _hash
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.combi_refresh_worker import process_pending_marker, RefreshNotAuthorized
+from foodtech_business_api.combi_refresh_backfill import backfill_pending_page
+from foodtech_business_api.cooking_store import meal_aggregate_shard
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.main import app
 from foodtech_contracts.combi_quality_load import RULE_VERSION
@@ -172,6 +174,24 @@ async def scenario(store, partitions, auth, auth_keys):
                 assert (await client.post(pending_path, headers=headers)).status_code == 409
             marker = store.table.get_item(Key={'pk': meal_pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True)['Item']
             assert int(marker['version']) == 4 and marker['state'] == 'PENDING'
+            # Emulate only this synthetic legacy marker without scanning the development table.
+            marker_key = {'pk': meal_pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}
+            store.table.update_item(Key=marker_key, UpdateExpression='REMOVE aggregate_refresh_shard')
+            legacy = store.table.get_item(Key=marker_key, ConsistentRead=True)['Item']
+            class SyntheticPage:
+                meta = store.table.meta
+                def scan(self, **_kwargs):
+                    return {'Items': [legacy]}
+                def update_item(self, **kwargs):
+                    return store.table.update_item(**kwargs)
+            class StaleSyntheticPage(SyntheticPage):
+                def scan(self, **_kwargs):
+                    return {'Items': [{**legacy, 'version': 3}]}
+            assert backfill_pending_page(StaleSyntheticPage())['changed'] == 1
+            assert 'aggregate_refresh_shard' not in store.table.get_item(Key=marker_key, ConsistentRead=True)['Item']
+            assert backfill_pending_page(SyntheticPage())['updated'] == 1
+            marker = store.table.get_item(Key=marker_key, ConsistentRead=True)['Item']
+            assert marker['aggregate_refresh_shard'] == meal_aggregate_shard(meal_pk)
             auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :lock',
                              ExpressionAttributeValues={':lock': 'synthetic-lock'})
             try:
