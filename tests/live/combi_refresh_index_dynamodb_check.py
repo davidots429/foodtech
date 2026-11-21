@@ -4,6 +4,7 @@ import os
 import time
 from uuid import uuid4
 import boto3
+from foodtech_business_api.cooking import SCORE_ITEMS
 from foodtech_business_api.cooking_store import DynamoCookingStore, meal_aggregate_shard
 from foodtech_business_api.combi_refresh_worker import process_pending_page
 from foodtech_business_api.combi_quality_aggregate import MealAggregateRequest, create_meal_aggregate_for_subject
@@ -23,20 +24,31 @@ pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}'
 auth_key = {'pk': f'USER#{subject}'}
 meta = {'sk': 'META', 'version': 1, 'meal_batch_id': meal_id,
         'rice_cooking_job_id': 'rice', 'mode_transition_id': 'transition',
-        'mackerel_cooking_job_id': 'fish', 'equipment_size': 'MEDIUM_FIXED_RACK_10'}
+        'mackerel_cooking_job_id': 'fish', 'equipment_size': 'MEDIUM_FIXED_RACK_10',
+        'mackerel_recipe_version': 'synthetic'}
 extra_partitions = []
 auth_created = False
 meal_created = False
 try:
     auth.put_item(Item={**auth_key, 'epoch': 0, 'suspended': False}, ConditionExpression='attribute_not_exists(pk)')
     auth_created = True
+    assessment = {'version': 1, 'safety_version': 1, 'menu': 'MACKEREL', 'status': 'COMPLETED',
+                  'scale_version': 'mackerel-common-v1', 'scores': {item: 4 for item in SCORE_ITEMS},
+                  'quality_status': 'QUALITY_PASSED', 'quality_passed': True, 'quality_target': True,
+                  'score_percent': '80.00', 'actual_mass_kg': '7.5', 'actual_portions': 50,
+                  'completed_at': '2026-11-22T01:00:00Z'}
+    pointer = {'version': 1, 'safety_version': 1, 'event_sk': 'EVENT#000000000002', 'usable': True,
+               'quality_status': 'QUALITY_PASSED', 'score_percent': '80.00', 'quality_target': True}
     store.create_meal(pk, [meta, {'sk': 'JOB#RICE#rice', 'status': 'PENDING'},
-                           {'sk': 'TRANSITION#transition'}, {'sk': 'JOB#MACKEREL#fish', 'safety_status': 'NOT_MEASURED'}])
+        {'sk': 'TRANSITION#transition'}, {'sk': 'JOB#MACKEREL#fish', 'status': 'UNLOADED',
+         'safety_status': 'PASSED', 'safety_version': 1, 'quality_version': 1, 'quality_current': pointer},
+        {'sk': pointer['event_sk'], 'event': 'MACKEREL_QUALITY_ASSESSED', 'assessment': assessment}])
     meal_created = True
     request = MealAggregateRequest.model_validate({'meal_ids': [meal_id], 'menu': 'MACKEREL',
         'equipment_size': 'MEDIUM_FIXED_RACK_10', 'recipe_version': 'synthetic', 'load_band': 'PARTIAL',
         'period_start': '2026-11-01T00:00:00Z', 'period_end': '2026-12-01T00:00:00Z'})
     original = asyncio.run(create_meal_aggregate_for_subject(store, subject, 0, request))
+    assert original['sample_count'] == 1 and original['mean_quality_score_percent'] == '80.00'
     group_pk = f"SCOPE#USER#{subject}#MEAL_AGGREGATE#{original['group_id']}"
     extra_partitions = [group_pk, f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS']
     store.advance_meal(pk, 1, {**meta, 'version': 2}, {'sk': 'JOB#RICE#rice', 'status': 'DONE'}, {'sk': 'EVENT#2'})
@@ -56,6 +68,7 @@ try:
     updated_id = next(row['result_id'] for row in versions if row['result_id'] != original['result_id'])
     updated = store.aggregate(group_pk, updated_id)
     assert updated['references'][0]['meal_version'] == 2
+    assert updated['sample_count'] == 1 and updated['mean_quality_score_percent'] == '80.00'
     assert store.aggregate(group_pk, original['result_id'])['references'][0]['meal_version'] == 1
     for _ in range(30):
         page = store.table.query(IndexName='MealAggregatePending', KeyConditionExpression=Key('aggregate_refresh_shard').eq(meal_aggregate_shard(pk)))
