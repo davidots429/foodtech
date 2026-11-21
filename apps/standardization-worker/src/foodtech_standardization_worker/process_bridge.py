@@ -1,6 +1,7 @@
 """Apply standardized synthetic fryer samples to an explicitly bound cooking job."""
 
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr
@@ -91,11 +92,18 @@ class DynamoProcessBridge:
                      "from_status": old.get("process_assessment_status", "INSUFFICIENT_DATA"),
                      "to_status": overall_status,
                      "reason": state["failure_reason"] if failed else None,
+                     "reason_codes": [state["failure_reason"]] if failed and state["failure_reason"] else [],
                      "temperature_status": state["temperature_status"],
                      "rule_version": state["rule_version"], "ingestion_event_id": event_id,
                      "thickness_time_rule_version": old.get("thickness_time_rule_version"),
                      "source_assessment_pk": assessment["pk"],
                      "occurred_at": new["updated_at"]}
+            if failed:
+                event["validation_change_reason"] = "PROCESS_ANOMALY"
+            previous = old.get("process_assessment") or {}
+            history_changed = (old.get("process_assessment_status") != overall_status or
+                               any(previous.get(field) != state.get(field) for field in
+                                   ("temperature_status", "data_gap", "gap_history_verified", "failure_reason")))
             operations = [
                 {"Put": {"TableName": self.table.name,
                          "Item": self._item({"pk": job_pk, "sk": "META", **new}),
@@ -105,6 +113,23 @@ class DynamoProcessBridge:
                 {"Put": {"TableName": self.table.name, "Item": self._item(event),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
             ]
+            if history_changed:
+                prefix, separator, job_id = job_pk.rpartition("#JOB#")
+                if not separator or not prefix.startswith("SCOPE#USER#") or not job_id:
+                    raise ValueError("invalid scoped job key")
+                history_key = {"pk": f"{prefix}#JOBS", "sk": "HISTORY#REVISION"}
+                history = self.table.get_item(Key=history_key, ConsistentRead=True).get("Item")
+                revision = history.get("revision") if history else 0
+                if isinstance(revision, bool) or not isinstance(revision, (int, Decimal)) or \
+                        (isinstance(revision, Decimal) and not revision.is_finite()) or \
+                        revision != int(revision) or not (0 if history is None else 1) <= revision < 10**18:
+                    raise ValueError("invalid customer history revision")
+                put = {"TableName": self.table.name,
+                       "Item": self._item({**(history or {}), **history_key, "revision": int(revision) + 1}),
+                       "ConditionExpression": "attribute_not_exists(pk)" if history is None else "revision = :prior"}
+                if history is not None:
+                    put["ExpressionAttributeValues"] = {":prior": {"N": str(int(revision))}}
+                operations.append({"Put": put})
             try:
                 self.client.transact_write_items(TransactItems=operations)
                 return self._refresh_restatement_if_needed(job_pk, assessment) or overall_status
@@ -112,7 +137,11 @@ class DynamoProcessBridge:
                 if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
                     return self._refresh_restatement_if_needed(job_pk, assessment) or "REPLAYED"
                 reasons = exc.response.get("CancellationReasons", [])
-                if not reasons or reasons[0].get("Code") != "ConditionalCheckFailed":
+                codes = {reason.get("Code") for reason in reasons}
+                retryable = (reasons and codes <= {None, "None", "TransactionConflict", "ConditionalCheckFailed"} and
+                             ("TransactionConflict" in codes or reasons[0].get("Code") == "ConditionalCheckFailed" or
+                              (history_changed and len(reasons) > 2 and reasons[2].get("Code") == "ConditionalCheckFailed")))
+                if not retryable:
                     raise
                 # Another writer changed the job version; recalculate from the new state.
         raise RuntimeError("process assessment could not commit after concurrent job updates")

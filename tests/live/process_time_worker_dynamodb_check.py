@@ -122,7 +122,12 @@ async def verify() -> None:
                 _, path, binding, placed_at = await started_job(client, subject, pks, run_id, "normal")
                 first = process_sample(binding, f"{run_id}-normal-1", placed_at + timedelta(seconds=5))
                 second = process_sample(binding, f"{run_id}-normal-2", placed_at + timedelta(seconds=10))
+                before_history = store.history_revision(subject)
                 assert bridge.apply(first) == "INSUFFICIENT_DATA"
+                first_history = store.history_revision(subject)
+                assert first_history == before_history + 1
+                assert bridge.apply(first) == "REPLAYED"
+                assert store.history_revision(subject) == first_history
                 before = await job_snapshot(client, path)
                 original_commit = store.commit
 
