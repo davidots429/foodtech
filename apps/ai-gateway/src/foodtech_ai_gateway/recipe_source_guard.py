@@ -127,13 +127,18 @@ class DynamoRecipeSourceGuard:
         """
         if not self._valid_scope(execution, job_partitions, source_partitions):
             raise ValueError('invalid recipe settlement scope')
+        bindings = ((execution.job_id, execution.job_version, execution.jeyuk_source_revision),
+                    (execution.prior_job_id, execution.prior_job_version, execution.prior_source_revision))
+        snapshot = self._read_snapshot(execution.tenant_id, bindings, source_partitions)
+        if snapshot is None or snapshot != self._read_snapshot(execution.tenant_id, bindings, source_partitions):
+            raise ValueError('recipe source changed or is unavailable')
         serializer = TypeSerializer()
         encode = lambda values: {key: serializer.serialize(value) for key, value in values.items()}
         checks = []
-        for job_id, version, revision, job_pk, source_pk in zip(
+        for index, (job_id, version, revision, job_pk, source_pk) in enumerate(zip(
                 (execution.job_id, execution.prior_job_id),
                 (execution.job_version, execution.prior_job_version),
-                (execution.jeyuk_source_revision, execution.prior_source_revision), job_partitions, source_partitions):
+                (execution.jeyuk_source_revision, execution.prior_source_revision), job_partitions, source_partitions)):
             batch = source_pk.removeprefix('JEYUK#')
             checks.append({'ConditionCheck': {'TableName': self.cooking.name,
                 'Key': encode({'pk': job_pk, 'sk': 'META'}),
@@ -154,6 +159,19 @@ class DynamoRecipeSourceGuard:
                 'Key': encode({'pk': source_pk, 'sk': 'SOURCE#REVISION'}),
                 'ConditionExpression': '#revision = :revision', 'ExpressionAttributeNames': {'#revision': 'revision'},
                 'ExpressionAttributeValues': encode({':revision': revision})}})
+            raw, receipts = snapshot[index][4:6]
+            receipt = next((item for item in receipts if item.get('pk') == source_pk and
+                            isinstance(item.get('sk'), str) and item['sk'].startswith('COLLECTION#RECEIPT#') and
+                            matches_jeyuk_snapshot(item, batch, raw)), None)
+            if receipt is None:
+                raise ValueError('matching receipt is unavailable')
+            fields = ('receipt_version', 'provenance', 'profile_id', 'fixture_id', 'starting_cursor',
+                      'ending_cursor', 'record_count', 'ordered_raw_sha256')
+            checks.append({'ConditionCheck': {'TableName': self.data.name,
+                'Key': encode({'pk': source_pk, 'sk': receipt['sk']}),
+                'ConditionExpression': ' AND '.join(f'#f{i} = :v{i}' for i in range(len(fields))),
+                'ExpressionAttributeNames': {f'#f{i}': name for i, name in enumerate(fields)},
+                'ExpressionAttributeValues': encode({f':v{i}': receipt[name] for i, name in enumerate(fields)})}})
         return checks
 
     def _verify(self, execution: Execution, source_partitions) -> bool:

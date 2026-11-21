@@ -104,6 +104,19 @@ def main():
             raise AssertionError('bound source guard rejected owner or accepted another execution')
         checks = bound.settlement_checks()
         session.client('dynamodb').transact_write_items(TransactItems=checks)
+        receipt_key = {'pk': f'JEYUK#{source_ids[0]}', 'sk': 'COLLECTION#RECEIPT#synthetic'}
+        original_digest = sources.get_item(Key=receipt_key, ConsistentRead=True)['Item']['ordered_raw_sha256']
+        sources.update_item(Key=receipt_key, UpdateExpression='SET ordered_raw_sha256 = :digest',
+                            ExpressionAttributeValues={':digest': '0' * 64})
+        try:
+            session.client('dynamodb').transact_write_items(TransactItems=checks)
+        except ClientError as error:
+            if error.response.get('Error', {}).get('Code') != 'TransactionCanceledException':
+                raise
+        else:
+            raise AssertionError('changed receipt passed settlement conditions')
+        sources.update_item(Key=receipt_key, UpdateExpression='SET ordered_raw_sha256 = :digest',
+                            ExpressionAttributeValues={':digest': original_digest})
         request = Request({'type': 'http', 'method': 'GET', 'path': '/', 'headers': [
             (b'cookie', f'{auth_module.SESSION_COOKIE}={session_id}'.encode())]})
         async def combined():

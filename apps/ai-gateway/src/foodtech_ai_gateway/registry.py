@@ -528,7 +528,10 @@ class DynamoRegistry:
                             "ExpressionAttributeNames": {"#v": "version"},
                             "ExpressionAttributeValues": self._av(values)}})
         if recipe_source_guard is not None:
-            checks = recipe_source_guard.settlement_checks()
+            try:
+                checks = recipe_source_guard.settlement_checks()
+            except ValueError as error:
+                raise RegistryConflict('recipe source changed during settlement') from error
             if any(check['ConditionCheck']['TableName'] == self.table_name for check in checks):
                 raise ValueError('recipe source tables must differ from execution registry')
             changes.extend(checks)

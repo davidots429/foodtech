@@ -40,7 +40,7 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
             source_checks = [item for item in TransactItems if 'ConditionCheck' in item and
                              item['ConditionCheck']['TableName'] != self.registry.table_name]
             if source_checks:
-                if len(source_checks) != 6 or not self.guard.verify(self.execution):
+                if len(source_checks) != 8 or not self.guard.verify(self.execution):
                     raise TransactionCanceledException()
                 TransactItems = [item for item in TransactItems if item not in source_checks]
             return original_transact(TransactItems=TransactItems, ClientRequestToken=ClientRequestToken)

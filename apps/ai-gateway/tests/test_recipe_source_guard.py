@@ -64,6 +64,7 @@ class RecipeSourceGuardTests(unittest.TestCase):
                 self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', sk)] = {
                     'pk': f'JEYUK#{batch}', 'sk': sk, 'raw': raw, 'provenance': 'SYNTHETIC'}
             receipt = tracker.finish(cursor=revision, complete=True, explicit=True)
+            receipt.update({'pk': f'JEYUK#{batch}', 'sk': 'COLLECTION#RECEIPT#1'})
             self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', 'COLLECTION#RECEIPT#1')] = receipt
 
     def test_exact_owner_job_and_source_versions_are_checked(self):
@@ -116,12 +117,20 @@ class RecipeSourceGuardTests(unittest.TestCase):
         sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')
         bound = BoundRecipeSourceGuard(self.guard, self.execution, jobs, sources)
         checks = bound.settlement_checks()
-        self.assertEqual(len(checks), 6)
+        self.assertEqual(len(checks), 8)
         first_job, first_reverse, first_revision = [item['ConditionCheck'] for item in checks[:3]]
         self.assertEqual(first_job['Key']['pk'], {'S': jobs[0]})
         self.assertEqual(first_job['ExpressionAttributeValues'][':batch'], {'S': 'batch-current'})
         self.assertEqual(first_reverse['ExpressionAttributeValues'][':pk'], {'S': jobs[0]})
         self.assertEqual(first_revision['ExpressionAttributeValues'][':revision'], {'N': '30'})
+        receipt_check = checks[3]['ConditionCheck']
+        self.assertEqual(receipt_check['Key']['sk'], {'S': 'COLLECTION#RECEIPT#1'})
+        self.assertEqual(receipt_check['ExpressionAttributeValues'][':v6'], {'N': '30'})
+        receipts = self.resource.tables['foodtech-data-flow-dev'].items
+        receipt = receipts.pop(('JEYUK#batch-current', 'COLLECTION#RECEIPT#1'))
+        with self.assertRaises(ValueError):
+            bound.settlement_checks()
+        receipts[('JEYUK#batch-current', 'COLLECTION#RECEIPT#1')] = receipt
         with self.assertRaises(ValueError):
             self.guard.settlement_checks(self.execution, jobs, (sources[0], sources[0]))
         with self.assertRaises(ValueError):
