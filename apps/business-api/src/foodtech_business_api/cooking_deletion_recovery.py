@@ -8,6 +8,11 @@ import json
 
 
 class CookingDeletionRecovery:
+    @staticmethod
+    def _writer_quiescence_proven():
+        # No deployed writer-fencing evidence is available to this coordinator yet.
+        return False
+
     def __init__(self, *, profile, job, meal, progress_store, cipher):
         for recovery in (profile, job, meal):
             coordinator = recovery.coordinator
@@ -37,6 +42,8 @@ class CookingDeletionRecovery:
                 phase, version = state['phase'], item['version']
             except (KeyError, TypeError, ValueError, UnicodeError):
                 raise ValueError('invalid cooking deletion checkpoint') from None
+        if not self._writer_quiescence_proven():
+            return {'phase': 'QUIESCENCE', 'writer_quiescence_required': True}
         if phase == 'VERIFYING':
             return {'phase': 'VERIFYING'}
         recovery = {'PROFILE': self.profile, 'JOB': self.job, 'MEAL': self.meal}[phase]

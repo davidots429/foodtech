@@ -303,9 +303,9 @@ def main():
             raise AssertionError('meal recovery did not preserve encrypted META snapshot')
         cooking = CookingDeletionRecovery(profile=profile_recovery, job=job_recovery, meal=meal_recovery,
                                           progress_store=plan_progress, cipher=profile_cipher)
-        for expected in ('JOB', 'MEAL', 'VERIFYING'):
-            if cooking.step(authenticated_subject=subject, request_id=winner, limit=100) != {'phase': expected}:
-                raise AssertionError('cooking recovery did not respect domain order')
+        if cooking.step(authenticated_subject=subject, request_id=winner, limit=100) != \
+                {'phase': 'QUIESCENCE', 'writer_quiescence_required': True}:
+            raise AssertionError('cooking recovery failed to require writer quiescence')
         try:
             cooking.step(authenticated_subject=str(uuid.uuid4()), request_id=winner)
         except (ValueError, DeletionProgressConflict):
