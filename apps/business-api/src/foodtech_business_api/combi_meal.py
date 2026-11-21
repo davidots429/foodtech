@@ -580,6 +580,13 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
     return {"meal": records[0], "rice": records[1], "transition": records[2], "mackerel": records[3]}
 
 
+def _phase_source_matches(source: dict | None, lineage: dict | None, phase: str) -> bool:
+    digest = source.get("raw_sha256") if isinstance(source, dict) else None
+    return bool(isinstance(digest, str) and len(digest) == 64 and
+                all(char in "0123456789abcdef" for char in digest) and
+                isinstance(lineage, dict) and lineage.get("raw_sha256") == digest and lineage.get("phase") == phase)
+
+
 def _rice_fan_verified(step: dict) -> bool:
     assessment = step.get("monitored_process_assessment") or {}
     return (assessment.get("fan_observation") or {}).get("status") == "MATCHED"
@@ -600,12 +607,24 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
     events = [rows[key] for key in sorted(rows) if key.startswith("EVENT#")]
     result = {"meal": meta, "rice": rows[keys[0]], "transition": rows[keys[1]], "mackerel": rows[keys[2]]}
     rice = result["rice"]
-    if rice.get("safety_status") == "PASSED" and not _rice_fan_verified(rice):
-        rice = {**rice, "safety_status": "INCOMPLETE"}
+    rice_source_invalid = bool(meta.get("source") and not _phase_source_matches(
+        meta["source"], rice.get("monitored_process_source"), "RICE"))
+    rice_fan_invalid = not _rice_fan_verified(rice)
+    if rice_source_invalid or rice_fan_invalid:
+        rice = {**rice}
+        if rice.get("safety_status") == "PASSED":
+            rice["safety_status"] = "INCOMPLETE"
         if rice.get("quality_current") and rice["quality_current"].get("usable"):
             rice["quality_current"] = {**rice["quality_current"], "usable": False,
-                                       "blocked_reason": "FAN_EVIDENCE_UNVERIFIED"}
+                                       "blocked_reason": "RICE_SOURCE_UNVERIFIED" if rice_source_invalid
+                                                         else "FAN_EVIDENCE_UNVERIFIED"}
         result["rice"] = rice
+    mackerel = result["mackerel"]
+    bound = meta.get("source")
+    if bound and mackerel.get("quality_current") and mackerel["quality_current"].get("usable") and not \
+            _phase_source_matches(bound, mackerel.get("monitored_process_source"), "MACKEREL"):
+        result["mackerel"] = {**mackerel, "quality_current": {**mackerel["quality_current"], "usable": False,
+                              "blocked_reason": "MACKEREL_SOURCE_UNVERIFIED"}}
     if events:
         result["events"] = events
     return result
@@ -707,6 +726,9 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
         transition = rows.get(f"TRANSITION#{old['mode_transition_id']}")
         if not transition or transition.get("status") != "DRY_HEAT_READY" or not transition.get("mackerel_load_allowed"):
             raise HTTPException(409, "건열 전환 준비를 먼저 확인해야 합니다.")
+        source = old.get("source")
+        if source and not _phase_source_matches(source, transition.get("source"), "TRANSITION"):
+            raise HTTPException(409, "연결된 원표본으로 건열 전환을 먼저 확인해야 합니다.")
         products = body.products
         if not products or len({item.product_id for item in products}) != len(products):
             raise HTTPException(422, "서로 다른 고등어 제품이 필요합니다.")
@@ -760,6 +782,8 @@ async def record_transition_evidence(meal_id: UUID, request: Request, body: Tran
         raise HTTPException(404, "식사 배치를 찾을 수 없습니다.")
     if int(old["version"]) != body.expected_version or old["status"] != "MODE_TRANSITION":
         raise HTTPException(409, "배치 상태가 변경되었거나 전환을 진행할 수 없습니다.")
+    if old.get("source"):
+        raise HTTPException(409, "연결된 원표본의 전환 판정을 사용해야 합니다.")
     step = rows.get(f"TRANSITION#{old['mode_transition_id']}")
     if not step or step.get("status") != "IN_PROGRESS":
         raise HTTPException(409, "진행 중인 전환이 없습니다.")
@@ -913,6 +937,8 @@ async def record_mackerel_process(meal_id: UUID, request: Request, body: Mackere
             "MACKEREL_UNLOADED", "MACKEREL_SAFETY_PASSED", "MACKEREL_SAFETY_FAILED"}:
         raise HTTPException(409, "인양된 고등어 작업의 현재 상태를 확인해 주세요.")
     step = rows.get(f"JOB#MACKEREL#{old['mackerel_cooking_job_id']}")
+    if old.get("source"):
+        raise HTTPException(409, "연결된 원표본의 고등어 공정 판정을 사용해야 합니다.")
     if not step or step.get("monitored_process_assessment"):
         raise HTTPException(409, "이미 공정 표본을 기록했거나 고등어 작업이 없습니다.")
     try:
@@ -976,6 +1002,9 @@ class SourceAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
     reassess_legacy_fan: bool = Field(default=False, strict=True)
+    reassess_manual_transition: bool = Field(default=False, strict=True)
+    reassess_manual_mackerel: bool = Field(default=False, strict=True)
+    reassess_manual_rice: bool = Field(default=False, strict=True)
 
 
 @router.post("/{meal_id}/source-assessment/{phase}")
@@ -1003,10 +1032,25 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
             "fan_observation" in prior_assessment or not prior_source or
             prior_source.get("raw_sha256") != source.get("raw_sha256") or prior_source.get("phase") != "RICE"):
         raise HTTPException(409, "팬 관찰이 없는 기존 밥 원천 판정만 같은 원표본으로 다시 계산할 수 있습니다.")
+    if body.reassess_manual_transition and (phase != "transition" or body.reassess_legacy_fan or
+            not step or not step.get("samples") or step.get("source") or
+            step.get("status") not in {"IN_PROGRESS", "DRY_HEAT_READY"} or
+            old["status"] not in {"MODE_TRANSITION", "MACKEREL_READY"}):
+        raise HTTPException(409, "고등어 투입 전의 별도 전환 판정만 원표본으로 다시 확인할 수 있습니다.")
+    if body.reassess_manual_rice and (phase != "rice" or body.reassess_legacy_fan or
+            body.reassess_manual_transition or body.reassess_manual_mackerel or not step or
+            step.get("status") != "UNLOADED" or not prior_assessment or prior_source or
+            not step.get("monitored_process_samples")):
+        raise HTTPException(409, "별도 표본으로 판정한 인양 밥만 원표본으로 다시 확인할 수 있습니다.")
+    if body.reassess_manual_mackerel and (phase != "mackerel" or body.reassess_legacy_fan or
+            body.reassess_manual_rice or body.reassess_manual_transition or not step or step.get("status") != "UNLOADED" or
+            not prior_assessment or prior_source or not step.get("monitored_process_samples")):
+        raise HTTPException(409, "별도 표본으로 판정한 인양 고등어만 원표본으로 다시 확인할 수 있습니다.")
     if phase == "transition":
-        if not step or step.get("status") != "IN_PROGRESS" or step.get("samples") or old["status"] != "MODE_TRANSITION":
+        if not body.reassess_manual_transition and (not step or step.get("status") != "IN_PROGRESS" or
+                step.get("samples") or old["status"] != "MODE_TRANSITION"):
             raise HTTPException(409, "표본이 없는 진행 중인 전환에서만 원천 판정을 적용할 수 있습니다.")
-    elif not step or step.get("status") != "UNLOADED" or (prior_assessment and not body.reassess_legacy_fan):
+    elif not step or step.get("status") != "UNLOADED" or (prior_assessment and not (body.reassess_legacy_fan or body.reassess_manual_mackerel or body.reassess_manual_rice)):
         raise HTTPException(409, "인양 후 아직 공정 판정이 없는 작업에만 적용할 수 있습니다.")
     jobs = {"RICE": old["rice_cooking_job_id"], "TRANSITION": old["mode_transition_id"],
             "MACKEREL": old["mackerel_cooking_job_id"]}
@@ -1088,9 +1132,14 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
                    "samples": transition_samples, "observed_through": observed_at, "source": lineage}
     else:
         updated = {**step, "monitored_process_assessment": assessment, "monitored_process_source": lineage}
+        if body.reassess_manual_mackerel or body.reassess_manual_rice:
+            updated.pop("monitored_process_samples", None)
+        if phase == "mackerel" and step.get("quality_current"):
+            updated["quality_current"] = {**step["quality_current"], "usable": False,
+                                          "blocked_reason": "MACKEREL_PROCESS_REASSESSED"}
         if phase == "rice":
             updated["rice_critical_alarm_observed"] = any(item.get("criticalAlarm") is True for item in selected)
-            if body.reassess_legacy_fan:
+            if body.reassess_legacy_fan or body.reassess_manual_rice or step.get("safety_status") == "PASSED" or step.get("quality_current"):
                 if step.get("safety_status") == "PASSED":
                     updated["safety_status"] = "INCOMPLETE"
                     updated["safety_version"] = int(step.get("safety_version", 0)) + 1
@@ -1100,10 +1149,19 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
     meta = {**old, "status": next_status, "version": version, "updated_at": _now()}
     if phase == "transition":
         meta["last_observed_at"] = observed_at
-    event = {"sk": f"EVENT#{version:012d}", "event": "RICE_SOURCE_REASSESSED" if body.reassess_legacy_fan else f"{kind}_SOURCE_ASSESSED",
+    event_name = ("RICE_SOURCE_REASSESSED" if body.reassess_legacy_fan else
+                  "TRANSITION_SOURCE_REASSESSED" if body.reassess_manual_transition else
+                  "MACKEREL_SOURCE_REASSESSED" if body.reassess_manual_mackerel else
+                  "RICE_MANUAL_SOURCE_REASSESSED" if body.reassess_manual_rice else f"{kind}_SOURCE_ASSESSED")
+    event = {"sk": f"EVENT#{version:012d}", "event": event_name,
              "from_status": old["status"], "to_status": next_status,
              "observed_at": observed_at, "recorded_at": _now(),
              "actor": session.subject, "assessment": assessment, "source_sha256": digest}
+    if body.reassess_manual_transition:
+        event["previous_transition"] = step
+    if body.reassess_manual_mackerel or body.reassess_manual_rice:
+        event["previous_assessment"] = prior_assessment
+        event["previous_samples"] = step["monitored_process_samples"]
     if body.reassess_legacy_fan:
         event["previous_assessment"] = prior_assessment
         event["previous_source"] = prior_source
@@ -1135,7 +1193,8 @@ async def confirm_rice_safety(meal_id: UUID, request: Request, body: RiceSafetyC
     reasons = assessment.get("reason_codes") or []
     suspected = (body.observation == "SUSPECTED" or step.get("rice_critical_alarm_observed") is True or
                  "SENSOR_ANOMALY_SUSPECTED" in reasons)
-    source_checked = not old.get("source") or bool(step.get("monitored_process_source"))
+    source_checked = not old.get("source") or _phase_source_matches(
+        old["source"], step.get("monitored_process_source"), "RICE")
     fan_checked = _rice_fan_verified(step)
     safety = ("SUSPECTED" if suspected else "PASSED" if process_status in {"NORMAL", "WARNING"} and source_checked and fan_checked
               else "INCOMPLETE")
@@ -1179,8 +1238,14 @@ async def assess_combi_quality(meal_id: UUID, menu: Literal["rice", "mackerel"],
     step = rows.get(f"JOB#{kind}#{job_id}")
     if not step or step.get("status") != "UNLOADED" or step.get("safety_status") != "PASSED":
         raise HTTPException(409, "인양과 유효한 안전 확인 후에만 품질평가를 완료할 수 있습니다.")
+    if menu == "rice" and old.get("source") and not _phase_source_matches(
+            old["source"], step.get("monitored_process_source"), "RICE"):
+        raise HTTPException(409, "연결된 밥 원표본의 공정 판정을 먼저 확인해야 합니다.")
     if menu == "rice" and not _rice_fan_verified(step):
         raise HTTPException(409, "밥 공정의 팬 관찰을 먼저 확인해야 합니다.")
+    if menu == "mackerel" and old.get("source") and not _phase_source_matches(
+            old["source"], step.get("monitored_process_source"), "MACKEREL"):
+        raise HTTPException(409, "연결된 고등어 원표본의 공정 판정을 먼저 확인해야 합니다.")
     current = int(step.get("quality_version", 0))
     if current != body.expected_current_version:
         raise HTTPException(409, "현재 품질평가가 변경되었습니다. 다시 조회해 주세요.")

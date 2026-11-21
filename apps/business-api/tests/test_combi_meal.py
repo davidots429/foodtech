@@ -91,6 +91,140 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path)).status_code, 404)
 
+    async def test_linked_source_blocks_unrelated_transition_and_mackerel_samples(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
+        meta = created["meal"]
+        meal_id = meta["meal_batch_id"]
+        path = "/api/customer/combi-meals/" + meal_id
+        pk = combi_meal._pk(self.subject, meal_id)
+        stored = self.store.items[(pk, "META")]
+        stored.update(status="MODE_TRANSITION", source={"raw_sha256": "a" * 64})
+        transition = self.store.items[(pk, f"TRANSITION#{meta['mode_transition_id']}")]
+        transition.update(status="IN_PROGRESS", started_at="2026-01-01T00:00:00Z")
+        samples = [{"second": 1, "chamber_celsius": "220", "climate_setpoint_percent": "10",
+                    "door_closed": True, "critical_alarm": False, "humidity_percent": "10"}]
+        response = await self.client.post(path + "/transition-evidence", headers=headers,
+            json={"expected_version": 1, "humidity_supported": True, "vent_supported": False, "samples": samples})
+        self.assertEqual(response.status_code, 409)
+        self.assertNotIn("samples", transition)
+        self.assertEqual(stored["version"], 1)
+        stored["status"] = "MACKEREL_UNLOADED"
+        fish = self.store.items[(pk, f"JOB#MACKEREL#{meta['mackerel_cooking_job_id']}")]
+        fish.update(status="UNLOADED", program_cooking_duration=2, time_status="NORMAL")
+        response = await self.client.post(path + "/mackerel-process", headers=headers,
+            json={"expected_version": 1, "samples": [
+                {"second": i, "chamber_celsius": "220", "door": "CLOSED", "fan_level": 3} for i in (1, 2)]})
+        self.assertEqual(response.status_code, 409)
+        self.assertNotIn("monitored_process_assessment", fish)
+        self.assertEqual(stored["version"], 1)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.post(path + "/mackerel-process", headers=headers,
+            json={"expected_version": 1, "samples": [{"second": 1, "chamber_celsius": "220", "door": "CLOSED"}]})).status_code, 404)
+
+    async def test_manual_transition_is_rechecked_against_late_linked_source_before_fish(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        meta = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()["meal"]
+        meal_id = meta["meal_batch_id"]
+        path = "/api/customer/combi-meals/" + meal_id
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        records = []
+        for phase, job, count in (("RICE", meta["rice_cooking_job_id"], 2),
+                                  ("TRANSITION", meta["mode_transition_id"], 30),
+                                  ("MACKEREL", meta["mackerel_cooking_job_id"], 2)):
+            for number in range(1, count + 1):
+                sequence = len(records) + 1
+                at = (start + timedelta(seconds=sequence - 1)).isoformat()
+                records.append(json.dumps({"eventId": f"{meal_id}-{sequence:06d}", "mealBatchId": meal_id,
+                    "cookingJobId": job, "deviceId": "combi-1", "mockInstanceId": "mockprofile-120-a-001",
+                    "eventType": "OBSERVATION", "occurredAt": at, "receivedAt": at, "sequence": sequence,
+                    "schemaVersion": "synthetic-combi-v2", "programVersion": "v1", "provenance": "SYNTHETIC",
+                    "dataQuality": "VALID", "phase": phase, "phaseSecond": number,
+                    "chamberCelsius": 100 if phase == "RICE" else 220,
+                    "climateSetpointPercent": 100 if phase == "RICE" else 10,
+                    "measuredHumidityPercent": 98 if phase == "RICE" else 10, "humidityValueSource": "MEASURED",
+                    "fanLevel": 4 if phase == "RICE" else 3, "doorState": "CLOSED", "criticalAlarm": False,
+                    "ventSupported": False, "ventEvent": None}))
+        imported = await self.client.post(path + "/source-observations", headers=headers,
+            json={"expected_version": 1, "device_id": "combi-1", "records": records})
+        self.assertEqual(imported.status_code, 201, imported.text)
+        pk = combi_meal._pk(self.subject, meal_id)
+        stored = self.store.items[(pk, "META")]
+        stored.update(status="MACKEREL_READY", last_observed_at=(start + timedelta(seconds=32)).isoformat())
+        rice = self.store.items[(pk, f"JOB#RICE#{meta['rice_cooking_job_id']}")]
+        rice.update(status="UNLOADED", active_cooking_started_at=start.isoformat(),
+                    program_completed_at=(start + timedelta(seconds=2)).isoformat(), program_cooking_duration=2,
+                    time_status="NORMAL", safety_status="PASSED", safety_version=1,
+                    monitored_process_assessment={"status": "NORMAL", "reason_codes": [],
+                                                  "fan_observation": {"status": "MATCHED"}},
+                    monitored_process_samples=[{"second": 1}], quality_current={"version": 1, "usable": True})
+        visible = (await self.client.get(path)).json()["rice"]
+        self.assertEqual(visible["safety_status"], "INCOMPLETE")
+        self.assertFalse(visible["quality_current"]["usable"])
+        quality = {"expected_version": 2, "expected_current_version": 1, "kind": "REASSESSMENT", "reason": "원천 대조",
+                   "scores": {key: 4 for key in cooking.SCORE_ITEMS},
+                   "observations": {key: "합성 관찰" for key in cooking.SCORE_ITEMS},
+                   "quality_decision": "QUALITY_PASSED", "planned_portions": 3, "actual_portions": 3}
+        self.assertEqual((await self.client.post(path + "/quality/rice", headers=headers, json=quality)).status_code, 409)
+        rice_result = await self.client.post(path + "/source-assessment/rice", headers=headers,
+            json={"expected_version": 2, "reassess_manual_rice": True})
+        self.assertEqual(rice_result.status_code, 200, rice_result.text)
+        self.assertEqual(rice_result.json()["event"]["previous_samples"], [{"second": 1}])
+        self.assertEqual(rice_result.json()["step"]["safety_status"], "INCOMPLETE")
+        self.assertFalse(rice_result.json()["step"]["quality_current"]["usable"])
+        self.assertNotIn("monitored_process_samples", rice_result.json()["step"])
+        stored = self.store.items[(pk, "META")]
+        step = self.store.items[(pk, f"TRANSITION#{meta['mode_transition_id']}")]
+        step.update(status="DRY_HEAT_READY", mackerel_load_allowed=True,
+                    started_at=(start + timedelta(seconds=2)).isoformat(),
+                    samples=[{"second": 1, "private": "earlier manual record"}])
+        fish = await self.client.post(path + "/events", headers=headers, json={"expected_version": 3,
+            "event": "MACKEREL_STARTED", "observed_at": (start + timedelta(seconds=33)).isoformat()})
+        self.assertEqual(fish.status_code, 409)
+        verified = await self.client.post(path + "/source-assessment/transition", headers=headers,
+            json={"expected_version": 3, "reassess_manual_transition": True})
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertEqual(verified.json()["event"]["event"], "TRANSITION_SOURCE_REASSESSED")
+        self.assertEqual(verified.json()["event"]["previous_transition"]["samples"][0]["private"], "earlier manual record")
+        self.assertEqual(verified.json()["step"]["source"]["raw_sha256"], imported.json()["meal"]["source"]["raw_sha256"])
+        self.assertEqual(verified.json()["meal"]["status"], "MACKEREL_READY")
+        repeat = await self.client.post(path + "/source-assessment/transition", headers=headers,
+            json={"expected_version": 4, "reassess_manual_transition": True})
+        self.assertEqual(repeat.status_code, 409)
+        stored = self.store.items[(pk, "META")]
+        stored["status"] = "MACKEREL_SAFETY_PASSED"
+        fish = self.store.items[(pk, f"JOB#MACKEREL#{meta['mackerel_cooking_job_id']}")]
+        fish.update(status="UNLOADED", active_cooking_started_at=(start + timedelta(seconds=32)).isoformat(),
+                    program_completed_at=(start + timedelta(seconds=34)).isoformat(),
+                    program_cooking_duration=2, time_status="NORMAL", safety_status="PASSED",
+                    monitored_process_assessment={"status": "NORMAL", "reason_codes": []},
+                    monitored_process_samples=[{"second": 1}, {"second": 2}],
+                    quality_current={"version": 1, "usable": True}, quality_version=1)
+        fetched = (await self.client.get(path)).json()
+        self.assertFalse(fetched["mackerel"]["quality_current"]["usable"])
+        self.assertEqual(fetched["mackerel"]["quality_current"]["blocked_reason"], "MACKEREL_SOURCE_UNVERIFIED")
+        self.assertEqual((await self.client.post(path + "/quality/mackerel", headers=headers,
+                                                json={**quality, "expected_version": 4})).status_code, 409)
+        reassessed = await self.client.post(path + "/source-assessment/mackerel", headers=headers,
+            json={"expected_version": 4, "reassess_manual_mackerel": True})
+        self.assertEqual(reassessed.status_code, 200, reassessed.text)
+        value = reassessed.json()
+        self.assertEqual(value["event"]["event"], "MACKEREL_SOURCE_REASSESSED")
+        self.assertEqual(value["event"]["previous_samples"], [{"second": 1}, {"second": 2}])
+        self.assertEqual(value["step"]["safety_status"], "PASSED")
+        self.assertFalse(value["step"]["quality_current"]["usable"])
+        self.assertEqual(value["step"]["quality_current"]["blocked_reason"], "MACKEREL_PROCESS_REASSESSED")
+        self.assertEqual(value["step"]["monitored_process_source"]["phase"], "MACKEREL")
+        fish = self.store.items[(pk, f"JOB#MACKEREL#{meta['mackerel_cooking_job_id']}")]
+        fish.pop("monitored_process_assessment")
+        fish.pop("monitored_process_source")
+        fish["quality_current"] = {"version": 1, "usable": True}
+        first_source = await self.client.post(path + "/source-assessment/mackerel", headers=headers,
+                                              json={"expected_version": 5})
+        self.assertEqual(first_source.status_code, 200, first_source.text)
+        self.assertFalse(first_source.json()["step"]["quality_current"]["usable"])
+        self.assertEqual(first_source.json()["step"]["quality_current"]["blocked_reason"], "MACKEREL_PROCESS_REASSESSED")
+
     async def test_rice_safety_uses_process_and_explicit_anomaly_confirmation(self):
         headers = {"X-CSRF-Token": "csrf"}
         created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
