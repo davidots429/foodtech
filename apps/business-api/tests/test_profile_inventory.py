@@ -31,19 +31,31 @@ class ProfileInventoryTests(unittest.TestCase):
         client = boto3.client('dynamodb', region_name='ap-southeast-2',
                               aws_access_key_id='synthetic', aws_secret_access_key='synthetic')
         store = DynamoCookingStore.__new__(DynamoCookingStore)
-        store.client, store.table, store.serializer = client, SimpleNamespace(name='cooking'), TypeSerializer()
+        store.client, store.table, store.serializer, store.auth_table_name = client, SimpleNamespace(name='cooking'), TypeSerializer(), 'auth'
         requests = []
         def capture(model, params, **kwargs):
             requests.append(params)
         client.meta.events.register('before-parameter-build.dynamodb.TransactWriteItems', capture)
         with Stubber(client) as stubber:
             stubber.add_response('transact_write_items', {}, {'TransactItems': ANY})
-            store.create_condition_profile('alice', {'profile_id': 'p1', 'profile_version': 'v1'})
+            store.create_condition_profile('alice', {'profile_id': 'p1', 'profile_version': 'v1'}, 3)
             stubber.assert_no_pending_responses()
         puts = requests[0]['TransactItems']
-        self.assertEqual(len(puts), 2)
-        self.assertTrue(all(p['Put']['ConditionExpression'] == 'attribute_not_exists(pk)' for p in puts))
-        self.assertEqual(puts[1]['Put']['Item']['pk']['S'], 'SCOPE#USER#alice#CONDITION_PROFILES')
+        self.assertEqual(len(puts), 3)
+        self.assertIn('deletion_lock_request', puts[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(puts[0]['ConditionCheck']['TableName'], 'auth')
+        self.assertEqual(puts[0]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N': '3'})
+        self.assertTrue(all(p['Put']['ConditionExpression'] == 'attribute_not_exists(pk)' for p in puts[1:]))
+        self.assertEqual(puts[2]['Put']['Item']['pk']['S'], 'SCOPE#USER#alice#CONDITION_PROFILES')
+
+    def test_dynamo_write_fails_closed_without_auth_table_or_epoch(self):
+        store = DynamoCookingStore.__new__(DynamoCookingStore)
+        store.auth_table_name = ''
+        with self.assertRaises(ValueError):
+            store.create_condition_profile('alice', {'profile_id': 'p1', 'profile_version': 'v1'})
+        store.auth_table_name = 'auth'
+        with self.assertRaises(ValueError):
+            store.create_condition_profile('alice', {'profile_id': 'p1', 'profile_version': 'v1'}, True)
 
     def test_dynamo_inventory_uses_consistent_page_and_scoped_cursor(self):
         calls = []

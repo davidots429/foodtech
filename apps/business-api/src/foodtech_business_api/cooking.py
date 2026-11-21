@@ -548,7 +548,7 @@ async def create_condition_profile(request: Request, body: ConditionProfileReque
     profile = {**body.model_dump(mode="json"), "provenance": "SYNTHETIC", "status": "DECLARED_UNVERIFIED",
                "created_at": _now(), "created_by": session.subject}
     try:
-        await _store_call(store, store.create_condition_profile, session.subject, profile)
+        await _store_call(store, store.create_condition_profile, session.subject, profile, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "이미 기록된 공정조건 버전입니다. 다른 버전으로 기록해 주세요.") from exc
     return profile

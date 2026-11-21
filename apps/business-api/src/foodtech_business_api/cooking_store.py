@@ -126,7 +126,7 @@ def _api_numbers(value):
 
 
 class CookingStore(Protocol):
-    def create_condition_profile(self, subject: str, profile: dict) -> None: ...
+    def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None: ...
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None: ...
     def list_condition_profile_refs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def ensure_condition_profile_listed(self, subject: str, profile_id: str, version: str) -> None: ...
@@ -189,7 +189,7 @@ class MemoryCookingStore:
         self.validation_sources: dict[tuple[str, str], dict] = {}
         self.lock = threading.RLock()
 
-    def create_condition_profile(self, subject: str, profile: dict) -> None:
+    def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None:
         key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}", f"VERSION#{profile['profile_version']}")
         listing = _profile_listing(subject, profile)
         list_key = (listing["pk"], listing["sk"])
@@ -612,20 +612,29 @@ class MemoryCookingStore:
 
 
 class DynamoCookingStore:
-    def __init__(self, table_name: str) -> None:
+    def __init__(self, table_name: str, auth_table_name: str | None = None) -> None:
         import boto3
 
         session = boto3.Session(region_name="ap-southeast-2")
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
+        self.auth_table_name = auth_table_name or os.getenv("FOODTECH_AUTH_TABLE", "")
 
-    def create_condition_profile(self, subject: str, profile: dict) -> None:
+    def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None:
+        if not getattr(self, 'auth_table_name', '') or type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63:
+            raise ValueError('authentication table and valid epoch are required')
         item = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}",
                 "sk": f"VERSION#{profile['profile_version']}", **profile}
         listing = _profile_listing(subject, profile)
         try:
             self.client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {"TableName": self.auth_table_name,
+                    "Key": self._item({"pk": f"USER#{subject}"}),
+                    "ConditionExpression": "((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) "
+                        "AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+                    "ExpressionAttributeNames": {"#epoch": "epoch"},
+                    "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}},
                 {"Put": {"TableName": self.table.name, "Item": self._item(item),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
                 {"Put": {"TableName": self.table.name, "Item": self._item(listing),
@@ -1392,9 +1401,9 @@ class DynamoCookingStore:
 
 
 @lru_cache(maxsize=4)
-def _store(table_name: str) -> CookingStore:
-    return DynamoCookingStore(table_name) if table_name else MemoryCookingStore()
+def _store(table_name: str, auth_table_name: str = '') -> CookingStore:
+    return DynamoCookingStore(table_name, auth_table_name) if table_name else MemoryCookingStore()
 
 
 def get_cooking_store() -> CookingStore:
-    return _store(os.getenv("FOODTECH_COOKING_TABLE", ""))
+    return _store(os.getenv("FOODTECH_COOKING_TABLE", ""), os.getenv("FOODTECH_AUTH_TABLE", ""))

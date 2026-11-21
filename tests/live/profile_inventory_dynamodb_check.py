@@ -18,8 +18,10 @@ def main():
     if session.client('sts').get_caller_identity()['Account'] != '573693340100':
         raise SystemExit('unexpected AWS account')
     table = session.resource('dynamodb').Table(table_name)
+    auth_table = session.resource('dynamodb').Table('foodtech-auth-sessions-dev')
     store = DynamoCookingStore.__new__(DynamoCookingStore)
     store.table, store.client, store.serializer = table, session.client('dynamodb'), TypeSerializer()
+    store.auth_table_name = 'foodtech-auth-sessions-dev'
     subject = 'synthetic-' + uuid4().hex
     owner = f'SCOPE#USER#{subject}'
     keys = [{'pk': f'{owner}#CONDITION_PROFILE#p1', 'sk': f'VERSION#{v}'} for v in ('v1', 'v2')]
@@ -30,6 +32,10 @@ def main():
     concurrent = {'pk': f'{owner}#CONDITION_PROFILE#race', 'sk': 'VERSION#v1'}
     concurrent_ref = {'pk': f'{owner}#CONDITION_PROFILES', 'sk': 'PROFILE#race#VERSION#v1'}
     keys += [concurrent, concurrent_ref]
+    locked_key = {'pk': f'{owner}#CONDITION_PROFILE#blocked', 'sk': 'VERSION#v1'}
+    locked_ref = {'pk': f'{owner}#CONDITION_PROFILES', 'sk': 'PROFILE#blocked#VERSION#v1'}
+    auth_key = {'pk': f'USER#{subject}'}
+    auth_created = False
     try:
         for version in ('v1', 'v2'):
             store.create_condition_profile(subject, {'profile_id': 'p1', 'profile_version': version})
@@ -54,6 +60,25 @@ def main():
         with ThreadPoolExecutor(max_workers=2) as executor:
             if sorted(executor.map(create_racing_profile, range(2))) != ['conflict', 'created']:
                 raise AssertionError('concurrent writes did not select exactly one winner')
+        auth_table.put_item(Item={**auth_key, 'epoch': 0, 'suspended': False, 'deletion_lock_request': str(uuid4())},
+                            ConditionExpression='attribute_not_exists(pk)')
+        auth_created = True
+        for state in ('locked', 'suspended', 'stale-epoch'):
+            if state == 'suspended':
+                auth_table.update_item(Key=auth_key, UpdateExpression='SET suspended = :yes REMOVE deletion_lock_request',
+                                       ExpressionAttributeValues={':yes': True})
+            elif state == 'stale-epoch':
+                auth_table.update_item(Key=auth_key, UpdateExpression='SET suspended = :no, #epoch = :epoch',
+                                       ExpressionAttributeNames={'#epoch': 'epoch'},
+                                       ExpressionAttributeValues={':no': False, ':epoch': 1})
+            try:
+                store.create_condition_profile(subject, {'profile_id': 'blocked', 'profile_version': 'v1'}, 0)
+            except Conflict:
+                pass
+            else:
+                raise AssertionError(f'profile write accepted for {state}')
+        if any(table.get_item(Key=k, ConsistentRead=True).get('Item') for k in (locked_key, locked_ref)):
+            raise AssertionError('blocked write left a profile or reference')
         table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
                        ConditionExpression='attribute_not_exists(pk)')
         checkpoint, found = None, False
@@ -77,7 +102,9 @@ def main():
     finally:
         for key in keys:
             table.delete_item(Key=key)
-    print('profile transaction, duplicate and concurrent write rejection, owner isolation, pagination, bounded scan, legacy reconciliation and cleanup verified')
+        if auth_created:
+            auth_table.delete_item(Key=auth_key)
+    print('profile transaction, concurrent write and deletion lock rejection, owner isolation, pagination, bounded scan, legacy reconciliation and cleanup verified')
 
 
 if __name__ == '__main__':

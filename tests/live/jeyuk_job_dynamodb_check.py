@@ -56,7 +56,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
     subject = f"synthetic-jeyuk-{run_id}"
     data_table = session.resource("dynamodb").Table(DATA_TABLE)
     cooking_table = session.resource("dynamodb").Table(COOKING_TABLE)
-    cooking_store = DynamoCookingStore(COOKING_TABLE)
+    cooking_store = DynamoCookingStore(COOKING_TABLE, 'foodtech-auth-sessions-dev')
     job_pk = None
     listing_key = None
     profile_id = "jeyuk-small-safety" if evidence else f"live-{run_id}"
@@ -336,6 +336,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                 remove_partition(data_table, f"MOCK#mockprofile-110-a-001#{cursor_key}")
             remove_partition(cooking_table, stream_pk)
             remove_partition(cooking_table, profile_pk)
+            remove_partition(cooking_table, f"SCOPE#USER#{subject}#CONDITION_PROFILES")
             if job_pk:
                 remove_partition(cooking_table, job_pk)
             if listing_key:
