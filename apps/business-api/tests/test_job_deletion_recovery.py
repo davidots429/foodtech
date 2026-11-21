@@ -11,6 +11,7 @@ class JobRecoveryTests(unittest.TestCase):
         coordinator=SimpleNamespace(store=store,step=Mock(return_value={'phase':'JOBS'}))
         recovery=SimpleNamespace(store=store,use_locked=Mock())
         service=JobDeletionRecovery(recovery=recovery,coordinator=coordinator)
+        service._writer_quiescence_proven=Mock(return_value=True)
         scope={'authenticated_subject':str(uuid4()),'request_id':str(uuid4())}
         recovery.use_locked.side_effect=ValueError('lock unavailable')
         with self.assertRaises(ValueError):service.step(**scope)
@@ -26,6 +27,18 @@ class JobRecoveryTests(unittest.TestCase):
         recovery=SimpleNamespace(store=SimpleNamespace(auth_table='auth',registry_table='other'))
         coordinator=SimpleNamespace(store=SimpleNamespace(auth_table='auth',registry_table='registry'))
         with self.assertRaises(ValueError):JobDeletionRecovery(recovery=recovery,coordinator=coordinator)
+
+    def test_direct_job_recovery_is_blocked_without_writer_fencing(self):
+        store=SimpleNamespace(auth_table='auth',registry_table='registry')
+        coordinator=SimpleNamespace(store=store,step=Mock())
+        def verified(**kwargs):
+            kwargs['action'](bytearray(b'internal'),bytearray(b'locator'))
+            return {'status':'DELETING'}
+        service=JobDeletionRecovery(recovery=SimpleNamespace(store=store,use_locked=Mock(side_effect=verified)),
+                                    coordinator=coordinator)
+        self.assertEqual(service.step(authenticated_subject=str(uuid4()),request_id=str(uuid4())),
+                         {'phase':'QUIESCENCE','writer_quiescence_required':True})
+        coordinator.step.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

@@ -15,6 +15,7 @@ class RecoveryTests(unittest.TestCase):
         self.adapter = ProfileDeletionRecovery(recovery=self.recovery, coordinator=self.coordinator)
 
     def test_runs_one_step_only_after_recovery_check(self):
+        self.adapter._writer_quiescence_proven=Mock(return_value=True)
         def locked(**kwargs):
             kwargs['action'](bytearray(b'internal-secret'), bytearray(b'locator-secret'))
             return {'status':'DELETING'}
@@ -24,6 +25,15 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn('secret', repr(result))
         self.coordinator.step.assert_called_once_with(subject=self.scope['authenticated_subject'],
                                                      request_id=self.scope['request_id'], limit=20)
+
+    def test_verified_request_still_blocks_without_writer_fence(self):
+        def locked(**kwargs):
+            kwargs['action'](bytearray(b'internal'), bytearray(b'locator'))
+            return {'status': 'DELETING'}
+        self.recovery.use_locked.side_effect = locked
+        self.assertEqual(self.adapter.step(**self.scope),
+                         {'phase': 'QUIESCENCE', 'writer_quiescence_required': True})
+        self.coordinator.step.assert_not_called()
 
     def test_failed_recovery_never_runs_step(self):
         self.recovery.use_locked.side_effect=ValueError('unavailable')

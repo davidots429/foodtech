@@ -12,6 +12,7 @@ class MealRecoveryTests(unittest.TestCase):
         coordinator = SimpleNamespace(store=store, step=Mock(return_value={'phase': 'CAPTURE'}))
         recovery = SimpleNamespace(store=store, use_locked=Mock(side_effect=ValueError('invalid owner')))
         service = MealDeletionRecovery(recovery=recovery, coordinator=coordinator)
+        service._writer_quiescence_proven = Mock(return_value=True)
         scope = {'authenticated_subject': str(uuid4()), 'request_id': str(uuid4())}
         with self.assertRaises(ValueError):
             service.step(**scope)
@@ -30,6 +31,18 @@ class MealRecoveryTests(unittest.TestCase):
         coordinator = SimpleNamespace(store=SimpleNamespace(auth_table='auth', registry_table='registry'))
         with self.assertRaises(ValueError):
             MealDeletionRecovery(recovery=recovery, coordinator=coordinator)
+
+    def test_direct_meal_recovery_is_blocked_without_writer_fencing(self):
+        store = SimpleNamespace(auth_table='auth', registry_table='registry')
+        coordinator = SimpleNamespace(store=store, step=Mock())
+        def verified(**kwargs):
+            kwargs['action'](bytearray(b'internal'), bytearray(b'locator'))
+            return {'status': 'DELETING'}
+        recovery = SimpleNamespace(store=store, use_locked=Mock(side_effect=verified))
+        service = MealDeletionRecovery(recovery=recovery, coordinator=coordinator)
+        self.assertEqual(service.step(authenticated_subject=str(uuid4()), request_id=str(uuid4())),
+                         {'phase': 'QUIESCENCE', 'writer_quiescence_required': True})
+        coordinator.step.assert_not_called()
 
 
 if __name__ == '__main__':

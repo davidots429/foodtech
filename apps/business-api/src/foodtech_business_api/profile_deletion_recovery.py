@@ -7,6 +7,11 @@ ensure legacy writers are stopped and verify all stores before completion.
 
 
 class ProfileDeletionRecovery:
+    @staticmethod
+    def _writer_quiescence_proven():
+        # Legacy writer fencing is not yet established for deployed workloads.
+        return False
+
     def __init__(self, *, recovery, coordinator):
         recovery_store = recovery.store
         progress = coordinator.store
@@ -18,7 +23,10 @@ class ProfileDeletionRecovery:
     def step(self, *, authenticated_subject, request_id, limit=20):
         result = []
         def action(_internal_id, _capsule_locator):
-            result.append(self.coordinator.step(subject=authenticated_subject, request_id=request_id, limit=limit))
+            if not self._writer_quiescence_proven():
+                result.append({'phase': 'QUIESCENCE', 'writer_quiescence_required': True})
+            else:
+                result.append(self.coordinator.step(subject=authenticated_subject, request_id=request_id, limit=limit))
         status = self.recovery.use_locked(authenticated_subject=authenticated_subject,
                                           request_id=request_id, action=action)
         if status != {'status': 'DELETING'} or len(result) != 1:
