@@ -141,6 +141,25 @@ class MinimalDataFlowStack extends Stack {
       visibilityTimeout: Duration.seconds(30),
       deadLetterQueue: { queue: processingDlq, maxReceiveCount: 3 },
     });
+    const collectorRole = new iam.Role(this, "CollectionAdapterTaskRole", {
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
+        conditions: {
+          ArnLike: { "aws:SourceArn": `arn:${this.partition}:ecs:${this.region}:${this.account}:*` },
+          StringEquals: { "aws:SourceAccount": this.account },
+        },
+      }),
+      description: "ECS task access for read-only equipment collection and quarantine",
+    });
+    table.grant(collectorRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem");
+    collectorRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:DeleteItem"], resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["STREAM#*"] },
+                    Null: { "dynamodb:LeadingKeys": "false" } },
+    }));
+    ordered.grant(collectorRole, "sqs:SendMessage");
+    collectorRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["s3:PutObject"], resources: [ingestionDlq.arnForObjects("ingestion/*")],
+    }));
     const workerRole = new iam.Role(this, "StandardizationWorkerTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
         conditions: {
@@ -160,6 +179,7 @@ class MinimalDataFlowStack extends Stack {
     ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
     quarantine.grant(workerRole, "sqs:SendMessage");
     new CfnOutput(this, "IngestionDlqBucketName", { value: ingestionDlq.bucketName });
+    new CfnOutput(this, "CollectionAdapterTaskRoleArn", { value: collectorRole.roleArn });
     new CfnOutput(this, "DataTableName", { value: table.tableName });
     new CfnOutput(this, "OrderedQueueUrl", { value: ordered.queueUrl });
     new CfnOutput(this, "StandardizationDlqUrl", { value: quarantine.queueUrl });

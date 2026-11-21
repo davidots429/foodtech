@@ -22,6 +22,7 @@ jobs:
       - run: npm run check
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMinimalDataFlow-dev --strict -c provisionDataFlow=true --output /tmp/foodtech-data-flow-cdk
         working-directory: infra/cdk
+      - run: python3 tests/config/check_collector_policy.py /tmp/foodtech-data-flow-cdk/FoodtechMinimalDataFlow-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiImagePublishing-dev --strict -c provisionAiImagePublishing=true --output /tmp/foodtech-ai-image-cdk
         working-directory: infra/cdk
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAuthIdentity-dev --strict -c provisionIdentity=true -c customerCallback=http://127.0.0.1:8000/api/auth/customer/callback -c adminCallback=http://127.0.0.1:8000/api/auth/admin/callback -c customerWeb=http://127.0.0.1:5173 -c adminWeb=http://127.0.0.1:5174 -c cognitoDomainPrefix=foodtech-synthetic-test --output /tmp/foodtech-identity-cdk

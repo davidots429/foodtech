@@ -51,4 +51,6 @@
 `AWS_PROFILE=foodtech .venv/bin/python tests/live/worker_role_iam_check.py`로 배포된 역할의 두 테이블과 두 큐에 대한 ID 기반 정책 및 실제 주체 시뮬레이션을 분리해 확인한다. 2026-11-14 역할 인라인 정책 자체는 기대한 허용 10건·거부 4건과 일치했지만, 실제 역할을 대상으로 한 시뮬레이션은 허용 10건 모두 `OrganizationsDecisionDetail.AllowedByOrganizations=false`로 판정했다. 이 계정에서는 적용된 SCP 목록을 조회할 권한도 없어 정확한 정책 조건은 확인하지 못했다. 시뮬레이터 결과는 실제 AWS API 호출이 아니므로 ECS Task 실행 권한을 검증 완료로 표시하지 않는다. 조직 관리 범위의 정책 확인과 실제 Task Definition 연결·실행 검증이 남아 있다.
 
 
-수집 격리 버킷은 `FoodtechMinimalDataFlow-dev`에 S3 관리형 암호화·공개 차단·TLS 강제·RETAIN으로 정의하고 `IngestionDlqBucketName`으로 출력한다. 이 정의는 아직 배포되지 않았으며 수집기 실행 역할에 버킷 쓰기와 manifest 저장 권한을 연결하는 작업이 필요하다.
+수집 격리 버킷은 `FoodtechMinimalDataFlow-dev`에 S3 관리형 암호화·공개 차단·TLS 강제·RETAIN으로 정의하고 `IngestionDlqBucketName`으로 출력한다. 이 정의는 아직 배포되지 않았다.
+
+수집 어댑터 Task 역할은 데이터 흐름 테이블의 조회·기록, `STREAM#` 파티션의 순서 복구 항목 삭제, Ordered FIFO 전송과 격리 버킷 `ingestion/` 객체 저장 권한을 갖도록 정의한다. CDK 합성과 합성 정책의 허용·거부 시뮬레이션만 확인했으며 아직 배포되지 않았다. 역할은 Task Definition에 연결되지 않았고 실제 ECS 실행 및 조직 정책 검증도 남았다.
