@@ -8,13 +8,14 @@ from .job_listing_deletion import clean_one_job_listing
 
 
 class JobDeletionCoordinator:
-    def __init__(self, *, jobs, worker, bindings, residual):
+    def __init__(self, *, jobs, worker, bindings, residual, binding_residual):
         if worker.inventory is not jobs or bindings.source_table is not jobs.source_table or \
                 bindings.progress_store is not jobs.progress_store or bindings.cipher is not jobs.cipher or \
                 residual.source_table is not jobs.source_table or residual.progress_store is not jobs.progress_store or \
-                residual.cipher is not jobs.cipher:
+                residual.cipher is not jobs.cipher or binding_residual.source_table is not jobs.source_table or \
+                binding_residual.progress_store is not jobs.progress_store or binding_residual.cipher is not jobs.cipher:
             raise ValueError('job deletion dependencies do not match')
-        self.jobs,self.worker,self.bindings,self.residual=jobs,worker,bindings,residual
+        self.jobs,self.worker,self.bindings,self.residual,self.binding_residual=jobs,worker,bindings,residual,binding_residual
         self.store,self.cipher=jobs.progress_store,jobs.cipher
 
     def step(self, *, subject, request_id, limit=20):
@@ -27,11 +28,11 @@ class JobDeletionCoordinator:
         else:
             state,version=self.jobs._json(item['checkpoint']),item['version']
             if set(state) != {'schema','phase','index','total'} or type(state['schema']) is not int or \
-                    state['schema'] != 1 or state['phase'] not in {'JOBS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','RESIDUAL','VERIFYING'} or \
+                    state['schema'] != 1 or state['phase'] not in {'JOBS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','RESIDUAL','BINDING_RESIDUAL','VERIFYING'} or \
                     type(state['index']) is not int or type(state['total']) is not int or \
                     not 0 <= state['index'] <= state['total'] < 10**12 or \
                     (state['phase'] in {'JOBS','BINDINGS'} and (state['index'] != 0 or state['total'] != 0)) or \
-                    (state['phase'] in {'LISTINGS','RESIDUAL','VERIFYING'} and state['index'] != state['total']) or \
+                    (state['phase'] in {'LISTINGS','RESIDUAL','BINDING_RESIDUAL','VERIFYING'} and state['index'] != state['total']) or \
                     type(version) is not int or version < 1 or \
                     item['state'] != ('VERIFYING' if state['phase']=='VERIFYING' else 'IN_PROGRESS'):
                 raise ValueError('invalid job deletion checkpoint')
@@ -62,10 +63,15 @@ class JobDeletionCoordinator:
             if (result.get('state'),result.get('removed')) == ('VERIFYING',False):state['phase']='RESIDUAL'
             elif (result.get('state'),result.get('removed')) != ('IN_PROGRESS',True):
                 raise ValueError('invalid job listing cleanup result')
-        else:
+        elif phase=='RESIDUAL':
             result=self.residual.observe_page(subject=subject,request_id=request_id,limit=limit)
             if result['residual_found']:
                 return {'phase':'RESIDUAL','residual_found':True}
+            if result['scan_complete']:state['phase']='BINDING_RESIDUAL'
+        else:
+            result=self.binding_residual.observe_page(subject=subject,request_id=request_id,limit=limit)
+            if result['residual_found']:
+                return {'phase':'BINDING_RESIDUAL','residual_found':True}
             if result['scan_complete']:state['phase']='VERIFYING'
         raw=json.dumps(state,ensure_ascii=True,sort_keys=True,separators=(',',':')).encode('ascii')
         self.store.save_checkpoint(cipher=self.cipher,**scope,expected_version=version,

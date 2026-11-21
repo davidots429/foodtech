@@ -19,14 +19,16 @@ class CoordinatorTests(unittest.TestCase):
             capture_page=Mock(return_value={'complete':True,'count':1}),remove_one=Mock(return_value={'state':'VERIFYING'}))
         self.residual=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
             observe_page=Mock(side_effect=[{'residual_found':True,'scan_complete':False},{'residual_found':False,'scan_complete':True}]))
-        self.coordinator=JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual)
+        self.binding_residual=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
+            observe_page=Mock(side_effect=[{'residual_found':True,'scan_complete':False},{'residual_found':False,'scan_complete':True}]))
+        self.coordinator=JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual,binding_residual=self.binding_residual)
         self.scope={'subject':str(uuid4()),'request_id':str(uuid4())}
 
     def test_order_and_meta_only_is_not_whole_deletion(self):
         with patch('foodtech_business_api.job_deletion_coordinator.clean_one_job_listing',
                    side_effect=[{'state':'IN_PROGRESS','removed':True},{'state':'VERIFYING','removed':False}]):
-            results=[self.coordinator.step(**self.scope)['phase'] for _ in range(10)]
-        self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','LISTINGS','RESIDUAL','RESIDUAL','VERIFYING','VERIFYING'])
+            results=[self.coordinator.step(**self.scope)['phase'] for _ in range(12)]
+        self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','LISTINGS','RESIDUAL','RESIDUAL','BINDING_RESIDUAL','BINDING_RESIDUAL','VERIFYING','VERIFYING'])
         self.assertEqual([c.kwargs['index'] for c in self.worker.delete_one.call_args_list],[0,0])
         self.bindings.remove_one.assert_called_once()
 
@@ -41,7 +43,7 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_dependency_mismatch_fails(self):
         self.bindings.cipher=object()
-        with self.assertRaises(ValueError):JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual)
+        with self.assertRaises(ValueError):JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual,binding_residual=self.binding_residual)
 
 
 if __name__=='__main__':unittest.main()

@@ -11,6 +11,7 @@ from foodtech_business_api.job_deletion_worker import JobDeletionWorker
 from foodtech_business_api.job_binding_inventory import JobBindingInventory
 from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
 from foodtech_business_api.job_deletion_residual import JobResidualScan
+from foodtech_business_api.job_binding_residual import JobBindingResidualScan
 from boto3.dynamodb.conditions import Key
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_JOB_DELETION_LIVE') != '1':
@@ -81,18 +82,24 @@ try:
  src.put_item(Item={**binding_key,'job_pk':pk,'job_id':'job'},ConditionExpression='attribute_not_exists(pk)')
  src.put_item(Item={**orphan_key,'job_pk':f'SCOPE#USER#{u}#JOB#orphan','job_id':'orphan'},ConditionExpression='attribute_not_exists(pk)')
  residual=JobResidualScan(source_table=src,progress_store=store,cipher=cipher)
- coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual)
+ binding_residual=JobBindingResidualScan(source_table=src,progress_store=store,cipher=cipher)
+ coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual,binding_residual=binding_residual)
  orphan_record={'pk':f'SCOPE#USER#{u}#JOB#lost','sk':'EVENT#1'}
- inserted=observed=False
+ inserted=observed=binding_inserted=binding_observed=False
+ remaining_binding={'pk':'JEYUK#jeyuk-late-'+u,'sk':'BINDING'}
  for _ in range(1000):
   result=coordinator.step(subject=u,request_id=q,limit=100)
   if result['phase']=='RESIDUAL' and not inserted:
    src.put_item(Item=orphan_record,ConditionExpression='attribute_not_exists(pk)');created.append((src,orphan_record));inserted=True
-  if result.get('residual_found'):
+  if result['phase']=='BINDING_RESIDUAL' and not binding_inserted:
+   src.put_item(Item={**remaining_binding,'job_pk':pk,'job_id':'job'},ConditionExpression='attribute_not_exists(pk)');created.append((src,remaining_binding));binding_inserted=True
+  if result.get('residual_found') and result['phase']=='RESIDUAL':
    observed=True;src.delete_item(Key=orphan_record)
+  if result.get('residual_found') and result['phase']=='BINDING_RESIDUAL':
+   binding_observed=True;src.delete_item(Key=remaining_binding)
   if result['phase']=='VERIFYING':break
  else:raise AssertionError('bounded job cleanup incomplete')
- assert observed
+ assert observed and binding_observed
  assert not src.get_item(Key=binding_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key=orphan_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#job'},ConsistentRead=True).get('Item')
