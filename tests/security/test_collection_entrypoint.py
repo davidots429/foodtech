@@ -45,6 +45,24 @@ class CollectionEntrypointTests(unittest.TestCase):
                 entrypoint.main()
             execute.assert_not_called()
 
+    def test_mqtt_uses_its_own_module_and_ca_variable(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {'FOODTECH_COLLECTION_PROTOCOL': 'mqtt',
+                    'FOODTECH_MOCK_CA_PEM': '-----BEGIN CERTIFICATE-----\nsynthetic'}, clear=True), \
+                patch.object(entrypoint.sys, 'argv', ['entry', '--count', '3']), \
+                patch.object(entrypoint.tempfile, 'mkdtemp', return_value=directory), \
+                patch.object(entrypoint.ssl, 'create_default_context'), patch.object(entrypoint.os, 'execvpe') as execute:
+            entrypoint.main()
+            self.assertEqual(execute.call_args.args[1], ['python', '-m', 'foodtech_collection_adapter.mqtt', '--count', '3'])
+            self.assertEqual(execute.call_args.args[2]['FOODTECH_MQTT_CA_FILE'], str(Path(directory) / 'ca.pem'))
+
+    def test_unknown_protocol_does_not_start_collector(self):
+        with patch.dict(os.environ, {'FOODTECH_COLLECTION_PROTOCOL': 'unknown'}, clear=True), \
+                patch.object(entrypoint.sys, 'argv', ['entry', '--help']), patch.object(entrypoint.os, 'execvpe') as execute:
+            with self.assertRaisesRegex(ValueError, 'unsupported collection protocol'):
+                entrypoint.main()
+            execute.assert_not_called()
+
     def test_real_ca_is_loadable_and_malformed_pem_is_rejected(self):
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'synthetic-ca')])

@@ -206,6 +206,53 @@ class MinimalDataFlowStack extends Stack {
       secret.grantRead(task.executionRole!);
       new CfnOutput(this, "RestCollectionTaskArn", { value: task.taskDefinitionArn });
     }
+    if (app.node.tryGetContext("provisionMqttCollectionTask") === "true") {
+      const required = (name: string): string => {
+        const value = app.node.tryGetContext(name);
+        if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
+        return value.trim();
+      };
+      const repo = required("collectionImageRepository");
+      const tag = required("collectionImageTag");
+      const secretArn = required("collectionMqttSecretArn");
+      const host = required("collectionMqttHost");
+      const port = required("collectionMqttPort");
+      if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
+          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
+        throw new Error("collection image requires a valid repository and version tag");
+      }
+      if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
+        throw new Error("collectionMqttSecretArn must be a complete Secrets Manager ARN");
+      }
+      if (!/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(host) ||
+          !/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
+        throw new Error("MQTT host and port are invalid");
+      }
+      const repository = ecr.Repository.fromRepositoryName(this, "MqttCollectionImage", repo);
+      const secret = secretsmanager.Secret.fromSecretCompleteArn(this, "CollectionMqttSecret", secretArn);
+      const task = new ecs.FargateTaskDefinition(this, "MqttCollectionTask", {
+        cpu: 256, memoryLimitMiB: 512, taskRole: collectorRole,
+        runtimePlatform: { operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+          cpuArchitecture: ecs.CpuArchitecture.X86_64 },
+      });
+      const logGroup = new logs.LogGroup(this, "MqttCollectionLogs", {
+        logGroupName: `/foodtech/${stage}/mqtt-collection`, retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      task.addContainer("App", {
+        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        environment: { FOODTECH_COLLECTION_PROTOCOL: "mqtt", FOODTECH_MQTT_HOST: host, FOODTECH_MQTT_PORT: port,
+          FOODTECH_DATA_TABLE: table.tableName, FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl,
+          FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
+        secrets: { FOODTECH_MQTT_USER: ecs.Secret.fromSecretsManager(secret, "username"),
+          FOODTECH_MQTT_PASSWORD: ecs.Secret.fromSecretsManager(secret, "password"),
+          FOODTECH_MQTT_CLIENT_ID: ecs.Secret.fromSecretsManager(secret, "client_id"),
+          FOODTECH_MOCK_CA_PEM: ecs.Secret.fromSecretsManager(secret, "ca_pem") },
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "app", logGroup }),
+      });
+      secret.grantRead(task.executionRole!);
+      new CfnOutput(this, "MqttCollectionTaskArn", { value: task.taskDefinitionArn });
+    }
     const workerRole = new iam.Role(this, "StandardizationWorkerTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
         conditions: {
@@ -569,8 +616,9 @@ if (app.node.tryGetContext("provisionIdentity") === "true") {
 if (app.node.tryGetContext("provisionDataFlow") === "true") {
   const dataFlow = new MinimalDataFlowStack(app, `FoodtechMinimalDataFlow-${stage}`, { env });
   Tags.of(dataFlow).add("Project", "foodtech");
-} else if (app.node.tryGetContext("provisionRestCollectionTask") === "true") {
-  throw new Error("provisionRestCollectionTask requires provisionDataFlow=true");
+} else if (app.node.tryGetContext("provisionRestCollectionTask") === "true" ||
+           app.node.tryGetContext("provisionMqttCollectionTask") === "true") {
+  throw new Error("collection tasks require provisionDataFlow=true");
 }
 if (app.node.tryGetContext("provisionCookingJobs") === "true") {
   const cookingJobs = new CookingJobsStack(app, `FoodtechCookingJobs-${stage}`, { env });
