@@ -25,6 +25,7 @@ import httpx
 from foodtech_collection_adapter.jeyuk_aws import DynamoJeyukIngestor
 from foodtech_contracts.jeyuk_receipt import matches_jeyuk_snapshot
 from foodtech_business_api.jeyuk_source_evidence import read_collection_completion
+from foodtech_business_api.recommendation_evidence import _jeyuk_timeline_link
 from foodtech_collection_adapter import __main__ as collector
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 
@@ -60,6 +61,7 @@ def collect_over_https(fixture_id: str, queue_url: str, cursor_key: str) -> int:
         temp = Path(directory)
         fixture = json.loads(FIXTURE.read_text())
         fixture["fixtureId"] = fixture_id
+        fixture["logicalStartAt"] = "2026-01-01T00:00:00Z"
         source = temp / "fixture.json"
         source.write_text(json.dumps(fixture), encoding="utf-8")
         key, cert, pfx = (temp / name for name in ("key.pem", "cert.pem", "cert.pfx"))
@@ -147,7 +149,17 @@ def main(*, mock_wire: bool = False) -> int:
                 raise AssertionError("Collected raw samples do not match the terminal receipt")
             if read_collection_completion(DATA_TABLE, fixture_id) != {"status": "MATCHED_AT_READ", "raw_count": expected_count}:
                 raise AssertionError("Business API could not verify the stored receipt")
-            settings = read_collection_completion(DATA_TABLE, fixture_id, include_settings=True).get("settings", {})
+            source = read_collection_completion(DATA_TABLE, fixture_id, include_settings=True)
+            settings = source.get("settings", {})
+            if "AGITATOR_FAILURE" not in source.get("process_observations", {}).get("reason_codes", []):
+                raise AssertionError("Synthetic source replay did not detect the agitator failure")
+            job_interval = {"actual_placed_at": "2026-01-01T00:00:00Z",
+                            "actual_lifted_at": "2026-01-01T00:00:30Z", "actual_cooking_seconds": 30}
+            if _jeyuk_timeline_link(job_interval, source) != "MATCHED":
+                raise AssertionError("Timestamped synthetic samples did not match the cooking interval")
+            job_interval["actual_lifted_at"] = "2026-01-01T00:00:29Z"
+            if _jeyuk_timeline_link(job_interval, source) != "NOT_MATCHED":
+                raise AssertionError("A mismatched cooking interval was not rejected")
             if settings.get("heating_setpoint_celsius") != {"status": "STABLE", "value": "200"} or \
                     settings.get("target_rpm") != {"status": "STABLE", "value": "30"}:
                 raise AssertionError("Business API did not verify the synthetic source settings")

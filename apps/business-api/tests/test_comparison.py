@@ -139,16 +139,31 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
                                    "SAUCE": feed("SAUCE", 20 + index, "group-private")}
             self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
                 menu="JEYUK", equipment_profile="jeyuk-small", scale_version="jeyuk-common-v1")
+        baseline = self.store.items[(cooking._pk(self.subject, self.baseline_id), "META")]
+        baseline["source_binding"] = {"source_id": "synthetic-rest", "device_id": "mockprofile-110-a-001",
+                                      "batch_id": "comparison-batch"}
+        baseline["actual_cooking_seconds"] = 115
         comparison = await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
                                             headers={"X-CSRF-Token": "test-csrf"})
         self.assertEqual(comparison.status_code, 201, comparison.text)
-        response = await self.client.get(f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence",
-                                         params={"comparison_id": comparison.json()["comparison_id"]})
+        observed = {"status": "MATCHED_AT_READ", "raw_count": 115,
+                    "sample_timeline": {"status": "RECORDED", "first_at": "2026-11-14T00:00:06Z",
+                                        "last_at": "2026-11-14T00:02:00Z", "sample_count": 115},
+                    "process_observations": {"reason_codes": ["AGITATOR_JAM_WARNING"],
+                                             "basis": "SYNTHETIC_SAMPLES_ONLY"}}
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test"}), \
+                patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion", return_value=observed) as read:
+            response = await self.client.get(f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence",
+                                             params={"comparison_id": comparison.json()["comparison_id"]})
+        read.assert_called_once_with("test", "comparison-batch", include_settings=True)
         self.assertEqual(response.status_code, 200, response.text)
         value = response.json()
         self.assertEqual(value["recorded"]["jeyuk_feed_timing"]["vegetable_start_offset_us"], 11_000_000)
         self.assertEqual(value["selected_comparison"]["baseline_jeyuk_feed_timing"]["vegetable_start_offset_us"], 10_000_000)
         self.assertFalse(value["selected_comparison"]["immediately_previous_verified"])
+        self.assertEqual(value["selected_comparison"]["baseline_jeyuk_timeline"], "MATCHED")
+        self.assertEqual(value["selected_comparison"]["baseline_jeyuk_collection"]["process_observations"]
+                         ["reason_codes"], ["AGITATOR_JAM_WARNING"])
         self.assertNotIn("group-private", response.text)
         self.subject = "other-customer"
         self.assertEqual((await self.client.get(f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence",
