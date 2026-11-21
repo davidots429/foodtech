@@ -37,7 +37,7 @@ def check_one(sqs, table, ordered_url, quarantine_url, profile, vendor):
     batch = f'batch-{vendor}-live-{unique}'
     batch_key, record_key = {'a': ('batchId', 'recordId'), 'b': ('batch_id', 'record_id'),
                              'c': ('BatchId', 'RecId')}[vendor]
-    xml = profile in ('111', '121')
+    xml = profile in ('101', '111', '121')
     raws = []
     for index, record in enumerate(fixture['records'], 1):
         record_id = f'rec-{vendor}-live-{unique}-{index}'
@@ -122,6 +122,8 @@ def check_one(sqs, table, ordered_url, quarantine_url, profile, vendor):
             if outcome['dedup_status'] != 'UNIQUE' or assessment['mapping_version'] != f'mockprofile-{profile}-{vendor}-map-v1':
                 raise AssertionError('Unexpected deduplication or mapping')
         data = processed[0][2]['normalized']
+        if profile in ('100', '101') and ('CHAMBER_TEMPERATURE' not in data or 'POT_TEMPERATURE' in data):
+            raise AssertionError('Basic equipment temperature was not preserved')
         if profile in ('110', '111') and ('POT_TEMPERATURE' not in data or 'CHAMBER_TEMPERATURE' in data):
             raise AssertionError('Stirring temperature was not preserved')
         if profile in ('120', '121') and (str(data['CLIMATE_SETTING_PERCENT']['value']) != '100' or
@@ -164,7 +166,7 @@ def main():
     ordered = sqs.get_queue_url(QueueName=ORDERED_QUEUE)['QueueUrl']
     quarantine = sqs.get_queue_url(QueueName=QUARANTINE_QUEUE)['QueueUrl']
     table = session.resource('dynamodb').Table(DATA_TABLE)
-    for profile in ('110', '111', '120', '121'):
+    for profile in ('100', '101', '110', '111', '120', '121'):
         for vendor in ('bc' if profile in ('110', '120') else 'abc'):
             if not empty_queue(sqs, ordered) or not empty_queue(sqs, quarantine):
                 raise SystemExit('Shared development queues must be empty')
