@@ -35,7 +35,7 @@ class CombiLiveStoreTests(unittest.TestCase):
         store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name='table'); store.client = Mock(); store.serializer = TypeSerializer(); store.auth_table_name = 'auth'
         pk = 'SCOPE#USER#owner#COMBI_MEAL#meal'
-        store.create_meal(pk, [{'sk': 'META', 'version': 1}], 4)
+        store.create_meal(pk, [{'sk': 'META', 'version': 1, 'meal_batch_id': 'meal'}], 4)
         guard = store.client.transact_write_items.call_args.kwargs['TransactItems'][0]['ConditionCheck']
         self.assertEqual(guard['Key']['pk'], {'S': 'USER#owner'})
         self.assertEqual(guard['ExpressionAttributeValues'][':expected'], {'N': '4'})
@@ -61,8 +61,25 @@ class CombiLiveStoreTests(unittest.TestCase):
 
     def test_memory_finalization_detects_competing_append(self):
         store = MemoryCookingStore()
-        store.create_meal('meal', [{'sk':'META','version':1}])
-        store.append_meal_live('meal', 0, {'sk':'META','count':5}, {'sk':'CHUNK#000000'})
+        store.create_meal('SCOPE#USER#owner#COMBI_MEAL#meal', [{'sk':'META','version':1,'meal_batch_id':'meal'}])
+        store.append_meal_live('SCOPE#USER#owner#COMBI_MEAL#meal', 0, {'sk':'META','count':5}, {'sk':'CHUNK#000000'})
         with self.assertRaises(Conflict):
-            store.attach_meal_source('meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], None)
-        self.assertIsNone(store.read('meal')[0].get('source'))
+            store.attach_meal_source('SCOPE#USER#owner#COMBI_MEAL#meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], None)
+        self.assertIsNone(store.read('SCOPE#USER#owner#COMBI_MEAL#meal')[0].get('source'))
+
+    def test_meal_inventory_is_owner_scoped_paginated_and_atomic(self):
+        store = MemoryCookingStore()
+        for owner, meal in [('alice', 'one'), ('alice', 'two'), ('bob', 'private')]:
+            store.create_meal(f'SCOPE#USER#{owner}#COMBI_MEAL#{meal}',
+                              [{'sk': 'META', 'meal_batch_id': meal}])
+        first = store.list_meal_refs('alice', 1, None)
+        second = store.list_meal_refs('alice', 1, first['next_cursor'])
+        self.assertEqual(first['items'] + second['items'], [{'meal_batch_id': 'one'}, {'meal_batch_id': 'two'}])
+        self.assertIsNone(second['next_cursor'])
+        self.assertEqual(store.list_meal_refs('bob', 5, None)['items'], [{'meal_batch_id': 'private'}])
+        with self.assertRaises(Conflict):
+            store.create_meal('SCOPE#USER#alice#COMBI_MEAL#one', [{'sk': 'META', 'meal_batch_id': 'one'}])
+        with self.assertRaises(ValueError):
+            store.create_meal('SCOPE#USER#alice#COMBI_MEAL#other', [{'sk': 'META', 'meal_batch_id': 'one'}])
+        with self.assertRaises(ValueError):
+            store.list_meal_refs('alice', 1, 'MEAL#bad#cursor')

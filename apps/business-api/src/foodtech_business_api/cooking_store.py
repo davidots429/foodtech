@@ -65,6 +65,24 @@ def _meal_subject(pk: str) -> str:
         raise ValueError("invalid meal owner")
     return subject
 
+
+def _meal_listing(pk: str, records: list[dict]) -> dict:
+    subject = _meal_subject(pk)
+    meal_id = pk.rpartition('#COMBI_MEAL#')[2]
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', meal_id):
+        raise ValueError('invalid meal id')
+    meta = [row for row in records if row.get('sk') == 'META']
+    if len(meta) != 1 or meta[0].get('meal_batch_id') != meal_id:
+        raise ValueError('meal scope and metadata do not match')
+    return {'pk': f'SCOPE#USER#{subject}#COMBI_MEALS', 'sk': f'MEAL#{meal_id}', 'meal_batch_id': meal_id}
+
+
+def _meal_page_args(subject: str, limit: int, cursor: str | None) -> None:
+    if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
+            type(limit) is not int or not 1 <= limit <= 100 or (cursor is not None and
+            (not isinstance(cursor, str) or not re.fullmatch(r'MEAL#[A-Za-z0-9_-]{1,128}', cursor))):
+        raise ValueError('invalid meal inventory page')
+
 def _history_number(item: dict | None) -> int | None:
     if item is None:
         return None
@@ -146,6 +164,7 @@ class CookingStore(Protocol):
     def customer_restatement(self, pk: str, request_id: str) -> dict | None: ...
     def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict: ...
     def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None: ...
+    def list_meal_refs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def read_meal(self, pk: str) -> list[dict]: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict, expected_epoch: int = 0) -> None: ...
@@ -282,11 +301,24 @@ class MemoryCookingStore:
             return self.items[key].copy()
 
     def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None:
+        listing = _meal_listing(pk, records)
+        listing_key = (listing['pk'], listing['sk'])
         with self.lock:
-            if any((pk, row["sk"]) in self.items for row in records):
+            if listing_key in self.items or any((pk, row["sk"]) in self.items for row in records):
                 raise Conflict
             for row in records:
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
+            self.items[listing_key] = listing
+
+    def list_meal_refs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _meal_page_args(subject, limit, cursor)
+        with self.lock:
+            pk = f'SCOPE#USER#{subject}#COMBI_MEALS'
+            rows = [row for (item_pk, sk), row in sorted(self.items.items())
+                    if item_pk == pk and sk.startswith('MEAL#') and (cursor is None or sk > cursor)]
+            page = rows[:limit]
+            return {'items': [{'meal_batch_id': row['meal_batch_id']} for row in page],
+                    'next_cursor': page[-1]['sk'] if len(rows) > limit else None}
 
     def read_meal(self, pk: str) -> list[dict]:
         with self.lock:
@@ -747,10 +779,13 @@ class DynamoCookingStore:
         return {"pk": pk, **request}
 
     def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None:
+        listing = _meal_listing(pk, records)
         operations = [self._owner_guard(_meal_subject(pk), expected_epoch)] + [{"Put": {"TableName": self.table.name,
                                 "Item": self._item({"pk": pk, **row}),
                                 "ConditionExpression": "attribute_not_exists(pk)"}}
                       for row in records]
+        operations.append({'Put': {'TableName': self.table.name, 'Item': self._item(listing),
+                                    'ConditionExpression': 'attribute_not_exists(pk)'}})
         try:
             self.client.transact_write_items(TransactItems=operations)
         except self.client.exceptions.TransactionCanceledException as exc:
@@ -758,6 +793,17 @@ class DynamoCookingStore:
                    for reason in exc.response.get("CancellationReasons", [])):
                 raise Conflict from exc
             raise
+
+    def list_meal_refs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _meal_page_args(subject, limit, cursor)
+        pk = f'SCOPE#USER#{subject}#COMBI_MEALS'
+        args = {'KeyConditionExpression': Key('pk').eq(pk) & Key('sk').begins_with('MEAL#'),
+                'ConsistentRead': True, 'Limit': limit}
+        if cursor is not None:
+            args['ExclusiveStartKey'] = {'pk': pk, 'sk': cursor}
+        page = self.table.query(**args)
+        return {'items': [{'meal_batch_id': item['meal_batch_id']} for item in page.get('Items', [])],
+                'next_cursor': page.get('LastEvaluatedKey', {}).get('sk')}
 
     def read_meal(self, pk: str) -> list[dict]:
         rows = []

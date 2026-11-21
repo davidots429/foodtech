@@ -20,6 +20,7 @@ def main():
     keys = [{'pk': pk, 'sk': sk} for sk in ('META', 'STEP#rice', 'EVENT#1', 'EVENT#2')]
     keys += [{'pk': pk + '#LIVE', 'sk': sk} for sk in ('META', 'CHUNK#000000')]
     keys += [{'pk': pk + '#SOURCE', 'sk': 'RAW#0000'}]
+    listing_key = {'pk': f'SCOPE#USER#{subject}#COMBI_MEALS', 'sk': 'MEAL#meal'}
     created = False
     try:
         auth.put_item(Item={**auth_key, 'epoch': 0, 'deletion_lock_request': str(uuid4())},
@@ -31,13 +32,15 @@ def main():
             except Conflict:
                 return
             raise AssertionError('guarded meal write was accepted')
-        records = [{'sk': 'META', 'version': 1}, {'sk': 'STEP#rice', 'status': 'PENDING'}]
+        records = [{'sk': 'META', 'version': 1, 'meal_batch_id': 'meal'}, {'sk': 'STEP#rice', 'status': 'PENDING'}]
         blocked(lambda: store.create_meal(pk, records, 0))
-        if any(table.get_item(Key=key, ConsistentRead=True).get('Item') for key in keys):
+        if any(table.get_item(Key=key, ConsistentRead=True).get('Item') for key in [*keys, listing_key]):
             raise AssertionError('locked meal creation left records')
         auth.update_item(Key=auth_key, UpdateExpression='REMOVE deletion_lock_request')
         blocked(lambda: store.create_meal(pk, records, 1))
         store.create_meal(pk, records, 0)
+        if store.list_meal_refs(subject, 1, None)['items'] != [{'meal_batch_id': 'meal'}]:
+            raise AssertionError('meal inventory missing')
         auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :id',
                          ExpressionAttributeValues={':id': str(uuid4())})
         advance = lambda: store.advance_meal(pk, 1, {'sk': 'META', 'version': 2},
@@ -58,6 +61,7 @@ def main():
     finally:
         for key in keys:
             table.delete_item(Key=key)
+        table.delete_item(Key=listing_key)
         if created:
             auth.delete_item(Key=auth_key)
     print('meal create, advance, append and attachment guard and cleanup verified')
