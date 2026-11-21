@@ -120,3 +120,5 @@ REST JSON의 `mockprofile-110-{b,c}-001`과 `mockprofile-120-{b,c}-001`은 각 �
 
 
 2026-11-21 개발 DynamoDB·SQS에서 C# MQTT Mock의 기본 `300/301/302`, 볶음·교반 `310/311/312`, 콤비오븐 `320/321/322` 각 vendor-a/b/c를 수집했다. 27개 조합의 순서·장비별 표준화·오류 격리 및 합성 데이터 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/mqtt_equipment_aws_check.py`. CSV 정상 fixture는 세 건 모두 정상이며 JSON·XML의 세 번째 물리 불가능한 값은 격리된다.
+
+`tests/live/rest_quarantine_aws_check.py`는 C# REST Mock의 잘못된 UTF-8에 대해 격리 저장 실패 시 커서가 전진하지 않는지와 성공 시 원본 바이트·암호화·manifest·커서 및 정리를 검증하기 위한 절차다. 개발 스택의 전용 버킷이 없거나 버전 관리가 설정된 경우 변경 없이 중단한다. 현재 버킷이 배포되지 않아 실제 AWS 저장 검증은 수행하지 않았다.
