@@ -145,6 +145,8 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
                     continue
                 try:
                     result = client.reconnect()
+                except ssl.SSLError:
+                    raise
                 except OSError:
                     next_reconnect = time.monotonic() + 1
                     continue
