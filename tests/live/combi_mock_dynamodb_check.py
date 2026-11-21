@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TABLE = "foodtech-cooking-jobs-dev"
 
 
-async def scenario(store, partitions, *, reassess=False):
+async def scenario(store, partitions, *, reassess=False, realtime=False):
     subject = "synthetic-combi-mock-" + uuid.uuid4().hex
     ids = [uuid.uuid4() for _ in range(4)]
     pk = f"SCOPE#USER#{subject}#COMBI_MEAL#{ids[0]}"
@@ -76,8 +76,11 @@ async def scenario(store, partitions, *, reassess=False):
                     port = probe.getsockname()[1]
                 env = {**os.environ, "FOODTECH_MOCK_CLIENT_ID": "test-client",
                        "FOODTECH_MOCK_CLIENT_SECRET": "test-secret", "FOODTECH_MOCK_CERT_PASSWORD": "test-password"}
-                server = subprocess.Popen(["dotnet", str(ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"),
-                                           "serve", "--fixture", str(source), "--cert", str(pfx), "--port", str(port)],
+                command = ["dotnet", str(ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"),
+                           "serve", "--fixture", str(source), "--cert", str(pfx), "--port", str(port)]
+                if realtime:
+                    command.append("--realtime")
+                server = subprocess.Popen(command,
                                           env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 try:
                     base = f"https://localhost:{port}"
@@ -93,8 +96,24 @@ async def scenario(store, partitions, *, reassess=False):
                         raise RuntimeError("Mock health did not become available")
                     mock = RestMockClient(base, "test-client", "test-secret", str(cert), profile_id="mockprofile-120")
                     try:
-                        result = await import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"],
-                                                   "validation-csrf", publish_live=not reassess)
+                        task = asyncio.create_task(import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"],
+                                                               "validation-csrf", publish_live=not reassess))
+                        observed_partial = False
+                        try:
+                            while realtime and not task.done():
+                                observation = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}/source-live")
+                                observation.raise_for_status()
+                                live = observation.json()
+                                if 0 < live.get("count", 0) < 15 and live.get("state") != "COMPLETED":
+                                    observed_partial = True
+                                await asyncio.sleep(0.25)
+                            result = await task
+                        finally:
+                            if not task.done():
+                                task.cancel()
+                                await asyncio.gather(task, return_exceptions=True)
+                        if realtime and not observed_partial:
+                            raise AssertionError("No in-progress live samples were observed")
                     finally:
                         mock.close()
                 finally:
@@ -152,10 +171,13 @@ async def scenario(store, partitions, *, reassess=False):
                 return {"phase_counts": result["phase_counts"], "legacy_reassessment": "verified",
                         "prior_quality_restored": False, "final_hash_matches": True}
             return {"phase_counts": result["phase_counts"], "live_count": 15,
+                    "realtime_partial_observed": observed_partial if realtime else None,
                     "final_hash_matches": True, "safety_not_assumed": True}
 
 
-async def main(*, reassess=False):
+async def main(*, reassess=False, realtime=False):
+    if reassess and realtime:
+        raise SystemExit("Choose realtime or legacy reassessment, not both")
     if os.getenv("AWS_PROFILE") != "foodtech" or os.getenv("FOODTECH_COOKING_TABLE") != TABLE:
         raise SystemExit("Use AWS_PROFILE=foodtech and the exact development cooking table")
     if not shutil.which("dotnet") or not shutil.which("openssl") or not (
@@ -167,7 +189,7 @@ async def main(*, reassess=False):
     store = DynamoCookingStore(TABLE)
     partitions = []
     try:
-        result = await scenario(store, partitions, reassess=reassess)
+        result = await scenario(store, partitions, reassess=reassess, realtime=realtime)
     finally:
         remove_and_verify(store.table, partitions)
     print(json.dumps({**result, "cleanup": "verified", "table": TABLE}))
@@ -176,4 +198,6 @@ async def main(*, reassess=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--reassess", action="store_true")
-    asyncio.run(main(reassess=parser.parse_args().reassess))
+    parser.add_argument("--realtime", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(main(reassess=args.reassess, realtime=args.realtime))
