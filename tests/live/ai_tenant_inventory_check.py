@@ -4,7 +4,8 @@ from uuid import uuid4
 
 import boto3
 from foodtech_ai_gateway.legacy_tenant_inventory import (ActiveReconciliationConflict, CredentialDeletionConflict,
-                                                         delete_credential_pair, ensure_reserved_marker,
+                                                         RegistryDeletionConflict, delete_credential_pair, delete_registry_key,
+                                                         ensure_reserved_marker,
                                                          list_partition_keys, reconcile_reserved_page, resolve_credential_vault,
                                                          scan_registry_partitions)
 
@@ -68,6 +69,13 @@ def main():
                 break
         if checkpoint is not None or not found_reserved or not table.get_item(Key=marker_key, ConsistentRead=True).get('Item'):
             raise AssertionError('legacy scan did not reconcile reservation')
+        try:
+            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
+                                request_id=request, partition=exec_pk, sk='RESULT')
+        except RegistryDeletionConflict:
+            pass
+        else:
+            raise AssertionError('active execution child was deleted')
         table.update_item(Key={'pk': exec_pk, 'sk': 'META'}, UpdateExpression='SET #s = :done',
                           ExpressionAttributeNames={'#s': 'state'}, ExpressionAttributeValues={':done': 'SUCCEEDED'})
         table.delete_item(Key=marker_key)
@@ -104,6 +112,22 @@ def main():
             pass
         else:
             raise AssertionError('other tenant read partition keys')
+        try:
+            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
+                                request_id=request, partition=exec_pk, sk='META')
+        except RegistryDeletionConflict:
+            pass
+        else:
+            raise AssertionError('execution parent deleted before children')
+        for sk in ('CALL#1', 'RESULT', 'META'):
+            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
+                                request_id=request, partition=exec_pk, sk=sk)
+        for partition in (consent_pk, limit_pk):
+            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
+                                request_id=request, partition=partition, sk='META')
+        if any(table.get_item(Key={'pk': partition, 'sk': 'META'}, ConsistentRead=True).get('Item')
+               for partition in (exec_pk, consent_pk, limit_pk)):
+            raise AssertionError('registry parent remains after deletion')
         def remove(request_id):
             delete_credential_pair(session.client('dynamodb'), auth_table=auth.name, registry_table=table.name,
                                    vault_table=vault.name, tenant=tenant, request_id=request_id, location=location)

@@ -2,7 +2,8 @@ import unittest
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
-from foodtech_ai_gateway.legacy_tenant_inventory import (VaultLocation, delete_credential_pair, ensure_reserved_marker,
+from foodtech_ai_gateway.legacy_tenant_inventory import (RegistryDeletionConflict, VaultLocation, delete_credential_pair,
+                                                         delete_registry_key, ensure_reserved_marker,
                                                          InventoryPage, list_partition_keys, reconcile_reserved_page, resolve_credential_vault,
                                                          scan_registry_partitions)
 
@@ -124,6 +125,25 @@ class TenantInventoryTests(unittest.TestCase):
                                              tenant='alice', request_id=request, limit=3)
             self.assertEqual(result.checkpoint, page.checkpoint)
             self.assertEqual(ensure.call_count, 2)
+
+    def test_registry_delete_requires_empty_parent_and_blocks_active_execution(self):
+        table, client, request = Mock(), Mock(), str(uuid4())
+        table.name = 'registry'
+        client.exceptions.TransactionCanceledException = type('Canceled', (Exception,), {})
+        table.query.return_value = {'Items': [{'pk': 'EXEC#one', 'sk': 'META'}, {'pk': 'EXEC#one', 'sk': 'RESULT'}]}
+        with self.assertRaises(RegistryDeletionConflict):
+            delete_registry_key(table, client, auth_table='auth', tenant='alice', request_id=request,
+                                partition='EXEC#one', sk='META')
+        client.transact_write_items.assert_not_called()
+        delete_registry_key(table, client, auth_table='auth', tenant='alice', request_id=request,
+                            partition='EXEC#one', sk='RESULT')
+        ops = client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertEqual(ops[1]['ConditionCheck']['Key']['pk'], {'S': 'ACTIVE#alice'})
+        self.assertIn('#state IN', ops[2]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[3]['Delete']['Key']['sk'], {'S': 'RESULT'})
+        with self.assertRaises(ValueError):
+            delete_registry_key(table, client, auth_table='auth', tenant='alice', request_id=request,
+                                partition='CREDENTIAL#one', sk='META')
 
 
 if __name__ == '__main__':

@@ -33,6 +33,10 @@ class ActiveReconciliationConflict(Exception):
     pass
 
 
+class RegistryDeletionConflict(Exception):
+    pass
+
+
 def _scope(tenant: str, limit: int) -> None:
     if not isinstance(tenant, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', tenant) or \
             type(limit) is not int or not 1 <= limit <= 100:
@@ -223,6 +227,75 @@ def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: s
                                    tenant=tenant, request_id=request_id, execution_id=partition.removeprefix('EXEC#'))
     check_lock()
     return page
+
+
+def delete_registry_key(table, client, *, auth_table: str, tenant: str, request_id: str,
+                        partition: str, sk: str) -> None:
+    """Delete a noncredential registry key under the exact deletion lock.
+
+    The trusted caller must enforce complete discovery and quiesce older
+    writers. META deletion is refused while child keys remain. This primitive
+    does not establish global deletion completion or authorize its caller.
+    """
+    _scope(tenant, 1)
+    try:
+        if str(UUID(request_id)) != request_id or not isinstance(partition, str) or \
+                not isinstance(sk, str) or not 1 <= len(sk) <= 2048:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('invalid registry deletion scope') from None
+    table_name = getattr(table, 'name', None)
+    if not isinstance(auth_table, str) or not auth_table or not isinstance(table_name, str) or \
+            not table_name or auth_table == table_name:
+        raise ValueError('separate auth and registry tables required')
+    execution = bool(re.fullmatch(r'EXEC#[A-Za-z0-9_-]{1,128}', partition))
+    ordinary = bool(re.fullmatch(r'(CONSENT|QUOTE)#[A-Za-z0-9_-]{1,128}', partition))
+    limit = bool(re.fullmatch(r'LIMIT#[0-9]{4}-(0[1-9]|1[0-2])#TENANT#' + re.escape(tenant), partition))
+    if not (execution or ordinary or limit):
+        raise ValueError('unsupported registry deletion partition')
+    if sk == 'META':
+        page = table.query(KeyConditionExpression=Key('pk').eq(partition), ProjectionExpression='pk, sk',
+                           ConsistentRead=True, Limit=2)
+        items = page.get('Items')
+        if not isinstance(items, list) or page.get('LastEvaluatedKey') or any(
+                item.get('pk') != partition or item.get('sk') != 'META' for item in items) or len(items) > 1:
+            raise RegistryDeletionConflict('partition contains unresolved child records')
+    serializer = TypeSerializer()
+    def encode(values):
+        return {name: serializer.serialize(value) for name, value in values.items()}
+    operations = [{'ConditionCheck': {'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
+        'ConditionExpression': 'deletion_lock_request = :request',
+        'ExpressionAttributeValues': encode({':request': request_id})}}]
+    if execution:
+        operations.append({'ConditionCheck': {'TableName': table_name,
+            'Key': encode({'pk': f'ACTIVE#{tenant}', 'sk': partition}),
+            'ConditionExpression': 'attribute_not_exists(pk)'}})
+    if limit:
+        parent_condition, parent_values, names = 'attribute_exists(pk)', {}, {}
+    else:
+        parent_condition, parent_values, names = 'tenant_id = :tenant', {':tenant': tenant}, {}
+        if execution:
+            parent_condition += ' AND #state IN (:pending, :success, :failed)'
+            parent_values.update({':pending': 'PENDING', ':success': 'SUCCEEDED', ':failed': 'FAILED'})
+            names['#state'] = 'state'
+    def condition_fields(expression):
+        fields = {'ConditionExpression': expression}
+        if parent_values: fields['ExpressionAttributeValues'] = encode(parent_values)
+        if names: fields['ExpressionAttributeNames'] = names
+        return fields
+    if sk != 'META':
+        operations.append({'ConditionCheck': {'TableName': table_name,
+            'Key': encode({'pk': partition, 'sk': 'META'}), **condition_fields(parent_condition)}})
+    delete = {'TableName': table_name, 'Key': encode({'pk': partition, 'sk': sk})}
+    if sk == 'META':
+        delete.update(condition_fields(f'attribute_not_exists(pk) OR ({parent_condition})'))
+    operations.append({'Delete': delete})
+    try:
+        client.transact_write_items(TransactItems=operations)
+    except client.exceptions.TransactionCanceledException as exc:
+        if any(reason.get('Code') == 'ConditionalCheckFailed' for reason in exc.response.get('CancellationReasons', [])):
+            raise RegistryDeletionConflict from exc
+        raise
 
 
 def delete_credential_pair(client, *, auth_table: str, registry_table: str, vault_table: str,
