@@ -42,8 +42,11 @@ class ProfileDeletionCoordinator:
                 data.update(phase='DELETE', total=result['count'])
         elif data['phase'] == 'DELETE':
             if data['index'] < data['total']:
-                self.worker.delete_one(subject=subject, request_id=request_id, index=data['index'])
-                data['index'] += 1
+                count = min(limit, 20, data['total'] - data['index'])
+                deleted = self.worker.delete_batch(subject=subject, request_id=request_id, start=data['index'], count=count)
+                if deleted != {'count': count, 'state': 'VERIFYING'}:
+                    raise ValueError('invalid profile cleanup result')
+                data['index'] += count
             if data['index'] == data['total']:
                 data['phase'] = 'ORPHANS'
         elif data['phase'] in {'ORPHANS', 'FINAL_LISTING'}:

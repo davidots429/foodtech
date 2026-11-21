@@ -4,6 +4,7 @@ The caller must authenticate the job, stop legacy writers and verify residuals
 across all stores. VERIFYING is not a deletion completion receipt.
 """
 import json
+from itertools import islice
 
 from .condition_profile_deletion import delete_profile_pair
 
@@ -22,6 +23,21 @@ class ProfileDeletionWorker:
             subject=subject, request_id=request_id)) if n == index), None)
         if target is None:
             raise ValueError('profile deletion target unavailable')
+        self._delete_target(subject=subject, request_id=request_id, index=index, target=target)
+        return {'index': index, 'state': 'VERIFYING'}
+
+    def delete_batch(self, *, subject, request_id, start, count):
+        if type(start) is not int or not 0 <= start < 10**12 or type(count) is not int or \
+                not 1 <= count <= 20 or start + count >= 10**12:
+            raise ValueError('invalid profile deletion range')
+        targets = list(islice(self.inventory.targets(subject=subject, request_id=request_id), start, start + count))
+        if len(targets) != count:
+            raise ValueError('profile deletion target range unavailable')
+        for index, target in enumerate(targets, start):
+            self._delete_target(subject=subject, request_id=request_id, index=index, target=target)
+        return {'count': count, 'state': 'VERIFYING'}
+
+    def _delete_target(self, *, subject, request_id, index, target):
         scope = {'subject': subject, 'request_id': request_id, 'domain': f'PROFILE_DELETE_{index:012d}'}
         raw = json.dumps({'schema': 1, 'profile_id': target.profile_id, 'version': target.version},
                          ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('ascii')
@@ -35,4 +51,3 @@ class ProfileDeletionWorker:
         if previous is None:
             self.progress_store.save_checkpoint(cipher=self.cipher, **scope, expected_version=0,
                                                 state='VERIFYING', checkpoint=raw)
-        return {'index': index, 'state': 'VERIFYING'}

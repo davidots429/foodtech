@@ -63,6 +63,23 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(delete.call_args.kwargs['profile_id'], 'p1')
         with self.assertRaises(ValueError): worker.delete_one(**self.scope, index=2)
 
+    def test_batch_retries_partial_deletion_and_rejects_incomplete_range(self):
+        self.capture_two()
+        worker = ProfileDeletionWorker(inventory=self.inventory, progress_store=self.progress,
+                                       cipher=self.cipher, source_table=self.source)
+        with patch('foodtech_business_api.profile_deletion_worker.delete_profile_pair') as delete:
+            delete.side_effect = [None, RuntimeError('temporary')]
+            with self.assertRaises(RuntimeError):
+                worker.delete_batch(**self.scope, start=0, count=2)
+            self.assertEqual(self.progress.items[(self.subject, self.request, 'PROFILE_DELETE_000000000000')]['state'], 'VERIFYING')
+            delete.reset_mock(side_effect=True)
+            self.assertEqual(worker.delete_batch(**self.scope, start=0, count=2), {'count': 2, 'state': 'VERIFYING'})
+            self.assertEqual(delete.call_count, 2)
+            delete.reset_mock()
+            with self.assertRaises(ValueError):
+                worker.delete_batch(**self.scope, start=0, count=3)
+            delete.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
