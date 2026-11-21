@@ -45,6 +45,12 @@ class CredentialDeletionPlan:
         result = observer.observe(subject=subject, request_id=request_id)
         if not isinstance(result, dict) or result.get('observation') not in {'BLOCKED', 'CLEAR_OBSERVED'}:
             raise ValueError('invalid execution observation')
+        # An execution check may take multiple pages. Reject a changed target
+        # before returning; final deletion must still repeat transactional guards.
+        after = resolve_credential_vault(self.source_table, self.vault_table, tenant=subject,
+                                          credential_id=plan['partition'].removeprefix('CREDENTIAL#'))
+        if after.key != location.key or after.tenant_pseudonym != location.tenant_pseudonym:
+            raise ValueError('credential metadata changed')
         return {'index': index, 'observation': result['observation']}
 
     def prepare(self, *, subject, request_id, index):

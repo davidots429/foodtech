@@ -52,6 +52,19 @@ class PlanTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.planner.observe_readiness(observer=observer, **self.scope)
 
+    def test_metadata_change_during_execution_observation_is_rejected(self):
+        original = VaultLocation({'pk': 'CREDENTIAL#key', 'sk': 'META'}, 'first')
+        changed = VaultLocation(original.key, 'changed')
+        observer = SimpleNamespace(capture=self.capture, progress_store=self.progress, source_table=self.source,
+                                   observe=Mock(return_value={'observation': 'CLEAR_OBSERVED'}))
+        with patch('foodtech_ai_gateway.credential_deletion_plan.resolve_credential_vault', return_value=original):
+            self.planner.prepare(**self.scope)
+        payload = self.progress.save_checkpoint.call_args.kwargs['checkpoint']
+        self.progress.load_checkpoint.return_value = {'state': 'IN_PROGRESS', 'version': 1, 'checkpoint': payload}
+        with patch('foodtech_ai_gateway.credential_deletion_plan.resolve_credential_vault', side_effect=[original, changed]):
+            with self.assertRaises(ValueError):
+                self.planner.observe_readiness(observer=observer, **self.scope)
+
     def test_invalid_or_changed_metadata_cannot_create_plan(self):
         with patch('foodtech_ai_gateway.credential_deletion_plan.resolve_credential_vault', side_effect=ValueError('mismatch')):
             with self.assertRaises(ValueError):
