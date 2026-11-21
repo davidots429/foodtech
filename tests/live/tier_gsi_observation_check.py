@@ -8,7 +8,7 @@ from foodtech_business_api.tier_store import DynamoTierStore
 
 REGION = 'ap-southeast-2'
 ACCOUNT = '573693340100'
-TABLE = 'foodtech-tier-requests-dev'
+TABLE = os.getenv('FOODTECH_TIER_TEST_TABLE', 'foodtech-tier-requests-dev')
 AUTH = 'foodtech-auth-sessions-dev'
 
 
@@ -24,8 +24,9 @@ def wait_for(observe, expected, *, timeout=45):
 
 
 def main():
-    if os.getenv('AWS_PROFILE') != 'foodtech':
-        raise SystemExit('explicit foodtech profile required')
+    if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_TIER_GSI_LIVE') != '1' or \
+            (TABLE != 'foodtech-tier-requests-dev' and not TABLE.startswith('foodtech-tier-gsi-test-')):
+        raise SystemExit('explicit profile, opt-in and approved development table required')
     session = boto3.Session(profile_name='foodtech', region_name=REGION)
     if session.client('sts').get_caller_identity()['Account'] != ACCOUNT:
         raise RuntimeError('unexpected AWS account')
