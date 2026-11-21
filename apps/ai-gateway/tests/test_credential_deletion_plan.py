@@ -37,6 +37,21 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.planner.prepare(**self.scope)
 
+    def test_readiness_rechecks_metadata_and_never_authorizes_deletion(self):
+        location = VaultLocation({'pk': 'CREDENTIAL#key', 'sk': 'META'}, 'private-pseudonym')
+        observer = SimpleNamespace(capture=self.capture, progress_store=self.progress, source_table=self.source,
+                                   observe=Mock(return_value={'observation': 'BLOCKED', 'reason': 'ACTIVE_MARKER'}))
+        with patch('foodtech_ai_gateway.credential_deletion_plan.resolve_credential_vault', return_value=location):
+            self.planner.prepare(**self.scope)
+            payload = self.progress.save_checkpoint.call_args.kwargs['checkpoint']
+            self.progress.load_checkpoint.return_value = {'state': 'IN_PROGRESS', 'version': 1, 'checkpoint': payload}
+            result = self.planner.observe_readiness(observer=observer, **self.scope)
+        self.assertEqual(result, {'index': 0, 'observation': 'BLOCKED'})
+        changed = VaultLocation(location.key, 'changed-pseudonym')
+        with patch('foodtech_ai_gateway.credential_deletion_plan.resolve_credential_vault', return_value=changed):
+            with self.assertRaises(ValueError):
+                self.planner.observe_readiness(observer=observer, **self.scope)
+
     def test_invalid_or_changed_metadata_cannot_create_plan(self):
         with patch('foodtech_ai_gateway.credential_deletion_plan.resolve_credential_vault', side_effect=ValueError('mismatch')):
             with self.assertRaises(ValueError):

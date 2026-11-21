@@ -19,6 +19,34 @@ class CredentialDeletionPlan:
         self.capture, self.progress_store, self.cipher = capture, progress_store, cipher
         self.source_table, self.vault_table = source_table, vault_table
 
+    def observe_readiness(self, *, observer, subject, request_id, index):
+        """Recheck metadata and execution state without authorizing deletion."""
+        if observer.capture is not self.capture or observer.progress_store is not self.progress_store or \
+                observer.source_table is not self.source_table:
+            raise ValueError('execution observer does not match credential plan')
+        self.prepare(subject=subject, request_id=request_id, index=index)
+        scope = {'subject': subject, 'request_id': request_id, 'domain': f'AI_CREDENTIAL_{index:012d}'}
+        saved = self.progress_store.load_checkpoint(cipher=self.cipher, **scope)
+        if not saved:
+            raise ValueError('credential deletion plan unavailable')
+        try:
+            plan = json.loads(saved['checkpoint'])
+            if saved['state'] != 'IN_PROGRESS' or saved['version'] != 1 or \
+                    set(plan) != {'schema', 'partition', 'vault_arn', 'tenant_pseudonym'} or \
+                    plan['schema'] != 1 or plan['vault_arn'] != self.vault_table.table_arn or \
+                    not re.fullmatch(r'CREDENTIAL#[A-Za-z0-9_-]{1,128}', plan['partition']):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            raise ValueError('invalid credential deletion plan') from None
+        location = resolve_credential_vault(self.source_table, self.vault_table, tenant=subject,
+                                             credential_id=plan['partition'].removeprefix('CREDENTIAL#'))
+        if location.key['pk'] != plan['partition'] or location.tenant_pseudonym != plan['tenant_pseudonym']:
+            raise ValueError('credential metadata changed')
+        result = observer.observe(subject=subject, request_id=request_id)
+        if not isinstance(result, dict) or result.get('observation') not in {'BLOCKED', 'CLEAR_OBSERVED'}:
+            raise ValueError('invalid execution observation')
+        return {'index': index, 'observation': result['observation']}
+
     def prepare(self, *, subject, request_id, index):
         if type(index) is not int or not 0 <= index < 10**12:
             raise ValueError('invalid credential inventory index')
