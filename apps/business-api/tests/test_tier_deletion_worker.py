@@ -11,6 +11,9 @@ class WorkerTests(unittest.TestCase):
         self.progress = Mock()
         self.cipher = object()
         self.index_capture = Mock()
+        self.index_capture.tier_store = self.tier
+        self.index_capture.progress_store = self.progress
+        self.index_capture.cipher = self.cipher
         self.worker = TierDeletionWorker(tier_store=self.tier, progress_store=self.progress, cipher=self.cipher,
                                          index_capture=self.index_capture)
         self.scope = {'subject': str(uuid4()), 'request_id': str(uuid4()), 'limit': 2}
@@ -97,7 +100,9 @@ class MemoryProgress:
 class CaptureTests(unittest.TestCase):
     def setUp(self):
         from foodtech_business_api.tier_deletion_worker import TierIndexCapture
-        self.tier, self.progress, self.cipher = Mock(), MemoryProgress(), object()
+        self.tier, self.progress, self.cipher = Mock(), MemoryProgress(), Mock()
+        self.cipher.source_table_arn = 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/tier-dev'
+        self.tier.table.table_arn = self.cipher.source_table_arn
         self.capture = TierIndexCapture(tier_store=self.tier, progress_store=self.progress, cipher=self.cipher)
         self.scope = {'subject': str(uuid4()), 'request_id': str(uuid4())}
 
@@ -172,6 +177,15 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(second, {'index': 0, 'observation': 'NOT_OBSERVED', 'version': 2})
         with self.assertRaises(ValueError):
             self.capture.observe_and_record(**self.scope, index=1)
+
+    def test_other_source_table_is_rejected_before_read_or_delete(self):
+        self.tier.table.table_arn = 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/other-dev'
+        with self.assertRaises(ValueError):
+            self.capture.capture_page(**self.scope, limit=1)
+        self.tier.deletion_index_candidates.assert_not_called()
+        with self.assertRaises(ValueError):
+            self.capture.ensure_ready(**self.scope)
+        self.tier.delete_inventory_page.assert_not_called()
 
     def test_deletion_refuses_incomplete_capture(self):
         worker = TierDeletionWorker(tier_store=self.tier, progress_store=self.progress,

@@ -32,6 +32,10 @@ class TierIndexCapture:
         return raw
 
     def _load(self, subject, request_id, domain):
+        source = getattr(self.cipher, 'source_table_arn', None)
+        actual = getattr(getattr(self.tier_store, 'table', None), 'table_arn', None)
+        if not isinstance(source, str) or not isinstance(actual, str) or source != actual:
+            raise ValueError('tier source table does not match checkpoint scope')
         return self.progress_store.load_checkpoint(cipher=self.cipher, subject=subject,
                                                    request_id=request_id, domain=domain)
 
@@ -134,7 +138,7 @@ class TierIndexCapture:
         if type(index) is not int or not 0 <= index < 10**12:
             raise ValueError('invalid tier index observation')
         scope = {'subject': subject, 'request_id': request_id, 'domain': f'TIER_OBSERVE_{index:012d}'}
-        previous = self.progress_store.load_checkpoint(cipher=self.cipher, **scope)
+        previous = self._load(subject, request_id, scope['domain'])
         version = 0 if previous is None else previous['version']
         if previous is not None:
             old = self._json(previous['checkpoint'])
@@ -159,6 +163,9 @@ class TierIndexCapture:
 
 class TierDeletionWorker:
     def __init__(self, *, tier_store, progress_store, cipher, index_capture):
+        if index_capture.tier_store is not tier_store or index_capture.progress_store is not progress_store or \
+                index_capture.cipher is not cipher:
+            raise ValueError('tier deletion dependencies do not match capture')
         self.index_capture = index_capture
         self.tier_store = tier_store
         self.progress_store = progress_store
