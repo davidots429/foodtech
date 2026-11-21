@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
+from uuid import uuid4
 
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_business_api.tier_store import DynamoTierStore, MemoryTierStore
@@ -70,6 +71,17 @@ class TierGuardTests(unittest.TestCase):
         self.store.table.query.return_value['Items'][0]['pk'] = 'TENANT#bob'
         with self.assertRaises(ValueError):
             self.store.inventory_keys('alice', 1, None)
+
+    def test_delete_requires_exact_lock_and_targets_only_scoped_key(self):
+        request = str(uuid4())
+        self.store.delete_inventory_key('alice', request, 'CURRENT')
+        operations = self.store.client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertEqual(operations[0]['ConditionCheck']['ExpressionAttributeValues'][':request'], {'S': request})
+        self.assertEqual(operations[1]['Delete']['Key'], {'pk': {'S': 'TENANT#alice'}, 'sk': {'S': 'CURRENT'}})
+        for subject, request_id, key in [('alice', 'bad', 'CURRENT'), ('alice#bad', request, 'CURRENT'),
+                                         ('alice', request, None), ('alice', request, '')]:
+            with self.subTest(subject=subject, key=key), self.assertRaises(ValueError):
+                self.store.delete_inventory_key(subject, request_id, key)
 
 
 if __name__ == '__main__':

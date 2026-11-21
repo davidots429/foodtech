@@ -5,6 +5,7 @@ import re
 import threading
 from functools import lru_cache
 from typing import Protocol
+from uuid import UUID
 
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
@@ -172,6 +173,37 @@ class DynamoTierStore:
                 next_key['pk'] != pk or not isinstance(next_key['sk'], str) or not 1 <= len(next_key['sk']) <= 2048):
             raise ValueError('invalid tier inventory checkpoint')
         return {'keys': keys, 'next_cursor': next_key['sk'] if next_key is not None else None}
+
+    def delete_inventory_key(self, subject: str, request_id: str, sk: str) -> None:
+        """Delete one known key only while the matching deletion lock is held.
+
+        The caller must authenticate and authorize the deletion request. A
+        successful delete is not proof of GSI, backup or whole-user removal.
+        """
+        _inventory_args(subject, 1, sk)
+        if sk is None:
+            raise ValueError('tier key required')
+        try:
+            if str(UUID(request_id)) != request_id:
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError('invalid deletion request') from None
+        if not self.auth_table_name:
+            raise ValueError('authentication table required')
+        try:
+            self.client.transact_write_items(TransactItems=[
+                {'ConditionCheck': {'TableName': self.auth_table_name,
+                                    'Key': self._item({'pk': f'USER#{subject}'}),
+                                    'ConditionExpression': 'deletion_lock_request = :request',
+                                    'ExpressionAttributeValues': self._item({':request': request_id})}},
+                {'Delete': {'TableName': self.table.name,
+                            'Key': self._item({'pk': f'TENANT#{subject}', 'sk': sk})}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get('Code') == 'ConditionalCheckFailed'
+                   for reason in exc.response.get('CancellationReasons', [])):
+                raise TierConflict from exc
+            raise
 
     def decide(self, subject: str, application_id: str, reviewer: str,
                decision: str, reviewed_at: str, reviewer_epoch: int = 0) -> dict:

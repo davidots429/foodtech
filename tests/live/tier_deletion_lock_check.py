@@ -57,6 +57,17 @@ def main():
                 break
         if set(inventory) != {key['sk'] for key in keys} or store.inventory_keys(admin, 10, None)['keys']:
             raise AssertionError('tier history inventory incomplete or cross-owner')
+        request = str(uuid4())
+        auth.update_item(Key=auth_keys[0], UpdateExpression='SET deletion_lock_request = :id',
+                         ExpressionAttributeValues={':id': request})
+        blocked(lambda: store.delete_inventory_key(customer, str(uuid4()), inventory[0]))
+        if not table.get_item(Key={'pk': keys[0]['pk'], 'sk': inventory[0]}, ConsistentRead=True).get('Item'):
+            raise AssertionError('wrong request removed a record')
+        for sk in inventory:
+            store.delete_inventory_key(customer, request, sk)
+        store.delete_inventory_key(customer, request, inventory[0])
+        if store.inventory_keys(customer, 10, None)['keys']:
+            raise AssertionError('tier records remain after deletion')
     finally:
         for key in keys:
             table.delete_item(Key=key)
