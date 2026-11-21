@@ -5,6 +5,7 @@ import unittest
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_business_api.capsule_inventory import CapsuleInventory
 from foodtech_capsule_crypto.contract import Entry, Envelope
+from foodtech_capsule_crypto.deletion_plan import EncryptedTarget, prepare_targets
 from foodtech_capsule_crypto.user_entry import UserEntryEnvelope, open_entry, seal_entry
 from foodtech_capsule_crypto.user_key import UserKeyGenerator, UserKeyRecord, UserKeyUnwrapper
 
@@ -76,6 +77,10 @@ class InventoryCryptoTests(unittest.TestCase):
                 envelope=envelope, expected_purpose='BILLING', expected_epoch='2026-11',
                 approved_purposes=purposes, approved_tenant_purposes=tenant_purposes))
         self.assertEqual(result, plain)
+        plan = prepare_targets(tenant=tenant, record=recovered_record,
+            targets=(EncryptedTarget('BILLING', '2026-11', envelope),), expected_count=inventory.entry_count,
+            key_map=key_map, approved_purposes=purposes, approved_tenant_purposes=tenant_purposes, kms_client=kms)
+        self.assertEqual(plan.entries, (plain,))
 
 
 if __name__ == '__main__':
