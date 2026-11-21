@@ -91,6 +91,21 @@ class ProgressTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.read_progress(self.job, 'owner-a')
 
+    def test_last_version_is_readable_but_cannot_advance(self):
+        maximum = 2**63 - 1
+        self.table.item.update(phase='CONTINUE', version=maximum - 1,
+            ciphertext=self.cipher.seal(self.job, 'owner-a', {'pk': 'next', 'sk': 'META'},
+                                        phase='CONTINUE', version=maximum - 1))
+        with patch('foodtech_business_api.profile_scan_progress.reconcile_legacy_page',
+                   return_value=LegacyProfilePage((), {'pk': 'next2', 'sk': 'META'}, 1)):
+            self.assertEqual(self.store.run_page(job_id=self.job, subject='owner-a', source_table=object(),
+                                                 profile_store=object(), limit=10).version, maximum)
+        self.assertEqual(self.store.read_progress(self.job, 'owner-a').version, maximum)
+        with patch('foodtech_business_api.profile_scan_progress.reconcile_legacy_page') as scan:
+            with self.assertRaisesRegex(ValueError, 'version exhausted'):
+                self.store.run_page(job_id=self.job, subject='owner-a', source_table=object(), profile_store=object(), limit=10)
+            scan.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

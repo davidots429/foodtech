@@ -52,7 +52,7 @@ class ProfileScanProgressStore:
                 (isinstance(version, Decimal) and (not version.is_finite() or version != int(version))):
             raise ValueError('invalid scan job version')
         version = int(version)
-        if not 1 <= version < 2**63 - 1:
+        if not 1 <= version < 2**63:
             raise ValueError('invalid scan job version')
         encrypted = item.get('ciphertext')
         if isinstance(encrypted, Binary):
@@ -77,6 +77,8 @@ class ProfileScanProgressStore:
         progress, checkpoint = self._read(job_id, subject)
         if progress.phase == 'SCAN_COMPLETE':
             raise ValueError('scan job is complete')
+        if progress.version == 2**63 - 1:
+            raise ValueError('scan job version exhausted')
         page = reconcile_legacy_page(source_table, profile_store, subject=subject, limit=limit, checkpoint=checkpoint)
         next_phase = 'CONTINUE' if page.checkpoint is not None else 'SCAN_COMPLETE'
         next_checkpoint = page.checkpoint if page.checkpoint is not None else _FINISHED
