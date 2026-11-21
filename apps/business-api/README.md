@@ -274,3 +274,5 @@ Vault와 Capsule의 원자적 생성 계약은 구현했지만 가입 경로와 
 `IdentityVault`는 인증된 subject의 인증 레코드에 임의의 Vault 참조만 두고, 별도 Vault의 무작위 내부 ID·Capsule locator와 별도 Capsule META를 동일 트랜잭션으로 연결한다. 사용자 잠금·epoch·기존 연결을 조건 검사하며 내부 ID와 locator를 인증 레코드에 복사하지 않는다. 삭제용 조회는 서버가 검증한 subject와 epoch로 한 사용자의 Vault·Capsule META를 강한 일관성으로 읽고 인증 상태를 재확인한다. 이후 `GuardedDeletion`이 트랜잭션에서 인증 epoch·Vault 참조·Vault/Capsule revision을 다시 검사한다. 생성 준비 객체는 재시도용 내부 메모리 객체이며 API나 인증 증거가 아니다.
 
 2026-11-21 기존 개발 DynamoDB 테이블의 고유 합성 항목으로 동시 연결 생성 중 한 건만 성공하고 고아 Vault/Capsule이 남지 않는 것, 동일 요청 재전송, 인증 epoch 변경 후 이전 삭제 스냅샷의 전체 취소, 최신 스냅샷의 등록과 시험 데이터 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/identity_vault_dynamodb_check.py`. 실제 개인정보·전용 Vault/Capsule 테이블·암호화 키·서비스 역할을 시험한 결과는 아니다. 실제 계정 생성·삭제 API에는 연결되지 않았고 Vault/Capsule 작성자 잠금·revision 강제, 소유자별 IAM/JIT·감사, 재시작 후 준비 요청 복구, 삭제 Worker·잔존 검증 및 복원 승격 통제가 남아 있다.
+
+삭제 작업의 내부 진행 저장은 인증 상태의 동일 삭제 잠금과 `DELETING` 레지스트리 및 예상 버전을 하나의 트랜잭션으로 검사한다. 체크포인트는 호출자가 요청·저장 영역·버전에 결합해 암호화한 값이어야 하며 저장기는 그 결합이나 호출자 권한을 검증하지 않는다. 완료 처리는 제공하지 않는다. 전용 테이블·키·역할과 인증된 작업자, 복구 및 실제 삭제 연결은 후속 작업이다.
