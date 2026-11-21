@@ -30,6 +30,9 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCookingJobs-dev --strict -c provisionCookingJobs=true --output /tmp/foodtech-cooking-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_meal_refresh_index.py /tmp/foodtech-cooking-cdk/FoodtechCookingJobs-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshSchedule-dev --strict -c provisionMealRefreshSchedule=true --output /tmp/foodtech-meal-schedule-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_meal_refresh_schedule.py /tmp/foodtech-meal-schedule-cdk/FoodtechMealRefreshSchedule-dev.template.json
 
   python:
     runs-on: ubuntu-latest

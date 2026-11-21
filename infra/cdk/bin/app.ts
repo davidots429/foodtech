@@ -1,9 +1,10 @@
-import { App, CfnOutput, Duration, RemovalPolicy, Stack, StackProps, Tags } from "aws-cdk-lib";
+import { App, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, StackProps, Tags, Token } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as codebuild from "aws-cdk-lib/aws-codebuild";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as events from "aws-cdk-lib/aws-events";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -392,6 +393,51 @@ class CookingJobsStack extends Stack {
       projectionType: dynamodb.ProjectionType.KEYS_ONLY,
     });
     new CfnOutput(this, "CookingJobsTableName", { value: table.tableName });
+  }
+}
+
+// Disabled until the caller has validated IAM, networking, backfill and deletion-writer coordination.
+class MealRefreshScheduleStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const arnPattern = "^arn:[a-z0-9-]+:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$";
+    const param = (name: string, pattern: string, description: string): CfnParameter =>
+      new CfnParameter(this, name, { type: "String", allowedPattern: pattern, description });
+    const taskRole = param("TaskRoleArn", arnPattern, "Existing reviewed least-privilege task role ARN");
+    const executionRole = param("ExecutionRoleArn", arnPattern, "Existing ECS task execution role ARN");
+    const invokeRole = param("InvokeRoleArn", arnPattern, "Existing EventBridge ECS invocation role ARN");
+    const cluster = param("ClusterArn", "^arn:[a-z0-9-]+:ecs:[a-z0-9-]+:[0-9]{12}:cluster/[A-Za-z0-9_-]+$", "Existing ECS cluster ARN");
+    const image = param("ImageUri", "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com\\/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$", "Immutable ECR image URI with sha256 digest");
+    const subnets = new CfnParameter(this, "SubnetIds", { type: "List<AWS::EC2::Subnet::Id>", description: "Private subnets with required AWS endpoints" });
+    const groups = new CfnParameter(this, "SecurityGroupIds", { type: "List<AWS::EC2::SecurityGroup::Id>", description: "Egress-restricted task security groups" });
+    const queue = param("DeliveryDlqArn", "^arn:[a-z0-9-]+:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+$", "Existing EventBridge delivery DLQ ARN and policy");
+    const interval = param("IntervalMinutes", "^([1-9]|[1-9][0-9]|[1-9][0-9]{2}|1[0-3][0-9]{2}|14[0-3][0-9]|1440)$",
+      "Validated sweep interval in whole minutes, from 1 to 1440");
+    const oneMinute = new CfnCondition(this, "OneMinute", { expression: Fn.conditionEquals(interval.valueAsString, "1") });
+    const logGroup = new logs.LogGroup(this, "WorkerLogs", { logGroupName: `/foodtech/${stage}/meal-refresh`,
+      retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN });
+    const task = new ecs.CfnTaskDefinition(this, "WorkerTask", {
+      family: `foodtech-meal-refresh-${stage}`, requiresCompatibilities: ["FARGATE"], networkMode: "awsvpc",
+      cpu: "256", memory: "512", taskRoleArn: taskRole.valueAsString, executionRoleArn: executionRole.valueAsString,
+      runtimePlatform: { operatingSystemFamily: "LINUX", cpuArchitecture: "X86_64" },
+      containerDefinitions: [{ name: "worker", image: image.valueAsString, essential: true, user: "10001:10001",
+        readonlyRootFilesystem: true, environment: [
+          { name: "FOODTECH_COOKING_TABLE", value: `foodtech-cooking-jobs-${stage}` },
+          { name: "FOODTECH_AUTH_TABLE", value: `foodtech-auth-sessions-${stage}` },
+        ], logConfiguration: { logDriver: "awslogs", options: { "awslogs-group": logGroup.logGroupName,
+          "awslogs-region": this.region, "awslogs-stream-prefix": "worker" } } }],
+    });
+    const rule = new events.CfnRule(this, "Schedule", { state: "DISABLED",
+      description: "Disabled until meal refresh deployment and deletion safeguards are verified",
+      scheduleExpression: Token.asString(Fn.conditionIf(oneMinute.logicalId, "rate(1 minute)", `rate(${interval.valueAsString} minutes)`)),
+      targets: [{ id: "MealRefresh", arn: cluster.valueAsString, roleArn: invokeRole.valueAsString,
+        deadLetterConfig: { arn: queue.valueAsString }, retryPolicy: { maximumEventAgeInSeconds: 3600, maximumRetryAttempts: 3 },
+        ecsParameters: { launchType: "FARGATE", taskCount: 1, taskDefinitionArn: task.ref,
+          networkConfiguration: { awsVpcConfiguration: { assignPublicIp: "DISABLED",
+            subnets: subnets.valueAsList, securityGroups: groups.valueAsList } } } }],
+    });
+    new CfnOutput(this, "TaskDefinitionArn", { value: task.ref });
+    new CfnOutput(this, "DisabledScheduleArn", { value: rule.attrArn });
   }
 }
 
@@ -786,6 +832,10 @@ if (app.node.tryGetContext("provisionDataFlow") === "true") {
 if (app.node.tryGetContext("provisionCookingJobs") === "true") {
   const cookingJobs = new CookingJobsStack(app, `FoodtechCookingJobs-${stage}`, { env });
   Tags.of(cookingJobs).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionMealRefreshSchedule") === "true") {
+  const mealRefresh = new MealRefreshScheduleStack(app, `FoodtechMealRefreshSchedule-${stage}`, { env });
+  Tags.of(mealRefresh).add("Project", "foodtech");
 }
 if (app.node.tryGetContext("provisionTierRequests") === "true") {
   const tierRequests = new TierRequestsStack(app, `FoodtechTierRequests-${stage}`, { env });
