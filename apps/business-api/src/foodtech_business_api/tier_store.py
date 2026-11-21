@@ -242,6 +242,43 @@ class DynamoTierStore:
             raise ValueError('invalid tier application checkpoint')
         return {'queue_sorts': keys, 'next_cursor': next_key['sk'] if next_key is not None else None}
 
+    def observe_pending_index(self, subject: str, request_id: str, queue_sort: str) -> str:
+        """Observe one captured GSI candidate without claiming propagation completion.
+
+        GSI reads are eventually consistent: NOT_OBSERVED is only the result of
+        this read. A bounded collision search may return INCONCLUSIVE. The
+        caller must protect the candidate and enforce its own authorization.
+        """
+        if not isinstance(queue_sort, str) or not 1 <= len(queue_sort) <= 2048:
+            raise ValueError('invalid tier index candidate')
+        self._locked_transaction([self._deletion_guard(subject, request_id)])
+        cursor = None
+        for _ in range(10):
+            args = {'IndexName': 'PendingRequests',
+                    'KeyConditionExpression': Key('queue_status').eq('REQUESTED') & Key('queue_sort').eq(queue_sort),
+                    'ProjectionExpression': 'pk, sk, queue_status, queue_sort', 'Limit': 100}
+            if cursor is not None:
+                args['ExclusiveStartKey'] = cursor
+            page = self.table.query(**args)
+            rows = page.get('Items')
+            if not isinstance(rows, list):
+                raise ValueError('invalid tier index page')
+            for row in rows:
+                if not isinstance(row, dict) or not isinstance(row.get('pk'), str) or \
+                        not isinstance(row.get('sk'), str) or row.get('queue_status') != 'REQUESTED' or \
+                        row.get('queue_sort') != queue_sort:
+                    raise ValueError('invalid tier index record')
+                if row['pk'] == f'TENANT#{subject}' and row['sk'] == 'CURRENT':
+                    return 'PRESENT'
+            cursor = page.get('LastEvaluatedKey')
+            if cursor is None:
+                return 'NOT_OBSERVED'
+            if not isinstance(cursor, dict) or set(cursor) != {'pk', 'sk', 'queue_status', 'queue_sort'} or \
+                    any(not isinstance(value, str) or not value or len(value) > 2048 for value in cursor.values()) or \
+                    cursor['queue_status'] != 'REQUESTED' or cursor['queue_sort'] != queue_sort:
+                raise ValueError('invalid tier index checkpoint')
+        return 'INCONCLUSIVE'
+
     def _deletion_guard(self, subject: str, request_id: str) -> dict:
         _inventory_args(subject, 1, None)
         try:

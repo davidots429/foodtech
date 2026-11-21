@@ -103,6 +103,17 @@ class CaptureTests(unittest.TestCase):
         self.progress.load_checkpoint.return_value = {'version': 2, 'state': 'VERIFYING', 'checkpoint': payload}
         self.capture.ensure_ready(**self.scope)
 
+    def test_observation_uses_captured_key_and_never_reports_completion(self):
+        payload = b'{"complete":true,"cursor":null,"keys":["date#secret"],"version":1}'
+        self.progress.load_checkpoint.return_value = {'version': 1, 'state': 'VERIFYING', 'checkpoint': payload}
+        self.tier.observe_pending_index.return_value = 'NOT_OBSERVED'
+        observed = self.capture.observe_one(**self.scope, index=0)
+        self.assertEqual(observed, {'index': 0, 'observation': 'NOT_OBSERVED'})
+        self.assertNotIn('date#secret', repr(observed))
+        self.tier.observe_pending_index.assert_called_once_with(self.scope['subject'], self.scope['request_id'], 'date#secret')
+        with self.assertRaises(ValueError):
+            self.capture.observe_one(**self.scope, index=1)
+
     def test_failed_save_and_oversized_page_do_not_become_ready(self):
         self.progress.load_checkpoint.return_value = None
         self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['x' * 2048] * 10, 'next_cursor': None}

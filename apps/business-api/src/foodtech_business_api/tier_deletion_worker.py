@@ -53,6 +53,22 @@ class TierIndexCapture:
             state="VERIFYING" if data["complete"] else "IN_PROGRESS", checkpoint=raw)
         return {"complete": data["complete"], "version": saved, "captured_count": len(combined)}
 
+    def observe_one(self, *, subject, request_id, index):
+        """Observe a captured candidate without exposing its sort key."""
+        if type(index) is not int or index < 0:
+            raise ValueError('invalid tier index observation')
+        entry = self.progress_store.load_checkpoint(cipher=self.cipher, subject=subject, request_id=request_id,
+                                                    domain='TIER_INDEX')
+        if not entry or entry.get('state') != 'VERIFYING':
+            raise ValueError('tier index capture is not complete')
+        data = self._decode(entry['checkpoint'])
+        if not data['complete'] or index >= len(data['keys']):
+            raise ValueError('invalid tier index observation')
+        result = self.tier_store.observe_pending_index(subject, request_id, data['keys'][index])
+        if result not in {'PRESENT', 'NOT_OBSERVED', 'INCONCLUSIVE'}:
+            raise ValueError('invalid tier index observation result')
+        return {'index': index, 'observation': result}
+
     def ensure_ready(self, *, subject, request_id):
         entry = self.progress_store.load_checkpoint(cipher=self.cipher, subject=subject, request_id=request_id,
                                                     domain="TIER_INDEX")

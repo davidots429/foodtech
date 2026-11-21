@@ -94,6 +94,25 @@ class TierGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.deletion_index_candidates('alice', request, 1, 'OTHER#x')
 
+    def test_index_observation_checks_owner_and_does_not_claim_completion(self):
+        self.store.table = Mock()
+        self.store.table.name = 'tier'
+        request, sort = str(uuid4()), 'date#application'
+        other = {'pk': 'TENANT#bob', 'sk': 'CURRENT', 'queue_status': 'REQUESTED', 'queue_sort': sort}
+        own = {**other, 'pk': 'TENANT#alice'}
+        cursor = {'pk': 'TENANT#bob', 'sk': 'CURRENT', 'queue_status': 'REQUESTED', 'queue_sort': sort}
+        self.store.table.query.side_effect = [{'Items': [other], 'LastEvaluatedKey': cursor}, {'Items': [own]}]
+        self.assertEqual(self.store.observe_pending_index('alice', request, sort), 'PRESENT')
+        self.assertEqual(self.store.table.query.call_args.kwargs['ExclusiveStartKey'], cursor)
+        self.store.table.query.side_effect = None
+        self.store.table.query.return_value = {'Items': [other]}
+        self.assertEqual(self.store.observe_pending_index('alice', request, sort), 'NOT_OBSERVED')
+        self.store.table.query.return_value = {'Items': [other], 'LastEvaluatedKey': cursor}
+        self.assertEqual(self.store.observe_pending_index('alice', request, sort), 'INCONCLUSIVE')
+        self.store.table.query.return_value = {'Items': [{**other, 'queue_sort': 'wrong'}]}
+        with self.assertRaises(ValueError):
+            self.store.observe_pending_index('alice', request, sort)
+
     def test_delete_requires_exact_lock_and_targets_only_scoped_key(self):
         request = str(uuid4())
         self.store.delete_inventory_key('alice', request, 'CURRENT')
