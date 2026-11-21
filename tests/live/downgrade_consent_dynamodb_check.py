@@ -26,6 +26,7 @@ def main():
     suffix = uuid4().hex
     parent, tenant, source, target = str(uuid4()), f"synthetic-{suffix}", f"tier1-{suffix}", f"local-{suffix}"
     job_id = str(uuid4())
+    prior_job_id = str(uuid4())
     comparison = uuid4().hex + uuid4().hex
     period = "2097-11"
     registry = DynamoRegistry(TABLE, period, resource=session.resource("dynamodb"),
@@ -43,12 +44,14 @@ def main():
             registry.create_limit(scope, ident, Decimal("0"), calls_remaining=calls)
             mark("LIMIT", f"{period}#{scope}#{ident}")
         registry.create_execution(Execution(parent, tenant, Feature.RECIPE_CORRECTION, source,
-                                              None, "SYNTHETIC", Decimal("0"), job_id=job_id, job_version=7, comparison_id=comparison))
+                                              None, "SYNTHETIC", Decimal("0"), job_id=job_id, job_version=7,
+                                              comparison_id=comparison, prior_job_id=prior_job_id, prior_job_version=3))
         mark("EXEC", parent)
         with patch.object(downgrade_flow, "MODEL_ID", target):
             flow = DowngradeFlow(registry)
             quote = flow.preview(tenant, parent)
             assert (quote["job_id"], quote["job_version"], quote["comparison_id"]) == (job_id, 7, comparison)
+            assert (quote["prior_job_id"], quote["prior_job_version"]) == (prior_job_id, 3)
             mark("QUOTE", quote["quote_id"])
             mark("CONSENT", quote["quote_id"])
             mark("EXEC", quote["execution_id"])
@@ -61,6 +64,7 @@ def main():
             assert child != parent and child == quote["execution_id"]
             assert (registry.execution(child).job_id, registry.execution(child).job_version,
                     registry.execution(child).comparison_id) == (job_id, 7, comparison)
+            assert (registry.execution(child).prior_job_id, registry.execution(child).prior_job_version) == (prior_job_id, 3)
             assert registry.consent(quote["quote_id"]).parent_execution_id == parent
             assert GatewayPolicy(registry).authorize(Caller("business-api", tenant), child).allowed
             try:
@@ -71,7 +75,8 @@ def main():
             assert registry.budget(tenant, "ollama").calls_remaining == 3
             unconfigured_parent = str(uuid4())
             registry.create_execution(Execution(unconfigured_parent, tenant, Feature.RECIPE_CORRECTION,
-                UNCONFIGURED_TIER1, None, "SYNTHETIC", Decimal("0"), job_id=job_id, job_version=7, comparison_id=comparison))
+                UNCONFIGURED_TIER1, None, "SYNTHETIC", Decimal("0"), job_id=job_id, job_version=7,
+                comparison_id=comparison, prior_job_id=prior_job_id, prior_job_version=3))
             mark("EXEC", unconfigured_parent)
             unconfigured_quote = flow.preview(tenant, unconfigured_parent)
             mark("QUOTE", unconfigured_quote["quote_id"])
@@ -80,6 +85,8 @@ def main():
             unconfigured_child = flow.confirm(tenant, unconfigured_quote["quote_id"], NOTICE_VERSION, True)
             assert (registry.execution(unconfigured_child).job_id,
                     registry.execution(unconfigured_child).comparison_id) == (job_id, comparison)
+            assert (registry.execution(unconfigured_child).prior_job_id,
+                    registry.execution(unconfigured_child).prior_job_version) == (prior_job_id, 3)
             assert GatewayPolicy(registry).authorize(Caller("business-api", tenant), unconfigured_child).allowed
     finally:
         for key in reversed(keys): table.delete_item(Key=key)
