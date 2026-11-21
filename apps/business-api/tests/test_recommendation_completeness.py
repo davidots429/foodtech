@@ -53,6 +53,20 @@ class CompletenessTests(unittest.TestCase):
         self.assertEqual(result["status"], "NOT_ASSESSED")
         self.assertIn("GAP_SEVERITY_NOT_ASSESSED", result["reasons"])
 
+    def test_confirmed_severe_observation_gap_is_insufficient(self):
+        result = self.evaluate(coverage={"internal_gap_detected": True,
+                                         "severe_observation_gap_detected": True})
+        self.assertEqual(result["status"], "INSUFFICIENT")
+        self.assertIn("SEVERE_OBSERVATION_GAP", result["reasons"])
+        self.assertNotIn("GAP_SEVERITY_NOT_ASSESSED", result["reasons"])
+        feed = {"initial_temperature_c": "4", "temperature_observed_at": "2026-11-21T00:00:00Z"}
+        job = {"menu": "JEYUK", "provenance": "SYNTHETIC", "safety_status": "PASSED",
+               "jeyuk_feeds": {name: dict(feed) for name in ("MEAT", "VEGETABLE", "SAUCE")},
+               "jeyuk_feed_mass_status": "MATCHED", "jeyuk_feed_safety_aligned": True,
+               "actual_cooking_seconds": 480}
+        self.assertIn("SEVERE_OBSERVATION_GAP", self.evaluate(job, coverage={
+            "internal_gap_detected": True, "severe_observation_gap_detected": True})["reasons"])
+
     def test_missing_critical_values_and_other_menu(self):
         job = deepcopy(self.job); job.update(safety_status="NOT_MEASURED", actual_cooking_seconds=None)
         result = self.evaluate(job, initial={})
