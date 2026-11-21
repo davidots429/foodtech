@@ -36,8 +36,21 @@ class FakeTable:
 
     def __init__(self):
         self.items = {}
-        self.meta = SimpleNamespace(client=SimpleNamespace(
-            exceptions=SimpleNamespace(ConditionalCheckFailedException=ConditionalFailed)))
+        self.exceptions = SimpleNamespace(ConditionalCheckFailedException=ConditionalFailed,
+                                          TransactionCanceledException=TransactionCanceled)
+        self.meta = SimpleNamespace(client=self)
+
+    def transact_write_items(self, *, TransactItems):
+        put, update = TransactItems[0]["Put"], TransactItems[1]["Update"]
+        item = put["Item"]
+        key = (item["pk"], item["sk"])
+        if key in self.items:
+            raise TransactionCanceled()
+        revision = update["Key"]
+        revision_key = (revision["pk"], revision["sk"])
+        previous = self.items.get(revision_key, {}).get("revision", 0)
+        self.items[key] = item
+        self.items[revision_key] = {**revision, "revision": previous + 1}
 
     def get_item(self, *, Key, ConsistentRead):
         assert ConsistentRead
@@ -113,6 +126,7 @@ class JeyukAwsTests(unittest.TestCase):
                 self.assertEqual(len(sqs.messages), seconds)
                 pk = f"JEYUK#jeyuk-{size}-full-v1"
                 self.assertEqual(table.items[(pk, "STATE")]["last_second"], seconds)
+                self.assertEqual(table.items[(pk, "SOURCE#REVISION")]["revision"], seconds)
                 source = json.loads(fixture.read_text())
                 identity = source["validationIdentity"]
                 context = {"actual_load_kg": source["actualLoadKg"],
