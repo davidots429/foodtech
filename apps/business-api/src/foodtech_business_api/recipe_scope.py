@@ -39,15 +39,19 @@ def _uuid(value):
         return False
 
 
+def _valid_future_expiry(expires):
+    valid = (type(expires) is int and 0 < expires < 2**63) or (
+        isinstance(expires, Decimal) and expires.is_finite() and 0 < expires < 2**63 and expires == int(expires))
+    return valid and expires > time.time()
+
+
 def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
     """Observe two stable snapshots; no permission is granted by this function."""
     subject = getattr(session, 'subject', None)
     expires = getattr(session, 'expires', None)
-    valid_expiry = (type(expires) is int and 0 < expires < 2**63) or (
-        isinstance(expires, Decimal) and expires.is_finite() and 0 < expires < 2**63 and expires == int(expires))
     if getattr(session, 'surface', None) != 'customer' or not isinstance(subject, str) or \
             not re.fullmatch(r'[A-Za-z0-9-]{1,128}', subject) or \
-            not valid_expiry or expires <= time.time() or \
+            not _valid_future_expiry(expires) or \
             not _uuid(execution_id):
         raise RecipeScopeDenied('recipe scope unavailable')
 
@@ -104,7 +108,8 @@ async def authenticated_recipe_scope(request, execution_id, execution_reader, jo
     scope = await asyncio.to_thread(resolve_recipe_scope, before, execution_id, execution_reader, job_reader)
     after = await _session(request, 'customer')
     await _require_principal_record(after)
-    if (before.subject, before.epoch, before.csrf) != (after.subject, after.epoch, after.csrf):
+    if (before.subject, before.epoch, before.csrf) != (after.subject, after.epoch, after.csrf) or \
+            not _valid_future_expiry(after.expires):
         raise RecipeScopeDenied('customer session changed')
     return scope
 

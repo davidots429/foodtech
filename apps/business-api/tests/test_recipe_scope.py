@@ -183,6 +183,13 @@ class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RecipeScopeDenied):
                 await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
 
+    async def test_session_expiring_during_final_principal_check_is_denied(self):
+        self.session.expires = 200
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session), \
+             patch('foodtech_business_api.recipe_scope.time.time', side_effect=[100, 150, 200]):
+            with self.assertRaises(RecipeScopeDenied):
+                await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
+
     async def test_revalidation_rejects_changed_record_and_source_revision(self):
         with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session):
             original = await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
