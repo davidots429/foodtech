@@ -8,6 +8,8 @@ from dataclasses import asdict
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
+import json
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -368,7 +370,11 @@ class DynamoRegistry:
                 items.append(self._condition(kind, identifier))
                 checked.add(key)
         try:
-            token = str(uuid5(NAMESPACE_URL, f"{self.table_name}:reserve:{execution.execution_id}"))
+            # A retry after a known conditional failure has fresh versions and
+            # therefore different transaction parameters. Preserve the token
+            # only for byte-identical parameters (e.g. an uncertain response).
+            digest = hashlib.sha256(json.dumps(items, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            token = str(uuid5(NAMESPACE_URL, f"{self.table_name}:reserve:{execution.execution_id}:{digest}"))
             self.client.transact_write_items(TransactItems=items, ClientRequestToken=token)
         except self.client.exceptions.TransactionCanceledException as error:
             raise RegistryConflict("execution or authorization record changed, or limit exhausted") from error

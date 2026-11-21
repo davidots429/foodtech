@@ -54,12 +54,29 @@ def main():
                 return False
 
         with ThreadPoolExecutor(max_workers=len(ids)) as executor:
-            accepted = sum(executor.map(attempt, ids))
+            outcomes = list(executor.map(attempt, ids))
+        accepted = sum(outcomes)
         remaining = int(table.get_item(Key=keys[0], ConsistentRead=True)["Item"]["calls_remaining"])
         reserved = sum(table.get_item(Key=key, ConsistentRead=True)["Item"]["state"] == "RESERVED" for key in keys[3:])
         if accepted < 1 or accepted > 3 or reserved != accepted or remaining != 3 - accepted:
             raise AssertionError("Concurrent reservations exceeded or disagreed with tenant limit")
         print(f"Concurrent transaction reservations verified: {accepted} accepted, {remaining} remaining")
+        for execution_id, succeeded in zip(ids, outcomes):
+            if succeeded:
+                continue
+            registry.begin_request()
+            execution = registry.execution(execution_id)
+            registry.budget(tenant, provider)
+            try:
+                registry.reserve(execution, provider)
+                accepted += 1
+            except RegistryConflict:
+                pass
+        remaining = int(table.get_item(Key=keys[0], ConsistentRead=True)["Item"]["calls_remaining"])
+        reserved = sum(table.get_item(Key=key, ConsistentRead=True)["Item"]["state"] == "RESERVED" for key in keys[3:])
+        if accepted != 3 or reserved != 3 or remaining != 0:
+            raise AssertionError("Retry did not consume exactly the remaining calls")
+        print("Freshly authorized retries consumed only the remaining budget")
     finally:
         for key in reversed(keys):
             table.delete_item(Key=key)
