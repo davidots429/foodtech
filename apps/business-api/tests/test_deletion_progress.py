@@ -9,6 +9,11 @@ class Client:
     def __init__(self):
         self.calls = []
         self.error = None
+        self.responses = None
+
+    def transact_get_items(self, **kwargs):
+        self.calls.append(kwargs)
+        return {'Responses': self.responses}
 
     def transact_write_items(self, **kwargs):
         self.calls.append(kwargs)
@@ -46,6 +51,29 @@ class ProgressTests(unittest.TestCase):
                 domain='COOKING', expected_version=1, state='IN_PROGRESS', checkpoint=b'private cursor'), 2)
         value = self.client.calls[-1]['TransactItems'][2]['Update']['ExpressionAttributeValues'][':checkpoint']
         self.assertEqual(value, {'B': b'sealed'})
+
+    def test_load_requires_locked_consistent_snapshot_and_decrypts_bound_version(self):
+        class Cipher:
+            def open(inner, **scope):
+                self.assertEqual(scope['version'], 3)
+                self.assertEqual(scope['state'], 'VERIFYING')
+                self.assertEqual(scope['ciphertext'], b'sealed')
+                return b'cursor'
+        self.client.responses = [
+            {'Item': {'deletion_lock_request': {'S': self.args['request_id']}, 'suspended': {'BOOL': True}}},
+            {'Item': {'status': {'S': 'DELETING'}}},
+            {'Item': {'version': {'N': '3'}, 'state': {'S': 'VERIFYING'}, 'encrypted_checkpoint': {'B': b'sealed'}}},
+        ]
+        scope = {k: self.args[k] for k in ('subject', 'request_id', 'domain')}
+        self.assertEqual(self.store.load_checkpoint(cipher=Cipher(), **scope),
+                         {'version': 3, 'state': 'VERIFYING', 'checkpoint': b'cursor'})
+        self.assertEqual(len(self.client.calls[-1]['TransactItems']), 3)
+        self.client.responses[0]['Item']['deletion_lock_request'] = {'S': str(uuid4())}
+        with self.assertRaises(DeletionProgressConflict):
+            self.store.load_checkpoint(cipher=Cipher(), **scope)
+        self.client.responses[0]['Item']['deletion_lock_request'] = {'S': self.args['request_id']}
+        self.client.responses[2] = {}
+        self.assertIsNone(self.store.load_checkpoint(cipher=Cipher(), **scope))
 
     def test_invalid_scope_and_completion_are_rejected_without_writes(self):
         for changes in ({'state': 'COMPLETED'}, {'expected_version': True}, {'domain': 'OTHER#CUSTOMER'},

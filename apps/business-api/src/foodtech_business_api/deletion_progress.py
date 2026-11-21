@@ -27,6 +27,53 @@ class DeletionProgressStore:
     def _encode(self, values):
         return {key: self.serializer.serialize(value) for key, value in values.items()}
 
+    def load_checkpoint(self, *, cipher, subject: str, request_id: str, domain: str):
+        """Read a consistent snapshot of the lock, registry and encrypted progress.
+
+        Subsequent mutations must recheck the lock. This read authorizes neither
+        the caller nor any deletion, and it does not hold the lock open.
+        """
+        try:
+            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+                    not isinstance(domain, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', domain):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError('invalid deletion progress scope') from None
+        encode = self._encode
+        response = self.client.transact_get_items(TransactItems=[
+            {'Get': {'TableName': self.auth_table, 'Key': encode({'pk': f'USER#{subject}'})}},
+            {'Get': {'TableName': self.registry_table, 'Key': encode({'pk': 'REGISTRY', 'sk': f'REQ#{request_id}'})}},
+            {'Get': {'TableName': self.progress_table, 'Key': encode({'pk': f'REQ#{request_id}', 'sk': f'DOMAIN#{domain}'})}},
+        ])
+        try:
+            entries = response['Responses']
+            if not isinstance(entries, list) or len(entries) != 3:
+                raise ValueError
+            auth, registry, progress = (entry.get('Item') for entry in entries)
+            if not auth or auth.get('deletion_lock_request') != {'S': request_id} or \
+                    auth.get('suspended') != {'BOOL': True} or not registry or \
+                    registry.get('status') != {'S': 'DELETING'}:
+                raise DeletionProgressConflict
+            if progress is None:
+                return None
+            number = progress['version']['N']
+            if not isinstance(number, str) or not re.fullmatch(r'[1-9][0-9]{0,18}', number):
+                raise ValueError
+            version = int(number)
+            if version >= 2**63:
+                raise ValueError
+            state = progress['state']['S']
+            if state not in {'IN_PROGRESS', 'VERIFYING', 'FAILED'}:
+                raise ValueError
+            ciphertext = progress['encrypted_checkpoint']['B']
+            if not isinstance(ciphertext, bytes) or not 1 <= len(ciphertext) <= 65536:
+                raise ValueError
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ValueError('invalid deletion progress record') from None
+        checkpoint = cipher.open(subject=subject, request_id=request_id, domain=domain,
+                                 version=version, state=state, ciphertext=ciphertext)
+        return {'version': version, 'state': state, 'checkpoint': checkpoint}
+
     def save_checkpoint(self, *, cipher, subject: str, request_id: str, domain: str,
                         expected_version: int, state: str, checkpoint: bytes) -> int:
         """Seal a checkpoint for its next version before the guarded write."""
