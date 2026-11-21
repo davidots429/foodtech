@@ -1,0 +1,84 @@
+"""Ciphertext-only Capsule writes with an optimistic revision and lock.
+
+No public endpoint, identity lookup, encryption, IAM boundary or deletion
+orchestration is provided by this module.
+"""
+import re
+import secrets
+from uuid import UUID
+
+import boto3
+from boto3.dynamodb.types import TypeSerializer
+
+
+class CapsuleWriter:
+    def __init__(self, table_name: str, allowed_purposes: frozenset[str], *, client=None):
+        if not table_name or not allowed_purposes or any(
+                not isinstance(value, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", value)
+                for value in allowed_purposes):
+            raise ValueError("table and approved purpose inventory are required")
+        self.table_name, self.allowed_purposes = table_name, allowed_purposes
+        self.client = client or boto3.client("dynamodb", region_name="ap-southeast-2")
+        self.serializer = TypeSerializer()
+
+    def _item(self, values: dict) -> dict:
+        return {name: self.serializer.serialize(value) for name, value in values.items()}
+
+    @staticmethod
+    def _locator(locator: str) -> None:
+        if not isinstance(locator, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", locator):
+            raise ValueError("invalid capsule locator")
+
+    @staticmethod
+    def _revision(revision: int) -> None:
+        if type(revision) is not int or not 1 <= revision < 2**63 - 1:
+            raise ValueError("invalid capsule revision")
+
+    def create(self) -> str:
+        """Create one random empty Capsule; collisions fail rather than overwrite."""
+        locator = secrets.token_urlsafe(32)
+        self._locator(locator)
+        self.client.put_item(TableName=self.table_name,
+            Item=self._item({"pk": locator, "sk": "META", "state": "ACTIVE", "revision": 1}),
+            ConditionExpression="attribute_not_exists(pk) AND attribute_not_exists(sk)")
+        return locator
+
+    def put_entry(self, *, locator: str, purpose: str, epoch: str, ciphertext: bytes, expected_revision: int) -> None:
+        """Create a new encrypted ENTRY and advance META in one transaction."""
+        self._locator(locator)
+        self._revision(expected_revision)
+        if not isinstance(purpose, str) or purpose not in self.allowed_purposes or not isinstance(epoch, str) or \
+                not re.fullmatch(r"[0-9]{4}-(?:0[1-9]|1[0-2])", epoch) or int(epoch[:4]) < 1 or \
+                not isinstance(ciphertext, bytes) or not 1 <= len(ciphertext) <= 400_000:
+            raise ValueError("invalid encrypted capsule entry")
+        self.client.transact_write_items(TransactItems=[
+            {"Update": {"TableName": self.table_name, "Key": self._item({"pk": locator, "sk": "META"}),
+                        "UpdateExpression": "SET #revision = :next",
+                        "ConditionExpression": "#state = :active AND #revision = :expected",
+                        "ExpressionAttributeNames": {"#state": "state", "#revision": "revision"},
+                        "ExpressionAttributeValues": self._item({":active": "ACTIVE", ":expected": expected_revision,
+                                                                   ":next": expected_revision + 1})}},
+            {"Put": {"TableName": self.table_name,
+                     "Item": self._item({"pk": locator, "sk": f"ENTRY#{purpose}#{epoch}", "ciphertext": ciphertext}),
+                     "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}},
+        ])
+
+    def lock_action(self, *, locator: str, request_id: str, expected_revision: int) -> dict:
+        """Build an update for the transaction that also locks the user and registers the tombstone.
+
+        This action is deliberately not executed alone; the orchestration must
+        bind it to an authoritative Vault version and the same deletion request.
+        """
+        self._locator(locator)
+        self._revision(expected_revision)
+        try:
+            if str(UUID(request_id)) != request_id:
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("invalid deletion request ID") from None
+        return {"Update": {"TableName": self.table_name, "Key": self._item({"pk": locator, "sk": "META"}),
+                           "UpdateExpression": "SET #state = :locked, #revision = :next, deletion_request_id = :request",
+                           "ConditionExpression": "#state = :active AND #revision = :expected AND attribute_not_exists(deletion_request_id)",
+                           "ExpressionAttributeNames": {"#state": "state", "#revision": "revision"},
+                           "ExpressionAttributeValues": self._item({":active": "ACTIVE", ":locked": "DELETION_LOCKED",
+                               ":expected": expected_revision, ":next": expected_revision + 1, ":request": request_id})}}
