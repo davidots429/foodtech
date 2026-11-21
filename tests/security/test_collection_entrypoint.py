@@ -5,6 +5,12 @@ import stat
 import tempfile
 import unittest
 from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 
 path = Path(__file__).resolve().parents[2] / 'infra/containers/collection_entrypoint.py'
@@ -38,6 +44,30 @@ class CollectionEntrypointTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 entrypoint.main()
             execute.assert_not_called()
+
+    def test_real_ca_is_loadable_and_malformed_pem_is_rejected(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'synthetic-ca')])
+        now = datetime.now(timezone.utc)
+        certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+        pem = certificate.public_bytes(serialization.Encoding.PEM).decode('ascii')
+        for value, valid in ((pem, True), ('-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n', False)):
+            with self.subTest(valid=valid), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {'FOODTECH_MOCK_CA_PEM': value}, clear=True), \
+                    patch.object(entrypoint.sys, 'argv', ['entry']), \
+                    patch.object(entrypoint.tempfile, 'mkdtemp', return_value=directory), \
+                    patch.object(entrypoint.os, 'execvpe') as execute:
+                if valid:
+                    entrypoint.main()
+                    execute.assert_called_once()
+                else:
+                    with self.assertRaises(entrypoint.ssl.SSLError):
+                        entrypoint.main()
+                    execute.assert_not_called()
 
 
 if __name__ == '__main__':
