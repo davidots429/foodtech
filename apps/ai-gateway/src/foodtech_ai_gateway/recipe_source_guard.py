@@ -9,7 +9,14 @@ from copy import deepcopy
 from decimal import Decimal
 from uuid import UUID
 
+from boto3.dynamodb.conditions import Key
+from foodtech_contracts.jeyuk_process import PROFILES
+from foodtech_contracts.jeyuk_receipt import matches_jeyuk_snapshot
+
 from .policy import Execution
+
+MAX_SOURCE_ROWS = max(profile.time_bands[-1] for profile in PROFILES.values())
+MAX_RECEIPTS = 100
 
 
 def _positive_integer(value: object) -> int | None:
@@ -75,5 +82,23 @@ class DynamoRecipeSourceGuard:
                                         ConsistentRead=True).get('Item')
             if not source or _positive_integer(source.get('revision')) != expected_revision:
                 return None
-            observed.append((batch, deepcopy(job), deepcopy(reverse), deepcopy(source)))
+            if expected_revision > MAX_SOURCE_ROWS:
+                return None
+            raw = self._read_prefix(batch, 'RAW#', expected_revision)
+            receipts = self._read_prefix(batch, 'COLLECTION#RECEIPT#', MAX_RECEIPTS)
+            if raw is None or receipts is None or len(raw) != expected_revision or \
+                    not any(matches_jeyuk_snapshot(receipt, batch, raw) for receipt in receipts):
+                return None
+            observed.append((batch, deepcopy(job), deepcopy(reverse), deepcopy(source), deepcopy(raw), deepcopy(receipts)))
         return tuple(observed) if observed[0][0] != observed[1][0] else None
+
+    def _read_prefix(self, batch: str, prefix: str, limit: int) -> list[dict] | None:
+        rows = []
+        paginator = self.data.meta.client.get_paginator('query')
+        for page in paginator.paginate(TableName=self.data.name,
+                KeyConditionExpression=Key('pk').eq(f'JEYUK#{batch}') & Key('sk').begins_with(prefix),
+                ConsistentRead=True, PaginationConfig={'PageSize': min(limit + 1, 100)}):
+            rows.extend(page.get('Items', []))
+            if len(rows) > limit:
+                return None
+        return rows

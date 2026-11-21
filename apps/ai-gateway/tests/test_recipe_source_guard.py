@@ -1,21 +1,34 @@
 import unittest
+import json
 from dataclasses import replace
 from decimal import Decimal
 from uuid import uuid4
 
 from foodtech_ai_gateway.policy import Execution, Feature
 from foodtech_ai_gateway.recipe_source_guard import DynamoRecipeSourceGuard
+from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
 
 
 class FakeTable:
-    def __init__(self): self.items = {}
+    def __init__(self, name):
+        self.name = name; self.items = {}; self.meta = self; self.client = self
     def get_item(self, *, Key, ConsistentRead):
         assert ConsistentRead is True
         return {'Item': self.items.get((Key['pk'], Key['sk']))}
+    def get_paginator(self, name):
+        assert name == 'query'
+        return self
+    def paginate(self, **kwargs):
+        assert kwargs['ConsistentRead'] is True
+        left, right = kwargs['KeyConditionExpression'].get_expression()['values']
+        pk = left.get_expression()['values'][1]
+        prefix = right.get_expression()['values'][1]
+        rows = [row for (item_pk, sk), row in sorted(self.items.items()) if item_pk == pk and sk.startswith(prefix)]
+        return [{'Items': rows[:20]}, {'Items': rows[20:]}]
 
 
 class FakeResource:
-    def __init__(self): self.tables = {'foodtech-cooking-jobs-dev': FakeTable(), 'foodtech-data-flow-dev': FakeTable()}
+    def __init__(self): self.tables = {name: FakeTable(name) for name in ('foodtech-cooking-jobs-dev', 'foodtech-data-flow-dev')}
     def Table(self, name): return self.tables[name]
 
 
@@ -35,6 +48,18 @@ class RecipeSourceGuardTests(unittest.TestCase):
             self.resource.tables['foodtech-cooking-jobs-dev'].items[(f'JEYUK#{batch}', 'BINDING')] = {
                 'job_pk': f'SCOPE#USER#tenant-a#JOB#{job}', 'job_id': job}
             self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', 'SOURCE#REVISION')] = {'revision': Decimal(revision)}
+            tracker = JeyukCompletionTracker(0)
+            for second in range(1, revision + 1):
+                raw = json.dumps({'fixtureId': batch, 'provenance': 'SYNTHETIC', 'profileId': 'mockprofile-110',
+                    'instanceId': 'mockprofile-110-a-001', 'profile': 'SMALL', 'actualLoadKg': 1.8,
+                    'second': second, 'sampleIntervalSeconds': 1, 'surfaceCelsius': 190,
+                    'actualRpm': 30, 'targetRpm': 30, 'motorLoadPercent': 40})
+                tracker.record(raw)
+                sk = f'RAW#{second:06d}'
+                self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', sk)] = {
+                    'pk': f'JEYUK#{batch}', 'sk': sk, 'raw': raw, 'provenance': 'SYNTHETIC'}
+            receipt = tracker.finish(cursor=revision, complete=True, explicit=True)
+            self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', 'COLLECTION#RECEIPT#1')] = receipt
 
     def test_exact_owner_job_and_source_versions_are_checked(self):
         self.assertTrue(self.guard.verify(self.execution))
@@ -78,6 +103,25 @@ class RecipeSourceGuardTests(unittest.TestCase):
                     table.items[(current_key, 'META')]['status'] = 'CHANGED_WITHOUT_VERSION'
             return original(Key=Key, ConsistentRead=ConsistentRead)
         table.get_item = changing
+        self.assertFalse(self.guard.verify(self.execution))
+
+    def test_rejects_mutated_raw_or_missing_terminal_receipt(self):
+        table = self.resource.tables['foodtech-data-flow-dev']
+        key = ('JEYUK#batch-prior', 'RAW#000002')
+        table.items[key]['raw'] += ' '
+        self.assertFalse(self.guard.verify(self.execution))
+        table.items[key]['raw'] = table.items[key]['raw'].rstrip()
+        del table.items[('JEYUK#batch-prior', 'COLLECTION#RECEIPT#1')]
+        self.assertFalse(self.guard.verify(self.execution))
+
+    def test_rejects_extra_or_missing_raw_even_when_revision_does_not_change(self):
+        table = self.resource.tables['foodtech-data-flow-dev']
+        key = ('JEYUK#batch-current', 'RAW#000001')
+        row = table.items.pop(key)
+        self.assertFalse(self.guard.verify(self.execution))
+        table.items[key] = row
+        extra_key = ('JEYUK#batch-current', 'RAW#000031')
+        table.items[extra_key] = {**row, 'sk': extra_key[1]}
         self.assertFalse(self.guard.verify(self.execution))
 
     def test_rejects_unrelated_tables(self):
