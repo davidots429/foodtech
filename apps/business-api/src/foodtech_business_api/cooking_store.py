@@ -178,7 +178,7 @@ class CookingStore(Protocol):
     def list_aggregate_dependencies(self, job_pk: str, limit: int, cursor: str | None) -> dict: ...
     def current_aggregate(self, pk: str) -> dict | None: ...
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
-                       record: dict) -> dict: ...
+                       record: dict, expected_epoch: int | None = None) -> dict: ...
 
 
 class MemoryCookingStore:
@@ -582,7 +582,7 @@ class MemoryCookingStore:
             return pointer.copy() if pointer else None
 
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
-                       record: dict) -> dict:
+                       record: dict, expected_epoch: int | None = None) -> dict:
         with self.lock:
             for job_pk, meta, pointer, process_pointer in snapshots:
                 current_meta = self.items.get((job_pk, "META"))
@@ -632,6 +632,15 @@ class DynamoCookingStore:
                         "AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
                     "ExpressionAttributeNames": {"#epoch": "epoch"},
                     "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}}
+
+    def _derived_owner_guard(self, subject: str, expected_epoch: int | None) -> dict:
+        if expected_epoch is not None:
+            return self._owner_guard(subject, expected_epoch)
+        if not getattr(self, 'auth_table_name', ''):
+            raise ValueError('authentication table is required')
+        return {"ConditionCheck": {"TableName": self.auth_table_name, "Key": self._item({"pk": f"USER#{subject}"}),
+            "ConditionExpression": "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+            "ExpressionAttributeValues": self._item({":false": False})}}
 
     def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None:
         guard = self._owner_guard(subject, expected_epoch)
@@ -1317,8 +1326,14 @@ class DynamoCookingStore:
         return _api_numbers(item)
 
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
-                       record: dict) -> dict:
-        operations = []
+                       record: dict, expected_epoch: int | None = None) -> dict:
+        prefix, separator, group_id = pk.rpartition('#AGGREGATE#')
+        if not separator or not group_id or not prefix.startswith('SCOPE#USER#') or not snapshots:
+            raise ValueError('invalid aggregate owner scope')
+        subject = prefix.removeprefix('SCOPE#USER#')
+        if not subject or any(_history_pk(job_pk) != prefix + '#JOBS' for job_pk, *_ in snapshots):
+            raise ValueError('aggregate owner mismatch')
+        operations = [self._derived_owner_guard(subject, expected_epoch)]
         for job_pk, meta, pointer, process_pointer in snapshots:
             operations.append({"ConditionCheck": {
                 "TableName": self.table.name, "Key": self._item({"pk": job_pk, "sk": "META"}),
