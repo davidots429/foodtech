@@ -11,6 +11,13 @@ def main(path):
              if resource['Type'] == 'AWS::IAM::Role' and name.startswith('AiGatewayTaskRole')]
     if len(roles) != 1:
         raise AssertionError('expected one Gateway task role')
+    role = resources[roles[0]]['Properties']
+    if role.get('ManagedPolicyArns') or role.get('Policies'):
+        raise AssertionError('unreviewed policies attached directly to Gateway role')
+    for resource in resources.values():
+        if resource['Type'] == 'AWS::IAM::ManagedPolicy' and \
+                {'Ref': roles[0]} in resource['Properties'].get('Roles', []):
+            raise AssertionError('unreviewed managed policy attached to Gateway role')
     policies = [resource['Properties']['PolicyDocument'] for resource in resources.values()
                 if resource['Type'] == 'AWS::IAM::Policy' and
                 {'Ref': roles[0]} in resource['Properties'].get('Roles', [])]
