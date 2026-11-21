@@ -42,7 +42,7 @@ class RecipeSourceGuardTests(unittest.TestCase):
             'SYNTHETIC', Decimal('0'), job_id=self.current, job_version=7,
             prior_job_id=self.prior, prior_job_version=3, jeyuk_source_revision=30, prior_source_revision=29)
         for job, version, batch, revision in ((self.current, 7, 'batch-current', 30), (self.prior, 3, 'batch-prior', 29)):
-            started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            started = datetime(2026, 1, 1, tzinfo=timezone.utc) - timedelta(seconds=60 if job == self.prior else 0)
             self.resource.tables['foodtech-cooking-jobs-dev'].items[(f'SCOPE#USER#tenant-a#JOB#{job}', 'META')] = {
                 'owner_subject': 'tenant-a', 'job_id': job, 'version': Decimal(version), 'menu': 'JEYUK',
                 'actual_placed_at': started.isoformat(), 'actual_lifted_at': (started + timedelta(seconds=revision)).isoformat(),
@@ -145,12 +145,30 @@ class RecipeSourceGuardTests(unittest.TestCase):
         table = self.resource.tables['foodtech-data-flow-dev']
         key = ('JEYUK#batch-prior', 'RAW#000002')
         raw = json.loads(table.items[key]['raw'])
-        raw['observedAt'] = '2026-01-01T00:00:08+00:00'
+        raw['observedAt'] = '2025-12-31T23:59:08+00:00'
         table.items[key]['raw'] = json.dumps(raw)
         tracker = JeyukCompletionTracker(0)
         for second in range(1, 30):
             tracker.record(table.items[('JEYUK#batch-prior', f'RAW#{second:06d}')]['raw'])
         table.items[('JEYUK#batch-prior', 'COLLECTION#RECEIPT#1')] = tracker.finish(cursor=29, complete=True, explicit=True)
+        self.assertFalse(self.guard.verify(self.execution))
+
+    def test_rejects_overlapping_prior_job(self):
+        key = (f'SCOPE#USER#tenant-a#JOB#{self.current}', 'META')
+        job = self.resource.tables['foodtech-cooking-jobs-dev'].items[key]
+        # Shift both current endpoints and all its source samples consistently;
+        # each job remains internally valid but the two jobs overlap.
+        job['actual_placed_at'] = '2025-12-31T23:59:20+00:00'
+        job['actual_lifted_at'] = '2025-12-31T23:59:50+00:00'
+        table = self.resource.tables['foodtech-data-flow-dev']
+        tracker = JeyukCompletionTracker(0)
+        for second in range(1, 31):
+            row = table.items[('JEYUK#batch-current', f'RAW#{second:06d}')]
+            sample = json.loads(row['raw'])
+            sample['observedAt'] = (datetime(2025, 12, 31, 23, 59, 20, tzinfo=timezone.utc) + timedelta(seconds=second)).isoformat()
+            row['raw'] = json.dumps(sample)
+            tracker.record(row['raw'])
+        table.items[('JEYUK#batch-current', 'COLLECTION#RECEIPT#1')] = tracker.finish(cursor=30, complete=True, explicit=True)
         self.assertFalse(self.guard.verify(self.execution))
 
     def test_rejects_unrelated_tables(self):

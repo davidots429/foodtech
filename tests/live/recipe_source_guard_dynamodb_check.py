@@ -32,11 +32,12 @@ def main():
     placed = datetime(2026, 1, 1, tzinfo=timezone.utc)
     try:
         for job, version, batch, revision in zip((current, prior), (7, 3), source_ids, (3, 2)):
+            started = placed - timedelta(seconds=60 if job == prior else 0)
             job_key = {'pk': f'SCOPE#USER#{owner}#JOB#{job}', 'sk': 'META'}
             source_key = {'pk': f'JEYUK#{batch}', 'sk': 'SOURCE#REVISION'}
             jobs.put_item(Item={**job_key, 'owner_subject': owner, 'job_id': job, 'version': version,
-                'menu': 'JEYUK', 'provenance': 'SYNTHETIC', 'actual_placed_at': placed.isoformat(),
-                'actual_lifted_at': (placed + timedelta(seconds=revision)).isoformat(),
+                'menu': 'JEYUK', 'provenance': 'SYNTHETIC', 'actual_placed_at': started.isoformat(),
+                'actual_lifted_at': (started + timedelta(seconds=revision)).isoformat(),
                 'actual_cooking_seconds': revision, 'source_binding': {'source_id': 'synthetic-rest',
                 'device_id': 'mockprofile-110-a-001', 'batch_id': batch}}, ConditionExpression=Attr('pk').not_exists())
             created.append((jobs, job_key))
@@ -50,7 +51,7 @@ def main():
             for second in range(1, revision + 1):
                 raw = json.dumps({'fixtureId': batch, 'provenance': 'SYNTHETIC', 'profileId': 'mockprofile-110',
                     'instanceId': 'mockprofile-110-a-001', 'profile': 'SMALL', 'actualLoadKg': 1.8,
-                    'second': second, 'observedAt': (placed + timedelta(seconds=second)).isoformat(),
+                    'second': second, 'observedAt': (started + timedelta(seconds=second)).isoformat(),
                     'sampleIntervalSeconds': 1, 'surfaceCelsius': 190,
                     'actualRpm': 30, 'targetRpm': 30, 'motorLoadPercent': 40})
                 tracker.record(raw)

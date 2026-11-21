@@ -107,7 +107,17 @@ class DynamoRecipeSourceGuard:
                     not _matches_job_timeline(job, raw):
                 return None
             observed.append((batch, deepcopy(job), deepcopy(reverse), deepcopy(source), deepcopy(raw), deepcopy(receipts)))
-        return tuple(observed) if observed[0][0] != observed[1][0] else None
+        if observed[0][0] == observed[1][0]:
+            return None
+        try:
+            current_start = datetime.fromisoformat(observed[0][1]['actual_placed_at'].replace('Z', '+00:00'))
+            prior_start = datetime.fromisoformat(observed[1][1]['actual_placed_at'].replace('Z', '+00:00'))
+            prior_end = datetime.fromisoformat(observed[1][1]['actual_lifted_at'].replace('Z', '+00:00'))
+            if not prior_start < current_start or prior_end > current_start:
+                return None
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return tuple(observed)
 
     def _read_prefix(self, batch: str, prefix: str, limit: int) -> list[dict] | None:
         rows = []
