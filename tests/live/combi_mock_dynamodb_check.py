@@ -9,6 +9,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -32,7 +33,62 @@ ROOT = Path(__file__).resolve().parents[2]
 TABLE = "foodtech-cooking-jobs-dev"
 
 
-async def scenario(store, partitions, *, reassess=False, realtime=False, resume=False):
+async def collector_child(subject, meal_id, device_id, base, cert):
+    """Run the collector in a fresh process with a synthetic local API session."""
+    store = DynamoCookingStore(TABLE)
+    async def session(_request, surface):
+        assert surface == "customer"
+        return Session("customer", subject, None, "validation-csrf", 9999999999, 0)
+    with patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false"}), \
+         patch.object(cooking, "_session", side_effect=session), \
+         patch.object(cooking, "get_cooking_store", return_value=store):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as api:
+            mock = RestMockClient(base, "test-client", "test-secret", cert, profile_id="mockprofile-120")
+            try:
+                result = await import_meal(mock, api, meal_id, device_id, "validation-csrf", publish_live=True)
+                print(json.dumps(result), flush=True)
+            finally:
+                mock.close()
+
+
+async def restart_collector(api, subject, meal, device_id, base, cert):
+    command = [sys.executable, __file__, "--collector-child", subject, meal["meal_batch_id"], device_id, base, cert]
+    first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    partial = None
+    try:
+        for _ in range(160):
+            if first.poll() is not None:
+                raise RuntimeError(f"first collector exited early: {first.stderr.read()[-1000:]}")
+            response = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}/source-live")
+            response.raise_for_status()
+            count = response.json().get("count", 0)
+            if 0 < count < 15:
+                partial = count
+                break
+            await asyncio.sleep(0.25)
+        if partial is None:
+            raise TimeoutError("collector did not persist a partial live stream")
+        if first.poll() is not None:
+            raise RuntimeError("first collector exited before the forced interruption")
+    finally:
+        if first.poll() is None:
+            first.kill()
+        await asyncio.to_thread(first.communicate, timeout=10)
+    if first.returncode != -9:
+        raise AssertionError("first collector was not forcibly terminated")
+    second = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        stdout, stderr = await asyncio.to_thread(second.communicate, timeout=90)
+    finally:
+        if second.poll() is None:
+            second.kill()
+            await asyncio.to_thread(second.communicate, timeout=10)
+    if second.returncode != 0:
+        raise RuntimeError(f"restarted collector failed: {stderr[-1000:]}")
+    return json.loads(stdout.strip().splitlines()[-1]), partial
+
+
+async def scenario(store, partitions, *, reassess=False, realtime=False, resume=False, restart=False):
     subject = "synthetic-combi-mock-" + uuid.uuid4().hex
     ids = [uuid.uuid4() for _ in range(4)]
     pk = f"SCOPE#USER#{subject}#COMBI_MEAL#{ids[0]}"
@@ -95,6 +151,19 @@ async def scenario(store, partitions, *, reassess=False, realtime=False, resume=
                             time.sleep(0.1)
                     else:
                         raise RuntimeError("Mock health did not become available")
+                    if restart:
+                        result, partial = await restart_collector(api, subject, meal, fixture["deviceId"], base, str(cert))
+                        if result["phase_counts"] != {"RICE": 5, "TRANSITION": 5, "MACKEREL": 5}:
+                            raise AssertionError("unexpected phase counts after process restart")
+                        final = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}")
+                        final.raise_for_status()
+                        live = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}/source-live")
+                        live.raise_for_status()
+                        if final.json()["meal"]["source"]["raw_sha256"] != result["raw_sha256"] or \
+                                live.json().get("count") != 15 or live.json().get("state") != "COMPLETED":
+                            raise AssertionError("restarted collector did not finalize the saved source")
+                        return {"phase_counts": result["phase_counts"], "persisted_before_restart": partial,
+                                "process_restart": True, "live_count": 15, "final_hash_matches": True}
                     mock = RestMockClient(base, "test-client", "test-secret", str(cert), profile_id="mockprofile-120")
                     try:
                         interrupted_count = None
@@ -219,8 +288,8 @@ async def scenario(store, partitions, *, reassess=False, realtime=False, resume=
                     "final_hash_matches": True, "safety_not_assumed": True}
 
 
-async def main(*, reassess=False, realtime=False, resume=False):
-    if (reassess and realtime) or (resume and not realtime):
+async def main(*, reassess=False, realtime=False, resume=False, restart=False):
+    if (reassess and realtime) or ((resume or restart) and not realtime) or (resume and restart):
         raise SystemExit("Choose realtime or legacy reassessment, not both")
     if os.getenv("AWS_PROFILE") != "foodtech" or os.getenv("FOODTECH_COOKING_TABLE") != TABLE:
         raise SystemExit("Use AWS_PROFILE=foodtech and the exact development cooking table")
@@ -233,7 +302,7 @@ async def main(*, reassess=False, realtime=False, resume=False):
     store = DynamoCookingStore(TABLE)
     partitions = []
     try:
-        result = await scenario(store, partitions, reassess=reassess, realtime=realtime, resume=resume)
+        result = await scenario(store, partitions, reassess=reassess, realtime=realtime, resume=resume, restart=restart)
     finally:
         remove_and_verify(store.table, partitions)
     print(json.dumps({**result, "cleanup": "verified", "table": TABLE}))
@@ -244,5 +313,10 @@ if __name__ == "__main__":
     parser.add_argument("--reassess", action="store_true")
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--restart", action="store_true")
+    parser.add_argument("--collector-child", nargs=5, metavar=("SUBJECT", "MEAL", "DEVICE", "BASE", "CERT"))
     args = parser.parse_args()
-    asyncio.run(main(reassess=args.reassess, realtime=args.realtime, resume=args.resume))
+    if args.collector_child:
+        asyncio.run(collector_child(*args.collector_child))
+    else:
+        asyncio.run(main(reassess=args.reassess, realtime=args.realtime, resume=args.resume, restart=args.restart))
