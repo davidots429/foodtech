@@ -235,6 +235,50 @@ def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: s
     return page
 
 
+def observe_active_markers(table, client, *, auth_table: str, tenant: str, request_id: str) -> str:
+    """Observe a customer's active marker partition while the same lock holds.
+
+    CLEAR is a point-in-time observation only: legacy reservations may lack a
+    marker and older writers may not honor the lock. It is never deletion proof.
+    """
+    _scope(tenant, 1)
+    try:
+        if str(UUID(request_id)) != request_id or not isinstance(auth_table, str) or not auth_table or \
+                not isinstance(getattr(table, 'name', None), str) or table.name == auth_table:
+            raise ValueError
+    except (TypeError, ValueError, AttributeError):
+        raise ValueError('invalid active marker scope') from None
+    serializer = TypeSerializer()
+    def encode(values):
+        return {key: serializer.serialize(value) for key, value in values.items()}
+    def check_lock():
+        try:
+            client.transact_write_items(TransactItems=[{'ConditionCheck': {
+                'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
+                'ConditionExpression': 'deletion_lock_request = :request',
+                'ExpressionAttributeValues': encode({':request': request_id})}}])
+        except client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get('Code') == 'ConditionalCheckFailed'
+                   for reason in (exc.response.get('CancellationReasons') or [])):
+                raise ActiveReconciliationConflict from exc
+            raise
+    check_lock()
+    page = table.query(KeyConditionExpression=Key('pk').eq(f'ACTIVE#{tenant}'),
+                       ProjectionExpression='pk, sk', ConsistentRead=True, Limit=1)
+    items = page.get('Items')
+    if not isinstance(items, list) or len(items) > 1:
+        raise ValueError('invalid active marker response')
+    if items:
+        item = items[0]
+        if not isinstance(item, dict) or item.get('pk') != f'ACTIVE#{tenant}' or \
+                not isinstance(item.get('sk'), str) or not re.fullmatch(r'EXEC#[A-Za-z0-9_-]{1,128}', item['sk']):
+            raise ValueError('invalid active marker record')
+    elif page.get('LastEvaluatedKey') is not None:
+        raise ValueError('invalid active marker response')
+    check_lock()
+    return 'PRESENT' if items else 'CLEAR'
+
+
 def delete_registry_key(table, client, *, auth_table: str, tenant: str, request_id: str,
                         partition: str, sk: str) -> None:
     """Delete a noncredential registry key under the exact deletion lock.

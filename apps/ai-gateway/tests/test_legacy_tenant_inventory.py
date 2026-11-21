@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from foodtech_ai_gateway.legacy_tenant_inventory import (RegistryDeletionConflict, VaultLocation, delete_credential_pair,
                                                          delete_registry_key, delete_registry_partition_page, ensure_reserved_marker,
-                                                         InventoryPage, list_partition_keys, reconcile_reserved_page, resolve_credential_vault,
+                                                         InventoryPage, list_partition_keys, observe_active_markers, reconcile_reserved_page, resolve_credential_vault,
                                                          scan_registry_partitions)
 
 
@@ -29,6 +29,25 @@ class TenantInventoryTests(unittest.TestCase):
                 scan_registry_partitions(table, tenant='alice', limit=1)
         with self.assertRaises(ValueError):
             scan_registry_partitions(table, tenant='alice#other', limit=1)
+
+    def test_active_marker_observation_is_bounded_locked_and_fail_closed(self):
+        table, client = Mock(), Mock()
+        table.name = 'registry'
+        request = str(uuid4())
+        table.query.return_value = {'Items': [{'pk': 'ACTIVE#alice', 'sk': 'EXEC#run'}]}
+        self.assertEqual(observe_active_markers(table, client, auth_table='auth', tenant='alice',
+                                                request_id=request), 'PRESENT')
+        self.assertEqual(client.transact_write_items.call_count, 2)
+        self.assertTrue(table.query.call_args.kwargs['ConsistentRead'])
+        table.query.return_value = {'Items': []}
+        self.assertEqual(observe_active_markers(table, client, auth_table='auth', tenant='alice',
+                                                request_id=request), 'CLEAR')
+        table.query.return_value = {'Items': [{'pk': 'ACTIVE#other', 'sk': 'EXEC#run'}]}
+        with self.assertRaises(ValueError):
+            observe_active_markers(table, client, auth_table='auth', tenant='alice', request_id=request)
+        table.query.return_value = {}
+        with self.assertRaises(ValueError):
+            observe_active_markers(table, client, auth_table='auth', tenant='alice', request_id=request)
 
     def test_child_keys_require_owner_meta_and_are_paginated(self):
         table = Mock()

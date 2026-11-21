@@ -7,7 +7,7 @@ from foodtech_ai_gateway.legacy_tenant_inventory import (ActiveReconciliationCon
                                                          RegistryDeletionConflict, delete_credential_pair, delete_registry_key,
                                                          delete_registry_partition_page,
                                                          ensure_reserved_marker,
-                                                         list_partition_keys, reconcile_reserved_page, resolve_credential_vault,
+                                                         list_partition_keys, observe_active_markers, reconcile_reserved_page, resolve_credential_vault,
                                                          scan_registry_partitions)
 
 
@@ -56,6 +56,14 @@ def main():
             raise AssertionError('incorrect lock restored an active marker')
         ensure(request)
         ensure(request)
+        if observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant, request_id=request) != 'PRESENT':
+            raise AssertionError('active marker was not observed')
+        try:
+            observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant, request_id=str(uuid4()))
+        except ActiveReconciliationConflict:
+            pass
+        else:
+            raise AssertionError('marker observation accepted the wrong lock')
         if not table.get_item(Key=marker_key, ConsistentRead=True).get('Item'):
             raise AssertionError('reserved legacy marker missing')
         table.delete_item(Key=marker_key)
@@ -80,6 +88,8 @@ def main():
         table.update_item(Key={'pk': exec_pk, 'sk': 'META'}, UpdateExpression='SET #s = :done',
                           ExpressionAttributeNames={'#s': 'state'}, ExpressionAttributeValues={':done': 'SUCCEEDED'})
         table.delete_item(Key=marker_key)
+        if observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant, request_id=request) != 'CLEAR':
+            raise AssertionError('settled marker still observed')
         try:
             ensure(request)
         except ActiveReconciliationConflict:
