@@ -25,27 +25,31 @@ class CheckpointCipherTests(unittest.TestCase):
 
     def test_checkpoint_roundtrip_is_job_bound(self):
         checkpoint = {'pk': 'private-owner-key', 'sk': 'META'}
-        encrypted = self.cipher.seal(self.job, 'owner-a', checkpoint)
+        encrypted = self.cipher.seal(self.job, 'owner-a', checkpoint, phase='CONTINUE', version=2)
         self.assertNotIn(b'private-owner-key', encrypted)
-        self.assertEqual(self.cipher.open(self.job, 'owner-a', encrypted), checkpoint)
+        self.assertEqual(self.cipher.open(self.job, 'owner-a', encrypted, phase='CONTINUE', version=2), checkpoint)
         self.assertNotIn('private-owner-key', repr(self.sdk.context))
         with self.assertRaises(ValueError):
-            self.cipher.open('e4248c1f-3496-45eb-b828-2177c34eb854', 'owner-a', encrypted)
+            self.cipher.open('e4248c1f-3496-45eb-b828-2177c34eb854', 'owner-a', encrypted, phase='CONTINUE', version=2)
         with self.assertRaises(ValueError):
-            self.cipher.open(self.job, 'owner-b', encrypted)
+            self.cipher.open(self.job, 'owner-b', encrypted, phase='CONTINUE', version=2)
+        with self.assertRaises(ValueError):
+            self.cipher.open(self.job, 'owner-a', encrypted, phase='CONTINUE', version=3)
+        with self.assertRaises(ValueError):
+            self.cipher.open(self.job, 'owner-a', encrypted, phase='SCAN_COMPLETE', version=2)
 
     def test_rejects_invalid_checkpoint_and_unexpected_context(self):
         for checkpoint in ({'pk': 'x'}, {'pk': 'x', 'sk': ''}, {'pk': 'x' * 2049, 'sk': 'x'}):
             with self.subTest(checkpoint=tuple(checkpoint)), self.assertRaises(ValueError):
-                self.cipher.seal(self.job, 'owner-a', checkpoint)
-        self.cipher.seal(self.job, 'owner-a', {'pk': 'x', 'sk': 'y'})
+                self.cipher.seal(self.job, 'owner-a', checkpoint, phase='INITIAL', version=1)
+        self.cipher.seal(self.job, 'owner-a', {'pk': 'x', 'sk': 'y'}, phase='INITIAL', version=1)
         original = self.sdk.decrypt
         def unexpected(**kwargs):
             raw, header = original(**kwargs)
             return raw, SimpleNamespace(algorithm=SUITE, encryption_context={**header.encryption_context, 'other': 'x'})
         self.sdk.decrypt = unexpected
         with self.assertRaises(ValueError):
-            self.cipher.open(self.job, 'owner-a', b'ciphertext')
+            self.cipher.open(self.job, 'owner-a', b'ciphertext', phase='INITIAL', version=1)
 
 
 if __name__ == '__main__':

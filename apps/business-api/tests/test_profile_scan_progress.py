@@ -8,13 +8,13 @@ from foodtech_business_api.profile_scan_progress import ProfileScanProgressStore
 
 class Cipher:
     def __init__(self): self.values = {}
-    def seal(self, job, subject, checkpoint):
+    def seal(self, job, subject, checkpoint, *, phase, version):
         token = str(len(self.values)).encode()
-        self.values[token] = (job, subject, checkpoint.copy())
+        self.values[token] = (job, subject, phase, version, checkpoint.copy())
         return token
-    def open(self, job, subject, ciphertext):
-        saved_job, saved_subject, value = self.values[ciphertext]
-        if (job, subject) != (saved_job, saved_subject): raise ValueError('scope mismatch')
+    def open(self, job, subject, ciphertext, *, phase, version):
+        saved_job, saved_subject, saved_phase, saved_version, value = self.values[ciphertext]
+        if (job, subject, phase, version) != (saved_job, saved_subject, saved_phase, saved_version): raise ValueError('scope mismatch')
         return value.copy()
 
 
@@ -81,6 +81,15 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual((result.phase, result.version), ('SCAN_COMPLETE', 2))
         with self.assertRaises(ValueError):
             self.store.read_progress(self.job, 'owner-b')
+
+    def test_old_ciphertext_cannot_be_replayed_at_a_new_version(self):
+        old_ciphertext = self.table.item['ciphertext']
+        with patch('foodtech_business_api.profile_scan_progress.reconcile_legacy_page',
+                   return_value=LegacyProfilePage((), {'pk': 'next', 'sk': 'META'}, 1)):
+            self.store.run_page(job_id=self.job, subject='owner-a', source_table=object(), profile_store=object(), limit=1)
+        self.table.item['ciphertext'] = old_ciphertext
+        with self.assertRaises(ValueError):
+            self.store.read_progress(self.job, 'owner-a')
 
 
 if __name__ == '__main__':

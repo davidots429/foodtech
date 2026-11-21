@@ -42,21 +42,24 @@ class ProfileCheckpointCipher:
             commitment_policy=CommitmentPolicy.REQUIRE_ENCRYPT_REQUIRE_DECRYPT, max_encrypted_data_keys=1)
         self.providers = providers or AwsCryptographicMaterialProviders(config=MaterialProvidersConfig())
 
-    def _context(self, job_id):
+    def _context(self, job_id, phase, version):
         try:
             if str(UUID(job_id)) != job_id:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise ValueError('invalid checkpoint job') from None
+        if phase not in {'INITIAL', 'CONTINUE', 'SCAN_COMPLETE'} or type(version) is not int or \
+                not 1 <= version < 2**63:
+            raise ValueError('invalid checkpoint version')
         return {'purpose': 'PROFILE_MIGRATION_CHECKPOINT', 'schema_version': '1',
-                'environment': self.environment, 'job_id': job_id}
+                'environment': self.environment, 'job_id': job_id, 'phase': phase, 'version': str(version)}
 
     def _keyring(self):
         return self.providers.create_aws_kms_keyring(input=CreateAwsKmsKeyringInput(
             kms_key_id=self.key_arn, kms_client=self.kms))
 
-    def seal(self, job_id: str, subject: str, checkpoint: dict) -> bytes:
-        context = self._context(job_id)
+    def seal(self, job_id: str, subject: str, checkpoint: dict, *, phase: str, version: int) -> bytes:
+        context = self._context(job_id, phase, version)
         _validate_subject(subject)
         _validate_checkpoint(checkpoint)
         raw = bytearray(json.dumps({'subject': subject, 'checkpoint': checkpoint}, ensure_ascii=True,
@@ -70,8 +73,8 @@ class ProfileCheckpointCipher:
         finally:
             raw[:] = b'\x00' * len(raw)
 
-    def open(self, job_id: str, subject: str, ciphertext: bytes) -> dict:
-        context = self._context(job_id)
+    def open(self, job_id: str, subject: str, ciphertext: bytes, *, phase: str, version: int) -> dict:
+        context = self._context(job_id, phase, version)
         _validate_subject(subject)
         if not isinstance(ciphertext, bytes) or not 1 <= len(ciphertext) <= 65536:
             raise ValueError('invalid checkpoint ciphertext')

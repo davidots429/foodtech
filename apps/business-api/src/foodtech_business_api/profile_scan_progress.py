@@ -37,7 +37,7 @@ class ProfileScanProgressStore:
 
     def start(self, job_id: str, subject: str) -> None:
         key = _job(job_id)
-        encrypted = self.cipher.seal(job_id, subject, _INITIAL)
+        encrypted = self.cipher.seal(job_id, subject, _INITIAL, phase='INITIAL', version=1)
         self.table.put_item(Item={**key, 'phase': 'INITIAL', 'version': 1, 'ciphertext': encrypted},
                             ConditionExpression='attribute_not_exists(pk)')
 
@@ -57,7 +57,7 @@ class ProfileScanProgressStore:
         encrypted = item.get('ciphertext')
         if isinstance(encrypted, Binary):
             encrypted = bytes(encrypted)
-        checkpoint = self.cipher.open(job_id, subject, encrypted)
+        checkpoint = self.cipher.open(job_id, subject, encrypted, phase=item['phase'], version=version)
         if item['phase'] == 'INITIAL':
             if checkpoint != _INITIAL:
                 raise ValueError('invalid initial checkpoint')
@@ -80,7 +80,7 @@ class ProfileScanProgressStore:
         page = reconcile_legacy_page(source_table, profile_store, subject=subject, limit=limit, checkpoint=checkpoint)
         next_phase = 'CONTINUE' if page.checkpoint is not None else 'SCAN_COMPLETE'
         next_checkpoint = page.checkpoint if page.checkpoint is not None else _FINISHED
-        ciphertext = self.cipher.seal(job_id, subject, next_checkpoint)
+        ciphertext = self.cipher.seal(job_id, subject, next_checkpoint, phase=next_phase, version=progress.version + 1)
         self.table.update_item(Key=key, UpdateExpression='SET #phase = :next, #version = :next_version, ciphertext = :ciphertext',
             ConditionExpression='#phase = :old AND #version = :expected',
             ExpressionAttributeNames={'#phase': 'phase', '#version': 'version'},
