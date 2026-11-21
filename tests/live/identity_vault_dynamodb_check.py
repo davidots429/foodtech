@@ -5,6 +5,8 @@ credentials or plaintext personal data are used. This is not an IAM/KMS test.
 """
 import json
 import os
+import subprocess
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -88,6 +90,21 @@ def main():
                 raise AssertionError("Fresh service could not recover the persisted linkage")
         finally:
             recovered_id[:] = b"\x00" * len(recovered_id)
+        child_code = '''
+import sys
+import boto3
+from foodtech_business_api.identity_vault import IdentityVault
+client = boto3.Session(profile_name="foodtech", region_name="ap-southeast-2").client("dynamodb")
+service = IdentityVault(auth_table="foodtech-auth-sessions-dev", vault_table="foodtech-cooking-jobs-dev",
+                        capsule_table="foodtech-data-flow-dev", approved_purposes=frozenset({"BILLING"}), client=client)
+snapshot, internal_id = service.resolve_deletion(authenticated_subject=sys.argv[1], expected_epoch=0)
+try:
+    if snapshot.vault_id != sys.argv[2]:
+        raise RuntimeError("Persisted identity did not match")
+finally:
+    internal_id[:] = b"\\x00" * len(internal_id)
+'''
+        subprocess.run([sys.executable, '-c', child_code, subject, winner.vault_id], check=True, timeout=60)
         try:
             vault_service.verify_committed(authenticated_subject=subject,
                                            prepared=replace(winner, request_id=str(uuid.uuid4())))
@@ -155,7 +172,7 @@ def main():
             auth.delete_item(Key=auth_key, ConditionExpression=Attr("provenance").eq("SYNTHETIC"))
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
-    print(json.dumps({"missing_principal_rejected": "verified", "atomic_provisioning": "verified", "lost_response_verification": "verified", "fresh_service_resolution": "verified", "stale_auth_rejected": "verified",
+    print(json.dumps({"missing_principal_rejected": "verified", "atomic_provisioning": "verified", "lost_response_verification": "verified", "fresh_process_resolution": "verified", "stale_auth_rejected": "verified",
                       "guarded_deletion_registration": "verified", "cleanup": "verified"}))
 
 
