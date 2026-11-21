@@ -29,6 +29,10 @@ class CredentialDeletionConflict(Exception):
     pass
 
 
+class ActiveReconciliationConflict(Exception):
+    pass
+
+
 def _scope(tenant: str, limit: int) -> None:
     if not isinstance(tenant, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', tenant) or \
             type(limit) is not int or not 1 <= limit <= 100:
@@ -133,6 +137,47 @@ def resolve_credential_vault(registry, vault, *, tenant: str, credential_id: str
             stored.get('credential_id') != credential_id or stored.get('tenant_pseudonym') != pseudonym:
         raise ValueError('credential inventory unavailable')
     return VaultLocation(key, pseudonym)
+
+
+def ensure_reserved_marker(client, *, auth_table: str, registry_table: str,
+                           tenant: str, request_id: str, execution_id: str) -> None:
+    """Mark a confirmed legacy reservation while its exact deletion lock is held.
+
+    A concurrent settlement makes the condition fail; the authorized caller
+    must re-read it. This does not identify all legacy executions or declare a
+    safe deletion point, and it must not be exposed to customers.
+    """
+    _scope(tenant, 1)
+    try:
+        if str(UUID(request_id)) != request_id or not isinstance(execution_id, str) or \
+                not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', execution_id):
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('invalid active reconciliation scope') from None
+    if not auth_table or not registry_table or auth_table == registry_table:
+        raise ValueError('separate auth and registry tables required')
+    serializer = TypeSerializer()
+    def encode(values):
+        return {name: serializer.serialize(value) for name, value in values.items()}
+    try:
+        client.transact_write_items(TransactItems=[
+            {'ConditionCheck': {'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
+                                'ConditionExpression': 'deletion_lock_request = :request',
+                                'ExpressionAttributeValues': encode({':request': request_id})}},
+            {'ConditionCheck': {'TableName': registry_table,
+                                'Key': encode({'pk': f'EXEC#{execution_id}', 'sk': 'META'}),
+                                'ConditionExpression': 'tenant_id = :tenant AND #state = :reserved',
+                                'ExpressionAttributeNames': {'#state': 'state'},
+                                'ExpressionAttributeValues': encode({':tenant': tenant, ':reserved': 'RESERVED'})}},
+            {'Update': {'TableName': registry_table,
+                        'Key': encode({'pk': f'ACTIVE#{tenant}', 'sk': f'EXEC#{execution_id}'}),
+                        'UpdateExpression': 'SET marker_version = :version',
+                        'ExpressionAttributeValues': encode({':version': 1})}},
+        ])
+    except client.exceptions.TransactionCanceledException as exc:
+        if any(reason.get('Code') == 'ConditionalCheckFailed' for reason in exc.response.get('CancellationReasons', [])):
+            raise ActiveReconciliationConflict from exc
+        raise
 
 
 def delete_credential_pair(client, *, auth_table: str, registry_table: str, vault_table: str,

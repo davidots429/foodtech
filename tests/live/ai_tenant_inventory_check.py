@@ -3,7 +3,8 @@ import os
 from uuid import uuid4
 
 import boto3
-from foodtech_ai_gateway.legacy_tenant_inventory import (CredentialDeletionConflict, delete_credential_pair,
+from foodtech_ai_gateway.legacy_tenant_inventory import (ActiveReconciliationConflict, CredentialDeletionConflict,
+                                                         delete_credential_pair, ensure_reserved_marker,
                                                          list_partition_keys, resolve_credential_vault,
                                                          scan_registry_partitions)
 
@@ -21,7 +22,7 @@ def main():
     exec_pk, consent_pk = f'EXEC#{run}', f'CONSENT#{run}'
     credential_pk = f'CREDENTIAL#{run}'
     limit_pk, other_limit = f'LIMIT#2026-11#TENANT#{tenant}', f'LIMIT#2026-11#TENANT#{tenant}-other'
-    items = [{'pk': exec_pk, 'sk': 'META', 'tenant_id': tenant},
+    items = [{'pk': exec_pk, 'sk': 'META', 'tenant_id': tenant, 'state': 'RESERVED'},
              {'pk': exec_pk, 'sk': 'RESULT'}, {'pk': exec_pk, 'sk': 'CALL#1'},
              {'pk': consent_pk, 'sk': 'META', 'tenant_id': tenant},
              {'pk': credential_pk, 'sk': 'META', 'tenant_id': tenant, 'credential_id': run,
@@ -31,6 +32,7 @@ def main():
     vault_key = {'pk': credential_pk, 'sk': 'META'}
     vault_created = False
     auth_key, request = {'pk': f'USER#{tenant}'}, str(uuid4())
+    marker_key = {'pk': f'ACTIVE#{tenant}', 'sk': f'EXEC#{run}'}
     auth_created = False
     try:
         for item in items:
@@ -41,6 +43,28 @@ def main():
         vault_created = True
         auth.put_item(Item={**auth_key, 'deletion_lock_request': request}, ConditionExpression='attribute_not_exists(pk)')
         auth_created = True
+        def ensure(request_id):
+            ensure_reserved_marker(session.client('dynamodb'), auth_table=auth.name, registry_table=table.name,
+                                   tenant=tenant, request_id=request_id, execution_id=run)
+        try:
+            ensure(str(uuid4()))
+        except ActiveReconciliationConflict:
+            pass
+        else:
+            raise AssertionError('incorrect lock restored an active marker')
+        ensure(request)
+        ensure(request)
+        if not table.get_item(Key=marker_key, ConsistentRead=True).get('Item'):
+            raise AssertionError('reserved legacy marker missing')
+        table.update_item(Key={'pk': exec_pk, 'sk': 'META'}, UpdateExpression='SET #s = :done',
+                          ExpressionAttributeNames={'#s': 'state'}, ExpressionAttributeValues={':done': 'SUCCEEDED'})
+        table.delete_item(Key=marker_key)
+        try:
+            ensure(request)
+        except ActiveReconciliationConflict:
+            pass
+        else:
+            raise AssertionError('settled execution regained an active marker')
         checkpoint, found = None, set()
         for _ in range(100):
             page = scan_registry_partitions(table, tenant=tenant, limit=100, checkpoint=checkpoint)
@@ -99,6 +123,7 @@ def main():
             table.delete_item(Key=key)
         if vault_created:
             vault.delete_item(Key=vault_key)
+        table.delete_item(Key=marker_key)
         if auth_created:
             auth.delete_item(Key=auth_key)
     print('tenant partition discovery, execution children, isolation and cleanup verified')

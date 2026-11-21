@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock
 from uuid import uuid4
 
-from foodtech_ai_gateway.legacy_tenant_inventory import (VaultLocation, delete_credential_pair,
+from foodtech_ai_gateway.legacy_tenant_inventory import (VaultLocation, delete_credential_pair, ensure_reserved_marker,
                                                          list_partition_keys, resolve_credential_vault,
                                                          scan_registry_partitions)
 
@@ -90,6 +90,21 @@ class TenantInventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             delete_credential_pair(client, auth_table='auth', registry_table='auth', vault_table='vault',
                                    tenant='alice', request_id=request, location=location)
+
+    def test_legacy_marker_requires_same_lock_and_reserved_owner(self):
+        client = Mock()
+        client.exceptions.TransactionCanceledException = type('Canceled', (Exception,), {})
+        request = str(uuid4())
+        ensure_reserved_marker(client, auth_table='auth', registry_table='registry', tenant='alice',
+                               request_id=request, execution_id='run')
+        ops = client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertEqual(ops[0]['ConditionCheck']['ExpressionAttributeValues'][':request'], {'S': request})
+        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':reserved'], {'S': 'RESERVED'})
+        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':tenant'], {'S': 'alice'})
+        self.assertEqual(ops[2]['Update']['Key']['pk'], {'S': 'ACTIVE#alice'})
+        with self.assertRaises(ValueError):
+            ensure_reserved_marker(client, auth_table='auth', registry_table='registry', tenant='alice',
+                                   request_id=request, execution_id='bad#id')
 
 
 if __name__ == '__main__':
