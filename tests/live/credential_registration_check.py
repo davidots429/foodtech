@@ -67,6 +67,9 @@ def main() -> None:
             key = {"pk": f"CREDENTIAL#{credential_id}", "sk": "META"}
             resource.Table(VAULT).delete_item(Key=key)
             resource.Table(REGISTRY).delete_item(Key=key)
+            for name in (VAULT, REGISTRY):
+                if resource.Table(name).get_item(Key=key, ConsistentRead=True).get("Item") is not None:
+                    raise RuntimeError("synthetic credential cleanup failed")
 
 
 if __name__ == "__main__":
