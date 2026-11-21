@@ -111,7 +111,7 @@ class JeyukJobBridgeTests(unittest.TestCase):
 
     def test_history_conflict_retries_without_losing_concurrent_change(self):
         key = ("SCOPE#USER#one#JOBS", "HISTORY#REVISION")
-        self.table.items[key] = {"pk": key[0], "sk": key[1], "revision": 5}
+        self.table.items[key] = {"pk": key[0], "sk": key[1], "revision": 5, "marker": "preserve"}
         original = self.bridge.client.transact_write_items
         calls = 0
         def concurrent(*, TransactItems):
@@ -125,6 +125,7 @@ class JeyukJobBridgeTests(unittest.TestCase):
         self.bridge.client.transact_write_items = concurrent
         self.assertEqual(self.bridge.apply(decision(1, "NORMAL")), "NORMAL")
         self.assertEqual((calls, self.table.items[key]["revision"]), (2, 7))
+        self.assertEqual(self.table.items[key]["marker"], "preserve")
 
     def test_auto_safety_proof_is_visible_but_does_not_complete_manual_validation(self):
         for second in range(1, 62):

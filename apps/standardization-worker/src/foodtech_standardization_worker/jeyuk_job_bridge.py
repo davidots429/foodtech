@@ -100,7 +100,7 @@ class DynamoJeyukJobBridge:
                         (isinstance(revision, Decimal) and not revision.is_finite()) or \
                         revision != int(revision) or not (0 if history is None else 1) <= revision < 10**18:
                     raise ValueError("invalid customer history revision")
-                put = {"TableName": self.table.name, "Item": self._item({**history_key, "revision": int(revision) + 1}),
+                put = {"TableName": self.table.name, "Item": self._item({**(history or {}), **history_key, "revision": int(revision) + 1}),
                        "ConditionExpression": "attribute_not_exists(pk)" if history is None else "revision = :prior"}
                 if history is not None:
                     put["ExpressionAttributeValues"] = {":prior": {"N": str(int(revision))}}
