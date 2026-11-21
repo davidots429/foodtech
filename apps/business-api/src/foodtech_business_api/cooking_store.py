@@ -134,7 +134,7 @@ class CookingStore(Protocol):
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
                                  source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None: ...
     def customer_restatement(self, pk: str, request_id: str) -> dict | None: ...
-    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict: ...
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict: ...
     def create_meal(self, pk: str, records: list[dict]) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
@@ -255,7 +255,7 @@ class MemoryCookingStore:
             value = self.items.get((pk, f"RESTATEMENT#REQUEST#{request_id}"))
             return value.copy() if value else None
 
-    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict:
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict:
         key = (pk, request["sk"])
         with self.lock:
             existing = self.items.get(key)
@@ -703,7 +703,7 @@ class DynamoCookingStore:
                                    ConsistentRead=True).get("Item")
         return _api_numbers(item)
 
-    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict:
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict:
         def existing_or_conflict():
             value = self.customer_restatement(pk, request["request_id"])
             if not value or any(value.get(field) != request.get(field) for field in
@@ -713,8 +713,11 @@ class DynamoCookingStore:
 
         if self.customer_restatement(pk, request["request_id"]):
             return existing_or_conflict()
+        subject = _history_pk(pk).removeprefix("SCOPE#USER#").removesuffix("#JOBS")
+        guard = self._owner_guard(subject, expected_epoch)
         try:
             self._history_transact([
+                guard,
                 {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
                     "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
                     "ExpressionAttributeValues": self._item({":v": expected_version})}},
@@ -723,9 +726,13 @@ class DynamoCookingStore:
                 self._history_update(pk),
             ])
         except self.client.exceptions.TransactionCanceledException as exc:
-            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in
-                   exc.response.get("CancellationReasons", [])):
+            reasons = exc.response.get("CancellationReasons", [])
+            codes = [reason.get("Code") for reason in reasons]
+            if len(codes) == 4 and codes[2] == "ConditionalCheckFailed" and all(
+                    code in (None, "None") for index, code in enumerate(codes) if index != 2):
                 return existing_or_conflict()
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
             raise
         return {"pk": pk, **request}
 

@@ -846,7 +846,7 @@ async def recommendation_evidence(job_id: str, request: Request, response: Respo
 @router.post("/{job_id}/process-restatements", status_code=202)
 async def request_process_restatement(job_id: str, request: Request, body: CustomerRestatementRequest) -> dict:
     from .restatement_queue import send, source_revision
-    _, store, pk, job, _ = await _read(request, job_id, write=True)
+    session, store, pk, job, _ = await _read(request, job_id, write=True)
     request_id = str(body.request_id)
     existing = await _store_call(store, store.customer_restatement, pk, request_id)
     if existing:
@@ -881,7 +881,7 @@ async def request_process_restatement(job_id: str, request: Request, body: Custo
                   "job_version_at_detection": body.expected_version, "provenance": "SYNTHETIC",
                   "requested_at": _now()}
         try:
-            existing = await _store_call(store, store.create_customer_restatement, pk, body.expected_version, record)
+            existing = await _store_call(store, store.create_customer_restatement, pk, body.expected_version, record, session.epoch)
         except Conflict as exc:
             raise _conflict() from exc
     if existing["status"] == "PENDING":
