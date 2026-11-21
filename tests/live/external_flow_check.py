@@ -48,7 +48,7 @@ async def check() -> None:
         raise RuntimeError("development registry is not empty; refusing shared-limit test")
     registry = DynamoRegistry(TABLE, datetime.now(timezone.utc).strftime("%Y-%m"),
                               resource=resource,
-                              client=boto3.client("dynamodb", region_name=REGION))
+                              client=boto3.client("dynamodb", region_name=REGION), auth_table="foodtech-auth-sessions-dev")
     suffix = str(uuid4())
     tenant_id, model_id, credential_id = (f"synthetic-tenant-{suffix}",
                                            f"synthetic-model-{suffix}",
@@ -111,6 +111,8 @@ async def check() -> None:
                             ("EXEC", quote["execution_id"]),
                             ("EXEC_RESULT", quote["execution_id"])))
         for kind, identifier in reversed(list(dict.fromkeys(created))):
+            if kind == "EXEC":
+                table.delete_item(Key={"pk": f"ACTIVE#{tenant_id}", "sk": f"EXEC#{identifier}"})
             key = {"pk": f"{'EXEC' if kind == 'EXEC_RESULT' else kind}#{identifier}",
                    "sk": "RESULT" if kind == "EXEC_RESULT" else "META"}
             table.delete_item(Key=key)

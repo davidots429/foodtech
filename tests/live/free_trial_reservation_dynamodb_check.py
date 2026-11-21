@@ -25,7 +25,7 @@ def main():
     period = f"{secrets.randbelow(4000) + 5000:04d}-{secrets.randbelow(12) + 1:02d}"
     tenant, provider = f"synthetic-reserve-{uuid4().hex}", f"synthetic-{uuid4().hex}"
     ids = [str(uuid4()) for _ in range(8)]
-    registry = DynamoRegistry(TABLE, period, resource=resource, client=session.client("dynamodb"))
+    registry = DynamoRegistry(TABLE, period, resource=resource, client=session.client("dynamodb"), auth_table="foodtech-auth-sessions-dev")
     keys = []
     barrier = threading.Barrier(len(ids))
     try:
@@ -42,7 +42,7 @@ def main():
         def attempt(execution_id):
             thread_session = boto3.Session(profile_name="foodtech", region_name=REGION)
             worker = DynamoRegistry(TABLE, period, resource=thread_session.resource("dynamodb"),
-                                    client=thread_session.client("dynamodb"))
+                                    client=thread_session.client("dynamodb"), auth_table="foodtech-auth-sessions-dev")
             worker.begin_request()
             execution = worker.execution(execution_id)
             worker.budget(tenant, provider)

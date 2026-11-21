@@ -123,9 +123,10 @@ async def main() -> None:
     tenant = f"synthetic-ai-validation-{run_id}"
     period = datetime.now(timezone.utc).strftime("%Y-%m")
     registry = DynamoRegistry(TABLE, period, resource=dynamodb,
-                              client=session.client("dynamodb"), local_models={MODEL})
+                              client=session.client("dynamodb"), local_models={MODEL}, auth_table="foodtech-auth-sessions-dev")
     keys: list[dict[str, str]] = []
     for execution_id in expected_ids:
+        keys.append({"pk": f"ACTIVE#{tenant}", "sk": f"EXEC#{execution_id}"})
         keys.extend((item_key("EXEC", execution_id),
                      item_key("EXEC", execution_id, "RESULT")))
     temp = tempfile.TemporaryDirectory(prefix="foodtech-ai-live-")

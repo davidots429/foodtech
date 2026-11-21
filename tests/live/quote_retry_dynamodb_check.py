@@ -25,7 +25,7 @@ def main():
     period = f"{secrets.randbelow(4000) + 5000:04d}-{secrets.randbelow(12) + 1:02d}"
     suffix = uuid4().hex
     tenant, model, credential = f"synthetic-{suffix}", f"synthetic-model-{suffix}", f"synthetic-key-{suffix}"
-    registry = DynamoRegistry(TABLE, period, resource=resource, client=session.client("dynamodb"))
+    registry = DynamoRegistry(TABLE, period, resource=resource, client=session.client("dynamodb"), auth_table="foodtech-auth-sessions-dev")
     keys = []
     def key(kind, identifier): return {"pk": f"{kind}#{identifier}", "sk": "META"}
     try:

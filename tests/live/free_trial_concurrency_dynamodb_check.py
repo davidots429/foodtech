@@ -30,7 +30,7 @@ def main():
         # Each thread gets its own boto3 resource, which is not thread-safe.
         thread_session = boto3.Session(profile_name="foodtech", region_name=REGION)
         registry = DynamoRegistry(TABLE, period, resource=thread_session.resource("dynamodb"),
-                                  client=thread_session.client("dynamodb"))
+                                  client=thread_session.client("dynamodb"), auth_table="foodtech-auth-sessions-dev")
         registry.ensure_trial_tenant_limit(tenant, Decimal("0"), 3 if index % 2 else 7)
 
     try:

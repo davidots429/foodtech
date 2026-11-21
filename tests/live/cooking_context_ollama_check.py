@@ -132,13 +132,14 @@ async def main() -> None:
     if any(table.get_item(Key=key, ConsistentRead=True).get("Item") for key in shared_keys):
         raise SystemExit("Shared model or limits already exist; refusing to alter or remove them")
     registry = DynamoRegistry(TABLE, period, resource=dynamodb,
-                              client=session.client("dynamodb"), local_models={MODEL})
+                              client=session.client("dynamodb"), local_models={MODEL}, auth_table="foodtech-auth-sessions-dev")
     cooking_table = "foodtech-cooking-jobs-dev"
     cooking_store = DynamoCookingStore(cooking_table)
     job_id = str(uuid4())
     cooking_partitions = [business_cooking._pk(tenant, job_id), f"SCOPE#USER#{tenant}#JOBS"]
     keys: list[dict[str, str]] = []
     for execution_id in expected_ids:
+        keys.append({"pk": f"ACTIVE#{tenant}", "sk": f"EXEC#{execution_id}"})
         keys.extend((item_key("EXEC", execution_id),
                      item_key("EXEC", execution_id, "RESULT")))
     temp = tempfile.TemporaryDirectory(prefix="foodtech-ai-live-")

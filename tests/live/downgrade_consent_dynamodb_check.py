@@ -34,7 +34,7 @@ def main():
     comparison = uuid4().hex + uuid4().hex
     period = "2097-11"
     registry = DynamoRegistry(TABLE, period, resource=session.resource("dynamodb"),
-                              client=session.client("dynamodb"), local_models={target, source})
+                              client=session.client("dynamodb"), local_models={target, source}, auth_table="foodtech-auth-sessions-dev")
     keys = []
     def mark(kind, ident): keys.append({"pk": f"{kind}#{ident}", "sk": "META"})
     try:

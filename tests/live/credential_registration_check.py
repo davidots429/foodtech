@@ -50,7 +50,7 @@ def main() -> None:
         tenant_id = f"synthetic-subject-{uuid4()}"
         credential_id = registrar.register(tenant_id, "openai", descriptor["key_version"],
                                            base64.b64encode(encrypted).decode(), 0)
-        record = DynamoRegistry(REGISTRY, "2026-11", resource=resource).credential(credential_id)
+        record = DynamoRegistry(REGISTRY, "2026-11", resource=resource, auth_table="foodtech-auth-sessions-dev").credential(credential_id)
         assert record and record.tenant_id == tenant_id
         vault = DynamoCredentialVault(VAULT, "dev", {stack["CredentialStorageKeyArn"]},
                                       resource=resource, kms_client=kms)
