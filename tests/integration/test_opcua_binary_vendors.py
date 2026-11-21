@@ -49,10 +49,10 @@ class BinaryVendorTests(unittest.IsolatedAsyncioTestCase):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "x509", "-in", str(pem), "-outform", "DER", "-out", str(der)],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for vendor in ("b", "c"):
-                with self.subTest(vendor=vendor):
-                    instance = f"mockprofile-203-{vendor}-001"
-                    pki = temp / f"pki-{vendor}"
+            for profile, vendor in (("203", "b"), ("203", "c"), *[(profile, vendor) for profile in ("213", "223") for vendor in "abc"]):
+                with self.subTest(profile=profile, vendor=vendor):
+                    instance = f"mockprofile-{profile}-{vendor}-001"
+                    pki = temp / f"pki-{profile}-{vendor}"
                     trusted = pki / "trusted/certs"
                     trusted.mkdir(parents=True)
                     shutil.copyfile(der, trusted / "client.der")
@@ -84,13 +84,14 @@ class BinaryVendorTests(unittest.IsolatedAsyncioTestCase):
                                 if attempt == 99: raise
                                 await asyncio.sleep(.2)
                         try:
-                            index = await client.get_namespace_index(f"urn:foodtech:synthetic:opcua:203:{vendor}:v1")
+                            index = await client.get_namespace_index(f"urn:foodtech:synthetic:opcua:{profile}:{vendor}:v1")
                             device = await client.nodes.objects.get_child([f"{index}:SyntheticDevice"])
                             temperature = await device.get_child([f"{index}:TemperatureCelsius"])
                             self.assertAlmostEqual(await temperature.read_value(), 180)
                             self.assertNotIn(ua.AccessLevel.CurrentWrite, await temperature.get_access_level())
-                            speed = await device.get_child([f"{index}:OutputPercent" if vendor == "b" else f"{index}:SpeedLevel"])
-                            self.assertEqual(await speed.read_value(), 60 if vendor == "b" else 6)
+                            speed = await device.get_child([f"{index}:OutputPercent" if vendor == "b" else f"{index}:SpeedLevel" if vendor == "c" else f"{index}:SpeedRpm"])
+                            expected_speed = 60 if vendor in ("a", "b") else 4 if profile == "223" else 6
+                            self.assertEqual(await speed.read_value(), expected_speed)
                         finally:
                             await client.disconnect()
                         class Failed:
@@ -108,8 +109,13 @@ class BinaryVendorTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual([decode_record(raw)["sequenceNumber"] for raw in ingestor.records], [1, 2, 3])
                         results = [assess(str(i), raw) for i, raw in enumerate(ingestor.records)]
                         self.assertEqual([item.quality_status for item in results], ["VALID", "VALID", "QUARANTINED"])
-                        self.assertTrue(all(item.mapping_version == f"mockprofile-203-{vendor}-map-v1" for item in results))
-                        self.assertNotIn("ROTATIONAL_SPEED_RPM", results[0].normalized)
+                        self.assertTrue(all(item.mapping_version == f"mockprofile-{profile}-{vendor}-map-v1" for item in results))
+                        if vendor != "a":
+                            self.assertNotIn("ROTATIONAL_SPEED_RPM", results[0].normalized)
+                        if profile == "213":
+                            self.assertIn("POT_TEMPERATURE", results[0].normalized)
+                        if profile == "223":
+                            self.assertIn("RELATIVE_HUMIDITY", results[0].normalized)
                     finally:
                         server.terminate()
                         server.wait(timeout=10)
