@@ -20,10 +20,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMinimalDataFlow-dev --strict -c provisionDataFlow=true --output /tmp/foodtech-data-flow-cdk
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMinimalDataFlow-dev --strict -c provisionDataFlow=true -c provisionRestCollectionTask=true -c provisionMqttCollectionTask=true -c provisionOpcUaJsonCollectionTask=true -c provisionOpcUaBinaryCollectionTask=true -c collectionUaBinarySecretArn=arn:aws:secretsmanager:ap-southeast-2:573693340100:secret:uab-Ab1234 -c collectionUaBinaryEndpoint=opc.tcp://ua.example:4840/foodtech -c collectionUaJsonSecretArn=arn:aws:secretsmanager:ap-southeast-2:573693340100:secret:ua-Ab1234 -c collectionUaJsonBaseUrl=https://ua.example -c collectionImageRepository=foodtech/collection -c collectionImageTag=v1 -c collectionMockSecretArn=arn:aws:secretsmanager:ap-southeast-2:573693340100:secret:synthetic-Ab1234 -c collectionMockBaseUrl=https://mock.example -c collectionMqttSecretArn=arn:aws:secretsmanager:ap-southeast-2:573693340100:secret:mqtt-Xy1234 -c collectionMqttHost=mqtt.example -c collectionMqttPort=8883 --output /tmp/foodtech-data-flow-cdk
         working-directory: infra/cdk
+      - run: python3 tests/config/check_collector_policy.py /tmp/foodtech-data-flow-cdk/FoodtechMinimalDataFlow-dev.template.json
+      - run: python3 tests/config/check_collector_task.py /tmp/foodtech-data-flow-cdk/FoodtechMinimalDataFlow-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiImagePublishing-dev --strict -c provisionAiImagePublishing=true --output /tmp/foodtech-ai-image-cdk
         working-directory: infra/cdk
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCollectionImagePublishing-dev --strict -c provisionCollectionImagePublishing=true --output /tmp/foodtech-collection-image-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_collection_publishing.py /tmp/foodtech-collection-image-cdk/FoodtechCollectionImagePublishing-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAuthIdentity-dev --strict -c provisionIdentity=true -c customerCallback=http://127.0.0.1:8000/api/auth/customer/callback -c adminCallback=http://127.0.0.1:8000/api/auth/admin/callback -c customerWeb=http://127.0.0.1:5173 -c adminWeb=http://127.0.0.1:5174 -c cognitoDomainPrefix=foodtech-synthetic-test --output /tmp/foodtech-identity-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_cognito_rotation.py /tmp/foodtech-identity-cdk/FoodtechAuthIdentity-dev.template.json
@@ -94,4 +99,25 @@ jobs:
             foodtech-credential-registration) module=foodtech_credential_registration.serve ;;
           esac
           docker run --rm --entrypoint python foodtech-ci/${{ matrix.package }}:test -c "import importlib; importlib.import_module('$module')"
+
+  collection-adapter-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/containers/collection-adapter.Dockerfile
+          push: false
+          load: true
+          tags: foodtech-ci/collection-adapter:test
+      - name: Verify REST collection entrypoint
+        run: docker run --rm foodtech-ci/collection-adapter:test --help
+      - name: Verify MQTT collection entrypoint
+        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=mqtt foodtech-ci/collection-adapter:test --help
+      - name: Verify OPC UA JSON collection entrypoint
+        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=opcua-json foodtech-ci/collection-adapter:test --help
+      - name: Verify OPC UA Binary collection entrypoint
+        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=opcua-binary foodtech-ci/collection-adapter:test --help
 

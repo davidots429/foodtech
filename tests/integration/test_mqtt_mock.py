@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
+from collection_entrypoint_support import injected_ca
 
 from foodtech_collection_adapter.mqtt import TOPIC, collect
 from foodtech_standardization_worker.process import assess
@@ -36,6 +37,7 @@ class MqttMockTests(unittest.TestCase):
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
                             "-password", "pass:test-password"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cert = injected_ca(ROOT, temp, cert, 'mqtt')
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 port = probe.getsockname()[1]
