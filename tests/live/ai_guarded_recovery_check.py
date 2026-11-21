@@ -207,6 +207,13 @@ def main():
                                            source_table=capsule,vault_table=vault)
         coordinator=AiDeletionCoordinator(capture=capture,worker=ai_worker,observer=observer,credentials=credentials)
         ai_recovery=AiDeletionRecovery(recovery=recovery,coordinator=coordinator)
+        # Reproduce an incomplete page saved by the previous format. The
+        # cursor points at a real synthetic item, so DynamoDB can resume it.
+        legacy_page={'schema':1,'start':None,'next':ai_key,'partitions':[ai_key['pk']]}
+        legacy_head={'schema':1,'pages':1,'count':1,'cursor':ai_key,'complete':False}
+        for domain,value in [('AI_INVENTORY_PAGE_000000000001',legacy_page),('AI_INVENTORY',legacy_head)]:
+            plan_progress.save_checkpoint(cipher=ai_cipher,subject=subject,request_id=winner,domain=domain,
+                expected_version=0,state='IN_PROGRESS',checkpoint=capture._pack(value))
         for _ in range(1000):
             result=ai_recovery.step(authenticated_subject=subject,request_id=winner,limit=100)
             if result.get('writer_quiescence_required'):break
@@ -214,6 +221,8 @@ def main():
         else:raise AssertionError('bounded AI recovery incomplete')
         if not capsule.get_item(Key=ai_key,ConsistentRead=True).get('Item'):
             raise AssertionError('synthetic AI record was removed without quiescence proof')
+        if sum(target.partition == ai_key['pk'] for target in capture.partitions(subject=subject,request_id=winner)) != 1:
+            raise AssertionError('legacy AI inventory did not resume correctly')
         try:ai_recovery.step(authenticated_subject=str(uuid.uuid4()),request_id=winner)
         except ValueError:pass
         else:raise AssertionError('other subject recovered AI deletion')
@@ -278,7 +287,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "ai_recovery": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "ai_legacy_resume": "verified", "ai_recovery": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
