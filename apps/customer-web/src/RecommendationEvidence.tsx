@@ -26,6 +26,9 @@ type Evidence = {
   collection_snapshot_matches_receipt: boolean;
   jeyuk_collection: JeyukCollection | null;
   jeyuk_timeline: "MATCHED" | "NOT_MATCHED" | "NOT_ASSESSED" | null;
+  selected_prior_job: { job_id: string; job_version: number; status: string; safety_status: string;
+    started_at: string; ended_at: string | null; order_status: "ENDED_BEFORE" | "END_UNVERIFIED";
+    immediately_previous_verified: false; collection: JeyukCollection; timeline: "MATCHED" | "NOT_MATCHED" | "NOT_ASSESSED" } | null;
   source_revision_status: "NOT_TRACKED" | "NOT_CONFIGURED" | "INCONSISTENT" | "MATCHED_AT_READ" | "CHANGED";
   reheat_history_status: "NOT_RECORDED" | "RECORDED" | "INCONSISTENT";
   reheat_history: { segment_id: string; started_at: string; lifted_at: string; duration_seconds: string;
@@ -91,8 +94,9 @@ type RecipeRequest = { execution_id: string; state: string; reason: string };
 type LocalNotice = { quote_id: string; notice_version: string; model_id: string; quality_notice: string;
   transmission_location: "LOCAL"; estimated_cost_usd: string; expires_at: string };
 
-export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: string; csrf: string; comparisonId?: string }) {
+export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jobId: string; csrf: string; comparisonId?: string; menu: string }) {
   const [value, setValue] = useState<Evidence | null>(null);
+  const [priorJobId, setPriorJobId] = useState("");
   const [requested, setRequested] = useState<RecipeRequest | null>(null);
   const [notice, setNotice] = useState<LocalNotice | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -105,8 +109,11 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
     if (busy) return;
     setBusy(true); setError(""); setValue(null); setRequested(null); setNotice(null); setConfirmed(false); setAcknowledged(false);
     try {
+      const params = new URLSearchParams();
+      if (comparisonId) params.set("comparison_id", comparisonId);
+      if (menu === "JEYUK" && priorJobId.trim()) params.set("prior_job_id", priorJobId.trim());
       const next = await api<Evidence>(jobPath(jobId) + "/recommendation-evidence" +
-        (comparisonId ? "?comparison_id=" + encodeURIComponent(comparisonId) : ""));
+        (params.size ? "?" + params.toString() : ""));
       if (!value || value.job_version !== next.job_version) { restatementId.current = null; setRestatementStatus(""); }
       setValue(next);
     }
@@ -165,6 +172,10 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
     <h4 id="recommendation-evidence-title">AI 권고에 사용할 조리 기록 확인</h4>
     <p className="small">기록된 정보와 필수 근거의 일부를 확인합니다. 전체 데이터 완전성과 AI 권고는 아직 판정하지 않습니다.</p>
     <p className="small">아래에서 비교 기록을 선택하고 최신성을 확인하면 다음 근거 조회에 포함됩니다.</p>
+    {menu === "JEYUK" && <label>확인할 이전 작업 ID (선택)
+      <input value={priorJobId} disabled={busy} onChange={event => { setPriorJobId(event.target.value); setValue(null); }}
+        placeholder="이전 조리작업의 ID" />
+    </label>}
     <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "조회 중" : "조리 근거 조회"}</button>
     {error && <p role="alert">{error}</p>}
     {value && <div aria-live="polite">
@@ -172,6 +183,17 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
       {value.selected_comparison && <div><p>선택한 이전 비교 작업: {value.selected_comparison.baseline_job_id} ·
         레시피 {value.selected_comparison.baseline_recipe_version} · 평가 {value.selected_comparison.baseline_score_percent}점</p>
         <p className="small">선택한 비교는 현재 작업보다 이전입니다. 비교 가능한 작업 중 가장 직전인지는 확인하지 않았습니다.</p></div>}
+      {value.selected_prior_job && <div>
+        <p>지정한 이전 작업 · 상태 {({ COMPLETED: "완료", FAILED: "실패", CANCELED: "취소" } as Record<string, string>)[value.selected_prior_job.status] ?? "확인 필요"}
+          {" "}· 안전 {({ PASSED: "통과", FAILED: "실패", INCOMPLETE: "미완료", NOT_MEASURED: "미측정", SUSPECTED: "이상 의심", UNDER_REVIEW: "검토 중" } as Record<string, string>)[value.selected_prior_job.safety_status] ?? "확인 필요"}</p>
+        <p>작업 순서: {value.selected_prior_job.order_status === "ENDED_BEFORE" ? "현재 작업 시작 전 종료 기록" : "먼저 시작했으나 종료 시각 미확인"}
+          {" "}· 원천 조리 구간 {({ MATCHED: "일치", NOT_MATCHED: "불일치", NOT_ASSESSED: "미확인" })[value.selected_prior_job.timeline]}</p>
+        {value.selected_prior_job.collection.settings && <p>기록된 설정: 열원 {settingLabel(value.selected_prior_job.collection.settings.heating_setpoint_celsius, "°C")}
+          {" "}· 목표 회전속도 {settingLabel(value.selected_prior_job.collection.settings.target_rpm, "rpm")}</p>}
+        {value.selected_prior_job.collection.process_observations && <p>합성 표본의 걸림·적재 이상 신호: {value.selected_prior_job.collection.process_observations.reason_codes.length ?
+          value.selected_prior_job.collection.process_observations.reason_codes.map(code => processObservationLabels[code] ?? "추가 확인 필요").join(", ") : "표본에서 감지되지 않음"}</p>}
+        <p className="small">가장 직전 작업 여부와 표본 밖 이상은 확인하지 않았으며 이 지정은 AI 요청에 반영되지 않습니다.</p>
+      </div>}
       <FeedTimingView label="현재 작업" timing={value.recorded.jeyuk_feed_timing} />
       {value.jeyuk_collection && <div>
         <p>합성 수집 원천: {({ NOT_CONFIGURED: "저장소 미연결", NOT_RECORDED: "수집 완료 기록 없음",
