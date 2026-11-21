@@ -110,8 +110,10 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                 fixture_version = "v2" if evidence else "v1"
                 raws = csharp_samples(fixture_id, FIXTURE_DIR / f"jeyuk-{size}-{fixture_kind}-{fixture_version}.json",
                                       placed_at.isoformat() if timeline else None) if safety else csharp_samples(fixture_id)
-                for raw in raws:
+                for index, raw in enumerate(raws, 1):
                     ingestor.ingest(raw)
+                    if evidence and (index % 100 == 0 or index == len(raws)):
+                        print(f"synthetic ingestion: {index}/{len(raws)}", flush=True)
                 processed = []
                 references = []
                 for _ in range(len(raws) + 16):
@@ -133,6 +135,8 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                             raise
                         references.append(reference)
                         sqs.delete_message(QueueUrl=ordered_url, ReceiptHandle=message["ReceiptHandle"])
+                        if evidence and (len(processed) % 100 == 0 or len(processed) == len(raws)):
+                            print(f"synthetic processing: {len(processed)}/{len(raws)}", flush=True)
                     if len(processed) == len(raws):
                         break
                 if len(processed) != len(raws):
