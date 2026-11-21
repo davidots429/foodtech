@@ -39,8 +39,14 @@ async def scenario(store, partitions):
             created.raise_for_status()
             meal = created.json()['meal']
             path = '/api/customer/combi-meals/' + meal['meal_batch_id']
+            records = []
+            for raw in records_for(meal):
+                sample = json.loads(raw)
+                if sample['phase'] == 'MACKEREL':
+                    sample['climateSetpointPercent'] = 12 if sample['phaseSecond'] == 5 else 10
+                records.append(json.dumps(sample, separators=(',', ':')))
             imported = await client.post(path + '/source-observations', headers=headers, json={
-                'expected_version': 1, 'device_id': 'synthetic-combi-validation', 'records': records_for(meal)})
+                'expected_version': 1, 'device_id': 'synthetic-combi-validation', 'records': records})
             imported.raise_for_status()
             assert imported.json()['meal']['version'] == 2
             start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -65,6 +71,7 @@ async def scenario(store, partitions):
                                      json={'expected_version': 2, 'reassess_manual_rice': True})
             rice.raise_for_status()
             assert rice.json()['event']['previous_samples'] == [{'second': 1}]
+            assert rice.json()['step']['monitored_process_assessment']['climate_observation']['status'] == 'MATCHED'
             assert rice.json()['step']['safety_status'] == 'INCOMPLETE' and not rice.json()['step']['quality_current']['usable']
             blocked = await client.post(path + '/events', headers=headers, json={'expected_version': 3,
                 'event': 'MACKEREL_STARTED', 'observed_at': (start + timedelta(seconds=241)).isoformat()})
@@ -86,6 +93,8 @@ async def scenario(store, partitions):
             assert fish.json()['event']['previous_samples'] == [{'second': 1}]
             assert not fish.json()['step']['quality_current']['usable']
             assert fish.json()['step']['monitored_process_source']['phase'] == 'MACKEREL'
+            climate = fish.json()['step']['monitored_process_assessment']['climate_observation']
+            assert climate['status'] == 'DEVIATION_OBSERVED' and climate['first_deviation_second'] == 5
             return {'rice': 'REASSESSED', 'transition': 'REASSESSED', 'mackerel': 'REASSESSED',
                     'prior_quality_restored': False}
 

@@ -16,7 +16,7 @@ def run(rows):
 
 
 def offline(rows):
-    samples = [Sample(row['phaseSecond'], row['chamberCelsius'], row['doorState'], 3) for row in rows]
+    samples = [Sample(row['phaseSecond'], row['chamberCelsius'], row['doorState'], 3, Decimal('10')) for row in rows]
     return assess(samples, len(rows), 'NORMAL')
 
 

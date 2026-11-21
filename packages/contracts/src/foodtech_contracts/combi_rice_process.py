@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Literal
 from .combi_door import assess as assess_door
 from .combi_fan import observe as observe_fan
+from .combi_climate import observe as observe_climate
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,7 @@ class Sample:
     humidity_percent: Decimal | None
     door: str | None = None
     fan_level: int | None = None
+    climate_setpoint_percent: Decimal | None = None
 
 
 def assess(samples: list[Sample], duration: int, time_status: str,
@@ -87,11 +89,15 @@ def assess(samples: list[Sample], duration: int, time_status: str,
     fan = observe_fan([sample.fan_level for sample in samples], 4)
     if fan["reason_code"]:
         warnings.add(fan["reason_code"])
+    climate = observe_climate([sample.climate_setpoint_percent for sample in samples], Decimal("100"))
+    if climate["reason_code"]:
+        warnings.add(climate["reason_code"])
     status = ("FAILED" if failures else "INSUFFICIENT_DATA" if humidity_source == "NOT_SUPPORTED" or
-              door["status"] in ("INSUFFICIENT_DATA", "NOT_MEASURED") or fan["status"] != "MATCHED" else
+              door["status"] in ("INSUFFICIENT_DATA", "NOT_MEASURED") or fan["status"] != "MATCHED" or
+              climate["status"] != "MATCHED" else
               "WARNING" if warnings else "NORMAL")
     return {"status": status, "reason_codes": sorted(failures | warnings),
             "humidity_value_source": humidity_source, "anomaly_suspected_seconds": suspects,
             "low_temperature_total_seconds": low_total, "high_temperature_total_seconds": high_total,
             "sample_count": len(samples), "door_assessment": door,
-            "fan_observation": fan}
+            "fan_observation": fan, "climate_observation": climate}

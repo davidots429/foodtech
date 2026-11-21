@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 from .combi_fan import observe as observe_fan
+from .combi_climate import observe as observe_climate
 
 
 @dataclass(frozen=True)
@@ -11,6 +12,7 @@ class Sample:
     chamber_celsius: Decimal
     door: str
     fan_level: int | None = None
+    climate_setpoint_percent: Decimal | None = None
 
 
 def assess(samples: list[Sample], duration: int, time_status: str) -> dict:
@@ -78,11 +80,14 @@ def assess(samples: list[Sample], duration: int, time_status: str) -> dict:
     fan = observe_fan([sample.fan_level for sample in samples], 3)
     if fan["reason_code"]:
         warnings.append(fan["reason_code"])
+    climate = observe_climate([sample.climate_setpoint_percent for sample in samples], Decimal("10"))
+    if climate["reason_code"]:
+        warnings.append(climate["reason_code"])
     incomplete = (recovered is None and "TEMPERATURE_RECOVERY_FAILURE" not in failures or
-                  candidate is not None or fan["status"] != "MATCHED")
+                  candidate is not None or fan["status"] != "MATCHED" or climate["status"] != "MATCHED")
     status = "FAILED" if failures else "INSUFFICIENT_DATA" if incomplete else "WARNING" if warnings else "NORMAL"
     return {"status": status, "reason_codes": sorted(failures | set(warnings)),
             "recovered_at_second": recovered, "recovery_clock_started_second": 2,
             "door_open_seconds": total_open, "door_max_open_seconds": max_open,
             "door_changes": changes, "door_final_state_pending": candidate is not None,
-            "sample_count": len(samples), "fan_observation": fan}
+            "sample_count": len(samples), "fan_observation": fan, "climate_observation": climate}
