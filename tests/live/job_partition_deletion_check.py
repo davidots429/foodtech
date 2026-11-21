@@ -8,6 +8,7 @@ from foodtech_business_api.deletion_checkpoint_cipher import DeletionCheckpointC
 from foodtech_business_api.job_partition_deletion import delete_one_job_record
 from foodtech_business_api.job_deletion_inventory import JobDeletionInventory
 from foodtech_business_api.job_deletion_worker import JobDeletionWorker
+from foodtech_business_api.job_binding_inventory import JobBindingInventory
 from boto3.dynamodb.conditions import Key
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_JOB_DELETION_LIVE') != '1':
@@ -21,7 +22,8 @@ ak={'pk':f'USER#{u}'}; rk={'pk':'REGISTRY','sk':f'REQ#{q}'}
 entries=[(auth,{**ak,'suspended':True,'deletion_lock_request':q}),(reg,{**rk,'status':'DELETING'}),
  (src,{'pk':pk,'sk':'META','owner_subject':u,'job_id':'job','menu':'JEYUK',
        'source_binding':{'source_id':'synthetic-rest','device_id':'mockprofile-110-a-001','batch_id':'jeyuk-'+u}}),
- (src,{'pk':'JEYUK#jeyuk-'+u,'sk':'BINDING','job_pk':pk,'job_id':'job'}),(src,{'pk':pk,'sk':'EVENT#1'}),
+ (src,{'pk':'JEYUK#jeyuk-'+u,'sk':'BINDING','job_pk':pk,'job_id':'job'}),
+ (src,{'pk':'JEYUK#jeyuk-orphan-'+u,'sk':'BINDING','job_pk':f'SCOPE#USER#{u}#JOB#orphan','job_id':'orphan'}),(src,{'pk':pk,'sk':'EVENT#1'}),
  (src,{'pk':pk,'sk':'ASSESSMENT#1'}),(src,{'pk':other,'sk':'EVENT#1'})]
 created=[]
 if progress.query(KeyConditionExpression=Key('pk').eq(f'REQ#{q}'),ConsistentRead=True)['Items']:
@@ -39,6 +41,22 @@ try:
  else: raise AssertionError('bounded job scan incomplete')
  assert [item.job_id for item in inventory.targets(subject=u,request_id=q)]==['job']
  worker=JobDeletionWorker(inventory=inventory,source_table=src,progress_store=store,cipher=cipher)
+ bindings=JobBindingInventory(source_table=src,progress_store=store,cipher=cipher)
+ for _ in range(1000):
+  captured=bindings.capture_page(subject=u,request_id=q,limit=20)
+  if captured['complete']:break
+ else:raise AssertionError('bounded binding scan incomplete')
+ targets=list(bindings.targets(subject=u,request_id=q))
+ orphan_index=next(i for i,target in enumerate(targets) if target.job_id=='orphan')
+ orphan_key={'pk':'JEYUK#jeyuk-orphan-'+u,'sk':'BINDING'}
+ src.update_item(Key=orphan_key,UpdateExpression='SET job_pk=:other',ExpressionAttributeValues={':other':other})
+ try:bindings.remove_one(subject=u,request_id=q,index=orphan_index)
+ except ProfileDeletionConflict:pass
+ else:raise AssertionError('changed orphan owner accepted')
+ src.update_item(Key=orphan_key,UpdateExpression='SET job_pk=:pk',ExpressionAttributeValues={':pk':f'SCOPE#USER#{u}#JOB#orphan'})
+ bindings.remove_one(subject=u,request_id=q,index=orphan_index)
+ bindings.remove_one(subject=u,request_id=q,index=orphan_index)
+ assert not src.get_item(Key=orphan_key,ConsistentRead=True).get('Item')
  binding_key={'pk':'JEYUK#jeyuk-'+u,'sk':'BINDING'}
  src.update_item(Key=binding_key,UpdateExpression='SET job_pk=:other',ExpressionAttributeValues={':other':other})
  try: worker.remove_binding(subject=u,request_id=q,index=0)
