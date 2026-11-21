@@ -5,7 +5,7 @@ from uuid import uuid4
 import boto3
 from foodtech_ai_gateway.legacy_tenant_inventory import (ActiveReconciliationConflict, CredentialDeletionConflict,
                                                          delete_credential_pair, ensure_reserved_marker,
-                                                         list_partition_keys, resolve_credential_vault,
+                                                         list_partition_keys, reconcile_reserved_page, resolve_credential_vault,
                                                          scan_registry_partitions)
 
 
@@ -56,6 +56,18 @@ def main():
         ensure(request)
         if not table.get_item(Key=marker_key, ConsistentRead=True).get('Item'):
             raise AssertionError('reserved legacy marker missing')
+        table.delete_item(Key=marker_key)
+        checkpoint, found_reserved = None, False
+        for _ in range(100):
+            page = reconcile_reserved_page(table, session.client('dynamodb'), auth_table=auth.name,
+                                           registry_table=table.name, tenant=tenant, request_id=request,
+                                           limit=100, checkpoint=checkpoint)
+            found_reserved |= exec_pk in page.partitions
+            checkpoint = page.checkpoint
+            if checkpoint is None:
+                break
+        if checkpoint is not None or not found_reserved or not table.get_item(Key=marker_key, ConsistentRead=True).get('Item'):
+            raise AssertionError('legacy scan did not reconcile reservation')
         table.update_item(Key={'pk': exec_pk, 'sk': 'META'}, UpdateExpression='SET #s = :done',
                           ExpressionAttributeNames={'#s': 'state'}, ExpressionAttributeValues={':done': 'SUCCEEDED'})
         table.delete_item(Key=marker_key)

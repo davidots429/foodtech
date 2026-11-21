@@ -1,9 +1,9 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from foodtech_ai_gateway.legacy_tenant_inventory import (VaultLocation, delete_credential_pair, ensure_reserved_marker,
-                                                         list_partition_keys, resolve_credential_vault,
+                                                         InventoryPage, list_partition_keys, reconcile_reserved_page, resolve_credential_vault,
                                                          scan_registry_partitions)
 
 
@@ -105,6 +105,25 @@ class TenantInventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ensure_reserved_marker(client, auth_table='auth', registry_table='registry', tenant='alice',
                                    request_id=request, execution_id='bad#id')
+
+    def test_reconcile_page_returns_progress_only_after_all_markers_succeed(self):
+        table, client, request = Mock(), Mock(), str(uuid4())
+        table.name = 'registry'
+        client.exceptions.TransactionCanceledException = type('Canceled', (Exception,), {})
+        page = InventoryPage(('EXEC#one', 'CONSENT#one', 'EXEC#two'), {'pk': 'private', 'sk': 'META'}, 3)
+        table.get_item.side_effect = lambda **kw: {'Item': {**kw['Key'], 'tenant_id': 'alice', 'state': 'RESERVED'}}
+        with patch('foodtech_ai_gateway.legacy_tenant_inventory.scan_registry_partitions', return_value=page), \
+             patch('foodtech_ai_gateway.legacy_tenant_inventory.ensure_reserved_marker', side_effect=[None, RuntimeError('changed')]) as ensure:
+            with self.assertRaises(RuntimeError):
+                reconcile_reserved_page(table, client, auth_table='auth', registry_table='registry',
+                                        tenant='alice', request_id=request, limit=3)
+            self.assertEqual(ensure.call_count, 2)
+        with patch('foodtech_ai_gateway.legacy_tenant_inventory.scan_registry_partitions', return_value=page), \
+             patch('foodtech_ai_gateway.legacy_tenant_inventory.ensure_reserved_marker') as ensure:
+            result = reconcile_reserved_page(table, client, auth_table='auth', registry_table='registry',
+                                             tenant='alice', request_id=request, limit=3)
+            self.assertEqual(result.checkpoint, page.checkpoint)
+            self.assertEqual(ensure.call_count, 2)
 
 
 if __name__ == '__main__':

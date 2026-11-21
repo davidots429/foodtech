@@ -180,6 +180,51 @@ def ensure_reserved_marker(client, *, auth_table: str, registry_table: str,
         raise
 
 
+def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: str,
+                            tenant: str, request_id: str, limit: int,
+                            checkpoint: dict | None = None) -> InventoryPage:
+    """Reconcile reserved executions in one scan page or return no progress.
+
+    This requires an authenticated maintenance caller and durable deletion
+    lock. A full scan is not a snapshot and does not prove deletion readiness.
+    """
+    _scope(tenant, limit)
+    try:
+        if str(UUID(request_id)) != request_id:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('invalid active reconciliation request') from None
+    if not auth_table or not registry_table or auth_table == registry_table or getattr(table, 'name', None) != registry_table:
+        raise ValueError('invalid active reconciliation tables')
+    serializer = TypeSerializer()
+    def encode(values):
+        return {name: serializer.serialize(value) for name, value in values.items()}
+    def check_lock():
+        try:
+            client.transact_write_items(TransactItems=[{'ConditionCheck': {
+                'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
+                'ConditionExpression': 'deletion_lock_request = :request',
+                'ExpressionAttributeValues': encode({':request': request_id})}}])
+        except client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get('Code') == 'ConditionalCheckFailed' for reason in exc.response.get('CancellationReasons', [])):
+                raise ActiveReconciliationConflict from exc
+            raise
+    check_lock()
+    page = scan_registry_partitions(table, tenant=tenant, limit=limit, checkpoint=checkpoint)
+    for partition in page.partitions:
+        if not partition.startswith('EXEC#'):
+            continue
+        item = table.get_item(Key={'pk': partition, 'sk': 'META'}, ConsistentRead=True).get('Item')
+        if not item or item.get('pk') != partition or item.get('sk') != 'META' or item.get('tenant_id') != tenant or \
+                item.get('state') not in {'PENDING', 'RESERVED', 'SUCCEEDED', 'FAILED'}:
+            raise ActiveReconciliationConflict('execution changed or is unavailable')
+        if item['state'] == 'RESERVED':
+            ensure_reserved_marker(client, auth_table=auth_table, registry_table=registry_table,
+                                   tenant=tenant, request_id=request_id, execution_id=partition.removeprefix('EXEC#'))
+    check_lock()
+    return page
+
+
 def delete_credential_pair(client, *, auth_table: str, registry_table: str, vault_table: str,
                            tenant: str, request_id: str, location: VaultLocation) -> None:
     """Delete matched metadata and vault entry under the exact deletion lock.
