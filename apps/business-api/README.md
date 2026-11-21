@@ -257,3 +257,5 @@
 제육볶음 합성 공정조건은 `POST /api/customer/cooking-jobs/condition-profiles`로 고객별 ID·버전, 장비 규모, 목표 열원 온도와 목표 RPM을 기록하고, 같은 ID·버전은 덮어쓸 수 없다. GET으로 같은 고객의 버전을 조회한다. 기록은 `DECLARED_UNVERIFIED`이며 승인된 조건을 뜻하지 않는다. 원천 완료 기록이 일치하는 경우 검증 증거 조회는 해당 버전과 원표본의 설정값이 모두 일정하고 일치하는지 확인한다. 값이 없거나 버전이 등록되지 않은 과거 표본은 미확인이다.
 
 2026-11-21 개발용 DynamoDB·SQS에서 C# Mock HTTPS 응답과 실제 수집기가 생성한 완료 기록을 사용해 480개 합성 제육볶음 표본의 전체 수집·처리, 조리 및 안전 확인, 원천 감사와 검증 전 증거 저장·조회를 확인하고 시험 데이터와 커서를 정리했다. Mock은 표본 전체를 즉시 제공했고 고객 세션은 합성 대체 세션이다. 실제 장비·원재료·교정 증명이나 72시간 유효성 승인을 뜻하지 않는다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/jeyuk_job_dynamodb_check.py --safety --timeline --full --feed-safety --evidence --wire`.
+
+시연 티어 신청은 인증 테이블의 고객 세션 epoch·정지·삭제 잠금을 신청 기록과 같은 트랜잭션에서 검사한다. 관리자 심사는 신청 고객의 정지·삭제 잠금과 심사자의 세션 epoch·정지·삭제 잠금을 함께 검사하며 같은 계정이면 한 번만 검사한다. `FOODTECH_AUTH_TABLE`과 인증 테이블 `dynamodb:ConditionCheckItem` 권한이 필요하다. 개발 시험은 기존 조리 테이블의 격리된 합성 키를 사용했으며 전용 티어 테이블·배포 역할과 사용자 삭제의 전체 완결성을 검증한 결과는 아니다. 메모리 저장소는 실제 삭제 잠금 경쟁을 재현하지 않는다.

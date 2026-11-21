@@ -53,7 +53,7 @@ async def submit(request: Request, body: Application, response: Response) -> dic
             "status": "REQUESTED", "tier": "FREE", "version": 1,
             "submitted_at": _now()}
     try:
-        await asyncio.to_thread(get_tier_store().submit, session.subject, item)
+        await asyncio.to_thread(get_tier_store().submit, session.subject, item, session.epoch)
     except TierConflict as exc:
         raise HTTPException(409, "이미 처리 중이거나 승인된 신청이 있습니다.") from exc
     response.headers["Cache-Control"] = "no-store"
@@ -82,7 +82,7 @@ async def decide(subject: str, application_id: str, request: Request,
         raise HTTPException(400, "신청 식별자가 올바르지 않습니다.") from exc
     try:
         item = await asyncio.to_thread(get_tier_store().decide, subject, application_id,
-                                       session.subject, body.decision, _now())
+                                       session.subject, body.decision, _now(), session.epoch)
     except TierConflict as exc:
         raise HTTPException(409, "신청 상태가 이미 변경되었습니다.") from exc
     response.headers["Cache-Control"] = "no-store"
