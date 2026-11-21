@@ -55,6 +55,8 @@
 
 수집 어댑터 Task 역할은 데이터 흐름 테이블의 조회·기록, `STREAM#` 파티션의 순서 복구 항목 삭제, Ordered FIFO 전송과 격리 버킷 `ingestion/` 객체 저장 권한을 갖도록 정의한다. CDK 합성과 합성 정책의 허용·거부 시뮬레이션만 확인했으며 아직 배포되지 않았다. 실제 ECS 실행 및 조직 정책 검증도 남았다.
 
+배포 후 `AWS_PROFILE=foodtech .venv/bin/python tests/live/collector_role_iam_check.py`로 배포된 역할의 정책과 Organizations를 포함한 유효 권한을 분리해 시뮬레이션한다. 개발 스택에 역할 또는 버킷 출력이 없으면 변경 없이 중단한다. 정책 시뮬레이션은 실제 ECS Task 실행을 대체하지 않는다.
+
 `infra/containers/collection-adapter.Dockerfile`은 잠금된 Python 의존성으로 비관리자 수집기 이미지를 만든다. 진입점은 주입된 인증서 자료를 검증해 권한 `0600` 임시 파일로 저장한 뒤 `FOODTECH_COLLECTION_PROTOCOL`에 따라 REST·MQTT·OPC UA JSON·OPC UA Binary 수집 명령을 실행한다. CI는 이미지를 빌드해 각 명령의 도움말 실행을 확인한다.
 
 `provisionRestCollectionTask=true`를 `provisionDataFlow=true`와 함께 사용하면 위 역할을 사용하는 단발 Fargate Task Definition을 합성한다. `collectionImageRepository`, `collectionImageTag`, `collectionMockBaseUrl`(HTTPS origin), `collectionMockSecretArn`이 필요하다. Secrets Manager JSON 필드 `client_id`, `client_secret`, `ca_pem`은 Task 실행 역할을 통해 주입하며 일반 환경변수로 저장하지 않는다. 기본 수집은 한 번 실행 후 종료하며 실행 시 허용된 CLI 인수를 지정할 수 있다.
