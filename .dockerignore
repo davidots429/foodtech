@@ -1,7 +1,14 @@
 **
 !pyproject.toml
 !uv.lock
+!global.json
 !apps/
+!apps/mock-control/
+!apps/mock-control/*.cs
+!apps/mock-control/*.csproj
+!apps/mock-control/packages.lock.json
+!fixtures/
+!fixtures/*.json
 !apps/ai-gateway/
 !apps/ai-gateway/pyproject.toml
 !apps/ai-gateway/src/
@@ -32,5 +39,7 @@
 !infra/containers/ai_service_entrypoint.py
 **/__pycache__/
 **/*.pyc
+**/bin/
+**/obj/
 **/.env
 **/.env.*

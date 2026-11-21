@@ -130,3 +130,7 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 `serve`는 볶음·교반 `mockprofile-111`과 콤비오븐 `mockprofile-121`의 vendor-a/b/c 합성 XML fixture를 인증된 읽기 전용 HTTPS로 제공한다. 장비 유형별 확장 필드는 원본 XML에 보존된다.
 
 `mockprofile-110` 볶음·교반과 `mockprofile-120` 콤비오븐의 vendor-b/c 합성 JSON 원천도 `serve`에서 읽기 전용 HTTPS로 제공한다. 기존 vendor-a의 제육·콤비 시뮬레이션 경로는 유지한다.
+# 독립 컨테이너 이미지
+
+`infra/containers/mock-control.Dockerfile`은 잠금된 NuGet 의존성으로 C# Mock을 게시하고, 테스트용 합성 fixture와 함께 비관리자 계정으로 실행하는 이미지를 만든다. 기본 명령은 `dotnet MockControl.dll`이며 실행할 때 `hash`, `serve`, `serve-mqtt`, `serve-ua-json`, `serve-opcua` 등 기존 CLI 인수를 명시한다. 인증서·개인키·인증정보는 이미지에 포함하지 않으며 실행 환경에서 별도로 제공한다. 이 이미지는 고객 서비스가 아니라 시험·시연용 독립 프로그램이다.
+
