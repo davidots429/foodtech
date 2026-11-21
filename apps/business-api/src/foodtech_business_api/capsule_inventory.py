@@ -12,6 +12,7 @@ from uuid import UUID
 import boto3
 from boto3.dynamodb.types import Binary, TypeDeserializer, TypeSerializer
 
+from .capsule_metadata import validate_key_metadata
 
 class CapsuleInventoryError(Exception):
     pass
@@ -53,7 +54,7 @@ class CapsuleInventory:
         except (KeyError, TypeError, ValueError, AttributeError, ArithmeticError):
             raise CapsuleInventoryError("invalid capsule metadata") from None
 
-    def stage(self, locator: str, request_id: str, stage_entry: Callable[[str, bytes], None]) -> InventoryResult:
+    def stage(self, locator: str, request_id: str, stage_entry: Callable[[str, bytes, dict[str, str]], None]) -> InventoryResult:
         """Stage each encrypted ENTRY; return success only after all pages and a stable revision.
 
         ``stage_entry`` may persist a provisional plan but must not delete data or
@@ -76,7 +77,7 @@ class CapsuleInventory:
                 KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
                 ExpressionAttributeValues={":pk": self.serializer.serialize(locator),
                                            ":prefix": self.serializer.serialize("ENTRY#")},
-                ProjectionExpression="pk, sk, ciphertext"):
+                ProjectionExpression="pk, sk, ciphertext, pool_version, shard_id, key_arn"):
             page_count += 1
             if not isinstance(page.get("Items"), list):
                 raise CapsuleInventoryError("invalid capsule query page")
@@ -85,6 +86,9 @@ class CapsuleInventory:
                     pk = self.deserializer.deserialize(item["pk"])
                     sk = self.deserializer.deserialize(item["sk"])
                     ciphertext = self.deserializer.deserialize(item["ciphertext"])
+                    key_metadata = {name: self.deserializer.deserialize(item[name]) for name in
+                                    ("pool_version", "shard_id", "key_arn")}
+                    validate_key_metadata(**key_metadata)
                     if isinstance(ciphertext, Binary):
                         ciphertext = bytes(ciphertext)
                     match = re.fullmatch(r"ENTRY#([A-Z][A-Z0-9_]{0,63})#([0-9]{4}-(?:0[1-9]|1[0-2]))", sk)
@@ -94,7 +98,7 @@ class CapsuleInventory:
                         raise ValueError
                 except (KeyError, TypeError, ValueError, AttributeError):
                     raise CapsuleInventoryError("invalid encrypted capsule entry") from None
-                stage_entry(sk, ciphertext)
+                stage_entry(sk, ciphertext, key_metadata)
                 previous = sk
                 count += 1
         if not page_count:

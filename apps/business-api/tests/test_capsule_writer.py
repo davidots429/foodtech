@@ -8,6 +8,8 @@ from foodtech_business_api.capsule_writer import CapsuleWriter
 
 
 LOCATOR = "A" * 43
+KEY_METADATA = {"pool_version": "pool-v1", "shard_id": "shard-0",
+                "key_arn": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key"}
 
 
 class Client:
@@ -41,7 +43,7 @@ class CapsuleWriterTests(unittest.TestCase):
 
     def test_entry_write_and_revision_are_one_conditioned_transaction(self):
         self.writer.put_entry(locator=LOCATOR, purpose="BILLING", epoch="2026-11",
-                              ciphertext=b"encrypted", expected_revision=4)
+                              ciphertext=b"encrypted", expected_revision=4, **KEY_METADATA)
         transaction = self.client.transactions[0]
         update, put = transaction[0]["Update"], transaction[1]["Put"]
         self.assertEqual(update["ExpressionAttributeValues"][":expected"], {"N": "4"})
@@ -49,6 +51,7 @@ class CapsuleWriterTests(unittest.TestCase):
         self.assertIn("#state = :active", update["ConditionExpression"])
         self.assertEqual(put["Item"]["sk"], {"S": "ENTRY#BILLING#2026-11"})
         self.assertEqual(put["Item"]["ciphertext"], {"B": b"encrypted"})
+        self.assertEqual(put["Item"]["pool_version"], {"S": "pool-v1"})
         self.assertIn("attribute_not_exists", put["ConditionExpression"])
 
     def test_lock_is_only_a_transaction_action_and_checks_state_and_revision(self):
@@ -61,10 +64,10 @@ class CapsuleWriterTests(unittest.TestCase):
 
     def test_invalid_input_cannot_issue_write(self):
         base = {"locator": LOCATOR, "purpose": "BILLING", "epoch": "2026-11",
-                "ciphertext": b"encrypted", "expected_revision": 1}
+                "ciphertext": b"encrypted", "expected_revision": 1, **KEY_METADATA}
         for invalid in ({"locator": "email@example.com"}, {"purpose": "UNAPPROVED"},
                         {"epoch": "0000-01"}, {"epoch": "2026-13"}, {"ciphertext": b""},
-                        {"ciphertext": b"x" * 400_001}, {"expected_revision": True}):
+                        {"ciphertext": b"x" * 400_001}, {"expected_revision": True}, {"key_arn": "not-a-key"}):
             with self.subTest(invalid=tuple(invalid)), self.assertRaises(ValueError):
                 self.writer.put_entry(**{**base, **invalid})
         with self.assertRaises(ValueError):
@@ -77,7 +80,8 @@ class CapsuleWriterTests(unittest.TestCase):
         with Stubber(client) as stubber:
             stubber.add_response("transact_write_items", {}, {"TransactItems": ANY})
             CapsuleWriter("capsule-table", frozenset({"BILLING"}), client=client).put_entry(
-                locator=LOCATOR, purpose="BILLING", epoch="2026-11", ciphertext=b"encrypted", expected_revision=1)
+                locator=LOCATOR, purpose="BILLING", epoch="2026-11", ciphertext=b"encrypted", expected_revision=1,
+                **KEY_METADATA)
             stubber.assert_no_pending_responses()
 
 

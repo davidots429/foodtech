@@ -16,6 +16,8 @@ from foodtech_business_api.capsule_inventory import CapsuleInventory, CapsuleInv
 from foodtech_business_api.capsule_writer import CapsuleWriter
 from process_flow_dynamodb_check import ACCOUNT, DATA_TABLE, REGION, remove_partition
 
+KEY_METADATA = {"pool_version": "synthetic-v1", "shard_id": "shard-0",
+                "key_arn": "arn:aws:kms:ap-southeast-2:123456789012:key/synthetic"}
 
 def main():
     if os.getenv("AWS_PROFILE") != "foodtech":
@@ -35,7 +37,7 @@ def main():
         def put(purpose):
             try:
                 writer.put_entry(locator=locator, purpose=purpose, epoch="2026-11",
-                                 ciphertext=b"synthetic-not-a-real-ciphertext", expected_revision=1)
+                                 ciphertext=b"synthetic-not-a-real-ciphertext", expected_revision=1, **KEY_METADATA)
                 return purpose, "CREATED"
             except ClientError as exc:
                 if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
@@ -53,9 +55,9 @@ def main():
             "Item": {name: serializer.serialize(value) for name, value in marker.items()},
             "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}}])
         staged = []
-        result = inventory.stage(locator, request_id, lambda sk, payload: staged.append((sk, payload)))
+        result = inventory.stage(locator, request_id, lambda sk, payload, metadata: staged.append((sk, payload, metadata)))
         if result.revision != 3 or result.entry_count != 1 or len(staged) != 1 or \
-                staged[0][1] != b"synthetic-not-a-real-ciphertext":
+                staged[0][1] != b"synthetic-not-a-real-ciphertext" or staged[0][2] != KEY_METADATA:
             raise AssertionError("Locked inventory does not match the successful write")
         try:
             inventory.stage(locator, str(uuid.uuid4()), lambda *_: (_ for _ in ()).throw(
@@ -66,7 +68,7 @@ def main():
             raise AssertionError("Wrong deletion request read the locked Capsule")
         try:
             writer.put_entry(locator=locator, purpose="BILLING", epoch="2026-12",
-                             ciphertext=b"synthetic", expected_revision=3)
+                             ciphertext=b"synthetic", expected_revision=3, **KEY_METADATA)
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
                 raise
