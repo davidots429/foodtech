@@ -76,6 +76,13 @@ const validationCheckLabels: Record<string, string> = {
   source_completion_record_matched: "수집 완료 기록과 원본 일치",
   source_revision_stable: "조회 중 원천 버전 유지",
 };
+const validationChangeLabels: Record<string, string> = {
+  RECIPE_CHANGED: "레시피 변경", EQUIPMENT_CHANGED: "장비 또는 수집 출처 변경",
+  INGREDIENT_CHANGED: "원재료 규격·로트·공급처 변경", SENSOR_CHANGED: "센서 또는 교정 기록 변경",
+  PROCESS_CONDITION_CHANGED: "공정조건 프로파일 변경", SAFETY_ANOMALY: "안전 이상",
+  MANUAL_SAFETY_REVISED: "수동 안전 판정 수정", INGREDIENT_RECORD_REVISED: "재료 투입 기록 수정",
+  DISCHARGE_RECORD_REVISED: "배출 기록 수정", PROCESS_ANOMALY: "공정 이상",
+};
 
 const jobLabels: Record<CookingJob["status"], string> = {
   PENDING: "대기", READY: "준비 완료", RUNNING: "조리 중", PAUSED: "일시 정지",
@@ -1162,6 +1169,9 @@ export function CookingWorkspace({ csrf }: Props) {
               <strong>{eventStatusLabel(item.domain, item.from_status)} → {eventStatusLabel(item.domain, item.to_status)}</strong>
               <small>{eventLabels[item.trigger] ?? item.trigger} · {timeLabel(item.occurred_at)}</small>
               {item.reason && <small>{processReasonLabels[item.reason] ?? item.reason}</small>}
+              {item.validation_change_reason && <small>재검증 관련 기록: {validationChangeLabels[item.validation_change_reason] ?? "기록된 변경"}</small>}
+              {!!item.change_reasons?.length && <small>조합 변경: {item.change_reasons.map((reason) => validationChangeLabels[reason] ?? "기록된 변경").join(", ")}</small>}
+              {!!item.unknown_fields?.length && <small>이전 조합에 확인되지 않은 항목이 있습니다.</small>}
               {item.manual_stop_confirmed_at && <small>운영자 수동 중단 확인: {timeLabel(item.manual_stop_confirmed_at)}</small>}
               {item.manual_stopped_at && <small>현장 수동 중단 시각: {timeLabel(item.manual_stopped_at)}</small>}
               {scoreItems.map(({ key, label }) => item.partial_scores?.[key] !== undefined || item.partial_observations?.[key]
