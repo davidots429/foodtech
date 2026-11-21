@@ -29,13 +29,15 @@ def main():
     registry = DynamoRegistry(table.name, period, resource=resource, client=session.client('dynamodb'), auth_table=auth.name)
     auth_created = False
     try:
+        auth.put_item(Item=auth_key, ConditionExpression='attribute_not_exists(pk)')
+        auth_created = True
         registry.create_limit('TENANT', tenant, Decimal('0'), calls_remaining=1)
         registry.create_limit('PROVIDER', provider, Decimal('0'))
         registry.create_limit('PROJECT', 'GLOBAL', Decimal('0'))
         execution = Execution(run, tenant, Feature.GENERAL_GUIDE, 'synthetic-model', None, 'SYNTHETIC', Decimal('0'))
         registry.create_execution(execution)
-        auth.put_item(Item={**auth_key, 'deletion_lock_request': str(uuid4())}, ConditionExpression='attribute_not_exists(pk)')
-        auth_created = True
+        auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request',
+                         ExpressionAttributeValues={':request': str(uuid4())})
         for operation in (
             lambda: registry.create_execution(Execution(blocked_run, tenant, Feature.GENERAL_GUIDE,
                                                         'synthetic-model', None, 'SYNTHETIC', Decimal('0'))),
