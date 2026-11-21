@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 
-from foodtech_ai_gateway.legacy_tenant_inventory import list_partition_keys, scan_registry_partitions
+from foodtech_ai_gateway.legacy_tenant_inventory import list_partition_keys, resolve_credential_vault, scan_registry_partitions
 
 
 class TenantInventoryTests(unittest.TestCase):
@@ -49,6 +49,26 @@ class TenantInventoryTests(unittest.TestCase):
                                              limit=10)['keys'], ['META'])
         with self.assertRaises(ValueError):
             list_partition_keys(table, tenant='bob', partition='LIMIT#2026-11#TENANT#alice', limit=10)
+
+    def test_vault_resolution_checks_both_records_and_hides_location(self):
+        registry, vault = Mock(), Mock()
+        key = {'pk': 'CREDENTIAL#key1', 'sk': 'META'}
+        meta = {**key, 'tenant_id': 'alice', 'credential_id': 'key1',
+                'tenant_pseudonym': 'private-pseudonym', 'vault_ref': 'vault:key1'}
+        registry.get_item.return_value = {'Item': meta}
+        vault.get_item.return_value = {'Item': {**key, 'credential_id': 'key1', 'tenant_pseudonym': 'private-pseudonym'}}
+        result = resolve_credential_vault(registry, vault, tenant='alice', credential_id='key1')
+        self.assertEqual(result.key, key)
+        self.assertNotIn('key1', repr(result))
+        self.assertNotIn('ciphertext', vault.get_item.call_args.kwargs['ProjectionExpression'])
+        with self.assertRaises(ValueError):
+            resolve_credential_vault(registry, vault, tenant='bob', credential_id='key1')
+        vault.get_item.return_value['Item']['tenant_pseudonym'] = 'other'
+        with self.assertRaises(ValueError):
+            resolve_credential_vault(registry, vault, tenant='alice', credential_id='key1')
+        registry.get_item.return_value['Item']['vault_ref'] = 'vault:other'
+        with self.assertRaises(ValueError):
+            resolve_credential_vault(registry, vault, tenant='alice', credential_id='key1')
 
 
 if __name__ == '__main__':

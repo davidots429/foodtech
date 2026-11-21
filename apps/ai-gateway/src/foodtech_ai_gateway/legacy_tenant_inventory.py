@@ -17,6 +17,11 @@ class InventoryPage:
     scanned_count: int
 
 
+@dataclass(frozen=True)
+class VaultLocation:
+    key: dict = field(repr=False)
+
+
 def _scope(tenant: str, limit: int) -> None:
     if not isinstance(tenant, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', tenant) or \
             type(limit) is not int or not 1 <= limit <= 100:
@@ -95,3 +100,29 @@ def list_partition_keys(table, *, tenant: str, partition: str, limit: int,
     if next_key is not None and next_key['pk'] != partition:
         raise ValueError('invalid partition inventory checkpoint')
     return {'keys': keys, 'next_cursor': next_key['sk'] if next_key else None}
+
+
+def resolve_credential_vault(registry, vault, *, tenant: str, credential_id: str) -> VaultLocation:
+    """Resolve an existing vault key only after matching tenant and both records.
+
+    This reads metadata only: caller authorization, write quiescence and
+    deletion with an atomic lock are mandatory separate responsibilities.
+    """
+    _scope(tenant, 1)
+    if not isinstance(credential_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', credential_id):
+        raise ValueError('invalid credential inventory scope')
+    key = {'pk': f'CREDENTIAL#{credential_id}', 'sk': 'META'}
+    record = registry.get_item(Key=key, ConsistentRead=True).get('Item')
+    if not record or any(record.get(name) != value for name, value in key.items()) or \
+            record.get('credential_id') != credential_id or record.get('tenant_id') != tenant or \
+            record.get('vault_ref') != f'vault:{credential_id}':
+        raise ValueError('credential inventory unavailable')
+    pseudonym = record.get('tenant_pseudonym')
+    if not isinstance(pseudonym, str) or not pseudonym or len(pseudonym) > 256:
+        raise ValueError('credential inventory unavailable')
+    stored = vault.get_item(Key=key, ProjectionExpression='pk, sk, credential_id, tenant_pseudonym',
+                            ConsistentRead=True).get('Item')
+    if not stored or any(stored.get(name) != value for name, value in key.items()) or \
+            stored.get('credential_id') != credential_id or stored.get('tenant_pseudonym') != pseudonym:
+        raise ValueError('credential inventory unavailable')
+    return VaultLocation(key)
