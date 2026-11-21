@@ -32,7 +32,8 @@ class IdentityVaultTests(unittest.TestCase):
         p = self.prepared
         principal = {"pk": {"S": f"USER#{self.subject}"}, "epoch": {"N": "0"}, "vault_id": {"S": p.vault_id}}
         vault = {"pk": {"S": p.vault_id}, "sk": {"S": "META"}, "state": {"S": "ACTIVE"},
-                 "revision": {"N": "1"}, "internal_user_id": {"S": p.internal_id}, "capsule_locator": {"S": p.locator}}
+                 "revision": {"N": "1"}, "internal_user_id": {"S": p.internal_id}, "capsule_locator": {"S": p.locator},
+                 "provision_request_id": {"S": p.request_id}}
         capsule = {"pk": {"S": p.locator}, "sk": {"S": "META"}, "state": {"S": "ACTIVE"}, "revision": {"N": "1"}}
         return principal, vault, capsule
 
@@ -45,6 +46,7 @@ class IdentityVaultTests(unittest.TestCase):
         request = self.client.requests[0]
         self.assertEqual(request["ClientRequestToken"], self.request_id)
         auth, vault, capsule = request["TransactItems"]
+        self.assertIn("attribute_exists(pk)", auth["Update"]["ConditionExpression"])
         self.assertEqual(auth["Update"]["ExpressionAttributeValues"][":vault"], {"S": p.vault_id})
         self.assertNotIn(p.locator, str(auth))
         self.assertNotIn(p.internal_id, str(auth))
@@ -61,6 +63,19 @@ class IdentityVaultTests(unittest.TestCase):
         self.assertNotIn(self.prepared.locator, repr(snapshot))
         internal_id[:] = b"\0" * len(internal_id)
 
+    def test_fresh_service_can_resolve_persisted_link_without_prepared_request(self):
+        principal, vault, capsule = self.items()
+        client = Client()
+        client.responses = [principal, vault, capsule, principal]
+        restarted = IdentityVault(auth_table="auth", vault_table="vault", capsule_table="capsule",
+                                  approved_purposes=frozenset({"BILLING"}), client=client)
+        snapshot, internal_id = restarted.resolve_deletion(authenticated_subject=self.subject, expected_epoch=0)
+        try:
+            self.assertEqual(snapshot.vault_id, self.prepared.vault_id)
+            self.assertEqual(bytes(internal_id), self.prepared.internal_id.encode())
+        finally:
+            internal_id[:] = b"\0" * len(internal_id)
+
     def test_owner_change_suspension_and_stale_capsule_fail_closed(self):
         principal, vault, capsule = self.items()
         cases = ([{**principal, "suspended": {"BOOL": True}}],
@@ -74,6 +89,24 @@ class IdentityVaultTests(unittest.TestCase):
                 self.client.responses = list(responses)
                 with self.assertRaises(IdentityVaultConflict):
                     self.vault.resolve_deletion(authenticated_subject=self.subject, expected_epoch=0)
+
+    def test_lost_response_verification_checks_the_exact_link_and_owner(self):
+        principal, vault, capsule = self.items()
+        self.client.responses = [principal, vault, capsule, principal, vault]
+        self.assertIsNone(self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared))
+        self.client.responses = [principal, vault, capsule, principal, vault]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.verify_committed(authenticated_subject=self.subject,
+                                        prepared=replace(self.prepared, internal_id=str(uuid4())))
+        self.client.responses = [principal, vault, capsule, principal, vault]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.verify_committed(authenticated_subject=self.subject,
+                                        prepared=replace(self.prepared, request_id=str(uuid4())))
+        with self.assertRaises(ValueError):
+            self.vault.verify_committed(authenticated_subject=str(uuid4()), prepared=self.prepared)
+        self.client.responses = [{**principal, "deletion_lock_request": {"S": str(uuid4())}}]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared)
 
     def test_prepared_action_tampering_and_owner_mismatch_fail_before_write(self):
         action = {"Put": {**self.prepared.capsule_action["Put"], "TableName": "wrong"}}

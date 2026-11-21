@@ -5,6 +5,7 @@ writer policy or durable provisioning recovery is provided by this component.
 """
 from dataclasses import dataclass, field
 from decimal import Decimal
+from secrets import compare_digest
 from uuid import UUID, uuid4
 
 import boto3
@@ -71,11 +72,12 @@ class IdentityVault:
         except (ValueError, TypeError, AttributeError):
             raise ValueError("invalid prepared identity") from None
         vault = {"pk": prepared.vault_id, "sk": "META", "internal_user_id": prepared.internal_id,
-                 "capsule_locator": prepared.locator, "state": "ACTIVE", "revision": 1}
+                 "capsule_locator": prepared.locator, "provision_request_id": prepared.request_id,
+                 "state": "ACTIVE", "revision": 1}
         self.client.transact_write_items(ClientRequestToken=prepared.request_id, TransactItems=[
             {"Update": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{authenticated_subject}"}),
                         "UpdateExpression": "SET vault_id = :vault, #epoch = if_not_exists(#epoch, :zero)",
-                        "ConditionExpression": "attribute_not_exists(vault_id) AND attribute_not_exists(deletion_lock_request) "
+                        "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(vault_id) AND attribute_not_exists(deletion_lock_request) "
                                                "AND (attribute_not_exists(suspended) OR suspended = :no) "
                                                "AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected)",
                         "ExpressionAttributeNames": {"#epoch": "epoch"},
@@ -129,3 +131,26 @@ class IdentityVault:
                                   int(capsule["revision"]), expected_epoch), bytearray(vault["internal_user_id"].encode("utf-8")))
         except (TypeError, ValueError, AttributeError, KeyError, ArithmeticError):
             raise IdentityVaultConflict("identity linkage is unavailable or changed") from None
+
+    def verify_committed(self, *, authenticated_subject: str, prepared: PreparedIdentity) -> None:
+        """Verify a lost response while the exact prepared request is still available.
+
+        This is not durable provisioning recovery and does not grant access to the
+        returned identity. Deletion locks or changed links fail closed.
+        """
+        if not isinstance(prepared, PreparedIdentity) or prepared.subject != authenticated_subject:
+            raise ValueError("identity owner mismatch")
+        snapshot, internal_id = self.resolve_deletion(authenticated_subject=authenticated_subject,
+                                                      expected_epoch=prepared.expected_epoch)
+        try:
+            raw = self.client.get_item(TableName=self.vault_table,
+                Key=self._item({"pk": snapshot.vault_id, "sk": "META"}), ConsistentRead=True).get("Item")
+            if snapshot.vault_id != prepared.vault_id or snapshot.capsule_locator != prepared.locator or \
+                    not compare_digest(internal_id, prepared.internal_id.encode("utf-8")) or not raw or \
+                    raw.get("provision_request_id") != {"S": prepared.request_id} or \
+                    raw.get("state") != {"S": "ACTIVE"} or \
+                    raw.get("revision") != {"N": str(snapshot.vault_revision)} or \
+                    raw.get("capsule_locator") != {"S": prepared.locator}:
+                raise IdentityVaultConflict("identity linkage does not match the prepared request")
+        finally:
+            internal_id[:] = b"\x00" * len(internal_id)

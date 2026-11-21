@@ -5,14 +5,17 @@ credentials or plaintext personal data are used. This is not an IAM/KMS test.
 """
 import json
 import os
+import subprocess
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 from foodtech_business_api.guarded_deletion import GuardedDeletion
-from foodtech_business_api.identity_vault import IdentityVault
+from foodtech_business_api.identity_vault import IdentityVault, IdentityVaultConflict
 from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
 
 
@@ -46,6 +49,17 @@ def main():
         raise SystemExit("Synthetic identifiers already exist")
     auth_created = False
     try:
+        try:
+            vault_service.commit(authenticated_subject=subject, prepared=prepared[0])
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+                raise
+        else:
+            raise AssertionError("Missing principal was allowed to create identity")
+        if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item") or \
+                vault.get_item(Key={"pk": prepared[0].vault_id, "sk": "META"}, ConsistentRead=True).get("Item") or \
+                capsule.get_item(Key={"pk": prepared[0].locator, "sk": "META"}, ConsistentRead=True).get("Item"):
+            raise AssertionError("Missing principal left identity records behind")
         auth.put_item(Item={**auth_key, "epoch": 0, "provenance": "SYNTHETIC"},
                       ConditionExpression=Attr("pk").not_exists())
         auth_created = True
@@ -67,6 +81,43 @@ def main():
                 capsule.get_item(Key={"pk": loser.locator, "sk": "META"}, ConsistentRead=True).get("Item"):
             raise AssertionError("Losing identity creation left an orphan")
         vault_service.commit(authenticated_subject=subject, prepared=winner)
+        vault_service.verify_committed(authenticated_subject=subject, prepared=winner)
+        restarted = IdentityVault(auth_table=AUTH, vault_table=VAULT, capsule_table=CAPSULE,
+                                  approved_purposes=frozenset({"BILLING"}), client=client)
+        recovered, recovered_id = restarted.resolve_deletion(authenticated_subject=subject, expected_epoch=0)
+        try:
+            if recovered.vault_id != winner.vault_id or bytes(recovered_id) != winner.internal_id.encode("utf-8"):
+                raise AssertionError("Fresh service could not recover the persisted linkage")
+        finally:
+            recovered_id[:] = b"\x00" * len(recovered_id)
+        child_code = '''
+import sys
+import boto3
+from foodtech_business_api.identity_vault import IdentityVault
+client = boto3.Session(profile_name="foodtech", region_name="ap-southeast-2").client("dynamodb")
+service = IdentityVault(auth_table="foodtech-auth-sessions-dev", vault_table="foodtech-cooking-jobs-dev",
+                        capsule_table="foodtech-data-flow-dev", approved_purposes=frozenset({"BILLING"}), client=client)
+snapshot, internal_id = service.resolve_deletion(authenticated_subject=sys.argv[1], expected_epoch=0)
+try:
+    if snapshot.vault_id != sys.argv[2]:
+        raise RuntimeError("Persisted identity did not match")
+finally:
+    internal_id[:] = b"\\x00" * len(internal_id)
+'''
+        subprocess.run([sys.executable, '-c', child_code, subject, winner.vault_id], check=True, timeout=60)
+        try:
+            vault_service.verify_committed(authenticated_subject=subject,
+                                           prepared=replace(winner, request_id=str(uuid.uuid4())))
+        except IdentityVaultConflict:
+            pass
+        else:
+            raise AssertionError("Different request ID was accepted as the committed identity")
+        try:
+            vault_service.verify_committed(authenticated_subject=subject, prepared=loser)
+        except IdentityVaultConflict:
+            pass
+        else:
+            raise AssertionError("Losing request was accepted as the committed identity")
         snapshot, internal_id = vault_service.resolve_deletion(authenticated_subject=subject, expected_epoch=0)
         try:
             if bytes(internal_id) != winner.internal_id.encode("utf-8") or snapshot.capsule_locator != winner.locator:
@@ -121,7 +172,7 @@ def main():
             auth.delete_item(Key=auth_key, ConditionExpression=Attr("provenance").eq("SYNTHETIC"))
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
-    print(json.dumps({"atomic_provisioning": "verified", "stale_auth_rejected": "verified",
+    print(json.dumps({"missing_principal_rejected": "verified", "atomic_provisioning": "verified", "lost_response_verification": "verified", "fresh_process_resolution": "verified", "stale_auth_rejected": "verified",
                       "guarded_deletion_registration": "verified", "cleanup": "verified"}))
 
 
