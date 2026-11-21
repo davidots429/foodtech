@@ -9,6 +9,7 @@ from foodtech_business_api.job_partition_deletion import delete_one_job_record
 from foodtech_business_api.job_deletion_inventory import JobDeletionInventory
 from foodtech_business_api.job_deletion_worker import JobDeletionWorker
 from foodtech_business_api.job_binding_inventory import JobBindingInventory
+from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
 from boto3.dynamodb.conditions import Key
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_JOB_DELETION_LIVE') != '1':
@@ -73,8 +74,15 @@ try:
  else: raise AssertionError('inactive request accepted')
  assert src.get_item(Key={'pk':pk,'sk':'ASSESSMENT#1'},ConsistentRead=True).get('Item')
  reg.update_item(Key=rk,UpdateExpression='SET #s=:s',ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'DELETING'})
- assert worker.delete_one(subject=u,request_id=q,index=0)['removed']
- assert worker.delete_one(subject=u,request_id=q,index=0)['removed']
+ src.put_item(Item={**binding_key,'job_pk':pk,'job_id':'job'},ConditionExpression='attribute_not_exists(pk)')
+ src.put_item(Item={**orphan_key,'job_pk':f'SCOPE#USER#{u}#JOB#orphan','job_id':'orphan'},ConditionExpression='attribute_not_exists(pk)')
+ coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings)
+ for _ in range(1000):
+  result=coordinator.step(subject=u,request_id=q,limit=20)
+  if result['phase']=='VERIFYING':break
+ else:raise AssertionError('bounded job cleanup incomplete')
+ assert not src.get_item(Key=binding_key,ConsistentRead=True).get('Item')
+ assert not src.get_item(Key=orphan_key,ConsistentRead=True).get('Item')
  assert worker.delete_one(subject=u,request_id=q,index=0)=={'index':0,'state':'META_ONLY','removed':False}
  assert src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')
  assert src.get_item(Key={'pk':other,'sk':'EVENT#1'},ConsistentRead=True).get('Item')
