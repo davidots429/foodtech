@@ -1,4 +1,4 @@
-"""Certificate-trusted synthetic OPC UA Binary sources for vendor-b and vendor-c."""
+"""Certificate-trusted synthetic OPC UA Binary equipment and vendor sources."""
 import asyncio
 import json
 import os
@@ -36,7 +36,7 @@ class BinaryVendorTests(unittest.IsolatedAsyncioTestCase):
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
                 self.assertNotEqual(result.returncode, 0)
 
-    async def test_vendor_b_and_c_readonly_and_recovery(self):
+    async def test_equipment_vendors_readonly_and_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
             key, pem, der = temp / "key.pem", temp / "client.pem", temp / "client.der"
