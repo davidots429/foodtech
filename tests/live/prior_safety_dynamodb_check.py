@@ -48,6 +48,12 @@ async def run() -> None:
                 patch.object(cooking, "_session", side_effect=fake_session), \
                 patch.object(cooking, "get_cooking_store", return_value=store):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                discovery = await client.get(f"/api/customer/cooking-jobs/{ids[1]}/prior-job-candidate")
+                discovery.raise_for_status()
+                candidate = discovery.json()
+                if (candidate["status"], candidate["candidate"]["job_id"],
+                        candidate["immediately_previous_verified"]) != ("CANDIDATE", ids[0], False):
+                    raise AssertionError("Unexpected prior job candidate")
                 result = await client.get(f"/api/customer/cooking-jobs/{ids[1]}/recommendation-evidence",
                                           params={"prior_job_id": ids[0]})
                 result.raise_for_status()

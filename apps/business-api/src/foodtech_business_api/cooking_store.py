@@ -69,6 +69,7 @@ class CookingStore(Protocol):
     def read_meal_live_chunks(self, pk: str) -> list[dict]: ...
     def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None: ...
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
+    def read_meta(self, pk: str) -> dict | None: ...
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
     def create(self, pk: str, meta: dict) -> None: ...
@@ -199,6 +200,11 @@ class MemoryCookingStore:
             meta = self.items.get((pk, "META"))
             pointer = self.items.get((pk, "ASSESSMENT#CURRENT"))
             return (meta.copy() if meta else None, pointer.copy() if pointer else None)
+
+    def read_meta(self, pk: str) -> dict | None:
+        with self.lock:
+            meta = self.items.get((pk, "META"))
+            return meta.copy() if meta else None
 
     def process_pointer(self, pk: str) -> dict | None:
         with self.lock:
@@ -611,6 +617,10 @@ class DynamoCookingStore:
             Key={"pk": pk, "sk": "ASSESSMENT#CURRENT"}, ConsistentRead=True,
         ).get("Item")
         return _api_numbers(meta), _api_numbers(pointer)
+
+    def read_meta(self, pk: str) -> dict | None:
+        item = self.table.get_item(Key={"pk": pk, "sk": "META"}, ConsistentRead=True).get("Item")
+        return _api_numbers(item)
 
     def process_pointer(self, pk: str) -> dict | None:
         item = self.table.get_item(Key={"pk": pk, "sk": "PROCESS#LATEST_RESTATED"},
