@@ -165,6 +165,7 @@ class CookingStore(Protocol):
     def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict: ...
     def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None: ...
     def list_meal_refs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
+    def ensure_meal_listed(self, subject: str, meal_id: str) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict, expected_epoch: int = 0) -> None: ...
@@ -319,6 +320,19 @@ class MemoryCookingStore:
             page = rows[:limit]
             return {'items': [{'meal_batch_id': row['meal_batch_id']} for row in page],
                     'next_cursor': page[-1]['sk'] if len(rows) > limit else None}
+
+    def ensure_meal_listed(self, subject: str, meal_id: str) -> None:
+        _meal_page_args(subject, 1, None)
+        pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}'
+        listing = _meal_listing(pk, [{'sk': 'META', 'meal_batch_id': meal_id}])
+        listing_key = (listing['pk'], listing['sk'])
+        with self.lock:
+            source, current = self.items.get((pk, 'META')), self.items.get(listing_key)
+            if not source or source.get('meal_batch_id') != meal_id or \
+                    (current is not None and current.get('meal_batch_id') != meal_id):
+                raise Conflict
+            if current is None:
+                self.items[listing_key] = listing
 
     def read_meal(self, pk: str) -> list[dict]:
         with self.lock:
@@ -804,6 +818,27 @@ class DynamoCookingStore:
         page = self.table.query(**args)
         return {'items': [{'meal_batch_id': item['meal_batch_id']} for item in page.get('Items', [])],
                 'next_cursor': page.get('LastEvaluatedKey', {}).get('sk')}
+
+    def ensure_meal_listed(self, subject: str, meal_id: str) -> None:
+        _meal_page_args(subject, 1, None)
+        pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}'
+        listing = _meal_listing(pk, [{'sk': 'META', 'meal_batch_id': meal_id}])
+        values = self._item({':id': meal_id})
+        try:
+            self.client.transact_write_items(TransactItems=[
+                self._derived_owner_guard(subject, None),
+                {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'META'}),
+                                    'ConditionExpression': 'meal_batch_id = :id', 'ExpressionAttributeValues': values}},
+                {'Update': {'TableName': self.table.name,
+                            'Key': self._item({'pk': listing['pk'], 'sk': listing['sk']}),
+                            'UpdateExpression': 'SET meal_batch_id = :id',
+                            'ConditionExpression': 'attribute_not_exists(pk) OR meal_batch_id = :id',
+                            'ExpressionAttributeValues': values}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
+            raise
 
     def read_meal(self, pk: str) -> list[dict]:
         rows = []

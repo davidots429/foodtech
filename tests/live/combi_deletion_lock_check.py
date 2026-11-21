@@ -43,6 +43,10 @@ def main():
             raise AssertionError('meal inventory missing')
         auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :id',
                          ExpressionAttributeValues={':id': str(uuid4())})
+        table.delete_item(Key=listing_key)
+        blocked(lambda: store.ensure_meal_listed(subject, 'meal'))
+        if table.get_item(Key=listing_key, ConsistentRead=True).get('Item'):
+            raise AssertionError('locked reconciliation created inventory')
         advance = lambda: store.advance_meal(pk, 1, {'sk': 'META', 'version': 2},
                                              {'sk': 'STEP#rice', 'status': 'DONE'}, {'sk': 'EVENT#1'}, 0)
         append = lambda: store.append_meal_live(pk, 0, {'sk': 'META', 'count': 1}, {'sk': 'CHUNK#000000'}, 0)
@@ -53,6 +57,11 @@ def main():
         if any(table.get_item(Key=key, ConsistentRead=True).get('Item') for key in keys[2:]):
             raise AssertionError('locked meal update left records')
         auth.update_item(Key=auth_key, UpdateExpression='REMOVE deletion_lock_request')
+        store.ensure_meal_listed(subject, 'meal')
+        store.ensure_meal_listed(subject, 'meal')
+        blocked(lambda: store.ensure_meal_listed(subject, 'missing'))
+        if store.list_meal_refs(subject, 1, None)['items'] != [{'meal_batch_id': 'meal'}]:
+            raise AssertionError('legacy meal inventory repair failed')
         append()
         store.attach_meal_source(pk, 1, {'sk': 'META', 'version': 2, 'source': 'synthetic'},
                                  {'sk': 'EVENT#2'}, [{'sk': 'RAW#0000'}], 1, 0)

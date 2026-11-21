@@ -83,3 +83,27 @@ class CombiLiveStoreTests(unittest.TestCase):
             store.create_meal('SCOPE#USER#alice#COMBI_MEAL#other', [{'sk': 'META', 'meal_batch_id': 'one'}])
         with self.assertRaises(ValueError):
             store.list_meal_refs('alice', 1, 'MEAL#bad#cursor')
+
+    def test_legacy_meal_reconciliation_requires_matching_source(self):
+        store = MemoryCookingStore()
+        source = ('SCOPE#USER#alice#COMBI_MEAL#old', 'META')
+        store.items[source] = {'meal_batch_id': 'old'}
+        store.ensure_meal_listed('alice', 'old')
+        store.ensure_meal_listed('alice', 'old')
+        self.assertEqual(store.list_meal_refs('alice', 10, None)['items'], [{'meal_batch_id': 'old'}])
+        with self.assertRaises(Conflict):
+            store.ensure_meal_listed('bob', 'old')
+        store.items[source]['meal_batch_id'] = 'changed'
+        with self.assertRaises(Conflict):
+            store.ensure_meal_listed('alice', 'old')
+
+    def test_dynamo_reconciliation_guards_auth_and_source(self):
+        store = DynamoCookingStore.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name='table'); store.client = Mock(); store.serializer = TypeSerializer(); store.auth_table_name = 'auth'
+        store.ensure_meal_listed('alice', 'old')
+        operations = store.client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertEqual(operations[0]['ConditionCheck']['TableName'], 'auth')
+        self.assertIn('deletion_lock_request', operations[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(operations[1]['ConditionCheck']['Key']['pk'], {'S': 'SCOPE#USER#alice#COMBI_MEAL#old'})
+        self.assertIn('meal_batch_id = :id', operations[1]['ConditionCheck']['ConditionExpression'])
+        self.assertIn('Update', operations[2])
