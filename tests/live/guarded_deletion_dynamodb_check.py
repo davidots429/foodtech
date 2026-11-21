@@ -21,6 +21,9 @@ from foodtech_capsule_crypto.contract import Entry
 from foodtech_capsule_crypto.user_entry import seal_entry
 from foodtech_capsule_crypto.user_key import UserKeyGenerator
 from foodtech_capsule_crypto.deletion_plan import prepare_from_resolved_inventory
+from foodtech_capsule_crypto.plan_worker import CapsulePlanWorker
+from foodtech_business_api.deletion_progress import DeletionProgressStore
+from foodtech_business_api.deletion_checkpoint_cipher import DeletionCheckpointCipher
 from foodtech_capsule_crypto.tenant_scope import TenantScope, TenantScopeResolver
 from capsule_user_key_kms_check import b64
 from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
@@ -45,6 +48,7 @@ def main():
     encryptor = DeletionRegistryCipher(key_arn, "dev", kms_client=session.client("kms"))
     decryptor = DeletionRegistryRecoveryCipher(key_arn, "dev", kms_client=session.client("kms"))
     auth, vault, capsule, registry = (dynamo.Table(name) for name in (AUTH, VAULT, CAPSULE, REGISTRY))
+    progress_table = dynamo.Table("foodtech-ai-credential-vault-dev")
     subject, vault_id, internal_id = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
     stale_id, stale_capsule_id, first_id, second_id = (str(uuid.uuid4()) for _ in range(4))
     ids = (stale_id, stale_capsule_id, first_id, second_id)
@@ -56,9 +60,13 @@ def main():
             vault.query(KeyConditionExpression=Key("pk").eq(vault_id), ConsistentRead=True).get("Items") or \
             capsule.query(KeyConditionExpression=Key("pk").eq(locator), ConsistentRead=True).get("Items") or \
             any(registry.get_item(Key={"pk": "REGISTRY", "sk": f"REQ#{value}"},
-                                  ConsistentRead=True).get("Item") for value in ids):
+                                  ConsistentRead=True).get("Item") for value in ids) or \
+            any(progress_table.get_item(Key={"pk": f"REQ#{value}", "sk": f"DOMAIN#{domain}"},
+                                        ConsistentRead=True).get("Item")
+                for value in ids for domain in ("CAPSULE_PLAN", "CAPSULE_PLAN_PAGE_000000000001")):
         raise SystemExit("Synthetic identifiers already exist")
     auth_created = vault_created = capsule_created = False
+    plan_request = None
     try:
         auth.put_item(Item={**auth_key, "epoch": 0, "vault_id": vault_id, "provenance": "SYNTHETIC"},
                       ConditionExpression=Attr("pk").not_exists())
@@ -171,10 +179,29 @@ def main():
             called.append('checked')
         if recovery.use_locked(authenticated_subject=subject, request_id=winner, action=inspect_locked) != {'status': 'DELETING'} or called != ['checked']:
             raise AssertionError('locked inventory action failed')
+        plan_request = winner
+        plan_progress = DeletionProgressStore(auth_table=AUTH, registry_table=REGISTRY,
+            progress_table=progress_table.name, client=client)
+        plan_cipher = DeletionCheckpointCipher(key_arn, 'dev', source_table_arn=capsule.table_arn,
+                                               kms_client=session.client('kms'))
+        worker = CapsulePlanWorker(recovery=recovery, inventory=CapsuleInventory(CAPSULE, purposes, client=client),
+            source_table=capsule, progress_store=plan_progress, progress_cipher=plan_cipher,
+            tenant_resolver=resolver, key_map=key_map, approved_purposes=purposes,
+            approved_tenant_purposes=tenant_purposes, kms_client=session.client('kms'))
+        expected_plan = {'state': 'PREPARED', 'target_count': 1, 'pages': 1}
+        if worker.prepare(authenticated_subject=subject, request_id=winner) != expected_plan or \
+                worker.prepare(authenticated_subject=subject, request_id=winner) != expected_plan:
+            raise AssertionError('durable capsule plan retry failed')
         loser = second_id if winner == first_id else first_id
         if registry.get_item(Key={"pk": "REGISTRY", "sk": f"REQ#{loser}"}, ConsistentRead=True).get("Item"):
             raise AssertionError("Losing request created a tombstone")
     finally:
+        if plan_request:
+            for domain in ('CAPSULE_PLAN', 'CAPSULE_PLAN_PAGE_000000000001'):
+                plan_key = {'pk': f'REQ#{plan_request}', 'sk': f'DOMAIN#{domain}'}
+                progress_table.delete_item(Key=plan_key)
+                if progress_table.get_item(Key=plan_key, ConsistentRead=True).get('Item'):
+                    raise RuntimeError('synthetic plan cleanup failed')
         for request_id in ids:
             key = {"pk": "REGISTRY", "sk": f"REQ#{request_id}"}
             item = registry.get_item(Key=key, ConsistentRead=True).get("Item")
@@ -194,7 +221,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
