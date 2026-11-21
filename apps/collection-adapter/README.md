@@ -113,3 +113,5 @@ MQTT XML의 `mockprofile-311-{a,b,c}-001`과 `mockprofile-321-{a,b,c}-001`은 �
 REST XML 수집기는 `--profile mockprofile-111` 또는 `mockprofile-121`과 일치하는 vendor-a/b/c 인스턴스를 지원한다. 별도 커서, XSD와 원천 스키마를 적용하며 DTD·외부 엔터티를 차단한다. 솥 온도와 콤비오븐 기후·습도·팬 의미를 유지하고 습도 미지원은 null로 보존한다. AWS 실저장은 별도 검증이다.
 
 REST JSON의 `mockprofile-110-{b,c}-001`과 `mockprofile-120-{b,c}-001`은 각 인스턴스의 원천 스키마·커서와 장비별 표준화 규칙을 사용한다. `--profile mockprofile-110`의 기존 제육 시뮬레이션 기본 경로는 유지되며 vendor-b/c는 명시적 `--instance`로 선택한다. 잘못된 UTF-8은 원본 바이트를 격리하기 위해 전달한다. AWS 실저장 검증은 별도다.
+
+2026-11-21 개발 DynamoDB·SQS에서 C# MQTT Mock의 볶음·교반 `310/311/312`와 콤비오븐 `320/321/322` 각 vendor-a/b/c를 수집했다. 18개 조합의 순서·장비별 표준화·오류 격리 및 합성 데이터 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/mqtt_equipment_aws_check.py`. CSV 정상 fixture는 세 건 모두 정상이며 JSON·XML의 세 번째 물리 불가능한 값은 격리된다.
