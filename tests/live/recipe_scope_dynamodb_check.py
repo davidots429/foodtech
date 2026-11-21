@@ -22,7 +22,8 @@ from foodtech_ai_gateway.registry import DynamoRegistry
 from foodtech_business_api import auth as auth_module
 from foodtech_business_api.auth_store import DynamoAuthStore, Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
-from foodtech_business_api.recipe_scope import RecipeScopeDenied, authenticated_recipe_scope, resolve_recipe_scope
+from foodtech_business_api.recipe_scope import (RecipeScopeDenied, authenticated_recipe_scope,
+                                                resolve_recipe_scope, revalidate_recipe_scope)
 
 
 def main():
@@ -87,7 +88,20 @@ def main():
         with patch.object(auth_module, 'get_store', return_value=auth), \
              patch.object(auth_module.Settings, 'from_env', return_value=SimpleNamespace()), \
              patch.object(auth_module, '_cognito_access', return_value=True):
-            assert asyncio.run(scope_read()).owner == subject
+            authenticated = asyncio.run(scope_read())
+            assert authenticated.owner == subject
+            assert asyncio.run(revalidate_recipe_scope(request, authenticated, registry.execution_snapshot,
+                                                       jobs.read_meta)) == authenticated
+            registry.table.update_item(Key=execution_key,
+                UpdateExpression='ADD jeyuk_source_revision :one, #version :one',
+                ExpressionAttributeNames={'#version': 'version'}, ExpressionAttributeValues={':one': 1},
+                ConditionExpression=Attr('tenant_id').eq(subject))
+            try:
+                asyncio.run(revalidate_recipe_scope(request, authenticated, registry.execution_snapshot, jobs.read_meta))
+            except RecipeScopeDenied:
+                pass
+            else:
+                raise AssertionError('changed execution revision accepted')
             calls = 0
             def suspend_during_read(key):
                 nonlocal calls

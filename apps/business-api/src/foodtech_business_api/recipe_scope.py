@@ -25,6 +25,10 @@ class RecipeReadScope:
     execution_id: str = field(repr=False)
     job_partitions: tuple[str, str] = field(repr=False)
     source_partitions: tuple[str, str] = field(repr=False)
+    job_versions: tuple[int, int] = field(repr=False)
+    source_revisions: tuple[int, int] = field(repr=False)
+    execution_state: str = field(repr=False)
+    execution_version: int = field(repr=False)
 
 
 def _uuid(value):
@@ -80,12 +84,12 @@ def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
             sources.append('JEYUK#' + binding['batch_id'])
         if sources[0] == sources[1]:
             raise RecipeScopeDenied('recipe scope unavailable')
-        return RecipeReadScope(subject, execution_id, tuple(jobs), tuple(sources)), versions, revisions, state, record_version
+        return RecipeReadScope(subject, execution_id, tuple(jobs), tuple(sources), versions, revisions, state, record_version)
 
     first = snapshot()
     if snapshot() != first or expires <= time.time():
         raise RecipeScopeDenied('recipe scope changed')
-    return first[0]
+    return first
 
 
 async def authenticated_recipe_scope(request, execution_id, execution_reader, job_reader):
@@ -100,3 +104,17 @@ async def authenticated_recipe_scope(request, execution_id, execution_reader, jo
     if (before.subject, before.epoch, before.csrf) != (after.subject, after.epoch, after.csrf):
         raise RecipeScopeDenied('customer session changed')
     return scope
+
+
+async def revalidate_recipe_scope(request, expected, execution_reader, job_reader):
+    """Reject a scope whose authenticated owner, execution or source references changed.
+
+    This compares observations and cannot prevent a subsequent concurrent write.
+    The eventual caller must enforce authorization and freshness at its boundary.
+    """
+    if not isinstance(expected, RecipeReadScope):
+        raise RecipeScopeDenied('recipe scope unavailable')
+    current = await authenticated_recipe_scope(request, expected.execution_id, execution_reader, job_reader)
+    if current != expected:
+        raise RecipeScopeDenied('recipe scope changed')
+    return current

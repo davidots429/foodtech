@@ -11,7 +11,8 @@ from starlette.requests import Request
 from foodtech_business_api import auth
 from foodtech_business_api.auth_store import MemoryStore, Session
 
-from foodtech_business_api.recipe_scope import RecipeScopeDenied, authenticated_recipe_scope, resolve_recipe_scope
+from foodtech_business_api.recipe_scope import (RecipeScopeDenied, authenticated_recipe_scope,
+                                                resolve_recipe_scope, revalidate_recipe_scope)
 
 
 class RecipeScopeTests(unittest.TestCase):
@@ -40,6 +41,9 @@ class RecipeScopeTests(unittest.TestCase):
         scope = self.resolve()
         self.assertEqual(scope.source_partitions, ('JEYUK#jeyuk-current', 'JEYUK#jeyuk-previous'))
         self.assertEqual(scope.job_partitions, tuple(self.jobs))
+        self.assertEqual(scope.job_versions, (2, 1))
+        self.assertEqual(scope.source_revisions, (4, 3))
+        self.assertEqual((scope.execution_state, scope.execution_version), ('PENDING', 1))
         self.assertNotIn(self.subject, repr(scope))
 
     def test_other_owner_expired_or_admin_is_denied(self):
@@ -144,6 +148,19 @@ class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
                 await authenticated_recipe_scope(request, self.execution_id, self.snapshot_reader, read)
         self.assertEqual(error.exception.status_code, 401)
         self.assertIsNone(store.read_session('synthetic-session'))
+
+    async def test_revalidation_rejects_changed_record_and_source_revision(self):
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session):
+            original = await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
+            same = await revalidate_recipe_scope(object(), original, self.snapshot_reader, self.jobs.get)
+            self.assertEqual(same, original)
+            self.execution.jeyuk_source_revision += 1
+            with self.assertRaises(RecipeScopeDenied):
+                await revalidate_recipe_scope(object(), original, self.snapshot_reader, self.jobs.get)
+            self.execution.jeyuk_source_revision -= 1
+            with self.assertRaises(RecipeScopeDenied):
+                await revalidate_recipe_scope(object(), original,
+                    lambda _: SimpleNamespace(execution=self.execution, state='PENDING', version=2), self.jobs.get)
 
 
 if __name__ == '__main__':
