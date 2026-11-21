@@ -35,13 +35,13 @@ class ProfileScanProgressStore:
     def __init__(self, table, cipher):
         self.table, self.cipher = table, cipher
 
-    def start(self, job_id: str, subject: str) -> None:
+    def start(self, job_id: str, subject: str, source_table_name: str) -> None:
         key = _job(job_id)
-        encrypted = self.cipher.seal(job_id, subject, _INITIAL, phase='INITIAL', version=1)
+        encrypted = self.cipher.seal(job_id, subject, _INITIAL, phase='INITIAL', version=1, source_table=source_table_name)
         self.table.put_item(Item={**key, 'phase': 'INITIAL', 'version': 1, 'ciphertext': encrypted},
                             ConditionExpression='attribute_not_exists(pk)')
 
-    def _read(self, job_id: str, subject: str) -> tuple[Progress, dict | None]:
+    def _read(self, job_id: str, subject: str, source_table_name: str) -> tuple[Progress, dict | None]:
         key = _job(job_id)
         item = self.table.get_item(Key=key, ConsistentRead=True).get('Item')
         if not isinstance(item, dict) or item.get('pk') != key['pk'] or item.get('sk') != key['sk'] or \
@@ -57,7 +57,7 @@ class ProfileScanProgressStore:
         encrypted = item.get('ciphertext')
         if isinstance(encrypted, Binary):
             encrypted = bytes(encrypted)
-        checkpoint = self.cipher.open(job_id, subject, encrypted, phase=item['phase'], version=version)
+        checkpoint = self.cipher.open(job_id, subject, encrypted, phase=item['phase'], version=version, source_table=source_table_name)
         if item['phase'] == 'INITIAL':
             if checkpoint != _INITIAL:
                 raise ValueError('invalid initial checkpoint')
@@ -68,13 +68,16 @@ class ProfileScanProgressStore:
             checkpoint = None
         return Progress(item['phase'], version), checkpoint
 
-    def read_progress(self, job_id: str, subject: str) -> Progress:
+    def read_progress(self, job_id: str, subject: str, source_table_name: str) -> Progress:
         """Resolve an uncertain write without returning the sensitive checkpoint."""
-        return self._read(job_id, subject)[0]
+        return self._read(job_id, subject, source_table_name)[0]
 
     def run_page(self, *, job_id: str, subject: str, source_table, profile_store, limit: int) -> Progress:
         key = _job(job_id)
-        progress, checkpoint = self._read(job_id, subject)
+        source_name = getattr(source_table, 'name', None)
+        if not isinstance(source_name, str) or getattr(getattr(profile_store, 'table', None), 'name', None) != source_name:
+            raise ValueError('profile source and destination differ')
+        progress, checkpoint = self._read(job_id, subject, source_name)
         if progress.phase == 'SCAN_COMPLETE':
             raise ValueError('scan job is complete')
         if progress.version == 2**63 - 1:
@@ -82,7 +85,8 @@ class ProfileScanProgressStore:
         page = reconcile_legacy_page(source_table, profile_store, subject=subject, limit=limit, checkpoint=checkpoint)
         next_phase = 'CONTINUE' if page.checkpoint is not None else 'SCAN_COMPLETE'
         next_checkpoint = page.checkpoint if page.checkpoint is not None else _FINISHED
-        ciphertext = self.cipher.seal(job_id, subject, next_checkpoint, phase=next_phase, version=progress.version + 1)
+        ciphertext = self.cipher.seal(job_id, subject, next_checkpoint, phase=next_phase, version=progress.version + 1,
+                                      source_table=source_name)
         self.table.update_item(Key=key, UpdateExpression='SET #phase = :next, #version = :next_version, ciphertext = :ciphertext',
             ConditionExpression='#phase = :old AND #version = :expected',
             ExpressionAttributeNames={'#phase': 'phase', '#version': 'version'},

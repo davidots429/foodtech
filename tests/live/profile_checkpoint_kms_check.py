@@ -19,8 +19,8 @@ def main():
     job = str(uuid4())
     subject = 'synthetic-owner-' + uuid4().hex
     checkpoint = {'pk': 'synthetic-other-owner-' + uuid4().hex, 'sk': 'META'}
-    ciphertext = cipher.seal(job, subject, checkpoint, phase='CONTINUE', version=2)
-    if checkpoint['pk'].encode() in ciphertext or cipher.open(job, subject, ciphertext, phase='CONTINUE', version=2) != checkpoint:
+    ciphertext = cipher.seal(job, subject, checkpoint, phase='CONTINUE', version=2, source_table='foodtech-cooking-jobs-dev')
+    if checkpoint['pk'].encode() in ciphertext or cipher.open(job, subject, ciphertext, phase='CONTINUE', version=2, source_table='foodtech-cooking-jobs-dev') != checkpoint:
         raise AssertionError('checkpoint encryption round trip failed')
     logger = logging.getLogger('aws_encryption_sdk')
     previous = logger.level
@@ -29,16 +29,22 @@ def main():
         for identifier, owner, value in ((str(uuid4()), subject, ciphertext), (job, 'other-owner', ciphertext),
                                          (job, subject, ciphertext[:-1] + bytes([ciphertext[-1] ^ 1]))):
             try:
-                cipher.open(identifier, owner, value, phase='CONTINUE', version=2)
+                cipher.open(identifier, owner, value, phase='CONTINUE', version=2, source_table='foodtech-cooking-jobs-dev')
             except ValueError:
                 continue
             raise AssertionError('wrong job or corrupted ciphertext was accepted')
         try:
-            cipher.open(job, subject, ciphertext, phase='CONTINUE', version=3)
+            cipher.open(job, subject, ciphertext, phase='CONTINUE', version=3, source_table='foodtech-cooking-jobs-dev')
         except ValueError:
             pass
         else:
             raise AssertionError('old ciphertext accepted for new version')
+        try:
+            cipher.open(job, subject, ciphertext, phase='CONTINUE', version=2, source_table='other-table')
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('checkpoint accepted for a different source table')
     finally:
         logger.setLevel(previous)
     print('synthetic checkpoint encryption, job binding and tamper rejection verified')

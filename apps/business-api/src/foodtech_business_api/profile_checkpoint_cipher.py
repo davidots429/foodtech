@@ -42,24 +42,27 @@ class ProfileCheckpointCipher:
             commitment_policy=CommitmentPolicy.REQUIRE_ENCRYPT_REQUIRE_DECRYPT, max_encrypted_data_keys=1)
         self.providers = providers or AwsCryptographicMaterialProviders(config=MaterialProvidersConfig())
 
-    def _context(self, job_id, phase, version):
+    def _context(self, job_id, phase, version, source_table):
         try:
             if str(UUID(job_id)) != job_id:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise ValueError('invalid checkpoint job') from None
+        if not isinstance(source_table, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{3,255}', source_table):
+            raise ValueError('invalid source table')
         if phase not in {'INITIAL', 'CONTINUE', 'SCAN_COMPLETE'} or type(version) is not int or \
                 not 1 <= version < 2**63:
             raise ValueError('invalid checkpoint version')
         return {'purpose': 'PROFILE_MIGRATION_CHECKPOINT', 'schema_version': '1',
-                'environment': self.environment, 'job_id': job_id, 'phase': phase, 'version': str(version)}
+                'environment': self.environment, 'job_id': job_id, 'phase': phase, 'version': str(version),
+                'source_table': source_table}
 
     def _keyring(self):
         return self.providers.create_aws_kms_keyring(input=CreateAwsKmsKeyringInput(
             kms_key_id=self.key_arn, kms_client=self.kms))
 
-    def seal(self, job_id: str, subject: str, checkpoint: dict, *, phase: str, version: int) -> bytes:
-        context = self._context(job_id, phase, version)
+    def seal(self, job_id: str, subject: str, checkpoint: dict, *, phase: str, version: int, source_table: str) -> bytes:
+        context = self._context(job_id, phase, version, source_table)
         _validate_subject(subject)
         _validate_checkpoint(checkpoint)
         raw = bytearray(json.dumps({'subject': subject, 'checkpoint': checkpoint}, ensure_ascii=True,
@@ -73,8 +76,8 @@ class ProfileCheckpointCipher:
         finally:
             raw[:] = b'\x00' * len(raw)
 
-    def open(self, job_id: str, subject: str, ciphertext: bytes, *, phase: str, version: int) -> dict:
-        context = self._context(job_id, phase, version)
+    def open(self, job_id: str, subject: str, ciphertext: bytes, *, phase: str, version: int, source_table: str) -> dict:
+        context = self._context(job_id, phase, version, source_table)
         _validate_subject(subject)
         if not isinstance(ciphertext, bytes) or not 1 <= len(ciphertext) <= 65536:
             raise ValueError('invalid checkpoint ciphertext')
