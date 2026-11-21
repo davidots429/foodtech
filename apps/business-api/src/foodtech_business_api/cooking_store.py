@@ -2,6 +2,7 @@
 
 import os
 import random
+import re
 import threading
 import time
 from decimal import Decimal
@@ -56,6 +57,25 @@ def _history_relevant(event: dict | None) -> bool:
     }))
 
 
+def _evidence_snapshot_inputs(pk: str, expected_version: int, snapshot: dict,
+                              source_table: str, revision: int, receipt: dict) -> None:
+    _history_pk(pk)
+    if type(expected_version) is not int or expected_version < 1 or type(revision) is not int or revision < 1 or \
+            not isinstance(source_table, str) or not re.fullmatch(r"foodtech-data-flow-[a-z0-9-]{1,32}", source_table):
+        raise ValueError("invalid evidence snapshot scope")
+    if not isinstance(snapshot, dict) or "pk" in snapshot or snapshot.get("status") != "LINKED_UNVERIFIED" or \
+            snapshot.get("job_version") != expected_version or snapshot.get("source_revision") != revision or \
+            snapshot.get("source_receipt_reference") != receipt or \
+            not isinstance(snapshot.get("sk"), str) or not re.fullmatch(r"VALIDATION#EVIDENCE#[0-9a-f-]{36}", snapshot["sk"]):
+        raise ValueError("invalid evidence snapshot")
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("pk"), str) or \
+            not re.fullmatch(r"JEYUK#[A-Za-z0-9_-]{1,128}", receipt["pk"]) or \
+            not isinstance(receipt.get("sk"), str) or not receipt["sk"].startswith("COLLECTION#RECEIPT#") or \
+            receipt.get("record_count") != revision or not isinstance(receipt.get("ordered_raw_sha256"), str) or \
+            not re.fullmatch(r"[0-9a-f]{64}", receipt["ordered_raw_sha256"]):
+        raise ValueError("invalid evidence receipt reference")
+
+
 def _only_result_already_exists(exc: Exception, operation_count: int) -> bool:
     reasons = exc.response.get("CancellationReasons", [])
     return (len(reasons) == operation_count and
@@ -82,6 +102,9 @@ def _api_numbers(value):
 
 
 class CookingStore(Protocol):
+    def validation_evidence_snapshots(self, pk: str) -> list[dict]: ...
+    def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
+                                 source_table: str, revision: int, receipt: dict) -> None: ...
     def customer_restatement(self, pk: str, request_id: str) -> dict | None: ...
     def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict: ...
     def create_meal(self, pk: str, records: list[dict]) -> None: ...
@@ -135,7 +158,25 @@ class MemoryCookingStore:
 
     def __init__(self) -> None:
         self.items: dict[tuple[str, str], dict] = {}
+        self.validation_sources: dict[tuple[str, str], dict] = {}
         self.lock = threading.RLock()
+
+    def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
+                                 source_table: str, revision: int, receipt: dict) -> None:
+        _evidence_snapshot_inputs(pk, expected_version, snapshot, source_table, revision, receipt)
+        with self.lock:
+            job = self.items.get((pk, "META"))
+            source = self.validation_sources.get((source_table, receipt["pk"]))
+            if not job or job.get("version") != expected_version or not source or \
+                    source.get("revision") != revision or source.get("receipt") != receipt or \
+                    (pk, snapshot["sk"]) in self.items:
+                raise Conflict
+            self.items[(pk, snapshot["sk"])] = {"pk": pk, **snapshot}
+
+    def validation_evidence_snapshots(self, pk: str) -> list[dict]:
+        with self.lock:
+            return [value.copy() for (item_pk, sk), value in sorted(self.items.items())
+                    if item_pk == pk and sk.startswith("VALIDATION#EVIDENCE#")]
 
     def customer_restatement(self, pk: str, request_id: str) -> dict | None:
         with self.lock:
@@ -715,6 +756,47 @@ class DynamoCookingStore:
             "UpdateExpression": "ADD revision :one",
             "ConditionExpression": "attribute_not_exists(revision) OR revision < :max",
             "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}}
+
+    def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
+                                 source_table: str, revision: int, receipt: dict) -> None:
+        _evidence_snapshot_inputs(pk, expected_version, snapshot, source_table, revision, receipt)
+        stream_pk = receipt["pk"]
+        operations = [
+            {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
+                                "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
+                                "ExpressionAttributeValues": {":v": {"N": str(expected_version)}}}},
+            {"ConditionCheck": {"TableName": source_table,
+                                "Key": self._item({"pk": stream_pk, "sk": "SOURCE#REVISION"}),
+                                "ConditionExpression": "revision = :v",
+                                "ExpressionAttributeValues": {":v": {"N": str(revision)}}}},
+            {"ConditionCheck": {"TableName": source_table,
+                                "Key": self._item({"pk": stream_pk, "sk": receipt["sk"]}),
+                                "ConditionExpression": "receipt_version = :rv AND provenance = :p AND profile_id = :profile AND fixture_id = :fixture AND starting_cursor = :zero AND ending_cursor = :count AND record_count = :count AND ordered_raw_sha256 = :hash",
+                                "ExpressionAttributeValues": self._item({":rv": "synthetic-jeyuk-collection-v1",
+                                    ":p": "SYNTHETIC", ":profile": "mockprofile-110", ":fixture": stream_pk[6:],
+                                    ":zero": 0, ":count": revision, ":hash": receipt["ordered_raw_sha256"]})}},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **snapshot}),
+                     "ConditionExpression": "attribute_not_exists(pk)"}},
+        ]
+        try:
+            self._history_transact(operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
+            raise
+
+    def validation_evidence_snapshots(self, pk: str) -> list[dict]:
+        results, last_key = [], None
+        while True:
+            args = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with("VALIDATION#EVIDENCE#"),
+                    "ConsistentRead": True}
+            if last_key:
+                args["ExclusiveStartKey"] = last_key
+            page = self.table.query(**args)
+            results.extend(page.get("Items", []))
+            last_key = page.get("LastEvaluatedKey")
+            if not last_key:
+                return _api_numbers(results)
 
     def history_revision(self, subject: str) -> int | None:
         item = self.table.get_item(Key={"pk": f"SCOPE#USER#{subject}#JOBS", "sk": "HISTORY#REVISION"},

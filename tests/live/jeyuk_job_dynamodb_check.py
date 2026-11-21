@@ -15,7 +15,7 @@ import httpx
 
 from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
-from foodtech_business_api.cooking_store import DynamoCookingStore
+from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
 from foodtech_business_api.main import app
 from foodtech_collection_adapter.jeyuk_aws import DynamoJeyukIngestor
 from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
@@ -193,6 +193,29 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                     if not evidence["checks"]["source_completion_record_matched"] or \
                             not evidence["checks"]["source_revision_stable"] or evidence["source_revision"] != len(raws):
                         raise AssertionError("completed source revision was not confirmed")
+                    receipt_ref = evidence["source_receipt_reference"]
+                    snapshot = {"sk": f"VALIDATION#EVIDENCE#{uuid.uuid4()}", "status": "LINKED_UNVERIFIED",
+                                "job_version": final["version"], "source_revision": len(raws),
+                                "source_receipt_reference": receipt_ref}
+                    await asyncio.to_thread(cooking_store.save_validation_evidence, job_pk, final["version"], snapshot,
+                                            DATA_TABLE, len(raws), receipt_ref)
+                    if not cooking_table.get_item(Key={"pk": job_pk, "sk": snapshot["sk"]}, ConsistentRead=True).get("Item"):
+                        raise AssertionError("evidence snapshot was not persisted")
+                    receipt_key = {"pk": stream_pk, "sk": "COLLECTION#RECEIPT#live-test"}
+                    data_table.update_item(Key=receipt_key, UpdateExpression="SET ordered_raw_sha256 = :bad",
+                                           ExpressionAttributeValues={":bad": "0" * 64})
+                    try:
+                        stale = {**snapshot, "sk": f"VALIDATION#EVIDENCE#{uuid.uuid4()}"}
+                        try:
+                            await asyncio.to_thread(cooking_store.save_validation_evidence, job_pk, final["version"], stale,
+                                                    DATA_TABLE, len(raws), receipt_ref)
+                        except Conflict:
+                            pass
+                        else:
+                            raise AssertionError("changed completion receipt was accepted")
+                    finally:
+                        data_table.update_item(Key=receipt_key, UpdateExpression="SET ordered_raw_sha256 = :original",
+                                               ExpressionAttributeValues={":original": receipt_ref["ordered_raw_sha256"]})
                     for check in ("source_records_contiguous", "source_records_match_binding",
                                   "source_derived_results_match_raw", "source_safety_samples_valid"):
                         if not evidence["checks"][check]:

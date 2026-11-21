@@ -59,6 +59,10 @@ type ValidationEvidence = {
   activation_allowed: false;
   remaining_verification: string[];
 };
+type ValidationEvidenceSnapshot = {
+  snapshot_id: string; recorded_at: string; job_version: number;
+  source_revision: number; status: "LINKED_UNVERIFIED";
+};
 const validationCheckLabels: Record<string, string> = {
   context_recorded: "재검증 조합 기록", context_matches_job: "조합과 현재 작업 정보 일치",
   job_completed: "조리 완료", source_bound: "수집 배치 연결",
@@ -221,6 +225,8 @@ export function CookingWorkspace({ csrf }: Props) {
   const [batchId, setBatchId] = useState("batch-a-001");
   const [validationForm, setValidationForm] = useState(emptyValidationFields);
   const [validationEvidence, setValidationEvidence] = useState<ValidationEvidence | null>(null);
+  const [validationSnapshots, setValidationSnapshots] = useState<ValidationEvidenceSnapshot[]>([]);
+  const [savingValidationSnapshot, setSavingValidationSnapshot] = useState(false);
   const [collectionEvidence, setCollectionEvidence] = useState<CollectionEvidence | null>(null);
   const [loadingJob, setLoadingJob] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -281,6 +287,7 @@ export function CookingWorkspace({ csrf }: Props) {
       const isNewJob = loadedJobId.current !== id;
       setJob(snapshot.job);
       setValidationEvidence(null);
+      setValidationSnapshots([]);
       setCollectionEvidence(null);
       setValidationForm(Object.fromEntries(validationFields.map(([key]) =>
         [key, snapshot.job.validation_context?.[key] ?? ""])) as Record<ValidationField, string>);
@@ -517,9 +524,34 @@ export function CookingWorkspace({ csrf }: Props) {
     if (!job || job.menu !== "JEYUK") return;
     setError("");
     try {
-      setValidationEvidence(await api<ValidationEvidence>(jobPath(job.job_id) + "/validation-evidence"));
+      const path = jobPath(job.job_id);
+      const [evidence, snapshots] = await Promise.all([
+        api<ValidationEvidence>(path + "/validation-evidence"),
+        api<ValidationEvidenceSnapshot[]>(path + "/validation-evidence-snapshots"),
+      ]);
+      if (loadedJobId.current === job.job_id && loadedJobVersion.current === job.version) {
+        setValidationEvidence(evidence);
+        setValidationSnapshots(snapshots);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "재검증 증거를 조회하지 못했습니다.");
+    }
+  }
+
+  async function captureValidationEvidence() {
+    if (!job || !validationEvidence || validationEvidence.status !== "LINKED_UNVERIFIED" ||
+        validationEvidence.job_version !== job.version || savingValidationSnapshot) return;
+    setSavingValidationSnapshot(true);
+    setError("");
+    try {
+      const path = jobPath(job.job_id) + "/validation-evidence-snapshots";
+      await api<ValidationEvidenceSnapshot>(path, csrf, { expected_version: job.version });
+      const snapshots = await api<ValidationEvidenceSnapshot[]>(path);
+      if (loadedJobId.current === job.job_id && loadedJobVersion.current === job.version) setValidationSnapshots(snapshots);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "증거 이력을 기록하지 못했습니다.");
+    } finally {
+      setSavingValidationSnapshot(false);
     }
   }
 
@@ -873,6 +905,12 @@ export function CookingWorkspace({ csrf }: Props) {
                   {validationCheckLabels[key] ?? key}: {passed ? "확인" : "미확인"}
                 </li>)}</ul>
                 {validationEvidence.process_reference && <p>자동 판정 참조: <code>{validationEvidence.process_reference.pk} / {validationEvidence.process_reference.sk}</code></p>}
+                <button type="button" className="secondary" onClick={captureValidationEvidence}
+                  disabled={busy || loadingJob || savingValidationSnapshot || validationEvidence.status !== "LINKED_UNVERIFIED" || validationEvidence.job_version !== job.version}>
+                  {savingValidationSnapshot ? "기록 중" : "현재 증거 이력 기록"}
+                </button>
+                {validationSnapshots.length > 0 && <ul>{[...validationSnapshots].sort((a, b) => b.recorded_at.localeCompare(a.recorded_at)).map((item) =>
+                  <li key={item.snapshot_id}>{timeLabel(item.recorded_at)} · 작업 버전 {item.job_version} · 원천 버전 {item.source_revision} · 검증 전 기록</li>)}</ul>}
                 <p>식별값은 합성 fixture의 선언값입니다. 이 조회로 실제 원재료 이력이나 교정 증명, 72시간 유효성이 확인되는 것은 아닙니다.</p>
               </div>}
             </div>}

@@ -141,6 +141,10 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EvidenceSnapshotRequest(StrictModel):
+    expected_version: StrictInt = Field(ge=1)
+
+
 class NewJob(StrictModel):
     planned_portions: int = Field(gt=0, le=1000)
     recipe_version: str = Field(min_length=1, max_length=80)
@@ -701,6 +705,44 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                                    "PROCESS_CONDITION_PROFILE_IDENTITY"] +
                                   ([] if checks["source_process_span_covers_cooking"] else ["SOURCE_TIMELINE_ALIGNMENT"]),
     }
+
+
+@router.post("/{job_id}/validation-evidence-snapshots", status_code=201)
+async def capture_validation_evidence(job_id: str, request: Request, body: EvidenceSnapshotRequest) -> dict:
+    """Persist a source-bound observation; it does not activate validation."""
+    session, store, pk, job, _ = await _read(request, job_id, write=True)
+    if job.get("version") != body.expected_version:
+        raise _conflict()
+    evidence = await jeyuk_validation_evidence(job_id, request)
+    receipt = evidence.get("source_receipt_reference")
+    binding = job.get("source_binding") or {}
+    if evidence.get("status") != "LINKED_UNVERIFIED" or evidence.get("job_version") != body.expected_version or \
+            not isinstance(receipt, dict) or receipt.get("pk") != f"JEYUK#{binding.get('batch_id')}":
+        raise HTTPException(409, "기록할 수 있는 원천 증거가 부족하거나 변경되었습니다.")
+    snapshot_id = str(uuid.uuid4())
+    snapshot = {"sk": f"VALIDATION#EVIDENCE#{snapshot_id}", "snapshot_id": snapshot_id,
+                "status": "LINKED_UNVERIFIED", "job_version": body.expected_version,
+                "context_digest": evidence["context_digest"], "context_version": evidence["context_version"],
+                "safety_version": evidence["safety_version"], "discharge_check_version": evidence["discharge_check_version"],
+                "source_revision": evidence["source_revision"], "source_receipt_reference": receipt,
+                "checks": evidence["checks"], "recorded_at": _now(), "recorded_by": session.subject}
+    try:
+        await _store_call(store, store.save_validation_evidence, pk, body.expected_version, snapshot,
+                          os.getenv("FOODTECH_DATA_TABLE", ""), evidence["source_revision"], receipt)
+    except Conflict as exc:
+        raise HTTPException(409, "작업 또는 원천 증거가 변경되었습니다. 다시 조회해 주세요.") from exc
+    except ValueError as exc:
+        raise HTTPException(503, "검증 증거 저장소 설정을 확인할 수 없습니다.") from exc
+    return {**snapshot, "activation_allowed": False}
+
+
+@router.get("/{job_id}/validation-evidence-snapshots")
+async def list_validation_evidence(job_id: str, request: Request, response: Response) -> list[dict]:
+    response.headers["Cache-Control"] = "no-store"
+    _, store, pk, job, _ = await _read(request, job_id)
+    if job.get("menu") != "JEYUK":
+        raise HTTPException(422, "제육볶음 작업에만 검증 증거 이력이 있습니다.")
+    return await _store_call(store, store.validation_evidence_snapshots, pk)
 
 
 @router.get("/{job_id}")
