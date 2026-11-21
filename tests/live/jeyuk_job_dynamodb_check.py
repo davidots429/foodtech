@@ -32,9 +32,10 @@ FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 async def run_check(*, safety: bool = False, size: str = "small", timeline: bool = False,
-                    full: bool = False, feed_safety: bool = False) -> int:
+                    full: bool = False, feed_safety: bool = False, evidence: bool = False) -> int:
     if size not in {"small", "medium", "large"} or (not safety and (size != "small" or timeline or full)) or \
-            (full and not timeline) or (feed_safety and (not safety or not timeline or size != "small")):
+            (full and not timeline) or (feed_safety and (not safety or not timeline or size != "small")) or \
+            (evidence and not (safety and timeline and full and feed_safety and size == "small")):
         raise ValueError("medium and large require the safety scenario")
     if os.getenv("AWS_PROFILE") != "foodtech":
         raise SystemExit("Use AWS_PROFILE=foodtech for the development account.")
@@ -55,7 +56,8 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
     cooking_store = DynamoCookingStore(COOKING_TABLE)
     job_pk = None
     listing_key = None
-    profile_pk = f"SCOPE#USER#{subject}#CONDITION_PROFILE#live-{run_id}"
+    profile_id = "jeyuk-small-safety" if evidence else f"live-{run_id}"
+    profile_pk = f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}"
 
     async def fake_session(_request, surface):
         assert surface == "customer"
@@ -105,10 +107,13 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                     "actual_placed_at": placed_at.isoformat()})
                 history_before = cooking_store.history_revision(subject)
                 fixture_kind = "full" if full else "safety"
-                raws = csharp_samples(fixture_id, FIXTURE_DIR / f"jeyuk-{size}-{fixture_kind}-v1.json",
+                fixture_version = "v2" if evidence else "v1"
+                raws = csharp_samples(fixture_id, FIXTURE_DIR / f"jeyuk-{size}-{fixture_kind}-{fixture_version}.json",
                                       placed_at.isoformat() if timeline else None) if safety else csharp_samples(fixture_id)
-                for raw in raws:
+                for index, raw in enumerate(raws, 1):
                     ingestor.ingest(raw)
+                    if evidence and (index % 100 == 0 or index == len(raws)):
+                        print(f"synthetic ingestion: {index}/{len(raws)}", flush=True)
                 processed = []
                 references = []
                 for _ in range(len(raws) + 16):
@@ -130,6 +135,8 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                             raise
                         references.append(reference)
                         sqs.delete_message(QueueUrl=ordered_url, ReceiptHandle=message["ReceiptHandle"])
+                        if evidence and (len(processed) % 100 == 0 or len(processed) == len(raws)):
+                            print(f"synthetic processing: {len(processed)}/{len(raws)}", flush=True)
                     if len(processed) == len(raws):
                         break
                 if len(processed) != len(raws):
@@ -164,6 +171,34 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                             "expected_version": final["version"], "kind": "INITIAL", "samples": probes})
                         if final["safety_status"] != "PASSED" or final.get("jeyuk_feed_safety_aligned") is not True:
                             raise AssertionError("bound feed timing did not pass the safety check")
+                        if evidence:
+                            await post(client, "/api/customer/cooking-jobs/condition-profiles", {
+                                "profile_id": profile_id, "profile_version": "v1", "equipment_profile": "jeyuk-small",
+                                "heating_setpoint_celsius": "200", "target_rpm": "30"}, 201)
+                            tracker = JeyukCompletionTracker(0)
+                            for raw in raws:
+                                tracker.record(raw)
+                            receipt = tracker.finish(cursor=len(raws), complete=True, explicit=True)
+                            if not receipt:
+                                raise AssertionError("could not construct synthetic completion receipt")
+                            data_table.put_item(Item={"pk": stream_pk, "sk": "COLLECTION#RECEIPT#live-test", **receipt},
+                                                ConditionExpression="attribute_not_exists(pk)")
+                            response = await client.get(path + "/validation-evidence")
+                            response.raise_for_status()
+                            observation = response.json()
+                            if observation["status"] != "LINKED_UNVERIFIED" or observation["activation_allowed"]:
+                                raise AssertionError(f"full source evidence was not linked: {observation['missing_checks']}")
+                            saved = await post(client, path + "/validation-evidence-snapshots", {
+                                "expected_version": final["version"]}, 201)
+                            listed = await client.get(path + "/validation-evidence-snapshots")
+                            listed.raise_for_status()
+                            if saved["activation_allowed"] or not any(
+                                    item["snapshot_id"] == saved["snapshot_id"] for item in listed.json()):
+                                raise AssertionError("unverified evidence snapshot was not listed")
+                            print(json.dumps({"scenario": "FULL_EVIDENCE", "processed": len(raws),
+                                              "evidence_status": observation["status"],
+                                              "activation_allowed": saved["activation_allowed"]}), flush=True)
+                            return 0
                         final = await post(client, path + "/jeyuk-feeds/sauce", {
                             "expected_version": final["version"], "started_at": placed_at.isoformat(),
                             "completed_at": (placed_at + timedelta(seconds=2)).isoformat(),
@@ -294,9 +329,10 @@ def main() -> int:
     parser.add_argument("--timeline", action="store_true")
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--feed-safety", action="store_true")
+    parser.add_argument("--evidence", action="store_true")
     args = parser.parse_args()
     return asyncio.run(run_check(safety=args.safety, size=args.size, timeline=args.timeline, full=args.full,
-                                 feed_safety=args.feed_safety))
+                                 feed_safety=args.feed_safety, evidence=args.evidence))
 
 
 if __name__ == "__main__":
