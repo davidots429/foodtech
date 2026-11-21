@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://foodtech.example/contracts/mockprofile-121-b-v1.schema.json",
+  "title": "Synthetic vendor-b combi oven REST XML record",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_id",
+    "device_id",
+    "batch_id",
+    "record_id",
+    "sequence_number",
+    "event_time_ms",
+    "device_status",
+    "temperature_f",
+    "output_percent",
+    "elapsed_ms",
+    "ext_equipment_type",
+    "ext_climate_setpoint_percent",
+    "ext_humidity_source",
+    "ext_humidity_percent",
+    "ext_fan_level"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "source_id": {
+      "const": "synthetic-rest-xml"
+    },
+    "device_id": {
+      "const": "mockprofile-121-b-001"
+    },
+    "batch_id": {
+      "type": "string",
+      "pattern": "^batch-b-[A-Za-z0-9-]+$"
+    },
+    "record_id": {
+      "type": "string",
+      "pattern": "^rec-b-[A-Za-z0-9-]+$"
+    },
+    "sequence_number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000
+    },
+    "event_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 253402300799999
+    },
+    "device_status": {
+      "enum": [
+        0,
+        1
+      ]
+    },
+    "temperature_f": {
+      "type": "number",
+      "minimum": -1000,
+      "maximum": 1000
+    },
+    "output_percent": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ext_firmware_version": {
+      "type": "string"
+    },
+    "ext_equipment_type": {
+      "const": "COMBI_OVEN"
+    },
+    "ext_climate_setpoint_percent": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "ext_humidity_source": {
+      "enum": [
+        "MEASURED",
+        "CONTROLLER_ESTIMATE",
+        "NOT_SUPPORTED"
+      ]
+    },
+    "ext_humidity_percent": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 100
+    },
+    "ext_fan_level": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10
+    }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "ext_humidity_source": {
+            "const": "NOT_SUPPORTED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "ext_humidity_percent": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "ext_humidity_percent": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          }
+        }
+      }
+    }
+  ]
+}

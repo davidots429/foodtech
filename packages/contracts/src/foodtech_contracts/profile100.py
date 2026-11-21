@@ -172,7 +172,8 @@ EQUIPMENT_SYNTHETIC_NORMALIZED = {}
 for _binary, _normalized in (("213", STIR_UA_JSON_NORMALIZED), ("223", COMBI_UA_JSON_NORMALIZED),
                                ("310", STIR_UA_JSON_NORMALIZED), ("320", COMBI_UA_JSON_NORMALIZED),
                                ("312", STIR_UA_JSON_NORMALIZED), ("322", COMBI_UA_JSON_NORMALIZED),
-                               ("311", STIR_UA_JSON_NORMALIZED), ("321", COMBI_UA_JSON_NORMALIZED)):
+                               ("311", STIR_UA_JSON_NORMALIZED), ("321", COMBI_UA_JSON_NORMALIZED),
+                               ("111", STIR_UA_JSON_NORMALIZED), ("121", COMBI_UA_JSON_NORMALIZED)):
     for _vendor in "abc":
         _id = f"mockprofile-{_binary}-{_vendor}-001"
         _source_schema = json.loads(files("foodtech_contracts").joinpath(
@@ -191,7 +192,7 @@ def _validate(record: dict) -> None:
     binary_id = record.get("deviceId")
     if binary_id in EQUIPMENT_SYNTHETIC_NORMALIZED:
         EQUIPMENT_SYNTHETIC_NORMALIZED[binary_id].validate(record)
-        if binary_id.startswith(("mockprofile-223-c-", "mockprofile-320-c-", "mockprofile-322-c-", "mockprofile-321-c-")) and record["measurements"]["speedLevel"] != record["extensions"]["vendor_extension"]["FanLevel"]:
+        if binary_id.startswith(("mockprofile-223-c-", "mockprofile-320-c-", "mockprofile-322-c-", "mockprofile-321-c-", "mockprofile-121-c-")) and record["measurements"]["speedLevel"] != record["extensions"]["vendor_extension"]["FanLevel"]:
             raise ValueError("conflicting synthetic fan levels")
         return
     for vendor, validator in COMBI_UA_JSON_NORMALIZED.items():
@@ -243,7 +244,7 @@ def decode_record(raw: str | bytes) -> dict:
     if not is_xml and any(isinstance(record.get(key), str) and
                           record[key] in {"mockprofile-101-a-001", "mockprofile-101-b-001", "mockprofile-101-c-001",
                                           "mockprofile-301-a-001", "mockprofile-301-b-001", "mockprofile-301-c-001",
-                                          *{f"mockprofile-{profile}-{vendor}-001" for profile in ("311", "321") for vendor in "abc"}}
+                                          *{f"mockprofile-{profile}-{vendor}-001" for profile in ("111", "121", "311", "321") for vendor in "abc"}}
                           for key in ("deviceId", "device_id", "DeviceId")):
         raise ValueError("XML source profile requires XML input")
     if not csv_source and any(isinstance(record.get(key), str) and record[key] in
