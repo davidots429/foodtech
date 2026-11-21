@@ -3,9 +3,9 @@ import base64
 import unittest
 
 from boto3.dynamodb.types import TypeSerializer
-from foodtech_business_api.capsule_inventory import CapsuleInventory
+from foodtech_business_api.capsule_inventory import CapsuleInventory, CapsuleInventoryError
 from foodtech_capsule_crypto.contract import Entry, Envelope
-from foodtech_capsule_crypto.deletion_plan import EncryptedTarget, prepare_targets
+from foodtech_capsule_crypto.deletion_plan import EncryptedTarget, prepare_targets, prepare_from_inventory
 from foodtech_capsule_crypto.user_entry import UserEntryEnvelope, open_entry, seal_entry
 from foodtech_capsule_crypto.user_key import UserKeyGenerator, UserKeyRecord, UserKeyUnwrapper
 
@@ -81,6 +81,25 @@ class InventoryCryptoTests(unittest.TestCase):
             targets=(EncryptedTarget('BILLING', '2026-11', envelope),), expected_count=inventory.entry_count,
             key_map=key_map, approved_purposes=purposes, approved_tenant_purposes=tenant_purposes, kms_client=kms)
         self.assertEqual(plan.entries, (plain,))
+        connected = prepare_from_inventory(inventory=CapsuleInventory('capsule', purposes, client=Client(meta, row)),
+            locator=locator, request_id=request_id, tenant=tenant, key_map=key_map,
+            approved_purposes=purposes, approved_tenant_purposes=tenant_purposes, kms_client=kms)
+        self.assertEqual(connected.entries, (plain,))
+
+        class UnstableClient(Client):
+            def __init__(self, meta, entry):
+                super().__init__(meta, entry)
+                self.reads = 0
+            def get_item(self, **kwargs):
+                self.reads += 1
+                changed = dict(self.meta)
+                if self.reads > 1:
+                    changed['revision'] = serializer.serialize(2)
+                return {'Item': changed}
+        with self.assertRaises(CapsuleInventoryError):
+            prepare_from_inventory(inventory=CapsuleInventory('capsule', purposes, client=UnstableClient(meta, row)),
+                locator=locator, request_id=request_id, tenant=tenant, key_map=key_map,
+                approved_purposes=purposes, approved_tenant_purposes=tenant_purposes, kms_client=kms)
 
 
 if __name__ == '__main__':
