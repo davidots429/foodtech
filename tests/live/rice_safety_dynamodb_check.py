@@ -23,7 +23,7 @@ async def scenario(store, partitions):
     subject = "synthetic-rice-safety-" + uuid.uuid4().hex
     ids = [uuid.uuid4() for _ in range(4)]
     pk = f"SCOPE#USER#{subject}#COMBI_MEAL#{ids[0]}"
-    partitions.append(pk)
+    partitions.extend((pk, f"SCOPE#USER#{subject}#COMBI_MEALS"))
 
     async def session(_request, surface):
         assert surface == "customer"
@@ -49,7 +49,7 @@ async def scenario(store, partitions):
                     "event": event, "observed_at": (start + timedelta(seconds=offset)).isoformat()})
                 response.raise_for_status()
             samples = [{"second": index, "chamber_celsius": "100", "humidity_percent": "98",
-                        "door": "CLOSED", "fan_level": 4} for index in range(1, 1801)]
+                        "door": "CLOSED", "fan_level": 4, "climate_setpoint_percent": "100"} for index in range(1, 1801)]
             process = await client.post(path + "/rice-process", headers=headers,
                 json={"expected_version": 4, "humidity_source": "MEASURED", "samples": samples})
             process.raise_for_status()
@@ -88,7 +88,7 @@ async def main():
     session = boto3.Session(profile_name="foodtech", region_name="ap-southeast-2")
     if session.client("sts").get_caller_identity()["Account"] != ACCOUNT:
         raise SystemExit("Unexpected AWS account")
-    store = DynamoCookingStore(TABLE)
+    store = DynamoCookingStore(TABLE, "foodtech-auth-sessions-dev")
     partitions = []
     try:
         result = await scenario(store, partitions)
