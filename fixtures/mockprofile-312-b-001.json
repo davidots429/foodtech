@@ -1,0 +1,27 @@
+{
+  "contractVersion": "1.0",
+  "profileId": "mockprofile-312",
+  "instanceId": "mockprofile-312-b-001",
+  "fixture": "vendor-b",
+  "provenance": "SYNTHETIC",
+  "generatorVersion": "1.0.0",
+  "seed": 312002,
+  "logicalStartTime": "2026-11-01T00:00:00Z",
+  "records": [
+    "schema_version,source_id,device_id,batch_id,record_id,sequence_number,event_time_ms,device_status,temperature_f,output_percent,elapsed_ms,ext_firmware_version,ext_equipment_type\n1.0,synthetic-mqtt-csv,mockprofile-312-b-001,batch-b-001,rec-b-001,1,1793491200000,1,356,60,0,synthetic-1,STIR_FRYER\n",
+    "schema_version,source_id,device_id,batch_id,record_id,sequence_number,event_time_ms,device_status,temperature_f,output_percent,elapsed_ms,ext_firmware_version,ext_equipment_type\n1.0,synthetic-mqtt-csv,mockprofile-312-b-001,batch-b-001,rec-b-002,2,1793491205000,1,358.7,60,5000,synthetic-1,STIR_FRYER\n",
+    "schema_version,source_id,device_id,batch_id,record_id,sequence_number,event_time_ms,device_status,temperature_f,output_percent,elapsed_ms,ext_firmware_version,ext_equipment_type\n1.0,synthetic-mqtt-csv,mockprofile-312-b-001,batch-b-001,rec-b-003,3,1793491210000,1,359.6,60,10000,synthetic-1,STIR_FRYER\n"
+  ],
+  "expected": {
+    "releaseSequence": [
+      1,
+      2,
+      3
+    ],
+    "qualityStatus": [
+      "VALID",
+      "VALID",
+      "VALID"
+    ]
+  }
+}

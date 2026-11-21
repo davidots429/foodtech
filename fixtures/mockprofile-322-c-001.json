@@ -1,0 +1,27 @@
+{
+  "contractVersion": "1.0",
+  "profileId": "mockprofile-322",
+  "instanceId": "mockprofile-322-c-001",
+  "fixture": "vendor-c",
+  "provenance": "SYNTHETIC",
+  "generatorVersion": "1.0.0",
+  "seed": 322003,
+  "logicalStartTime": "2026-11-01T00:00:00Z",
+  "records": [
+    "SchVer,SrcId,DeviceId,BatchId,RecId,SeqNo,Timestamp,Status,Readings_TempC,Readings_SpeedLvl,Readings_ElapsedMin,Alarm,Err,Extension_Firmware,Extension_EquipmentType,Extension_ClimateSetpointPct,Extension_HumiditySource,Extension_HumidityPct,Extension_FanLevel\n1.0,synthetic-mqtt-csv,mockprofile-322-c-001,batch-c-001,rec-c-001,1,2026-11-01T09:00:00+09:00,RUN,180,4,0,N,,synthetic-1,COMBI_OVEN,100,MEASURED,98,4\n",
+    "SchVer,SrcId,DeviceId,BatchId,RecId,SeqNo,Timestamp,Status,Readings_TempC,Readings_SpeedLvl,Readings_ElapsedMin,Alarm,Err,Extension_Firmware,Extension_EquipmentType,Extension_ClimateSetpointPct,Extension_HumiditySource,Extension_HumidityPct,Extension_FanLevel\n1.0,synthetic-mqtt-csv,mockprofile-322-c-001,batch-c-001,rec-c-002,2,2026-11-01T09:00:05+09:00,RUN,181.5,4,0.0833333,N,,synthetic-1,COMBI_OVEN,100,MEASURED,98,4\n",
+    "SchVer,SrcId,DeviceId,BatchId,RecId,SeqNo,Timestamp,Status,Readings_TempC,Readings_SpeedLvl,Readings_ElapsedMin,Alarm,Err,Extension_Firmware,Extension_EquipmentType,Extension_ClimateSetpointPct,Extension_HumiditySource,Extension_HumidityPct,Extension_FanLevel\n1.0,synthetic-mqtt-csv,mockprofile-322-c-001,batch-c-001,rec-c-003,3,2026-11-01T09:00:10+09:00,RUN,182,4,0.1666667,N,,synthetic-1,COMBI_OVEN,100,MEASURED,98,4\n"
+  ],
+  "expected": {
+    "releaseSequence": [
+      1,
+      2,
+      3
+    ],
+    "qualityStatus": [
+      "VALID",
+      "VALID",
+      "VALID"
+    ]
+  }
+}

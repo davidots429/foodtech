@@ -8,6 +8,9 @@ from importlib.resources import files
 COLUMNS = {v: json.loads(files('foodtech_contracts').joinpath(
     f'mockprofile-302-{v}-v1.columns.json').read_text())['columns'] for v in 'abc'}
 PREFIXES = tuple(','.join(COLUMNS[v][:2]) + ',' for v in 'abc')
+EQUIPMENT_COLUMNS = {(profile, vendor): json.loads(files('foodtech_contracts').joinpath(
+    f'mockprofile-{profile}-{vendor}-v1.columns.json').read_text())['columns']
+    for profile in ('312', '322') for vendor in 'abc'}
 
 
 def is_csv(raw: str | bytes) -> bool:
@@ -31,6 +34,11 @@ def parse_record(raw: str | bytes) -> dict:
     if vendor is None:
         raise ValueError('CSV column schema mismatch')
     row = dict(zip(*rows))
+    instance = row.get({'a': 'deviceId', 'b': 'device_id', 'c': 'DeviceId'}[vendor], '')
+    equipment_profile = next((profile for profile in ('312', '322')
+                              if instance == f'mockprofile-{profile}-{vendor}-001'), None)
+    if equipment_profile and rows[0][:len(EQUIPMENT_COLUMNS[(equipment_profile, vendor)])] != EQUIPMENT_COLUMNS[(equipment_profile, vendor)]:
+        raise ValueError('equipment CSV column schema mismatch')
     def number(key):
         try:
             value = Decimal(row[key])
@@ -42,6 +50,8 @@ def parse_record(raw: str | bytes) -> dict:
         value = row[key]
         if not value.isascii() or not value.isdigit(): raise ValueError('invalid integer cell')
         return int(value)
+    def optional_number(key):
+        return None if row[key] == '' else number(key)
     if vendor == 'a':
         result = {key: row[key] for key in COLUMNS[vendor][:8]}
         result['sequenceNumber'] = integer('sequenceNumber')
@@ -61,5 +71,24 @@ def parse_record(raw: str | bytes) -> dict:
         result['Readings'] = {'TempC': number('Readings_TempC'), 'SpeedLvl': integer('Readings_SpeedLvl'),
                               'ElapsedMin': number('Readings_ElapsedMin')}
         result.update(Alarm=row['Alarm'], Err=row['Err'], Extension={'Firmware': row['Extension_Firmware']})
+    if equipment_profile:
+        if vendor == 'a':
+            result['extensions']['equipmentType'] = row['extensions.equipmentType']
+            if equipment_profile == '322':
+                result['extensions'].update(climateSetpointPercent=number('extensions.climateSetpointPercent'),
+                    humiditySource=row['extensions.humiditySource'], humidityPercent=optional_number('extensions.humidityPercent'),
+                    fanLevel=integer('extensions.fanLevel'))
+        elif vendor == 'b':
+            result['ext_equipment_type'] = row['ext_equipment_type']
+            if equipment_profile == '322':
+                result.update(ext_climate_setpoint_percent=number('ext_climate_setpoint_percent'),
+                    ext_humidity_source=row['ext_humidity_source'], ext_humidity_percent=optional_number('ext_humidity_percent'),
+                    ext_fan_level=integer('ext_fan_level'))
+        else:
+            result['Extension']['EquipmentType'] = row['Extension_EquipmentType']
+            if equipment_profile == '322':
+                result['Extension'].update(ClimateSetpointPct=number('Extension_ClimateSetpointPct'),
+                    HumiditySource=row['Extension_HumiditySource'], HumidityPct=optional_number('Extension_HumidityPct'),
+                    FanLevel=integer('Extension_FanLevel'))
     # Additional columns stay in the original CSV and are not promoted to standard fields.
     return result

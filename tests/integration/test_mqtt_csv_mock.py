@@ -27,9 +27,9 @@ class MqttCsvTests(unittest.TestCase):
                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
                 "-password", "pass:test-password"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for vendor, fault in (("a", None), ("b", None), ("c", None), ("a", "invalid-csv")):
-                with self.subTest(vendor=vendor, fault=fault):
-                    instance = f"mockprofile-302-{vendor}-001"
+            for profile, vendor, fault in (*[(profile, vendor, None) for profile in ("302", "312", "322") for vendor in "abc"], ("302", "a", "invalid-csv"), ("312", "a", "invalid-csv"), ("322", "c", "invalid-csv")):
+                with self.subTest(profile=profile, vendor=vendor, fault=fault):
+                    instance = f"mockprofile-{profile}-{vendor}-001"
                     with socket.socket() as probe:
                         probe.bind(("127.0.0.1", 0))
                         port = probe.getsockname()[1]
@@ -63,15 +63,17 @@ class MqttCsvTests(unittest.TestCase):
                             sink = Sink()
                             self.assertEqual(collect(*args, count=1, timeout_seconds=10, instance=instance, quarantine=sink), 1)
                             self.assertIn(b"\n=1.0,", sink.records[0][0])
-                            self.assertEqual(sink.records[0][1]["profile_id"], "mockprofile-302")
+                            self.assertEqual(sink.records[0][1]["profile_id"], f"mockprofile-{profile}")
                             self.assertEqual(ingestor.records, [])
                         else:
                             self.assertEqual(collect(*args, count=3, timeout_seconds=20, instance=instance), 3)
                             self.assertEqual([decode_record(raw)["sequenceNumber"] for raw in ingestor.records], [1, 2, 3])
                             results = [assess(str(i), raw) for i, raw in enumerate(ingestor.records)]
                             self.assertEqual([item.quality_status for item in results], ["VALID", "VALID", "VALID"])
-                            self.assertTrue(all(item.mapping_version == f"mockprofile-302-{vendor}-map-v1" for item in results))
+                            self.assertTrue(all(item.mapping_version == f"mockprofile-{profile}-{vendor}-map-v1" for item in results))
                             self.assertTrue(all("\n" in raw for raw in ingestor.records))
+                            if profile == "312": self.assertIn("POT_TEMPERATURE", results[0].normalized)
+                            if profile == "322": self.assertIn("RELATIVE_HUMIDITY", results[0].normalized)
                     finally:
                         server.terminate()
                         server.wait(timeout=5)
