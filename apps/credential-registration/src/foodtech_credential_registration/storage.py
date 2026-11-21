@@ -1,5 +1,8 @@
 """Encrypt and write a credential without a stored-secret read or decrypt path."""
 
+import base64
+import binascii
+import re
 from typing import Any
 
 import aws_encryption_sdk
@@ -13,6 +16,19 @@ from boto3.dynamodb.conditions import Attr
 
 
 SUITE = Algorithm.AES_256_GCM_HKDF_SHA512_COMMIT_KEY_ECDSA_P384
+
+
+def _credential_pseudonym(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    match = re.fullmatch(r"psn:v1:credential:([0-9]{4})-(0[1-9]|1[0-2]):([A-Za-z0-9._-]{1,64}):([A-Za-z0-9_-]{43})", value)
+    if not match or int(match.group(1)) < 1:
+        return False
+    try:
+        digest = base64.b64decode(match.group(4) + "=", altchars=b"-_", validate=True)
+        return len(digest) == 32 and base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=") == match.group(4)
+    except (ValueError, binascii.Error):
+        return False
 
 
 class CredentialWriter:
@@ -40,7 +56,7 @@ class CredentialWriter:
     def encrypt_item(self, credential_id: str, tenant_pseudonym: str, provider: str,
                      plaintext: bytearray, *, pool_version: str, shard_id: str) -> dict:
         try:
-            if not credential_id or len(credential_id) > 256 or not tenant_pseudonym or \
+            if not credential_id or len(credential_id) > 256 or not _credential_pseudonym(tenant_pseudonym) or \
                     provider not in {"openai", "google", "anthropic"} or \
                     not pool_version or not shard_id or not 1 <= len(plaintext) <= 400:
                 raise ValueError("invalid credential metadata or key byte length")
