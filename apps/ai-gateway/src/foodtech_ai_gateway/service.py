@@ -112,7 +112,7 @@ class GatewayService:
                     guard.execution != execution:
                 return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_SCOPE_UNAVAILABLE")
             try:
-                checks = guard.settlement_checks()
+                checks = await asyncio.to_thread(guard.settlement_checks)
                 if any(check['ConditionCheck']['TableName'] == self.registry.table_name for check in checks):
                     raise ValueError('source table conflicts with execution registry')
             except (TypeError, ValueError, KeyError):
@@ -132,13 +132,13 @@ class GatewayService:
             except Exception:
                 return False
 
-        def finish_recipe(*, succeeded: bool, response_text: str | None = None, error_code: str | None = None) -> bool:
+        async def finish_recipe(*, succeeded: bool, response_text: str | None = None, error_code: str | None = None) -> bool:
             try:
-                self.registry.finish(execution_id, succeeded=succeeded, actual_cost_usd=Decimal('0'),
-                                     response_text=response_text, error_code=error_code,
-                                     expected_execution=execution,
-                                     recipe_source_guard=self.recipe_source_guard if succeeded and
-                                         isinstance(baseline, JeyukBaseline) else None)
+                await asyncio.to_thread(self.registry.finish, execution_id, succeeded=succeeded,
+                                        actual_cost_usd=Decimal('0'), response_text=response_text,
+                                        error_code=error_code, expected_execution=execution,
+                                        recipe_source_guard=self.recipe_source_guard if succeeded and
+                                            isinstance(baseline, JeyukBaseline) else None)
                 return True
             except RegistryConflict:
                 return False
@@ -173,18 +173,18 @@ class GatewayService:
             if not await source_current():
                 code = "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE"
                 if reserved:
-                    if not finish_recipe(succeeded=False, error_code=code):
+                    if not await finish_recipe(succeeded=False, error_code=code):
                         return ExecutionOutcome(execution_id, "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
                     return ExecutionOutcome(execution_id, "FAILED", error_code=code)
                 return ExecutionOutcome(execution_id, "DENIED", error_code=code)
             if result["status"] == "NEEDS_REVIEW":
                 response = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-                if not finish_recipe(succeeded=True, response_text=response):
+                if not await finish_recipe(succeeded=True, response_text=response):
                     return ExecutionOutcome(execution_id, "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
                 return ExecutionOutcome(execution_id, "SUCCEEDED", response_text=response)
             code = result["error_code"]
         if reserved:
-            if not finish_recipe(succeeded=False, error_code=code):
+            if not await finish_recipe(succeeded=False, error_code=code):
                 return ExecutionOutcome(execution_id, "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
             return ExecutionOutcome(execution_id, "FAILED", error_code=code)
         return ExecutionOutcome(execution_id, "DENIED", error_code=code)

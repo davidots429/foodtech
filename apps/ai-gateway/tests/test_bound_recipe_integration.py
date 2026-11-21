@@ -1,5 +1,6 @@
 """Internal Gateway flow using the real source guard and synthetic records."""
 import asyncio
+import threading
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -60,6 +61,27 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
         result = self.invoke(Model())
         self.assertEqual(result.state, 'SUCCEEDED')
         self.assertIn('NEEDS_REVIEW', result.response_text)
+
+    def test_blocking_settlement_reads_run_outside_event_loop_thread(self):
+        main_thread = threading.get_ident()
+        threads = []
+        original_checks = self.source.guard.settlement_checks
+        original_finish = self.registry.finish
+        def record_checks(*args, **kwargs):
+            threads.append(('checks', threading.get_ident()))
+            return original_checks(*args, **kwargs)
+        def record_finish(*args, **kwargs):
+            threads.append(('finish', threading.get_ident()))
+            return original_finish(*args, **kwargs)
+        self.source.guard.settlement_checks = record_checks
+        self.registry.finish = record_finish
+        class Model:
+            async def structured_chat(self, *_):
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        self.assertEqual(self.invoke(Model()).state, 'SUCCEEDED')
+        self.assertTrue(any(name == 'checks' for name, _ in threads))
+        self.assertTrue(any(name == 'finish' for name, _ in threads))
+        self.assertTrue(all(thread != main_thread for _, thread in threads))
 
     def test_source_change_during_model_call_discards_candidate(self):
         source = self.source.resource.tables['foodtech-data-flow-dev']
