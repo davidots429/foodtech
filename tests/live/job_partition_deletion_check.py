@@ -88,7 +88,8 @@ try:
  meta_worker=JobMetaDeletion(inventory=inventory,residual=residual,binding_residual=binding_residual)
  final_jobs=JobFinalResidualScan(source_table=src,progress_store=store,cipher=cipher)
  final_bindings=JobBindingFinalResidualScan(source_table=src,progress_store=store,cipher=cipher)
- coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual,binding_residual=binding_residual,metadata=meta_worker,final_jobs=final_jobs,final_bindings=final_bindings)
+ inspector=JobSourceSnapshot(inventory=inventory)
+ coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual,binding_residual=binding_residual,metadata=meta_worker,final_jobs=final_jobs,final_bindings=final_bindings,sources=inspector)
  orphan_record={'pk':f'SCOPE#USER#{u}#JOB#lost','sk':'EVENT#1'}
  inserted=observed=binding_inserted=binding_observed=False
  remaining_binding={'pk':'JEYUK#jeyuk-late-'+u,'sk':'BINDING'}
@@ -108,9 +109,10 @@ try:
    observed=True;src.delete_item(Key=orphan_record)
   if result.get('residual_found') and result['phase']=='BINDING_RESIDUAL':
    binding_observed=True;src.delete_item(Key=remaining_binding)
-  if result['phase']=='VERIFYING':break
+  if result.get('source_ownership_required'):break
+  if result['phase']=='VERIFYING':raise AssertionError('bound source was not blocked')
  else:raise AssertionError('bounded job cleanup incomplete')
- assert observed and binding_observed and late_observed
+ assert observed and binding_observed and late_observed and result.get('source_ownership_required')
  assert not src.get_item(Key=binding_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key=orphan_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#job'},ConsistentRead=True).get('Item')
