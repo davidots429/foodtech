@@ -45,11 +45,12 @@ class HistoryRevisionTests(unittest.TestCase):
     def test_start_and_history_revision_share_dynamo_transaction(self):
         calls = []; store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test"); store.serializer = TypeSerializer()
+        store.auth_table_name = "auth-table"
         store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
         store.commit("SCOPE#USER#owner#JOB#one", 1, {"version": 2},
                      event={"sk": "EVENT#start", "trigger": "COOKING_STARTED"})
         ops = calls[0]["TransactItems"]
-        self.assertEqual(len(ops), 3)
+        self.assertEqual(len(ops), 4)
         self.assertEqual(ops[-1]["Update"]["Key"], {"pk": {"S": "SCOPE#USER#owner#JOBS"},
                                                      "sk": {"S": "HISTORY#REVISION"}})
         self.assertIn("attribute_not_exists", ops[-1]["Update"]["ConditionExpression"])

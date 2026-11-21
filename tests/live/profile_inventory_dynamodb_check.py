@@ -47,6 +47,11 @@ def main():
     recook_meta = {**job_meta, 'job_id': 'synthetic-recook', 'source_job_id': 'synthetic-job'}
     recook_keys = [{'pk': recook_pk, 'sk': 'META'},
                    {'pk': job_index, 'sk': f'CREATED#{timestamp}#synthetic-recook'}]
+    assessment = {'sk': 'ASSESSMENT#REV#000000000001', 'version': 1}
+    pointer = {'version': 1, 'usable': True}
+    event = {'sk': 'EVENT#SYNTHETIC#1', 'trigger': 'SAFETY'}
+    commit_keys = [{'pk': job_pk, 'sk': assessment['sk']}, {'pk': job_pk, 'sk': 'ASSESSMENT#CURRENT'},
+                   {'pk': job_pk, 'sk': event['sk']}]
     auth_created = False
     try:
         for version in ('v1', 'v2'):
@@ -105,6 +110,15 @@ def main():
         auth_table.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request',
                                ExpressionAttributeValues={':request': str(uuid4())})
         try:
+            store.commit(job_pk, 1, {**job_meta, 'version': 2}, assessment, pointer, event, 1)
+        except Conflict:
+            pass
+        else:
+            raise AssertionError('job mutation accepted after deletion lock')
+        if any(table.get_item(Key=k, ConsistentRead=True).get('Item') for k in commit_keys) or \
+                table.get_item(Key=job_keys[0], ConsistentRead=True)['Item']['version'] != 1:
+            raise AssertionError('blocked job mutation changed job or assessment')
+        try:
             store.create_recook(job_pk, 1, recook_pk, recook_meta, 1)
         except Conflict:
             pass
@@ -117,6 +131,9 @@ def main():
         store.create_recook(job_pk, 1, recook_pk, recook_meta, 1)
         if any(table.get_item(Key=k, ConsistentRead=True).get('Item') is None for k in recook_keys):
             raise AssertionError('valid recook was not created')
+        store.commit(job_pk, 1, {**job_meta, 'version': 2}, assessment, pointer, event, 1)
+        if any(table.get_item(Key=k, ConsistentRead=True).get('Item') is None for k in commit_keys):
+            raise AssertionError('valid job mutation did not save its assessment')
         table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
                        ConditionExpression='attribute_not_exists(pk)')
         checkpoint, found = None, False
@@ -143,6 +160,8 @@ def main():
         for key in job_keys:
             table.delete_item(Key=key)
         for key in recook_keys:
+            table.delete_item(Key=key)
+        for key in commit_keys:
             table.delete_item(Key=key)
         if auth_created:
             auth_table.delete_item(Key=auth_key)

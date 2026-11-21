@@ -159,7 +159,7 @@ class CookingStore(Protocol):
                       new_pk: str, meta: dict, expected_epoch: int = 0) -> None: ...
     def commit(self, pk: str, expected_version: int, meta: dict,
                assessment: dict | None = None, pointer: dict | None = None,
-               event: dict | None = None) -> None: ...
+               event: dict | None = None, expected_epoch: int = 0) -> None: ...
     def assessments(self, pk: str) -> list[dict]: ...
     def events(self, pk: str) -> list[dict]: ...
     def assessment(self, pk: str, version: int) -> dict | None: ...
@@ -431,7 +431,7 @@ class MemoryCookingStore:
 
     def commit(self, pk: str, expected_version: int, meta: dict,
                assessment: dict | None = None, pointer: dict | None = None,
-               event: dict | None = None) -> None:
+               event: dict | None = None, expected_epoch: int = 0) -> None:
         with self.lock:
             current = self.items.get((pk, "META"))
             if not current or current["version"] != expected_version:
@@ -1053,8 +1053,11 @@ class DynamoCookingStore:
 
     def commit(self, pk: str, expected_version: int, meta: dict,
                assessment: dict | None = None, pointer: dict | None = None,
-               event: dict | None = None) -> None:
-        operations = [{"Put": {
+               event: dict | None = None, expected_epoch: int = 0) -> None:
+        owner = _history_pk(pk).removeprefix('SCOPE#USER#').removesuffix('#JOBS')
+        if not owner or ('owner_subject' in meta and meta['owner_subject'] != owner):
+            raise ValueError('job owner mismatch')
+        operations = [self._owner_guard(owner, expected_epoch), {"Put": {
             "TableName": self.table.name,
             "Item": self._item({"pk": pk, "sk": "META", **meta}),
             "ConditionExpression": "#version = :expected",

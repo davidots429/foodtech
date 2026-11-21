@@ -102,7 +102,7 @@ def _jeyuk_feed_safety_current(job: dict) -> bool:
     return job.get("menu") != "JEYUK" or job.get("jeyuk_feed_safety_aligned") is True
 
 
-async def _commit(store, pk: str, previous: dict, meta: dict,
+async def _commit(session, store, pk: str, previous: dict, meta: dict,
                   assessment: dict | None = None, pointer: dict | None = None,
                   event: dict | None = None):
     if event is not None:
@@ -110,7 +110,7 @@ async def _commit(store, pk: str, previous: dict, meta: dict,
         if reason:
             event = {**event, "validation_change_reason": reason}
     try:
-        await _store_call(store, store.commit, pk, int(previous["version"]), meta, assessment, pointer, event)
+        await _store_call(store, store.commit, pk, int(previous["version"]), meta, assessment, pointer, event, session.epoch)
     except Conflict as exc:
         raise _conflict() from exc
     from .assessment_aggregate import refresh_dependents as refresh_aggregates
@@ -473,7 +473,7 @@ async def record_tonkatsu_batch(job_id: str, request: Request, body: TonkatsuBat
     event = {"sk": f"EVENT#TONKATSU_BATCH#{version:012d}", "domain": "TONKATSU_BATCH",
              "trigger": "TONKATSU_BATCH_RECORDED", "batch": value,
              "actor_subject": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(session, store, pk, old, meta, event=event)
     return meta
 
 
@@ -513,7 +513,7 @@ async def record_tonkatsu_initial_context(job_id: str, request: Request, body: T
     event = {"sk": f"EVENT#TONKATSU_INITIAL_CONTEXT#{version:012d}", "domain": "TONKATSU_INITIAL_CONTEXT",
              "trigger": "TONKATSU_INITIAL_CONTEXT_RECORDED", "context": value,
              "actor_subject": session.subject, "occurred_at": timestamp}
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(session, store, pk, old, meta, event=event)
     return meta
 
 
@@ -608,7 +608,7 @@ async def record_jeyuk_validation_context(job_id: str, request: Request,
         changes = compare_jeyuk_context(old["validation_context"], context)
         event["change_reasons"] = list(changes.reasons)
         event["unknown_fields"] = list(changes.unknown_fields)
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(session, store, pk, old, meta, event=event)
     return meta
 
 
@@ -1020,7 +1020,7 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
              "actual_cooking_seconds": cooking_seconds,
              "process_time_status": time_status if body.event == "COOKING_COMPLETED" else None,
              "thickness_time_rule_version": RULE_VERSION if body.event == "COOKING_COMPLETED" else None}
-    await _commit(store, pk, old, meta, pointer=new_pointer, event=event)
+    await _commit(session, store, pk, old, meta, pointer=new_pointer, event=event)
     return meta
 
 
@@ -1112,7 +1112,7 @@ async def record_jeyuk_feed(job_id: str, ingredient: Literal["meat", "vegetable"
              "trigger": "FEED_REVISED" if previous else "FEED_RECORDED", "ingredient": key,
              "previous": previous, "feed": current, "reason": body.reason.strip() if body.reason else None,
              "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta,
+    await _commit(session, store, pk, old, meta,
                   pointer=_blocked_pointer(pointer, "JEYUK_FEED_CHANGED"),
                   event=event)
     return meta
@@ -1150,7 +1150,7 @@ async def record_jeyuk_discharge(job_id: str, request: Request, body: JeyukDisch
              "trigger": "DISCHARGE_REVISED" if previous else "DISCHARGE_COMPLETED", "previous": previous,
              "discharge": current, "reason": body.reason.strip() if body.reason else None,
              "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(session, store, pk, old, meta, event=event)
     return meta
 
 
@@ -1222,7 +1222,7 @@ async def safety_event(job_id: str, request: Request, body: SafetyEvent) -> dict
              "partial_observations": body.partial_observations if body.event == "SUSPECTED" else {},
              "evaluation_status": meta["evaluation_status"],
              "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{body.event}"), event=event)
+    await _commit(session, store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{body.event}"), event=event)
     return meta
 
 
@@ -1286,7 +1286,7 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
              "probes": meta["core_check"], "mock_evidence": meta["core_check_mock_evidence"],
              "reheat_segment_id": reheat["segment_id"] if reheat else None,
              "actor": session.subject, "occurred_at": _now()}
-    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
+    await _commit(session, store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
     return meta
 
 
@@ -1327,7 +1327,7 @@ async def tonkatsu_reheat(job_id: str, request: Request, body: TonkatsuReheat) -
     event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}", "domain": "SAFETY_STATUS",
              "trigger": "TONKATSU_REHEATED", "from_status": "FAILED", "to_status": "INCOMPLETE",
              "segment": segment, "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, "SAFETY_RECHECK_REQUIRED"), event=event)
+    await _commit(session, store, pk, old, meta, pointer=_blocked_pointer(pointer, "SAFETY_RECHECK_REQUIRED"), event=event)
     return meta
 
 
@@ -1401,7 +1401,7 @@ async def jeyuk_discharge_check(job_id: str, request: Request, body: JeyukDischa
              "manual_status": manual_status, "auto_safety_status": auto_status,
              "feed_safety_aligned": feed_alignment,
              "kind": body.kind, "samples": evidence, "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
+    await _commit(session, store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
     return meta
 
 
@@ -1487,7 +1487,7 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
                    "safety_version": old["safety_version"]}
     meta = {**old, "version": old["version"] + 1, "updated_at": _now(),
             "evaluation_status": "COMPLETED"}
-    await _commit(store, pk, old, meta, assessment, new_pointer)
+    await _commit(session, store, pk, old, meta, assessment, new_pointer)
     return assessment
 
 
