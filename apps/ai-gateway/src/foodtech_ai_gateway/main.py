@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from typing import Literal
 
 from .ollama import OllamaClient
-from .policy import Caller, Execution, Feature, UNCONFIGURED_TIER1
+from .policy import Caller, Execution, Feature, Tier, UNCONFIGURED_TIER1
 from .registry import DynamoRegistry
 from .service import GatewayService
 from .provider import LiteLLMProvider
@@ -60,7 +60,19 @@ class ExternalConfirm(StrictBody):
     notice_version: str = Field(min_length=1, max_length=64)
 
 
-class DowngradePreview(StrictBody):
+class PriorBinding(StrictBody):
+    prior_job_id: UUID | None = None
+    prior_job_version: int | None = Field(default=None, strict=True, ge=1)
+
+    @model_validator(mode="after")
+    def validate_prior(self):
+        if (self.prior_job_id is None) != (self.prior_job_version is None) or \
+                (self.prior_job_id is not None and self.prior_job_id == getattr(self, "job_id", None)):
+            raise ValueError("invalid prior job binding")
+        return self
+
+
+class DowngradePreview(PriorBinding):
     tenant_id: str = Field(min_length=1, max_length=128)
     parent_execution_id: UUID
     job_id: UUID | None = None
@@ -68,14 +80,14 @@ class DowngradePreview(StrictBody):
     comparison_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
-class RecipeRequest(StrictBody):
+class RecipeRequest(PriorBinding):
     tenant_id: str = Field(min_length=1, max_length=128)
     job_id: UUID
     job_version: int = Field(strict=True, ge=1)
     comparison_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
-class DowngradeConfirm(StrictBody):
+class DowngradeConfirm(PriorBinding):
     tenant_id: str = Field(min_length=1, max_length=128)
     notice_version: str = Field(min_length=1, max_length=64)
     quality_warning_acknowledged: StrictBool
@@ -174,12 +186,13 @@ async def downgrade_preview(request: Request, body: DowngradePreview) -> dict:
     _internal(request)
     try:
         registry = _service(request).registry
-        expected = (str(body.job_id) if body.job_id else None, body.job_version, body.comparison_id)
+        expected = (str(body.job_id) if body.job_id else None, body.job_version, body.comparison_id,
+                    str(body.prior_job_id) if body.prior_job_id else None, body.prior_job_version)
         parent = registry.execution(str(body.parent_execution_id))
-        if not parent or parent.tenant_id != body.tenant_id or (parent.job_id, parent.job_version, parent.comparison_id) != expected:
+        if not parent or parent.tenant_id != body.tenant_id or (parent.job_id, parent.job_version, parent.comparison_id, parent.prior_job_id, parent.prior_job_version) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         result = DowngradeFlow(registry).preview(body.tenant_id, str(body.parent_execution_id))
-        if (result["job_id"], result["job_version"], result["comparison_id"]) != expected:
+        if (result["job_id"], result["job_version"], result["comparison_id"], result["prior_job_id"], result["prior_job_version"]) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         return result
     except DowngradeError as error:
@@ -190,21 +203,33 @@ async def downgrade_preview(request: Request, body: DowngradePreview) -> dict:
 async def recipe_request(request: Request, body: RecipeRequest) -> dict:
     _internal(request)
     service = _service(request)
-    # Tier 1 execution configuration is a separate implementation; never silently
-    # select an unapproved provider or call the local model on this path.
-    if os.getenv("FOODTECH_RECIPE_TIER1_MODEL_ID"):
-        raise HTTPException(503, "TIER1_REQUEST_NOT_IMPLEMENTED")
     if service.registry.model(UNCONFIGURED_TIER1) is not None:
         raise HTTPException(503, "RESERVED_MODEL_MARKER_IN_USE")
+    model_id = os.getenv("FOODTECH_RECIPE_TIER1_MODEL_ID", "").strip()
+    if model_id:
+        model = service.registry.model(model_id)
+        if model_id == UNCONFIGURED_TIER1 or len(model_id) > 128 or not model or model.tier != Tier.TIER_1:
+            raise HTTPException(503, "TIER1_MODEL_CONFIGURATION_INVALID")
+    else:
+        model_id = UNCONFIGURED_TIER1
     trial = _trial_limits()
     if trial is not None:
         service.registry.ensure_trial_tenant_limit(body.tenant_id, *trial)
     execution_id = str(uuid4())
     service.registry.create_execution(Execution(execution_id, body.tenant_id, Feature.RECIPE_CORRECTION,
-        UNCONFIGURED_TIER1, None, "SYNTHETIC", Decimal("0"),
-        job_id=str(body.job_id), job_version=body.job_version, comparison_id=body.comparison_id))
-    return {"execution_id": execution_id, "state": "BLOCKED", "reason": "TIER1_MODEL_NOT_CONFIGURED",
-            "job_id": str(body.job_id), "job_version": body.job_version, "comparison_id": body.comparison_id}
+        model_id, None, "SYNTHETIC", Decimal("0"),
+        job_id=str(body.job_id), job_version=body.job_version, comparison_id=body.comparison_id,
+        prior_job_id=str(body.prior_job_id) if body.prior_job_id else None, prior_job_version=body.prior_job_version))
+    if model_id == UNCONFIGURED_TIER1:
+        reason = "TIER1_MODEL_NOT_CONFIGURED"
+    else:
+        service.registry.begin_request()
+        decision = service.policy.authorize(Caller("business-api", body.tenant_id), execution_id)
+        reason = "RECOMMENDATION_EVIDENCE_UNVERIFIED" if decision.allowed else decision.code
+    return {"execution_id": execution_id, "state": "BLOCKED", "reason": reason,
+            "execution_available": False,
+            "job_id": str(body.job_id), "job_version": body.job_version, "comparison_id": body.comparison_id,
+            "prior_job_id": str(body.prior_job_id) if body.prior_job_id else None, "prior_job_version": body.prior_job_version}
 
 
 @app.post("/internal/ai/recipe-downgrades/{quote_id}/confirm", status_code=201)
@@ -213,9 +238,11 @@ async def downgrade_confirm(request: Request, quote_id: UUID, body: DowngradeCon
     try:
         registry = _service(request).registry
         quote = registry.quote(str(quote_id))
-        expected = (str(body.job_id) if body.job_id else None, body.job_version, body.comparison_id)
+        expected = (str(body.job_id) if body.job_id else None, body.job_version, body.comparison_id,
+                    str(body.prior_job_id) if body.prior_job_id else None, body.prior_job_version)
         if not quote or quote.get("tenant_id") != body.tenant_id or \
-                (quote.get("job_id"), quote.get("job_version"), quote.get("comparison_id")) != expected:
+                (quote.get("job_id"), quote.get("job_version"), quote.get("comparison_id"),
+                 quote.get("prior_job_id"), quote.get("prior_job_version")) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         execution_id = DowngradeFlow(registry).confirm(
             body.tenant_id, str(quote_id), body.notice_version, body.quality_warning_acknowledged)
