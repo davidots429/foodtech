@@ -75,7 +75,9 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_customer_session_example_and_csrf_logout(self):
         state = (await self.login())["state"][0]
         self.assertEqual((await self.callback("customer", state)).status_code, 303)
-        me = (await self.client.get("/api/customer/me")).json()
+        me_response = await self.client.get("/api/customer/me")
+        self.assertEqual(me_response.headers["cache-control"], "no-store")
+        me = me_response.json()
         self.assertEqual(me["tier"], "FREE")
         self.assertEqual((await self.client.get("/api/customer/example")).json()["readOnly"], True)
         plan = (await self.client.get("/api/customer/demo-plan")).json()

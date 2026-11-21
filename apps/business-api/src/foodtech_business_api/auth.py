@@ -443,13 +443,15 @@ async def refresh_context(surface: str, request: Request) -> Response:
 
 
 @router.get("/{surface}/me")
-async def me(surface: str, request: Request) -> dict:
+async def me(surface: str, request: Request) -> Response:
     session = await _session(request, surface)
     current_tier = await asyncio.to_thread(get_tier_store().current, session.subject) if surface == "customer" else None
     tier = None if surface == "admin" else "DEMO_PAID" if current_tier and current_tier["status"] == "APPROVED_FOR_DEMO" else "FREE"
-    return {"email": session.email, "surface": session.surface, "csrf": session.csrf,
+    response = JSONResponse({"email": session.email, "surface": session.surface, "csrf": session.csrf,
             "tier": tier, "refresh_available": bool(session.refresh_ciphertext),
-            "expires_in": max(0, int((session.access_expires or session.expires) - time.time()))}
+            "expires_in": max(0, int((session.access_expires or session.expires) - time.time()))})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/customer/example")
