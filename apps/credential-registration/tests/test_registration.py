@@ -83,16 +83,18 @@ class RegistrationTests(unittest.TestCase):
         registrar = CredentialRegistrar(
             writer, "registry-test", self.transfer,
             TenantPseudonymizer("arn:aws:kms:ap-southeast-2:123:key/hmac", "v1",
-                                kms_client=self.kms), dynamodb_client=dynamo)
+                                kms_client=self.kms), auth_table="auth-test", dynamodb_client=dynamo)
         credential_id = registrar.register("subject-1", "openai", "2026-11",
-                                           self.ciphertext(b"synthetic-api-key"))
+                                           self.ciphertext(b"synthetic-api-key"), 2)
         self.assertEqual(writer.seen_plaintext, b"synthetic-api-key")
         self.assertEqual(bytes(writer.buffer), b"\x00" * len(writer.buffer))
-        self.assertEqual(len(dynamo.items), 2)
-        self.assertEqual([item["Put"]["TableName"] for item in dynamo.items],
+        self.assertEqual(len(dynamo.items), 3)
+        self.assertEqual(dynamo.items[0]["ConditionCheck"]["ExpressionAttributeValues"][":expected"], {"N": "2"})
+        self.assertIn("deletion_lock_request", dynamo.items[0]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual([item["Put"]["TableName"] for item in dynamo.items[1:]],
                          ["vault-test", "registry-test"])
         self.assertNotIn("synthetic-api-key", repr(dynamo.items))
-        metadata = dynamo.items[1]["Put"]["Item"]
+        metadata = dynamo.items[2]["Put"]["Item"]
         self.assertEqual(metadata["credential_id"]["S"], credential_id)
         self.assertEqual(metadata["tenant_id"]["S"], "subject-1")
         self.assertTrue(metadata["tenant_pseudonym"]["S"].startswith("psn:v1:credential:"))

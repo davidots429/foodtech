@@ -90,11 +90,12 @@ class TenantPseudonymizer:
 
 class CredentialRegistrar:
     def __init__(self, writer: CredentialWriter, registry_table: str, transfer: TransferKey,
-                 pseudonymizer: TenantPseudonymizer, *, dynamodb_client: Any = None):
-        if not registry_table:
-            raise ValueError("AI registry table is required")
+                 pseudonymizer: TenantPseudonymizer, *, auth_table: str, dynamodb_client: Any = None):
+        if not registry_table or not auth_table or auth_table in {registry_table, writer.table.name}:
+            raise ValueError("separate AI registry and authentication tables are required")
         self.writer = writer
         self.registry_table = registry_table
+        self.auth_table = auth_table
         self.transfer = transfer
         self.pseudonymizer = pseudonymizer
         self.client = dynamodb_client or boto3.client("dynamodb")
@@ -104,7 +105,9 @@ class CredentialRegistrar:
         return {key: self.serializer.serialize(item) for key, item in value.items()}
 
     def register(self, tenant_id: str, provider: str, key_version: str,
-                 ciphertext_base64: str) -> str:
+                 ciphertext_base64: str, expected_epoch: int) -> str:
+        if type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63:
+            raise RegistrationError("TENANT_SCOPE_INVALID")
         if provider not in {"openai", "google", "anthropic"}:
             raise RegistrationError("PROVIDER_INVALID")
         plaintext = self.transfer.decrypt(key_version, ciphertext_base64)
@@ -120,6 +123,10 @@ class CredentialRegistrar:
                         "state": "ACTIVE", "expires_at": None,
                         "vault_ref": f"vault:{credential_id}", "version": 1}
             self.client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{tenant_id}"}),
+                    "ConditionExpression": "((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+                    "ExpressionAttributeNames": {"#epoch": "epoch"},
+                    "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}},
                 {"Put": {"TableName": self.writer.table.name, "Item": self._item(vault_item),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
                 {"Put": {"TableName": self.registry_table, "Item": self._item(metadata),
@@ -142,4 +149,5 @@ def from_env() -> CredentialRegistrar:
     environment = os.getenv("FOODTECH_STAGE", "dev")
     return CredentialRegistrar(
         CredentialWriter(vault_table, environment, storage_key), registry_table,
-        TransferKey(transfer_key, transfer_version), TenantPseudonymizer(hmac_key, hmac_version))
+        TransferKey(transfer_key, transfer_version), TenantPseudonymizer(hmac_key, hmac_version),
+        auth_table=os.environ["FOODTECH_AUTH_TABLE"])

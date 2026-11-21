@@ -52,3 +52,5 @@
 
 
 수집 격리 버킷은 `FoodtechMinimalDataFlow-dev`에 S3 관리형 암호화·공개 차단·TLS 강제·RETAIN으로 정의하고 `IngestionDlqBucketName`으로 출력한다. 이 정의는 아직 배포되지 않았으며 수집기 실행 역할에 버킷 쓰기와 manifest 저장 권한을 연결하는 작업이 필요하다.
+
+자격증명 등록 Task의 인증 테이블 조건 검사 권한과 `FOODTECH_AUTH_TABLE` 설정은 삭제 중 신규 자격증명 생성을 막기 위한 변경안이다. 합성 결과이며 배포 및 실제 Task 역할 검증은 별도로 수행한다.

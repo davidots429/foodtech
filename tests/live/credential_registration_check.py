@@ -44,12 +44,12 @@ def main() -> None:
                          resource=resource, kms_client=kms),
         REGISTRY, transfer,
         TenantPseudonymizer(stack["CredentialPseudonymKeyArn"], "v1", kms_client=kms),
-        dynamodb_client=boto3.client("dynamodb", region_name=REGION))
+        auth_table="foodtech-auth-sessions-dev", dynamodb_client=boto3.client("dynamodb", region_name=REGION))
     credential_id = None
     try:
         tenant_id = f"synthetic-subject-{uuid4()}"
         credential_id = registrar.register(tenant_id, "openai", descriptor["key_version"],
-                                           base64.b64encode(encrypted).decode())
+                                           base64.b64encode(encrypted).decode(), 0)
         record = DynamoRegistry(REGISTRY, "2026-11", resource=resource).credential(credential_id)
         assert record and record.tenant_id == tenant_id
         vault = DynamoCredentialVault(VAULT, "dev", {stack["CredentialStorageKeyArn"]},

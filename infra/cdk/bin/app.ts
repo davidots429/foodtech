@@ -284,6 +284,10 @@ class CredentialVaultStack extends Stack {
     this.transferKey = transferKey;
     this.hmacKey = hmacKey;
     table.grant(registration, "dynamodb:PutItem");
+    const authForRegistration = dynamodb.Table.fromTableName(
+      this, "AuthSessionsForCredentialRegistration", `foodtech-auth-sessions-${stage}`,
+    );
+    authForRegistration.grant(registration, "dynamodb:ConditionCheckItem");
     table.grant(gateway, "dynamodb:GetItem");
     const registry = dynamodb.Table.fromTableName(
       this, "ExecutionRegistryForGateway", `foodtech-ai-execution-registry-${stage}`,
@@ -374,6 +378,7 @@ class AiServiceTasksStack extends Stack {
         FOODTECH_STAGE: stage,
         FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
         FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
+        FOODTECH_AUTH_TABLE: `foodtech-auth-sessions-${stage}`,
         FOODTECH_CREDENTIAL_STORAGE_KEY_ARN: vault.storageKey.keyArn,
         FOODTECH_CREDENTIAL_TRANSFER_KEY_ARN: vault.transferKey.keyArn,
         FOODTECH_CREDENTIAL_TRANSFER_KEY_VERSION: required("credentialKeyPeriod"),

@@ -250,7 +250,7 @@ def aws_backends():
                          resource=resource, kms_client=kms), REGISTRY_TABLE,
         TransferKey(keys["CredentialTransferKeyArn"], period, kms_client=kms),
         TenantPseudonymizer(keys["CredentialPseudonymKeyArn"], "v1", kms_client=kms),
-        dynamodb_client=session.client("dynamodb"))
+        auth_table="foodtech-auth-sessions-dev", dynamodb_client=session.client("dynamodb"))
     vault = DynamoCredentialVault(VAULT_TABLE, "dev", {keys["CredentialStorageKeyArn"]},
                                   resource=resource, kms_client=kms)
     return registry, registrar, vault, resource

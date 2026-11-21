@@ -63,7 +63,7 @@ async def register(request: Request, body: EncryptedCredential, response: Respon
     try:
         async with _client(ca, cert, key) as client:
             result = await client.post(f"{url}/internal/credentials",
-                                       json={**body.model_dump(), "tenant_id": session.subject})
+                                       json={**body.model_dump(), "tenant_id": session.subject, "expected_epoch": session.epoch})
             result.raise_for_status()
             response.headers["Cache-Control"] = "no-store"
             return result.json()

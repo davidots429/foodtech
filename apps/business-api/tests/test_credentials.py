@@ -33,7 +33,7 @@ class CustomerCredentialTests(unittest.IsolatedAsyncioTestCase):
     async def test_customer_identity_and_csrf_are_server_owned(self):
         internal = InternalClient()
         async def session(_request, _surface):
-            return SimpleNamespace(subject="server-owned-subject", csrf="csrf-test")
+            return SimpleNamespace(subject="server-owned-subject", csrf="csrf-test", epoch=2)
         with patch.object(credentials, "_session", side_effect=session), \
              patch.object(credentials, "_settings", return_value=("https://127.0.0.1:8444", "ca", "cert", "key")), \
              patch.object(credentials, "_client", return_value=internal):
@@ -51,6 +51,7 @@ class CustomerCredentialTests(unittest.IsolatedAsyncioTestCase):
                                           headers={"X-CSRF-Token": "csrf-test"})
                 self.assertEqual(saved.status_code, 201)
         self.assertEqual(internal.last_json["tenant_id"], "server-owned-subject")
+        self.assertEqual(internal.last_json["expected_epoch"], 2)
         self.assertEqual(internal.last_json["ciphertext_base64"], "synthetic-ciphertext")
         self.assertNotIn("api_key", internal.last_json)
 

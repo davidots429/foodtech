@@ -15,6 +15,7 @@ class StrictBody(BaseModel):
 
 class EncryptedCredential(StrictBody):
     tenant_id: str = Field(min_length=1, max_length=128)
+    expected_epoch: int = Field(ge=0, lt=2**63, strict=True)
     provider: str = Field(min_length=1, max_length=32)
     key_version: str = Field(min_length=1, max_length=32)
     ciphertext_base64: str = Field(min_length=1, max_length=1024)
@@ -53,7 +54,7 @@ async def register(request: Request, body: EncryptedCredential, response: Respon
     response.headers["Cache-Control"] = "no-store"
     try:
         credential_id = _registrar(request).register(
-            body.tenant_id, body.provider, body.key_version, body.ciphertext_base64)
+            body.tenant_id, body.provider, body.key_version, body.ciphertext_base64, body.expected_epoch)
     except RegistrationError as error:
         raise HTTPException(400, error.code) from None
     return {"credential_id": credential_id, "provider": body.provider, "state": "ACTIVE"}
