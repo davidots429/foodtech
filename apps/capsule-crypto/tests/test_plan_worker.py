@@ -70,6 +70,21 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.worker.prepare(authenticated_subject=self.subject, request_id=self.request)
 
+    def test_prepared_targets_are_checked_before_dispatch_and_retry_is_explicit(self):
+        with patch('foodtech_capsule_crypto.plan_worker.prepare_from_resolved_inventory', return_value=DeletionTargets(self.entries)):
+            self.worker.prepare(authenticated_subject=self.subject, request_id=self.request)
+        seen = []
+        output = self.worker.use_prepared(authenticated_subject=self.subject, request_id=self.request, action=seen.append)
+        self.assertEqual(output, {'state': 'VISITED', 'target_count': 12})
+        self.assertEqual(seen, list(self.entries))
+        self.assertNotIn('A'*43, repr(output))
+        key = (self.subject, self.request, 'CAPSULE_PLAN_PAGE_000000000001')
+        self.progress.rows[key]['checkpoint'] = b'corrupt'
+        seen.clear()
+        with self.assertRaises(ValueError):
+            self.worker.use_prepared(authenticated_subject=self.subject, request_id=self.request, action=seen.append)
+        self.assertEqual(seen, [])
+
     def test_changed_plan_or_wrong_source_is_rejected(self):
         with patch('foodtech_capsule_crypto.plan_worker.prepare_from_resolved_inventory', return_value=DeletionTargets(self.entries)):
             self.worker.prepare(authenticated_subject=self.subject, request_id=self.request)

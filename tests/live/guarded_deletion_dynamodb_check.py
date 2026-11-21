@@ -192,6 +192,14 @@ def main():
         if worker.prepare(authenticated_subject=subject, request_id=winner) != expected_plan or \
                 worker.prepare(authenticated_subject=subject, request_id=winner) != expected_plan:
             raise AssertionError('durable capsule plan retry failed')
+        visited = []
+        def check_target(item):
+            if item != target:
+                raise AssertionError('verified capsule target differs')
+            visited.append(True)
+        if worker.use_prepared(authenticated_subject=subject, request_id=winner, action=check_target) != \
+                {'state': 'VISITED', 'target_count': 1} or visited != [True]:
+            raise AssertionError('prepared capsule plan validation failed')
         loser = second_id if winner == first_id else first_id
         if registry.get_item(Key={"pk": "REGISTRY", "sk": f"REQ#{loser}"}, ConsistentRead=True).get("Item"):
             raise AssertionError("Losing request created a tombstone")
@@ -221,7 +229,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
