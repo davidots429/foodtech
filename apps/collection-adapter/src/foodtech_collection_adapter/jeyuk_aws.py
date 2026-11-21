@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -51,12 +52,29 @@ class DynamoJeyukIngestor:
         item = {**key, "raw": raw, "profile_id": "mockprofile-110",
                 "fixture_id": sample.fixture_id, "second": sample.second,
                 "provenance": "SYNTHETIC"}
-        try:
-            self.table.put_item(Item=item, ConditionExpression=Attr("pk").not_exists())
-        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
-            existing = self.table.get_item(Key=key, ConsistentRead=True)["Item"]
-            if existing["raw"] != raw:
-                raise ValueError("Jeyuk raw sample changed for the same fixture and second")
+        # The item and counter must commit together. A duplicate never
+        # increments the counter, including after an uncertain response.
+        for attempt in range(4):
+            try:
+                self.table.meta.client.transact_write_items(TransactItems=[
+                    {"Put": {"TableName": self.table.name, "Item": item,
+                             "ConditionExpression": "attribute_not_exists(pk)"}},
+                    {"Update": {"TableName": self.table.name,
+                                "Key": {"pk": pk, "sk": "SOURCE#REVISION"},
+                                "UpdateExpression": "ADD revision :one",
+                                "ExpressionAttributeValues": {":one": 1}}},
+                ])
+                break
+            except self.table.meta.client.exceptions.TransactionCanceledException as exc:
+                existing = self.table.get_item(Key=key, ConsistentRead=True).get("Item")
+                if existing:
+                    if existing["raw"] != raw:
+                        raise ValueError("Jeyuk raw sample changed for the same fixture and second")
+                    break
+                reasons = getattr(exc, "response", {}).get("CancellationReasons", [])
+                if attempt == 3 or not any(reason.get("Code") == "TransactionConflict" for reason in reasons):
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
         reference = {"profile_id": "mockprofile-110", "pk": pk, "raw_sk": raw_sk,
                      "fixture_id": sample.fixture_id, "second": sample.second}
         body = json.dumps(reference, separators=(",", ":"))

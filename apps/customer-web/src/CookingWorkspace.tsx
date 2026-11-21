@@ -44,7 +44,7 @@ type ComparisonHistoryItem = {
   score_total_delta: number; improvement_status: "OBSERVED" | "NOT_OBSERVED";
 };
 type ComparisonHistoryPage = { items: ComparisonHistoryItem[]; next_cursor: string | null };
-type CollectionEvidence = { status: "NOT_BOUND" | "NOT_RECORDED" | "NOT_MATCHED" | "MATCHED_AT_READ"; raw_count: number | null };
+type CollectionEvidence = { status: "NOT_BOUND" | "NOT_RECORDED" | "NOT_MATCHED" | "MATCHED_AT_READ" | "CHANGED_DURING_READ" | "REVISION_UNVERIFIED"; raw_count: number | null };
 type ValidationEvidence = {
   status: "INCOMPLETE" | "LINKED_UNVERIFIED";
   checks: Record<string, boolean>;
@@ -853,6 +853,8 @@ export function CookingWorkspace({ csrf }: Props) {
               {collectionEvidence && <p className="small" role="status">수집 기록: {({
                 NOT_BOUND: "수집 배치 연결 전", NOT_RECORDED: "완료 기록 없음",
                 NOT_MATCHED: "현재 저장 표본과 완료 기록이 일치하지 않음",
+                CHANGED_DURING_READ: "조회 중 표본이 변경됨 · 다시 확인 필요",
+                REVISION_UNVERIFIED: "이전 방식의 표본으로 원천 변경 여부를 확인할 수 없음",
                 MATCHED_AT_READ: "조회한 저장 표본과 완료 기록 일치",
               })[collectionEvidence.status]}{collectionEvidence.raw_count != null && ` · ${collectionEvidence.raw_count}건`}. 이 결과만으로 안전성이나 AI 실행을 승인하지 않습니다.</p>}
               {validationEvidence && <div className="small" aria-live="polite">
