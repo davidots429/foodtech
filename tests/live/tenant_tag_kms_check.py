@@ -6,6 +6,7 @@ No keys, roles or other AWS resources are created or modified by this script.
 """
 import argparse
 import os
+import re
 import uuid
 
 import boto3
@@ -18,9 +19,17 @@ REGION = "ap-southeast-2"
 def check(sts, kms, scoped_kms_factory, role_arn: str, key_arn: str) -> None:
     if sts.get_caller_identity()["Account"] != ACCOUNT:
         raise ValueError("Unexpected AWS account")
-    if not role_arn.startswith(f"arn:aws:iam::{ACCOUNT}:role/") or not key_arn.startswith(
-            f"arn:aws:kms:{REGION}:{ACCOUNT}:key/"):
-        raise ValueError("Test role and key must belong to the development account and region")
+    if not re.fullmatch(rf"arn:aws:iam::{ACCOUNT}:role/foodtech-tenant-tag-poc-[A-Za-z0-9+=,.@_-]{{1,32}}", role_arn) or not re.fullmatch(
+            rf"arn:aws:kms:{REGION}:{ACCOUNT}:key/[0-9a-f-]{{36}}", key_arn):
+        raise ValueError("A dedicated development test role and key ARN are required")
+    metadata = kms.describe_key(KeyId=key_arn)["KeyMetadata"]
+    if metadata.get("Arn") != key_arn or metadata.get("KeyState") != "Enabled" or \
+            metadata.get("KeySpec") != "SYMMETRIC_DEFAULT" or metadata.get("KeyUsage") != "ENCRYPT_DECRYPT":
+        raise ValueError("A dedicated enabled symmetric test key is required")
+    paginator = kms.get_paginator("list_resource_tags")
+    tags = [tag for page in paginator.paginate(KeyId=key_arn) for tag in page.get("Tags", [])]
+    if not any(tag.get("TagKey") == "foodtech-purpose" and tag.get("TagValue") == "tenant-tag-poc" for tag in tags):
+        raise ValueError("Test key is missing the dedicated tenant-tag-poc tag")
     marker = uuid.uuid4().hex
     tenant_a, tenant_b = f"synthetic-a-{marker}", f"synthetic-b-{marker}"
     context_a = {"tenant_pseudonym": tenant_a, "purpose": "TENANT_TAG_TEST"}
