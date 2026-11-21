@@ -10,20 +10,21 @@ from foodtech_business_api.condition_profile_deletion import ProfileDeletionConf
 class ProfileDeletionTests(unittest.TestCase):
     def setUp(self):
         self.table, self.client = SimpleNamespace(name='cooking'), Mock()
-        self.args = {'auth_table': 'auth', 'subject': 'alice', 'request_id': str(uuid4()),
+        self.args = {'auth_table': 'auth', 'registry_table': 'registry', 'subject': 'alice', 'request_id': str(uuid4()),
                      'profile_id': 'profile', 'version': 'v1'}
 
     def test_guarded_pair_transaction_scopes_both_records(self):
         delete_profile_pair(self.table, self.client, **self.args)
         operations = self.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(len(operations), 3)
+        self.assertEqual(len(operations), 4)
         self.assertEqual(operations[0]['ConditionCheck']['Key'], {'pk': {'S': 'USER#alice'}})
         self.assertIn('suspended = :yes', operations[0]['ConditionCheck']['ConditionExpression'])
-        self.assertEqual(operations[1]['Delete']['Key'], {'pk': {'S': 'SCOPE#USER#alice#CONDITION_PROFILE#profile'},
+        self.assertEqual(operations[1]['ConditionCheck']['ExpressionAttributeValues'][':active'], {'S': 'DELETING'})
+        self.assertEqual(operations[2]['Delete']['Key'], {'pk': {'S': 'SCOPE#USER#alice#CONDITION_PROFILE#profile'},
                                                           'sk': {'S': 'VERSION#v1'}})
-        self.assertEqual(operations[2]['Delete']['Key'], {'pk': {'S': 'SCOPE#USER#alice#CONDITION_PROFILES'},
+        self.assertEqual(operations[3]['Delete']['Key'], {'pk': {'S': 'SCOPE#USER#alice#CONDITION_PROFILES'},
                                                           'sk': {'S': 'PROFILE#profile#VERSION#v1'}})
-        self.assertIn('attribute_not_exists(pk)', operations[1]['Delete']['ConditionExpression'])
+        self.assertIn('attribute_not_exists(pk)', operations[2]['Delete']['ConditionExpression'])
 
     def test_invalid_scope_and_failed_condition_do_not_report_success(self):
         for change in ({'subject': 'alice#other'}, {'request_id': 'bad'}, {'profile_id': 'p#x'}, {'auth_table': 'cooking'}):

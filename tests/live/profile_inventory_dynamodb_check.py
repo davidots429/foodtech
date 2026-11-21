@@ -20,6 +20,7 @@ def main():
         raise SystemExit('unexpected AWS account')
     table = session.resource('dynamodb').Table(table_name)
     auth_table = session.resource('dynamodb').Table('foodtech-auth-sessions-dev')
+    registry = session.resource('dynamodb').Table('foodtech-ai-execution-registry-dev')
     store = DynamoCookingStore.__new__(DynamoCookingStore)
     store.table, store.client, store.serializer = table, session.client('dynamodb'), TypeSerializer()
     store.auth_table_name = 'foodtech-auth-sessions-dev'
@@ -56,6 +57,8 @@ def main():
     stream_pk = 'SYNTHETIC_STREAM#' + uuid4().hex
     stream_key = {'pk': stream_pk, 'sk': 'BINDING'}
     auth_created = False
+    registry_key = None
+    registry_created = False
     try:
         for version in ('v1', 'v2'):
             store.create_condition_profile(subject, {'profile_id': 'p1', 'profile_version': version})
@@ -180,8 +183,11 @@ def main():
         request = str(uuid4())
         auth_table.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request, suspended = :yes',
                                ExpressionAttributeValues={':request': request, ':yes': True})
+        registry_key = {'pk': 'REGISTRY', 'sk': f'REQ#{request}'}
+        registry.put_item(Item={**registry_key, 'status': 'DELETING'}, ConditionExpression='attribute_not_exists(pk)')
+        registry_created = True
         def remove_profile(request_id, version):
-            delete_profile_pair(table, store.client, auth_table=auth_table.name, subject=subject,
+            delete_profile_pair(table, store.client, auth_table=auth_table.name, registry_table=registry.name, subject=subject,
                                 request_id=request_id, profile_id='p1', version=version)
         try:
             remove_profile(str(uuid4()), 'v1')
@@ -216,6 +222,8 @@ def main():
         for key in commit_keys:
             table.delete_item(Key=key)
         table.delete_item(Key=stream_key)
+        if registry_created:
+            registry.delete_item(Key=registry_key)
         if auth_created:
             auth_table.delete_item(Key=auth_key)
     print('profile and job guards, profile pair deletion, owner isolation and cleanup verified')

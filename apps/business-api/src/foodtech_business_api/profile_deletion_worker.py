@@ -30,7 +30,7 @@ class ProfileDeletionWorker:
                                      previous.get('checkpoint') != raw):
             raise ValueError('profile deletion progress does not match target')
         delete_profile_pair(self.source_table, self.progress_store.client,
-            auth_table=self.progress_store.auth_table, subject=subject, request_id=request_id,
+            auth_table=self.progress_store.auth_table, registry_table=self.progress_store.registry_table, subject=subject, request_id=request_id,
             profile_id=target.profile_id, version=target.version)
         if previous is None:
             self.progress_store.save_checkpoint(cipher=self.cipher, **scope, expected_version=0,

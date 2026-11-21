@@ -13,7 +13,7 @@ class OrphanCleanupTests(unittest.TestCase):
         self.table = Mock(name='source')
         self.table.name, self.table.table_arn = 'cooking', 'arn:source'
         self.client = Mock()
-        self.store = SimpleNamespace(auth_table='auth', progress_table='progress', client=self.client,
+        self.store = SimpleNamespace(auth_table='auth', registry_table='registry', progress_table='progress', client=self.client,
                                      load_checkpoint=Mock(return_value=None))
         self.args = dict(source_table=self.table, progress_store=self.store,
                          cipher=SimpleNamespace(source_table_arn='arn:source'),
@@ -25,10 +25,11 @@ class OrphanCleanupTests(unittest.TestCase):
         self.table.query.return_value = {'Items': [self.item]}
         self.assertEqual(clean_one_orphan(**self.args), {'state': 'VERIFYING', 'removed': True})
         ops = self.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(ops[1]['ConditionCheck']['ConditionExpression'], 'attribute_not_exists(pk)')
-        self.assertEqual(ops[1]['ConditionCheck']['Key']['pk'], {'S': 'SCOPE#USER#alice#CONDITION_PROFILE#p'})
-        self.assertEqual(ops[2]['Delete']['Key']['sk'], {'S': 'PROFILE#p#VERSION#v1'})
+        self.assertEqual(ops[2]['ConditionCheck']['ConditionExpression'], 'attribute_not_exists(pk)')
+        self.assertEqual(ops[2]['ConditionCheck']['Key']['pk'], {'S': 'SCOPE#USER#alice#CONDITION_PROFILE#p'})
+        self.assertEqual(ops[3]['Delete']['Key']['sk'], {'S': 'PROFILE#p#VERSION#v1'})
         self.assertIn('suspended', ops[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':active'], {'S': 'DELETING'})
 
     def test_empty_is_observation_and_bad_rows_fail_closed(self):
         self.table.query.return_value = {'Items': []}

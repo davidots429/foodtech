@@ -24,7 +24,7 @@ def clean_one_orphan(*, source_table, progress_store, cipher, subject, request_i
     except (ValueError, TypeError, AttributeError):
         raise ValueError('invalid profile cleanup scope') from None
     if source_table.table_arn != getattr(cipher, 'source_table_arn', None) or source_table.name in {
-            progress_store.auth_table, progress_store.progress_table}:
+            progress_store.auth_table, progress_store.registry_table, progress_store.progress_table}:
         raise ValueError('profile source does not match cleanup scope')
     # The protected load verifies the suspended account, request lock and registry.
     progress_store.load_checkpoint(cipher=cipher, subject=subject, request_id=request_id,
@@ -55,6 +55,10 @@ def clean_one_orphan(*, source_table, progress_store, cipher, subject, request_i
             {'ConditionCheck': {'TableName': progress_store.auth_table, 'Key': encode({'pk': f'USER#{subject}'}),
                 'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes',
                 'ExpressionAttributeValues': encode({':request': request_id, ':yes': True})}},
+            {'ConditionCheck': {'TableName': progress_store.registry_table,
+                'Key': encode({'pk': 'REGISTRY', 'sk': f'REQ#{request_id}'}),
+                'ConditionExpression': '#status = :active', 'ExpressionAttributeNames': {'#status': 'status'},
+                'ExpressionAttributeValues': encode({':active': 'DELETING'})}},
             {'ConditionCheck': {'TableName': source_table.name, 'Key': encode(source),
                 'ConditionExpression': 'attribute_not_exists(pk)'}},
             {'Delete': {'TableName': source_table.name, 'Key': encode({'pk': expected['pk'], 'sk': expected['sk']}),
