@@ -24,15 +24,19 @@ class AiCoordinatorTests(unittest.TestCase):
         self.coordinator=AiDeletionCoordinator(capture=self.capture,worker=self.worker,observer=self.observer,credentials=self.credentials)
         self.scope={'subject':str(uuid4()),'request_id':str(uuid4())}
 
-    def test_active_execution_blocks_and_credentials_remain_unremoved(self):
-        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'PARTITIONS'})
-        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'PARTITIONS','execution_blocked':True})
+    def test_observed_clear_is_not_writer_quiescence_proof(self):
+        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'QUIESCENCE'})
+        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'QUIESCENCE','writer_quiescence_required':True,'execution_blocked':True})
+        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'QUIESCENCE','writer_quiescence_required':True,'execution_blocked':False})
+        self.worker.run_page.assert_not_called();self.credentials.observe_readiness.assert_not_called()
+
+    def test_previous_verifying_checkpoint_is_not_treated_as_quiescence(self):
+        key=(self.scope['subject'],self.scope['request_id'],'AI_COORDINATOR')
+        state={'schema':1,'phase':'VERIFYING','index':2,'total':2}
+        self.progress.items[key]={'version':1,'state':'VERIFYING','checkpoint':json.dumps(state).encode()}
+        result=self.coordinator.step(**self.scope)
+        self.assertTrue(result['writer_quiescence_required'])
         self.worker.run_page.assert_not_called()
-        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'PARTITIONS'})
-        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'CREDENTIALS'})
-        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'CREDENTIALS'})
-        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'CREDENTIALS','credential_settlement_required':True,'execution_blocked':False})
-        self.assertEqual(self.worker.run_page.call_count,1)
 
     def test_recovery_failure_does_not_run_deletion(self):
         self.progress.auth_table='auth';self.progress.registry_table='deletion-registry'

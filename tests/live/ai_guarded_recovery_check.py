@@ -209,12 +209,11 @@ def main():
         ai_recovery=AiDeletionRecovery(recovery=recovery,coordinator=coordinator)
         for _ in range(1000):
             result=ai_recovery.step(authenticated_subject=subject,request_id=winner,limit=100)
-            if result.get('execution_blocked') or result.get('credential_settlement_required'):
-                raise AssertionError('unexpected AI deletion block')
-            if result['phase']=='VERIFYING':break
+            if result.get('writer_quiescence_required'):break
+            if result['phase']=='VERIFYING':raise AssertionError('quiescence gate bypassed')
         else:raise AssertionError('bounded AI recovery incomplete')
-        if capsule.get_item(Key=ai_key,ConsistentRead=True).get('Item'):
-            raise AssertionError('synthetic AI record remained')
+        if not capsule.get_item(Key=ai_key,ConsistentRead=True).get('Item'):
+            raise AssertionError('synthetic AI record was removed without quiescence proof')
         try:ai_recovery.step(authenticated_subject=str(uuid.uuid4()),request_id=winner)
         except ValueError:pass
         else:raise AssertionError('other subject recovered AI deletion')

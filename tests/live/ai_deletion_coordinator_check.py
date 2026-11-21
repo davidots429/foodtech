@@ -31,11 +31,12 @@ try:
  coordinator=AiDeletionCoordinator(capture=capture,worker=worker,observer=observer,credentials=creds)
  for _ in range(1000):
   result=coordinator.step(subject=u,request_id=q,limit=100)
-  if result.get('execution_blocked') or result.get('credential_settlement_required'):raise AssertionError('unexpected blocked state')
-  if result['phase']=='VERIFYING':break
+  if result.get('writer_quiescence_required'):break
+  if result['phase']=='VERIFYING':raise AssertionError('quiescence gate bypassed')
  else:raise AssertionError('bounded AI cleanup incomplete')
- assert not source.get_item(Key=sk,ConsistentRead=True).get('Item')
- print('captured consent and guarded AI partition cleanup reached verification without credentials')
+ assert result['phase']=='QUIESCENCE' and not result['execution_blocked']
+ assert source.get_item(Key=sk,ConsistentRead=True).get('Item')
+ print('captured consent; observed clear still requires writer quiescence and preserves data')
 finally:
  cursor=None
  while True:
