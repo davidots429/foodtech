@@ -73,6 +73,16 @@ def main():
         request = str(uuid4())
         auth.update_item(Key=auth_keys[0], UpdateExpression='SET deletion_lock_request = :id',
                          ExpressionAttributeValues={':id': request})
+        candidates, candidate_cursor = [], None
+        while True:
+            candidate_page = store.deletion_index_candidates(customer, request, 1, candidate_cursor)
+            candidates.extend(candidate_page['queue_sorts'])
+            candidate_cursor = candidate_page['next_cursor']
+            if candidate_cursor is None:
+                break
+        if set(candidates) != {item['submitted_at'] + '#' + app, item['submitted_at'] + '#' + second_app}:
+            raise AssertionError('application index candidates incomplete')
+        blocked(lambda: store.deletion_index_candidates(customer, str(uuid4()), 1))
         blocked(lambda: store.delete_inventory_key(customer, str(uuid4()), inventory[0]))
         if not table.get_item(Key={'pk': keys[0]['pk'], 'sk': inventory[0]}, ConsistentRead=True).get('Item'):
             raise AssertionError('wrong request removed a record')

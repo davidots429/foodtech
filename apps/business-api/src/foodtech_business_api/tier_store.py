@@ -203,6 +203,45 @@ class DynamoTierStore:
             raise ValueError('invalid tier inventory checkpoint')
         return {'keys': keys, 'next_cursor': next_key['sk'] if next_key is not None else None}
 
+    def deletion_index_candidates(self, subject: str, request_id: str, limit: int,
+                                  cursor: str | None = None) -> dict:
+        """Read one locked page of possible pending-index sort keys.
+
+        Return values and cursors are sensitive internal data. The caller must
+        encrypt and persist every page before deleting any source records. A
+        completed query is not proof of GSI propagation or absence.
+        """
+        _inventory_args(subject, limit, cursor)
+        self._locked_transaction([self._deletion_guard(subject, request_id)])
+        pk = f'TENANT#{subject}'
+        args = {'KeyConditionExpression': Key('pk').eq(pk) & Key('sk').begins_with('APPLICATION#'),
+                'ProjectionExpression': 'pk, sk, application_id, submitted_at',
+                'ConsistentRead': True, 'Limit': limit}
+        if cursor is not None:
+            if not cursor.startswith('APPLICATION#'):
+                raise ValueError('invalid tier application cursor')
+            args['ExclusiveStartKey'] = {'pk': pk, 'sk': cursor}
+        page = self.table.query(**args)
+        items = page.get('Items')
+        if not isinstance(items, list):
+            raise ValueError('invalid tier application page')
+        keys = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError('invalid tier application')
+            app, submitted = item.get('application_id'), item.get('submitted_at')
+            if item.get('pk') != pk or not isinstance(app, str) or not 1 <= len(app) <= 128 or \
+                    item.get('sk') != 'APPLICATION#' + app or not isinstance(submitted, str) or \
+                    not 1 <= len(submitted) <= 128 or len(submitted + '#' + app) > 2048:
+                raise ValueError('invalid tier application')
+            keys.append(submitted + '#' + app)
+        next_key = page.get('LastEvaluatedKey')
+        if next_key is not None and (not isinstance(next_key, dict) or set(next_key) != {'pk', 'sk'} or
+                next_key['pk'] != pk or not isinstance(next_key['sk'], str) or
+                not next_key['sk'].startswith('APPLICATION#') or len(next_key['sk']) > 2048):
+            raise ValueError('invalid tier application checkpoint')
+        return {'queue_sorts': keys, 'next_cursor': next_key['sk'] if next_key is not None else None}
+
     def _deletion_guard(self, subject: str, request_id: str) -> dict:
         _inventory_args(subject, 1, None)
         try:

@@ -74,6 +74,26 @@ class TierGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.inventory_keys('alice', 1, None)
 
+    def test_locked_application_candidates_are_bounded_and_owner_checked(self):
+        self.store.table = Mock()
+        self.store.table.name = 'tier'
+        request = str(uuid4())
+        self.store.table.query.return_value = {'Items': [{'pk': 'TENANT#alice', 'sk': 'APPLICATION#a',
+            'application_id': 'a', 'submitted_at': '2026-01-01T00:00:00Z'}],
+            'LastEvaluatedKey': {'pk': 'TENANT#alice', 'sk': 'APPLICATION#a'}}
+        result = self.store.deletion_index_candidates('alice', request, 1)
+        self.assertEqual(result, {'queue_sorts': ['2026-01-01T00:00:00Z#a'], 'next_cursor': 'APPLICATION#a'})
+        args = self.store.table.query.call_args.kwargs
+        self.assertTrue(args['ConsistentRead'])
+        self.assertEqual(args['Limit'], 1)
+        guard = self.store.client.transact_write_items.call_args.kwargs['TransactItems'][0]['ConditionCheck']
+        self.assertEqual(guard['ExpressionAttributeValues'][':request'], {'S': request})
+        self.store.table.query.return_value['Items'][0]['pk'] = 'TENANT#bob'
+        with self.assertRaises(ValueError):
+            self.store.deletion_index_candidates('alice', request, 1)
+        with self.assertRaises(ValueError):
+            self.store.deletion_index_candidates('alice', request, 1, 'OTHER#x')
+
     def test_delete_requires_exact_lock_and_targets_only_scoped_key(self):
         request = str(uuid4())
         self.store.delete_inventory_key('alice', request, 'CURRENT')
