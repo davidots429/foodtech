@@ -10,6 +10,8 @@
 
 현재 계정의 `iam:ListOpenIDConnectProviders` 및 `iam:GetOpenIDConnectProvider`는 조직 정책의 명시적 거부로 확인되었고 GitHub용 배포 역할도 없다. 따라서 GitHub Actions에는 AWS 자격증명을 추가하지 않는다. CodeBuild의 명시적 일회성 게시로 개발용 이미지를 준비하고, 조직 정책이 OIDC 공급자 설정을 허용하면 승인된 GitHub Actions OIDC 방식으로 전환한다. 공개 GitHub 소스 다운로드에는 배포 비밀값을 사용하지 않는다.
 
+`-c provisionCollectionImagePublishing=true`는 수집기 전용 불변 태그 ECR 저장소와 별도의 명시적 CodeBuild 프로젝트를 합성한다. 이 프로젝트도 `main`의 HEAD가 지정한 40자리 `SOURCE_SHA`와 일치할 때만 `sha-<앞 12자리>` 이미지를 빌드·게시하며 자동 트리거는 없다. AI 이미지 게시와 독립적으로 실행한다. 아직 배포·실행되지 않았으며 ECR 저장, CodeBuild 실행과 로그 암호화 KMS 키에 비용이 발생할 수 있다. OIDC 제약 해소 시 승인된 GitHub Actions 배포 방식으로 전환한다.
+
 ## AI 서비스 Task Definition 초안
 
 `-c provisionCredentialVault=true -c provisionAiServiceTasks=true`는 별도 `FoodtechAiServiceTasks-dev` 스택에 자격증명 등록기와 AI Gateway의 Fargate Task Definition을 만든다. 각 Task는 기존 Vault 스택의 **서로 다른** 업무 역할을 사용한다. 실행 역할은 해당 ECR 이미지와 Secrets Manager TLS 자료를 읽고 CloudWatch Logs에 기록한다. 등록기는 Vault 쓰기와 KMS 전송·저장·가명화 권한, Gateway는 Vault 읽기와 저장 키 복호화 권한을 유지한다. 외부 공급자 실행은 기본 비활성이다.

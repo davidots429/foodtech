@@ -697,6 +697,67 @@ class AiImagePublishingStack extends Stack {
   }
 }
 
+class CollectionImagePublishingStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const repository = new ecr.Repository(this, "CollectionImages", {
+      repositoryName: "foodtech/collection-adapter",
+      imageTagMutability: ecr.TagMutability.IMMUTABLE,
+      encryption: ecr.RepositoryEncryption.AES_256,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    repository.addLifecycleRule({ maxImageCount: 5, rulePriority: 1 });
+    const logKey = new kms.Key(this, "CollectionImageBuildLogKey", {
+      enableKeyRotation: true, removalPolicy: RemovalPolicy.RETAIN,
+      description: "Encrypt Foodtech collection image build logs",
+    });
+    logKey.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [new iam.ServicePrincipal(`logs.${this.region}.${this.urlSuffix}`)],
+      actions: ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:Describe*"],
+      resources: ["*"],
+      conditions: { ArnEquals: { "kms:EncryptionContext:aws:logs:arn":
+        `arn:${this.partition}:logs:${this.region}:${this.account}:log-group:/foodtech/${stage}/collection-image-builds` } },
+    }));
+    const logGroup = new logs.LogGroup(this, "CollectionImageBuildLogs", {
+      logGroupName: `/foodtech/${stage}/collection-image-builds`, encryptionKey: logKey,
+      retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const project = new codebuild.Project(this, "CollectionImageBuilder", {
+      projectName: `foodtech-collection-image-${stage}`,
+      description: "Explicit, commit-pinned collection image publishing",
+      environment: { buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        computeType: codebuild.ComputeType.MEDIUM, privileged: true },
+      timeout: Duration.minutes(30), logging: { cloudWatch: { logGroup } },
+      environmentVariables: { SOURCE_SHA: { value: "REQUIRED_AT_START_BUILD" },
+        COLLECTION_REPOSITORY: { value: repository.repositoryUri } },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: "0.2",
+        phases: {
+          pre_build: { commands: [
+            "echo \"$SOURCE_SHA\" | grep -Eq '^[0-9a-f]{40}$'",
+            "git clone --depth 1 --branch main https://github.com/davidots429/foodtech.git source",
+            "test \"$(git -C source rev-parse HEAD)\" = \"$SOURCE_SHA\"",
+            "aws ecr get-login-password --region \"$AWS_DEFAULT_REGION\" | docker login --username AWS --password-stdin \"${COLLECTION_REPOSITORY%%/*}\"",
+            "IMAGE_TAG=sha-$(echo \"$SOURCE_SHA\" | cut -c1-12)",
+          ] },
+          build: { commands: [
+            "docker build -f source/infra/containers/collection-adapter.Dockerfile -t \"$COLLECTION_REPOSITORY:$IMAGE_TAG\" source",
+            "docker push \"$COLLECTION_REPOSITORY:$IMAGE_TAG\"",
+          ] },
+        },
+      }),
+    });
+    repository.grantPullPush(project);
+    const logGrant = logKey.grant(project, "kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*",
+      "kms:GenerateDataKey*", "kms:Describe*");
+    for (const statement of logGrant.principalStatements) {
+      statement.addCondition("StringEquals", { "kms:ViaService": `logs.${this.region}.${this.urlSuffix}` });
+    }
+    new CfnOutput(this, "CollectionImageRepositoryName", { value: repository.repositoryName });
+    new CfnOutput(this, "CollectionImageBuildProjectName", { value: project.projectName });
+  }
+}
+
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
 if (app.node.tryGetContext("provisionAuthRefreshKey") === "true") {
@@ -740,6 +801,10 @@ if (app.node.tryGetContext("provisionCredentialVault") === "true") {
 }
 if (app.node.tryGetContext("provisionAiImagePublishing") === "true") {
   const publishing = new AiImagePublishingStack(app, `FoodtechAiImagePublishing-${stage}`, { env });
+  Tags.of(publishing).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionCollectionImagePublishing") === "true") {
+  const publishing = new CollectionImagePublishingStack(app, `FoodtechCollectionImagePublishing-${stage}`, { env });
   Tags.of(publishing).add("Project", "foodtech");
 }
 app.synth();
