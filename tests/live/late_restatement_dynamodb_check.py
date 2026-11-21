@@ -113,7 +113,7 @@ def main() -> None:
         with patch.dict(os.environ, {"FOODTECH_COOKING_TABLE": COOKING_TABLE}):
             worker = DynamoStandardizationWorker(DATA_TABLE, "unused", "unused")
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
-        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 1
+        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 2
         processor = DynamoProcessRestatement(COOKING_TABLE, DATA_TABLE)
         request = cooking.get_item(Key={"pk": job_pk, "sk": request_sk}, ConsistentRead=True)["Item"]
         result = cooking.get_item(Key={"pk": job_pk, "sk": request["result_sk"]},
@@ -163,7 +163,7 @@ def main() -> None:
             evidence = asyncio.run(recommendation_evidence.read_evidence(None, "test"))
             assert evidence["source_revision_status"] == "CHANGED"
         assert worker._publish_process(followup) == "RESTATEMENT_DERIVED"
-        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 2
+        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 4
         followup_request = cooking.get_item(
             Key={"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{followup_id}"},
             ConsistentRead=True)["Item"]
@@ -183,7 +183,7 @@ def main() -> None:
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"}, ConsistentRead=True)["Item"] == job
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
         assert processor.process(job_pk, f"synthetic-restatement-{run_id}-late") == "ALREADY_COMPLETED"
-        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 2
+        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 4
         race_id = f"synthetic-restatement-{run_id}-race"
         race = {**followup, "pk": f"EVENT#{race_id}", "ingestion_event_id": race_id,
                 "normalized": {**followup["normalized"], "sequence_number": 6,
@@ -204,7 +204,7 @@ def main() -> None:
         processor.client = SimpleNamespace(exceptions=original_client.exceptions,
                                            transact_write_items=racing_transaction)
         assert processor.process(job_pk, race_id) == "STALE_RETRY"
-        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 2
+        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 4
         assert cooking.get_item(Key={"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"},
                                 ConsistentRead=True)["Item"]["version"] == 2
         print(json.dumps({"account": ACCOUNT, "region": REGION, "result": "DERIVED_ONLY",

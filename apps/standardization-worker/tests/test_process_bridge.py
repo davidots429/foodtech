@@ -44,6 +44,12 @@ class FakeClient:
     def transact_write_items(self, *, TransactItems):
         self.calls += 1
         for write in TransactItems:
+            if "Update" in write:
+                key = {name: self.deserializer.deserialize(value) for name, value in write["Update"]["Key"].items()}
+                item_key = (key["pk"], key["sk"])
+                previous = self.table.items.get(item_key, {})
+                self.table.items[item_key] = {**previous, **key, "revision": previous.get("revision", 0) + 1}
+                continue
             values = {key: self.deserializer.deserialize(value) for key, value in write["Put"]["Item"].items()}
             self.table.items[(values["pk"], values["sk"])] = values
 
@@ -254,7 +260,8 @@ class ProcessBridgeTests(unittest.TestCase):
         self.assertEqual(request["source_assessment_pk"], "EVENT#late-1")
         self.assertEqual(request["job_version_at_detection"], 8)
         self.assertEqual(table.items[(job_pk, "META")], meta)
-        self.assertEqual(bridge.client.calls, 0)
+        self.assertEqual(bridge.client.calls, 1)
+        self.assertEqual(table.items[("SCOPE#USER#customer-1#JOBS", "HISTORY#REVISION")]["revision"], 1)
         bridge.restatement = SimpleNamespace(process=lambda pk, event: "DERIVED")
         self.assertEqual(bridge.apply(late), "RESTATEMENT_DERIVED")
         bridge.restatement = SimpleNamespace(process=lambda pk, event: "STALE_RETRY")
