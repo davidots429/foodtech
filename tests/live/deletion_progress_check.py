@@ -47,6 +47,13 @@ def main():
         auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :other',
                          ExpressionAttributeValues={':other': str(uuid4())})
         try:
+            store.save_checkpoint(cipher=cipher, **scope, expected_version=1, state='VERIFYING',
+                                  checkpoint=b'blocked-cursor')
+        except DeletionProgressConflict:
+            pass
+        else:
+            raise AssertionError('changed lock allowed write')
+        try:
             store.load_checkpoint(cipher=cipher, **scope)
         except DeletionProgressConflict:
             pass
