@@ -101,14 +101,17 @@ class DynamoTierStore:
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
         self.auth_table_name = os.getenv("FOODTECH_AUTH_TABLE", "")
+        self.auth_table = session.resource("dynamodb").Table(self.auth_table_name) if self.auth_table_name else None
 
     def _item(self, item: dict) -> dict:
         return {key: self.serializer.serialize(value) for key, value in item.items()}
 
-    def _guard(self, subject: str, epoch: int | None) -> dict:
+    def _guard(self, subject: str, epoch: int | None, *, admin: bool = False) -> dict:
         if not self.auth_table_name or not isinstance(subject, str) or not subject:
             raise ValueError("authentication table and subject are required")
         condition = "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)"
+        if admin:
+            condition += " AND (attribute_not_exists(admin_blocked) OR admin_blocked = :false)"
         values = {":false": {"BOOL": False}}
         names = {}
         if epoch is not None:
@@ -150,9 +153,35 @@ class DynamoTierStore:
             raise
 
     def pending(self, limit: int = 20) -> list[dict]:
-        page = self.table.query(IndexName="PendingRequests", KeyConditionExpression=Key("queue_status").eq("REQUESTED"),
-                                Limit=limit, ScanIndexForward=True)
-        return [_current(item) for item in page.get("Items", [])]
+        if not self.auth_table or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('authentication table and valid limit required')
+        results, cursor = [], None
+        # Bound work when many deleted or stale index entries are still visible.
+        for _ in range(10):
+            args = {'IndexName': 'PendingRequests', 'KeyConditionExpression': Key('queue_status').eq('REQUESTED'),
+                    'Limit': limit, 'ScanIndexForward': True}
+            if cursor is not None:
+                args['ExclusiveStartKey'] = cursor
+            page = self.table.query(**args)
+            for indexed in page.get('Items', []):
+                pk, subject = indexed.get('pk'), indexed.get('subject')
+                if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
+                        pk != f'TENANT#{subject}' or indexed.get('sk') != 'CURRENT':
+                    continue
+                current = self.table.get_item(Key={'pk': pk, 'sk': 'CURRENT'}, ConsistentRead=True).get('Item')
+                if not current or current.get('subject') != subject or current.get('status') != 'REQUESTED' or \
+                        current.get('application_id') != indexed.get('application_id'):
+                    continue
+                principal = self.auth_table.get_item(Key={'pk': f'USER#{subject}'}, ConsistentRead=True).get('Item', {})
+                if principal.get('suspended') or 'deletion_lock_request' in principal:
+                    continue
+                results.append(_current(current))
+                if len(results) == limit:
+                    return results
+            cursor = page.get('LastEvaluatedKey')
+            if not cursor:
+                break
+        return results
 
     def inventory_keys(self, subject: str, limit: int, cursor: str | None) -> dict:
         """Internal key inventory; the caller must authorize and protect its scope."""
@@ -236,8 +265,8 @@ class DynamoTierStore:
                   "reviewed_at": reviewed_at, "reviewed_by": reviewer}
         try:
             self.client.transact_write_items(TransactItems=[
-                *([self._guard(subject, reviewer_epoch)] if subject == reviewer else
-                  [self._guard(subject, None), self._guard(reviewer, reviewer_epoch)]),
+                *([self._guard(subject, reviewer_epoch, admin=True)] if subject == reviewer else
+                  [self._guard(subject, None), self._guard(reviewer, reviewer_epoch, admin=True)]),
                 {"Put": {"TableName": self.table.name, "Item": self._item(item),
                          "ConditionExpression": "#status = :requested AND application_id = :application AND #version = :version",
                          "ExpressionAttributeNames": {"#status": "status", "#version": "version"},

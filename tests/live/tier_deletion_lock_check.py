@@ -45,6 +45,10 @@ def main():
         blocked(lambda: store.decide(customer, app, admin, 'REJECTED', 'now', 0))
         auth.update_item(Key=auth_keys[0], UpdateExpression='REMOVE deletion_lock_request')
         blocked(lambda: store.decide(customer, app, admin, 'REJECTED', 'now', 1))
+        auth.update_item(Key=auth_keys[1], UpdateExpression='SET admin_blocked = :yes',
+                         ExpressionAttributeValues={':yes': True})
+        blocked(lambda: store.decide(customer, app, admin, 'REJECTED', 'now', 0))
+        auth.update_item(Key=auth_keys[1], UpdateExpression='REMOVE admin_blocked')
         store.decide(customer, app, admin, 'REJECTED', 'now', 0)
         if store.current(customer)['status'] != 'REJECTED':
             raise AssertionError('valid review not saved')

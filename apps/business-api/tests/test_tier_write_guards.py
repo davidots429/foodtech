@@ -34,10 +34,12 @@ class TierGuardTests(unittest.TestCase):
         self.assertEqual([op['ConditionCheck']['Key']['pk']['S'] for op in ops[:2]],
                          ['USER#customer', 'USER#admin'])
         self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N': '5'})
+        self.assertIn('admin_blocked', ops[1]['ConditionCheck']['ConditionExpression'])
         self.store.decide('customer', 'app', 'customer', 'REJECTED', 'now', 5)
         ops = self.store.client.transact_write_items.call_args.kwargs['TransactItems']
         self.assertEqual(len(ops), 3)
         self.assertEqual(ops[0]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N': '5'})
+        self.assertIn('admin_blocked', ops[0]['ConditionCheck']['ConditionExpression'])
 
     def test_missing_auth_config_fails_closed(self):
         self.store.auth_table_name = ''
@@ -96,6 +98,34 @@ class TierGuardTests(unittest.TestCase):
         self.assertEqual(self.store.delete_inventory_page('alice', request, 2), 1)
         self.assertEqual(self.store.inventory_keys.call_args.args, ('alice', 2, None))
         self.store.delete_inventory_key.assert_called_once_with('alice', request, 'b')
+
+    def test_pending_excludes_stale_deleted_and_locked_index_entries(self):
+        self.store.table, self.store.auth_table = Mock(), Mock()
+        def indexed(subject, app):
+            return {'pk': f'TENANT#{subject}', 'sk': 'CURRENT', 'subject': subject,
+                    'application_id': app, 'status': 'REQUESTED'}
+        rows = [indexed('deleted', 'old'), indexed('changed', 'old'), indexed('locked', 'a'),
+                indexed('ok', 'a')]
+        self.store.table.query.side_effect = [
+            {'Items': rows[:2], 'LastEvaluatedKey': {'pk': 'TENANT#changed', 'sk': 'CURRENT'}},
+            {'Items': rows[2:]}]
+        def current(*, Key, ConsistentRead):
+            self.assertTrue(ConsistentRead)
+            who = Key['pk'].removeprefix('TENANT#')
+            if who == 'deleted': return {}
+            return {'Item': indexed(who, 'new' if who == 'changed' else 'a')}
+        self.store.table.get_item.side_effect = current
+        self.store.auth_table.get_item.side_effect = lambda **kw: {
+            'Item': {'deletion_lock_request': 'locked'}} if kw['Key']['pk'] == 'USER#locked' else {}
+        result = self.store.pending(2)
+        self.assertEqual([item['subject'] for item in result], ['ok'])
+        self.assertEqual(self.store.table.query.call_count, 2)
+        self.assertEqual(self.store.auth_table.get_item.call_count, 2)
+
+    def test_pending_fails_closed_without_auth_table(self):
+        self.store.auth_table = None
+        with self.assertRaises(ValueError):
+            self.store.pending()
 
 
 if __name__ == '__main__':
