@@ -29,12 +29,15 @@ class CapsuleWriterTests(unittest.TestCase):
 
     def test_creation_uses_random_locator_and_does_not_overwrite(self):
         with patch("foodtech_business_api.capsule_writer.secrets.token_urlsafe", return_value=LOCATOR) as random:
-            self.assertEqual(self.writer.create(), LOCATOR)
+            locator, action = self.writer.create_action()
+            self.assertEqual(locator, LOCATOR)
         random.assert_called_once_with(32)
-        request = self.client.puts[0]
+        request = action["Put"]
         self.assertEqual(request["Item"]["state"], {"S": "ACTIVE"})
         self.assertEqual(request["Item"]["revision"], {"N": "1"})
         self.assertIn("attribute_not_exists", request["ConditionExpression"])
+        self.assertEqual(self.client.puts, [])
+        self.assertEqual(self.client.transactions, [])
 
     def test_entry_write_and_revision_are_one_conditioned_transaction(self):
         self.writer.put_entry(locator=LOCATOR, purpose="BILLING", epoch="2026-11",

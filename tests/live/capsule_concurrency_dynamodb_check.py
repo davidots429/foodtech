@@ -29,7 +29,8 @@ def main():
     inventory = CapsuleInventory(DATA_TABLE, frozenset({"BILLING", "USAGE"}), client=client)
     marker_pk = f"CAPSULE_TEST#{uuid.uuid4()}"
     serializer = TypeSerializer()
-    locator = writer.create()
+    locator, create_action = writer.create_action()
+    client.transact_write_items(TransactItems=[create_action])
     try:
         def put(purpose):
             try:

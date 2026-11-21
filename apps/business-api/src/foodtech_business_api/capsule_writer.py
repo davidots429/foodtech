@@ -34,14 +34,16 @@ class CapsuleWriter:
         if type(revision) is not int or not 1 <= revision < 2**63 - 1:
             raise ValueError("invalid capsule revision")
 
-    def create(self) -> str:
-        """Create one random empty Capsule; collisions fail rather than overwrite."""
+    def create_action(self) -> tuple[str, dict]:
+        """Build a random Capsule put to include in the same transaction as Vault creation.
+
+        The locator must not be returned externally until that transaction succeeds.
+        """
         locator = secrets.token_urlsafe(32)
         self._locator(locator)
-        self.client.put_item(TableName=self.table_name,
-            Item=self._item({"pk": locator, "sk": "META", "state": "ACTIVE", "revision": 1}),
-            ConditionExpression="attribute_not_exists(pk) AND attribute_not_exists(sk)")
-        return locator
+        return locator, {"Put": {"TableName": self.table_name,
+            "Item": self._item({"pk": locator, "sk": "META", "state": "ACTIVE", "revision": 1}),
+            "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}}
 
     def put_entry(self, *, locator: str, purpose: str, epoch: str, ciphertext: bytes, expected_revision: int) -> None:
         """Create a new encrypted ENTRY and advance META in one transaction."""
