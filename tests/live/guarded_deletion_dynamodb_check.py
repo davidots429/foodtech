@@ -20,7 +20,8 @@ from foodtech_business_api.deletion_registry_recovery_cipher import DeletionRegi
 from foodtech_capsule_crypto.contract import Entry
 from foodtech_capsule_crypto.user_entry import seal_entry
 from foodtech_capsule_crypto.user_key import UserKeyGenerator
-from foodtech_capsule_crypto.deletion_plan import prepare_from_inventory
+from foodtech_capsule_crypto.deletion_plan import prepare_from_resolved_inventory
+from foodtech_capsule_crypto.tenant_scope import TenantScope, TenantScopeResolver
 from capsule_user_key_kms_check import b64
 from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
 
@@ -40,6 +41,7 @@ def main():
     client, dynamo = session.client("dynamodb"), session.resource("dynamodb")
     outputs = session.client("cloudformation").describe_stacks(StackName="FoodtechCredentialVault-dev")["Stacks"][0]["Outputs"]
     key_arn = next(item["OutputValue"] for item in outputs if item["OutputKey"] == "CredentialStorageKeyArn")
+    hmac_arn = next(item["OutputValue"] for item in outputs if item["OutputKey"] == "CredentialPseudonymKeyArn")
     encryptor = DeletionRegistryCipher(key_arn, "dev", kms_client=session.client("kms"))
     decryptor = DeletionRegistryRecoveryCipher(key_arn, "dev", kms_client=session.client("kms"))
     auth, vault, capsule, registry = (dynamo.Table(name) for name in (AUTH, VAULT, CAPSULE, REGISTRY))
@@ -69,7 +71,13 @@ def main():
         capsule_created = True
         key_map = {('synthetic-v1', 'shard-0'): key_arn}
         purposes, tenant_purposes = frozenset({'BILLING'}), frozenset({'credential'})
-        tenant = f'psn:v1:credential:2026-11:v1:{b64(1)}'
+        resolver = TenantScopeResolver(key_map={('credential', 'v1'): hmac_arn},
+            approved_purposes=tenant_purposes, kms_client=session.client('kms'))
+        identity_buffer = bytearray(internal_id.encode('ascii'))
+        try:
+            tenant = resolver.derive(internal_id=identity_buffer, scope=TenantScope('credential', '2026-11', 'v1'))
+        finally:
+            identity_buffer[:] = b'\x00' * len(identity_buffer)
         target = Entry('BILLING', '2026-11', b64(2))
         user_key, entry = UserKeyGenerator(key_map, tenant_purposes, kms_client=session.client('kms')).generate(
             tenant=tenant, pool_version='synthetic-v1', shard_id='shard-0',
@@ -154,8 +162,9 @@ def main():
             if bytes(internal_buffer) != internal_id.encode():
                 raise AssertionError('recovered internal ID differs')
             inventory = CapsuleInventory(CAPSULE, purposes, client=client)
-            plan = prepare_from_inventory(inventory=inventory, locator=locator_buffer.decode('ascii'), request_id=winner,
-                tenant=tenant, key_map=key_map, approved_purposes=purposes,
+            plan = prepare_from_resolved_inventory(inventory=inventory, locator=locator_buffer.decode('ascii'),
+                request_id=winner, internal_id=internal_buffer, tenant_resolver=resolver,
+                key_map=key_map, approved_purposes=purposes,
                 approved_tenant_purposes=tenant_purposes, kms_client=session.client('kms'))
             if plan.entries != (target,):
                 raise AssertionError('synthetic deletion target differs')

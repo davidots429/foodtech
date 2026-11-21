@@ -5,7 +5,7 @@ import unittest
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_business_api.capsule_inventory import CapsuleInventory, CapsuleInventoryError
 from foodtech_capsule_crypto.contract import Entry, Envelope
-from foodtech_capsule_crypto.deletion_plan import EncryptedTarget, prepare_targets, prepare_from_inventory
+from foodtech_capsule_crypto.deletion_plan import EncryptedTarget, prepare_targets, prepare_from_inventory, prepare_from_resolved_inventory
 from foodtech_capsule_crypto.user_entry import UserEntryEnvelope, open_entry, seal_entry
 from foodtech_capsule_crypto.user_key import UserKeyGenerator, UserKeyRecord, UserKeyUnwrapper
 
@@ -86,6 +86,30 @@ class InventoryCryptoTests(unittest.TestCase):
             locator=locator, request_id=request_id, tenant=tenant, key_map=key_map,
             approved_purposes=purposes, approved_tenant_purposes=tenant_purposes, kms_client=kms)
         self.assertEqual(connected.entries, (plain,))
+        internal_id = bytearray(b'12c5f2d4-c6d2-4165-adf7-e7fed537af06')
+        class Resolver:
+            def derive(self, *, internal_id, scope):
+                self.scope = scope
+                return tenant
+        resolver = Resolver()
+        resolved = prepare_from_resolved_inventory(
+            inventory=CapsuleInventory('capsule', purposes, client=Client(meta, row)), locator=locator,
+            request_id=request_id, internal_id=internal_id, tenant_resolver=resolver, key_map=key_map,
+            approved_purposes=purposes, approved_tenant_purposes=tenant_purposes, kms_client=kms)
+        self.assertEqual(resolved.entries, (plain,))
+        self.assertEqual((resolver.scope.purpose, resolver.scope.epoch, resolver.scope.key_version),
+                         ('credential', '2026-11', 'v1'))
+        class WrongResolver:
+            def derive(self, *, internal_id, scope):
+                return f'psn:v1:credential:2026-11:v1:{digest(3)}'
+        with self.assertRaises(ValueError):
+            prepare_from_resolved_inventory(inventory=CapsuleInventory('capsule', purposes, client=Client(meta, row)),
+                locator=locator, request_id=request_id, internal_id=internal_id, tenant_resolver=WrongResolver(),
+                key_map=key_map, approved_purposes=purposes, approved_tenant_purposes=tenant_purposes, kms_client=kms)
+        with self.assertRaises(ValueError):
+            prepare_from_resolved_inventory(inventory=CapsuleInventory('capsule', purposes, client=Client(meta, row)),
+                locator=locator, request_id=request_id, internal_id=bytearray(b'bad'), tenant_resolver=resolver,
+                key_map=key_map, approved_purposes=purposes, approved_tenant_purposes=tenant_purposes, kms_client=kms)
 
         class UnstableClient(Client):
             def __init__(self, meta, entry):

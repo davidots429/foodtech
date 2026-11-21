@@ -54,17 +54,8 @@ def prepare_targets(*, tenant: str, record: UserKeyRecord | None, targets: tuple
     return unwrapper.use(tenant=tenant, record=record, use_key=open_all)
 
 
-def prepare_from_inventory(*, inventory, locator: str, request_id: str, tenant: str,
-                           key_map: dict, approved_purposes: frozenset[str],
-                           approved_tenant_purposes: frozenset[str], kms_client=None) -> DeletionTargets:
-    """Build an in-memory plan only after the locked inventory has completed.
-
-    The inventory and its authorization are supplied by the trusted worker.
-    This does not persist a plan, perform deletion, or establish that every
-    legacy writer respects the lock.
-    """
+def _stage_inventory(inventory, locator, request_id):
     from .contract import Envelope
-
     staged = []
     def stage_entry(sk, ciphertext, metadata):
         if not isinstance(sk, str) or not isinstance(ciphertext, bytes) or not isinstance(metadata, dict):
@@ -78,11 +69,47 @@ def prepare_from_inventory(*, inventory, locator: str, request_id: str, tenant: 
         except KeyError:
             raise ValueError('invalid staged inventory entry') from None
         staged.append(EncryptedTarget(pieces[1], pieces[2], envelope))
+    return inventory.stage(locator, request_id, stage_entry), tuple(staged)
 
-    result = inventory.stage(locator, request_id, stage_entry)
+
+def prepare_from_inventory(*, inventory, locator: str, request_id: str, tenant: str,
+                           key_map: dict, approved_purposes: frozenset[str],
+                           approved_tenant_purposes: frozenset[str], kms_client=None) -> DeletionTargets:
+    """Low-level preparation: the trusted caller must independently resolve tenant."""
+    result, staged = _stage_inventory(inventory, locator, request_id)
     wrapped = result.wrapped_user_key
     record = None if wrapped is None else UserKeyRecord(wrapped.user_key_id, wrapped.pool_version,
         wrapped.shard_id, wrapped.key_arn, wrapped.encrypted_dek)
-    return prepare_targets(tenant=tenant, record=record, targets=tuple(staged),
+    return prepare_targets(tenant=tenant, record=record, targets=staged,
+        expected_count=result.entry_count, key_map=key_map, approved_purposes=approved_purposes,
+        approved_tenant_purposes=approved_tenant_purposes, kms_client=kms_client)
+
+
+def prepare_from_resolved_inventory(*, inventory, locator: str, request_id: str, internal_id: bytearray,
+                                    tenant_resolver, key_map: dict, approved_purposes: frozenset[str],
+                                    approved_tenant_purposes: frozenset[str], kms_client=None) -> DeletionTargets:
+    """Derive tenant from a trusted internal ID and stable inventory metadata.
+
+    Called only inside an authorized locked recovery boundary. This function
+    does not authenticate the caller, persist a plan or perform deletion.
+    """
+    from uuid import UUID
+    from .tenant_scope import TenantScope
+    try:
+        if not isinstance(internal_id, bytearray) or str(UUID(internal_id.decode('ascii'))) != internal_id.decode('ascii'):
+            raise ValueError
+    except (ValueError, TypeError, UnicodeError, AttributeError):
+        raise ValueError('invalid internal identity') from None
+    result, staged = _stage_inventory(inventory, locator, request_id)
+    wrapped = result.wrapped_user_key
+    if wrapped is None:
+        if result.entry_count != 0 or staged:
+            raise ValueError('invalid unkeyed capsule inventory')
+        return DeletionTargets(())
+    scope = TenantScope(wrapped.scope_purpose, wrapped.scope_epoch, wrapped.scope_key_version)
+    tenant = tenant_resolver.derive(internal_id=internal_id, scope=scope)
+    record = UserKeyRecord(wrapped.user_key_id, wrapped.pool_version, wrapped.shard_id,
+                           wrapped.key_arn, wrapped.encrypted_dek)
+    return prepare_targets(tenant=tenant, record=record, targets=staged,
         expected_count=result.entry_count, key_map=key_map, approved_purposes=approved_purposes,
         approved_tenant_purposes=approved_tenant_purposes, kms_client=kms_client)
