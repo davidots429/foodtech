@@ -45,6 +45,11 @@ from foodtech_business_api.meal_deletion_worker import MealDeletionWorker
 from foodtech_business_api.meal_meta_deletion import MealMetaDeletion
 from foodtech_business_api.meal_source_snapshot import MealSourceSnapshot
 from foodtech_business_api.cooking_deletion_recovery import CookingDeletionRecovery
+from foodtech_business_api.meal_aggregate_deletion_coordinator import MealAggregateDeletionCoordinator
+from foodtech_business_api.meal_aggregate_deletion_inventory import MealAggregateDeletionInventory
+from foodtech_business_api.meal_aggregate_deletion_recovery import MealAggregateDeletionRecovery
+from foodtech_business_api.meal_aggregate_deletion_residual import MealAggregateResidualScan
+from foodtech_business_api.meal_aggregate_deletion_worker import MealAggregateDeletionWorker
 from foodtech_business_api.deletion_progress import DeletionProgressConflict, DeletionProgressStore
 from foodtech_business_api.deletion_checkpoint_cipher import DeletionCheckpointCipher
 from foodtech_capsule_crypto.tenant_scope import TenantScope, TenantScopeResolver
@@ -303,7 +308,13 @@ def main():
         if not plan_progress.load_checkpoint(cipher=profile_cipher, subject=subject, request_id=winner,
                                              domain='MEAL_META_000000000000'):
             raise AssertionError('meal recovery did not preserve encrypted META snapshot')
-        cooking = CookingDeletionRecovery(profile=profile_recovery, job=job_recovery, meal=meal_recovery,
+        aggregate_inventory = MealAggregateDeletionInventory(source_table=vault, progress_store=plan_progress, cipher=profile_cipher)
+        aggregate_worker = MealAggregateDeletionWorker(inventory=aggregate_inventory)
+        aggregate_residual = MealAggregateResidualScan(source_table=vault, progress_store=plan_progress, cipher=profile_cipher)
+        aggregate_coordinator = MealAggregateDeletionCoordinator(inventory=aggregate_inventory, worker=aggregate_worker,
+                                                                 residual=aggregate_residual)
+        aggregate_recovery = MealAggregateDeletionRecovery(recovery=recovery, coordinator=aggregate_coordinator)
+        cooking = CookingDeletionRecovery(profile=profile_recovery, job=job_recovery, meal=meal_recovery, aggregate=aggregate_recovery,
                                           progress_store=plan_progress, cipher=profile_cipher)
         if cooking.step(authenticated_subject=subject, request_id=winner, limit=100) != \
                 {'phase': 'QUIESCENCE', 'writer_quiescence_required': True}:
