@@ -73,6 +73,8 @@ const validationCheckLabels: Record<string, string> = {
   source_validation_identity_matches: "원천의 합성 원재료·센서·공정 ID 일치",
   source_relative_duration_covers_cooking: "상대 표본 길이가 조리시간 이상",
   source_process_span_covers_cooking: "합성 원천 표본과 작업 조리구간의 시각 일치",
+  source_completion_record_matched: "수집 완료 기록과 원본 일치",
+  source_revision_stable: "조회 중 원천 버전 유지",
 };
 
 const jobLabels: Record<CookingJob["status"], string> = {
