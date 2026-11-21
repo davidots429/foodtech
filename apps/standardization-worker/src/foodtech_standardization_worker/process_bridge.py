@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
-from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.tonkatsu_process import process_status
@@ -177,6 +176,11 @@ class DynamoProcessBridge:
             return "BINDING_MISMATCH"
         event_id = assessment["ingestion_event_id"]
         key = {"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{event_id}"}
+        if self.table.get_item(Key=key, ConsistentRead=True).get("Item"):
+            return "RESTATEMENT_ALREADY_PENDING"
+        prefix, separator, job_id = job_pk.rpartition("#JOB#")
+        if not separator or not prefix.startswith("SCOPE#USER#") or not job_id:
+            raise ValueError("invalid scoped job key")
         requested_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         request = {**key, "status": "PENDING", "reason": reason,
                    "ingestion_event_id": event_id,
@@ -189,7 +193,17 @@ class DynamoProcessBridge:
                    "event_time": normalized["event_time"], "requested_at": requested_at,
                    "provenance": "SYNTHETIC"}
         try:
-            self.table.put_item(Item=request, ConditionExpression=Attr("pk").not_exists())
+            self.client.transact_write_items(TransactItems=[
+                {"Put": {"TableName": self.table.name, "Item": self._item(request),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+                {"Update": {"TableName": self.table.name,
+                            "Key": self._item({"pk": prefix + "#JOBS", "sk": "HISTORY#REVISION"}),
+                            "UpdateExpression": "ADD revision :one",
+                            "ConditionExpression": "attribute_not_exists(revision) OR revision < :max",
+                            "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}},
+            ])
             return "RESTATEMENT_PENDING"
-        except self.table.meta.client.exceptions.ConditionalCheckFailedException:
-            return "RESTATEMENT_ALREADY_PENDING"
+        except self.client.exceptions.TransactionCanceledException:
+            if self.table.get_item(Key=key, ConsistentRead=True).get("Item"):
+                return "RESTATEMENT_ALREADY_PENDING"
+            raise

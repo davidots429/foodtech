@@ -223,6 +223,7 @@ class MemoryCookingStore:
             current = self.items.get((pk, "META"))
             if not current or current["version"] != expected_version:
                 raise Conflict
+            self._advance_history(pk)
             self.items[key] = {"pk": pk, **request}
             return self.items[key].copy()
 
@@ -604,12 +605,13 @@ class DynamoCookingStore:
         if self.customer_restatement(pk, request["request_id"]):
             return existing_or_conflict()
         try:
-            self.client.transact_write_items(TransactItems=[
+            self._history_transact([
                 {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
                     "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
                     "ExpressionAttributeValues": self._item({":v": expected_version})}},
                 {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **request}),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
+                self._history_update(pk),
             ])
         except self.client.exceptions.TransactionCanceledException as exc:
             if any(reason.get("Code") == "ConditionalCheckFailed" for reason in

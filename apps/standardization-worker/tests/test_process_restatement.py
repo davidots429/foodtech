@@ -25,7 +25,7 @@ class ProcessRestatementTests(unittest.TestCase):
                                "CHAMBER_TEMPERATURE": {"value": str(temperature), "unit": "°C"}}}
 
     def job(self):
-        return {"pk": "JOB#1", "sk": "META", "job_id": "1", "version": 7,
+        return {"pk": "SCOPE#USER#owner#JOB#1", "sk": "META", "job_id": "1", "version": 7,
                 "status": "COMPLETED", "source_binding": self.binding,
                 "process_thickness_status": "NORMAL", "process_time_status": "NORMAL"}
 
@@ -155,7 +155,7 @@ class ProcessRestatementTests(unittest.TestCase):
         first = self.sample("first", 2, 0)
         late = self.sample("late", 3, 5, late=True)
         after_terminal = self.sample("after-terminal", 4, 10)
-        request = {"pk": "JOB#1", "sk": "RESTATEMENT#REQUEST#late", "status": "PENDING",
+        request = {"pk": "SCOPE#USER#owner#JOB#1", "sk": "RESTATEMENT#REQUEST#late", "status": "PENDING",
                    "source_assessment_pk": "EVENT#late", "source_assessment_sk": "ASSESSMENT#v1",
                    "source_stream_pk": stream_binding_key(**self.binding)}
         cooking = Mock(name="cooking")
@@ -183,9 +183,9 @@ class ProcessRestatementTests(unittest.TestCase):
                    "record_count": 4, "raw_sha256": [hashlib.sha256(row["raw"].encode()).hexdigest() for row in raws]}
         processor._stream_sources = lambda _pk: raws
         processor._collection_receipts = lambda _pk: [receipt]
-        self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+        self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", "late"), "DERIVED")
         operations = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(operations), 5)
+        self.assertEqual(len(operations), 6)
         self.assertEqual(operations[0]["ConditionCheck"]["Key"]["sk"]["S"], "META")
         self.assertEqual(operations[1]["Put"]["Item"]["status"]["S"], "DERIVED_ONLY")
         self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "4")
@@ -200,13 +200,15 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual(operations[3]["Put"]["Item"]["version"]["N"], "1")
         self.assertEqual(operations[3]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
         self.assertEqual(operations[4]["ConditionCheck"]["ConditionExpression"], "attribute_not_exists(pk)")
+        self.assertEqual(operations[5]["Update"]["Key"]["pk"], {"S": "SCOPE#USER#owner#JOBS"})
+        self.assertEqual(operations[5]["Update"]["UpdateExpression"], "ADD revision :one")
         self.assertEqual(job["status"], "COMPLETED")
-        processor._refresh_dependents.assert_called_once_with("JOB#1")
+        processor._refresh_dependents.assert_called_once_with("SCOPE#USER#owner#JOB#1")
         assessment_lookup = {"EVENT#preload": preload, "EVENT#first": first, "EVENT#late": late,
                              "EVENT#after-terminal": after_terminal}
         data.get_item.side_effect = lambda **kwargs: ({"Item": {"revision": 4}}
             if kwargs["Key"]["sk"] == "SOURCE#REVISION" else {"Item": assessment_lookup[kwargs["Key"]["pk"]]})
-        self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+        self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", "late"), "DERIVED")
         operations = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
         self.assertEqual(operations[1]["Put"]["Item"]["source_revision"]["N"], "4")
         self.assertEqual(operations[4]["ConditionCheck"]["ExpressionAttributeValues"][":r"]["N"], "4")
@@ -214,24 +216,24 @@ class ProcessRestatementTests(unittest.TestCase):
         data.get_item.side_effect = lambda **kwargs: ({"Item": {"revision": next(revisions)}}
             if kwargs["Key"]["sk"] == "SOURCE#REVISION" else {"Item": assessment_lookup[kwargs["Key"]["pk"]]})
         processor.client.transact_write_items.reset_mock()
-        self.assertEqual(processor.process("JOB#1", "late"), "SOURCE_CHANGED_RETRY")
+        self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", "late"), "SOURCE_CHANGED_RETRY")
         processor.client.transact_write_items.assert_not_called()
         data.get_item.side_effect = lambda **kwargs: ({} if kwargs["Key"]["sk"] == "SOURCE#REVISION" else
             {"Item": assessment_lookup[kwargs["Key"]["pk"]]})
-        pointer = {"pk": "JOB#1", "sk": "PROCESS#LATEST_RESTATED", "version": 1}
+        pointer = {"pk": "SCOPE#USER#owner#JOB#1", "sk": "PROCESS#LATEST_RESTATED", "version": 1}
         cooking.get_item.side_effect = lambda **kwargs: {"Item": {
             request["sk"]: request, "META": job,
             "PROCESS#LATEST_RESTATED": pointer}[kwargs["Key"]["sk"]]}
-        self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+        self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", "late"), "DERIVED")
         next_pointer = processor.client.transact_write_items.call_args.kwargs["TransactItems"][3]["Put"]
         self.assertEqual(next_pointer["Item"]["version"]["N"], "2")
         self.assertEqual(next_pointer["ExpressionAttributeValues"][":previous"]["N"], "1")
         with patch("foodtech_standardization_worker.process_restatement.COVERAGE_VERSION", "future-version"):
-            self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+            self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", "late"), "DERIVED")
         new_result = processor.client.transact_write_items.call_args.kwargs["TransactItems"][1]["Put"]["Item"]
         self.assertNotEqual(new_result["sk"]["S"], original_key)
         with patch("foodtech_standardization_worker.process_restatement.SUMMARY_VERSION", "future-summary"):
-            self.assertEqual(processor.process("JOB#1", "late"), "DERIVED")
+            self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", "late"), "DERIVED")
         new_result = processor.client.transact_write_items.call_args.kwargs["TransactItems"][1]["Put"]["Item"]
         self.assertNotEqual(new_result["sk"]["S"], original_key)
 
@@ -240,15 +242,15 @@ class ProcessRestatementTests(unittest.TestCase):
         processor.cooking = Mock()
         processor.cooking.get_item.return_value = {"Item": {"status": "COMPLETED"}}
         processor._refresh_dependents = Mock()
-        self.assertEqual(processor.process("JOB#1", "late"), "ALREADY_COMPLETED")
-        processor._refresh_dependents.assert_called_once_with("JOB#1")
+        self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", "late"), "ALREADY_COMPLETED")
+        processor._refresh_dependents.assert_called_once_with("SCOPE#USER#owner#JOB#1")
 
     def test_customer_request_replays_current_source_without_trigger_event(self):
         job = self.job()
         sample = self.sample("first", 1, 0)
         source_pk = stream_binding_key(**self.binding)
         request_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-        request = {"pk": "JOB#1", "sk": f"RESTATEMENT#REQUEST#{request_id}", "status": "PENDING",
+        request = {"pk": "SCOPE#USER#owner#JOB#1", "sk": f"RESTATEMENT#REQUEST#{request_id}", "status": "PENDING",
                    "reason": "CUSTOMER_REFRESH", "request_id": request_id, "source_stream_pk": source_pk,
                    "job_version_at_detection": job["version"]}
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
@@ -264,12 +266,12 @@ class ProcessRestatementTests(unittest.TestCase):
         processor._query = lambda _pk, prefix: [request] if prefix.startswith("RESTATEMENT") else []
         processor._stream_sources = lambda _pk: [{"ingestion_event_id": "first"}]
         processor._collection_receipts = lambda _pk: []
-        self.assertEqual(processor.process("JOB#1", request_id), "DERIVED")
+        self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", request_id), "DERIVED")
         request_put = processor.client.transact_write_items.call_args.kwargs["TransactItems"][2]["Put"]["Item"]
         self.assertEqual(request_put["status"]["S"], "COMPLETED")
         request["job_version_at_detection"] = job["version"] - 1
         processor.client.transact_write_items.reset_mock()
-        self.assertEqual(processor.process("JOB#1", request_id), "REQUEST_STALE")
+        self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", request_id), "REQUEST_STALE")
         processor.client.transact_write_items.assert_not_called()
         self.assertEqual(processor.cooking.update_item.call_args.kwargs["ExpressionAttributeValues"][":stale"], "STALE")
 
@@ -287,7 +289,7 @@ class ProcessRestatementTests(unittest.TestCase):
     def test_process_waits_for_unstandardized_raw_sample(self):
         job = self.job()
         late = self.sample("late", 2, 5, late=True)
-        request = {"pk": "JOB#1", "sk": "RESTATEMENT#REQUEST#late", "status": "PENDING",
+        request = {"pk": "SCOPE#USER#owner#JOB#1", "sk": "RESTATEMENT#REQUEST#late", "status": "PENDING",
                    "source_assessment_pk": "EVENT#late", "source_stream_pk": late["source_pk"]}
         cooking, data, client = Mock(), Mock(), Mock()
         cooking.get_item.side_effect = lambda **kwargs: {"Item": {
@@ -301,7 +303,7 @@ class ProcessRestatementTests(unittest.TestCase):
             {"ingestion_event_id": "late"}, {"ingestion_event_id": "unstandardized"}]
         processor._collection_receipts = lambda _pk: []
         with self.assertRaisesRegex(RuntimeError, "not ready"):
-            processor.process("JOB#1", "late")
+            processor.process("SCOPE#USER#owner#JOB#1", "late")
         client.transact_write_items.assert_not_called()
 
     def test_followup_detection_compares_immutable_result_sources(self):
@@ -313,8 +315,8 @@ class ProcessRestatementTests(unittest.TestCase):
         processor.cooking.get_item.side_effect = lambda **kwargs: (
             {"Item": pointer} if kwargs["Key"]["sk"] == "PROCESS#LATEST_RESTATED"
             else {"Item": result})
-        self.assertFalse(processor.has_new_source("JOB#1", self.sample("first", 1, 0)))
-        self.assertTrue(processor.has_new_source("JOB#1", self.sample("followup", 3, 10)))
+        self.assertFalse(processor.has_new_source("SCOPE#USER#owner#JOB#1", self.sample("first", 1, 0)))
+        self.assertTrue(processor.has_new_source("SCOPE#USER#owner#JOB#1", self.sample("followup", 3, 10)))
 
 
 if __name__ == "__main__":
