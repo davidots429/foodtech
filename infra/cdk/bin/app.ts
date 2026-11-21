@@ -31,6 +31,20 @@ class AuthSessionsStack extends Stack {
   }
 }
 
+// Opt-in key: the API execution role and deployment are configured separately.
+class AuthRefreshKeyStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const key = new kms.Key(this, "SessionRefreshKey", {
+      alias: `foodtech/session-refresh-${stage}`,
+      description: `Foodtech ${stage} Cognito session refresh tokens`,
+      enableKeyRotation: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    new CfnOutput(this, "SessionRefreshKeyArn", { value: key.keyArn });
+  }
+}
+
 class AuthIdentityStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps) {
     super(scope, id, props);
@@ -67,6 +81,7 @@ class AuthIdentityStack extends Stack {
       authFlows: name === "Admin" ? { userPassword: true, userSrp: true } : undefined,
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
+      refreshTokenRotationGracePeriod: Duration.seconds(10),
       refreshTokenValidity: Duration.days(1),
       accessTokenValidity: Duration.hours(1),
       idTokenValidity: Duration.hours(1),
@@ -477,6 +492,10 @@ class AiImagePublishingStack extends Stack {
 
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
+if (app.node.tryGetContext("provisionAuthRefreshKey") === "true") {
+  const refreshKey = new AuthRefreshKeyStack(app, `FoodtechAuthRefreshKey-${stage}`, { env });
+  Tags.of(refreshKey).add("Project", "foodtech");
+}
 if (app.node.tryGetContext("provisionIdentity") === "true") {
   const identity = new AuthIdentityStack(app, `FoodtechAuthIdentity-${stage}`, { env });
   Tags.of(identity).add("Project", "foodtech");

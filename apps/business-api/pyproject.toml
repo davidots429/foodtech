@@ -8,6 +8,7 @@ dependencies = [
     "httpx>=0.28,<1",
     "PyJWT[crypto]>=2.10,<3",
     "boto3>=1.40,<2",
+    "aws-encryption-sdk[mpl]==4.0.7",
     "botocore[crt]>=1.43,<2",
     "foodtech-contracts",
 ]

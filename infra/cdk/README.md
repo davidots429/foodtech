@@ -30,6 +30,10 @@
 
 `FoodtechAuthSessions-dev`는 만료 시각(`expires`)이 있는 인증 흐름·세션과 관리자 권한 회수 상태를 저장하는 DynamoDB 테이블을 만든다. 앱은 `FOODTECH_AUTH_TABLE=foodtech-auth-sessions-dev`로 연결한다. TTL은 물리 삭제용이며 애플리케이션이 만료를 직접 검사한다.
 
+`provisionAuthRefreshKey=true`를 명시하면 별도 `FoodtechAuthRefreshKey-dev` 스택에 세션 갱신 토큰용 대칭 KMS 키와 ARN 출력을 합성한다. 이 키는 기존 AI 자격증명 키와 분리되며 자동 회전과 삭제 시 보존을 사용한다. 키를 실제 배포하면 KMS 비용이 발생한다. 현재 업무 API 실행 역할·키 사용 권한 및 환경 변수 연결은 구성되지 않았고, 합성은 실제 배포나 역할 검증이 아니다.
+
+새 Cognito Identity 스택의 고객·관리자 App Client는 갱신 토큰 회전과 10초 재시도 유예를 정의한다. 회전과 호환되지 않는 `REFRESH_TOKEN_AUTH`는 사용하지 않는다. 이는 CDK 정의이며 기존 시험 Pool의 App Client 설정을 변경하지 않는다.
+
 2026-11-01에 `foodtech` 프로파일의 `ap-southeast-2`에 `CDKToolkit`과 `FoodtechAuthSessions-dev`를 배포했다. 시험용 합성 식별자로 두 DynamoDB 저장소 인스턴스의 흐름 단일 소비·세션 공유·관리자 차단 상태 전파를 확인하고 시험 항목을 삭제했다. 이 스택은 Cognito User Pool을 만들지 않았다.
 
 `-c provisionIdentity=true`를 주면 Cognito Essentials User Pool, 고객·관리자 App Client, 관리형 로그인 v2, 선택적 TOTP MFA, 관리자 그룹을 정의하는 `FoodtechAuthIdentity-dev`도 합성한다. 두 callback URL·두 웹 URL·고유 도메인 접두어를 context로 전달해야 한다. 현재 CLI로 만든 `foodtech-auth-poc-20261101` Pool은 이 스택의 소유 대상이 아니므로 `provisionIdentity` 없이 세션 스택만 배포한다. PoC Pool을 이 스택으로 자동 편입하거나 같은 이름으로 다시 만들지 않는다. 향후 별도 환경에 새 Pool을 배포할 때 이 정의를 사용하고, 기존 PoC는 사용자·연동 전환을 확인한 후 별도 정리한다. 시험용 Pool의 TOTP MFA도 `OPTIONAL`로 설정했다.

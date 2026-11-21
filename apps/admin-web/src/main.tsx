@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { loadSession, useSessionRefresh } from "./useSessionRefresh";
 import { TierReview } from "./TierReview";
 import "./style.css";
 
-type Session = { email: string | null; surface: "admin"; csrf: string };
+type Session = { email: string | null; surface: "admin"; csrf: string; refresh_available: boolean; expires_in: number };
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  useSessionRefresh("admin", session, setError);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -17,7 +19,7 @@ function App() {
   const requestActive = useRef(false);
 
   useEffect(() => {
-    fetch("/api/admin/me", { credentials: "same-origin" })
+    loadSession("admin")
       .then(async (response) => response.ok ? setSession(await response.json()) : null)
       .catch(() => setError("인증 서버에 연결할 수 없습니다."))
       .finally(() => setLoading(false));

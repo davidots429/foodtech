@@ -24,6 +24,7 @@ SESSION_COOKIE = "ft_session"
 FLOW_COOKIE = "ft_login_flow"
 FLOW_SECONDS = 300
 SESSION_SECONDS = 3600
+REFRESH_SESSION_SECONDS = 8 * 3600
 DEMO_NOTICE = "실제 과금이 발생하지 않으며 사업자 진위 조회를 수행하지 않는 비영리 시연 기능입니다."
 ADMIN_ACR = "urn:cognito:loa:4"
 
@@ -166,6 +167,51 @@ async def _exchange(settings: Settings, client_id: str, callback_url: str, code:
         return token_response.json()
 
 
+def _refresh_cipher():
+    key_arn = os.getenv("FOODTECH_AUTH_REFRESH_KEY_ARN", "")
+    if not key_arn:
+        return None
+    environment = os.getenv("FOODTECH_ENVIRONMENT", "")
+    if not environment:
+        raise HTTPException(503, "세션 갱신 설정이 완료되지 않았습니다.")
+    from .session_token_cipher import SessionTokenCipher
+    try:
+        return SessionTokenCipher(key_arn, environment)
+    except (ValueError, BotoCoreError, ClientError) as exc:
+        raise HTTPException(503, "세션 갱신을 사용할 수 없습니다.") from exc
+
+
+async def _refresh_fields(session_id: str, surface: str, token: object) -> dict:
+    cipher = _refresh_cipher()
+    if cipher is None or token is None:
+        return {}
+    if not isinstance(token, str) or not token:
+        raise HTTPException(401, "세션 갱신 정보를 확인할 수 없습니다.")
+    try:
+        ciphertext = await asyncio.to_thread(cipher.seal, bytearray(token.encode("utf-8")), session_id, surface)
+    except (ValueError, UnicodeError) as exc:
+        raise HTTPException(503, "세션 갱신을 준비할 수 없습니다.") from exc
+    return {"refresh_ciphertext": ciphertext, "refresh_deadline": int(time.time()) + REFRESH_SESSION_SECONDS}
+
+
+def _cognito_refresh(client_id: str, token: str) -> dict:
+    client = boto3.client("cognito-idp", region_name="ap-southeast-2")
+    return client.get_tokens_from_refresh_token(ClientId=client_id, RefreshToken=token)["AuthenticationResult"]
+
+
+def _cognito_revoke(client_id: str, token: str) -> None:
+    client = boto3.client("cognito-idp", region_name="ap-southeast-2")
+    client.revoke_token(ClientId=client_id, Token=token)
+
+
+async def _try_revoke(client_id: str, token: str) -> bool:
+    try:
+        await asyncio.to_thread(_cognito_revoke, client_id, token)
+        return True
+    except (BotoCoreError, ClientError, ValueError):
+        return False
+
+
 @router.get("/auth/{surface}/callback")
 async def callback(surface: str, request: Request, code: str = "", state: str = "") -> RedirectResponse:
     settings = Settings.from_env()
@@ -201,15 +247,19 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
     if old_session_id:
         await asyncio.to_thread(store.delete_session, old_session_id)
     session_id = secrets.token_urlsafe(32)
+    refresh_fields = await _refresh_fields(session_id, surface, tokens.get("refresh_token"))
+    access_expires = int(min(time.time() + SESSION_SECONDS, float(access["exp"])))
+    if refresh_fields:
+        refresh_fields["access_expires"] = access_expires
     await asyncio.to_thread(store.save_session, session_id, Session(
         surface, identity["sub"], identity.get("email"), secrets.token_urlsafe(32),
-        int(min(time.time() + SESSION_SECONDS, float(access["exp"]))),
+        refresh_fields.get("refresh_deadline", access_expires),
         int(principal.get("epoch", 0)),
-        tokens["access_token"],
+        tokens["access_token"], **refresh_fields,
     ))
     response = RedirectResponse(web, status_code=303)
     response.delete_cookie(FLOW_COOKIE, path="/api")
-    _cookie(response, SESSION_COOKIE, session_id, SESSION_SECONDS, settings.secure_cookies)
+    _cookie(response, SESSION_COOKIE, session_id, REFRESH_SESSION_SECONDS if refresh_fields else SESSION_SECONDS, settings.secure_cookies)
     return response
 
 
@@ -283,19 +333,23 @@ async def admin_totp(request: Request, body: dict) -> Response:
     if old_session_id:
         await asyncio.to_thread(store.delete_session, old_session_id)
     session_id = secrets.token_urlsafe(32)
+    refresh_fields = await _refresh_fields(session_id, "admin", tokens.get("RefreshToken"))
+    access_expires = int(min(time.time() + SESSION_SECONDS, float(access["exp"])))
+    if refresh_fields:
+        refresh_fields["access_expires"] = access_expires
     await asyncio.to_thread(store.save_session, session_id, Session(
         "admin", identity["sub"], identity.get("email"), secrets.token_urlsafe(32),
-        int(min(time.time() + SESSION_SECONDS, float(access["exp"]))), int(principal.get("epoch", 0)),
-        tokens["AccessToken"],
+        refresh_fields.get("refresh_deadline", access_expires), int(principal.get("epoch", 0)),
+        tokens["AccessToken"], **refresh_fields,
     ))
     response = JSONResponse({"authenticated": True})
     response.headers["Cache-Control"] = "no-store"
     response.delete_cookie(FLOW_COOKIE, path="/api")
-    _cookie(response, SESSION_COOKIE, session_id, SESSION_SECONDS, settings.secure_cookies)
+    _cookie(response, SESSION_COOKIE, session_id, REFRESH_SESSION_SECONDS if refresh_fields else SESSION_SECONDS, settings.secure_cookies)
     return response
 
 
-async def _session(request: Request, surface: str) -> Session:
+async def _session(request: Request, surface: str, *, allow_expired_access: bool = False) -> Session:
     if surface not in {"customer", "admin"}:
         raise HTTPException(404)
     session_id = request.cookies.get(SESSION_COOKIE, "")
@@ -303,6 +357,8 @@ async def _session(request: Request, surface: str) -> Session:
     session = await asyncio.to_thread(store.read_session, session_id) if session_id else None
     if not session or session.surface != surface:
         raise HTTPException(401, "로그인이 필요합니다.")
+    if not allow_expired_access and session.access_expires is not None and session.access_expires <= time.time():
+        raise HTTPException(401, "세션 갱신이 필요합니다.")
     principal = await asyncio.to_thread(store.principal, session.subject)
     if (int(principal.get("epoch", 0)) != session.epoch or principal.get("suspended")
             or (surface == "admin" and principal.get("admin_blocked"))):
@@ -314,13 +370,88 @@ async def _session(request: Request, surface: str) -> Session:
     return session
 
 
+@router.post("/{surface}/session/refresh")
+async def refresh_session(surface: str, request: Request) -> Response:
+    session = await _session(request, surface, allow_expired_access=True)
+    _csrf(request, session)
+    cipher = _refresh_cipher()
+    if not cipher or not session.refresh_ciphertext:
+        raise HTTPException(401, "다시 로그인해야 합니다.")
+    settings = Settings.from_env()
+    client_id, _, _ = settings.client(surface)
+    session_id = request.cookies.get(SESSION_COOKIE, "")
+    lease = secrets.token_urlsafe(32)
+    store = get_store()
+    now = int(time.time())
+    claimed = await asyncio.to_thread(store.claim_refresh, session_id, lease, now, now + 30)
+    if not claimed:
+        raise HTTPException(409, "세션 갱신이 진행 중이거나 만료되었습니다.")
+    plaintext = None
+    original_token = None
+    tokens = None
+    completed = False
+    try:
+        plaintext = await asyncio.to_thread(cipher.open, claimed.refresh_ciphertext, session_id, surface)
+        original_token = plaintext.decode("utf-8")
+        tokens = await asyncio.to_thread(_cognito_refresh, client_id, original_token)
+        identity = _claims(tokens["IdToken"], settings, client_id, "id")
+        access = _claims(tokens["AccessToken"], settings, client_id, "access")
+        if identity.get("sub") != session.subject or access.get("sub") != session.subject or \
+                (surface == "admin" and "foodtech-admin" not in access.get("cognito:groups", [])):
+            raise ValueError("invalid refreshed principal")
+        principal = await asyncio.to_thread(store.principal, session.subject)
+        if int(principal.get("epoch", 0)) != session.epoch or principal.get("suspended") or \
+                (surface == "admin" and principal.get("admin_blocked")) or \
+                not await _checked_cognito_access(settings, session.subject, surface):
+            await asyncio.to_thread(store.delete_session, session_id)
+            raise HTTPException(401, "세션 권한이 회수되었습니다.")
+        replacement = tokens.get("RefreshToken")
+        if replacement is not None:
+            if not isinstance(replacement, str) or not replacement:
+                raise ValueError("invalid rotated token")
+            plaintext[:] = b"\x00" * len(plaintext)
+            plaintext = bytearray(replacement.encode("utf-8"))
+        ciphertext = await asyncio.to_thread(cipher.seal, plaintext, session_id, surface)
+        expires = int(min(time.time() + SESSION_SECONDS, float(access["exp"]), claimed.refresh_deadline))
+        completed = await asyncio.to_thread(store.finish_refresh, session_id, lease, claimed.refresh_version,
+                                            int(time.time()), tokens["AccessToken"], ciphertext, expires)
+        if not completed:
+            raise HTTPException(409, "세션이 변경되었습니다. 다시 로그인해 주세요.")
+    except (BotoCoreError, ClientError, KeyError, ValueError, UnicodeError) as exc:
+        raise HTTPException(401, "세션을 갱신하지 못했습니다. 다시 로그인해 주세요.") from exc
+    finally:
+        if tokens is not None and not completed:
+            orphan = tokens.get("RefreshToken") or original_token
+            if isinstance(orphan, str) and orphan:
+                await _try_revoke(client_id, orphan)
+        if plaintext is not None:
+            plaintext[:] = b"\x00" * len(plaintext)
+    response = JSONResponse({"authenticated": True, "expires_in": max(0, expires - int(time.time()))})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/{surface}/session/refresh-context")
+async def refresh_context(surface: str, request: Request) -> Response:
+    """Recover the CSRF value for an existing, refreshable BFF session after a reload."""
+    session = await _session(request, surface, allow_expired_access=True)
+    if not session.refresh_ciphertext or session.refresh_deadline <= time.time():
+        raise HTTPException(401, "다시 로그인해야 합니다.")
+    response = JSONResponse({"csrf": session.csrf})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @router.get("/{surface}/me")
-async def me(surface: str, request: Request) -> dict:
+async def me(surface: str, request: Request) -> Response:
     session = await _session(request, surface)
     current_tier = await asyncio.to_thread(get_tier_store().current, session.subject) if surface == "customer" else None
     tier = None if surface == "admin" else "DEMO_PAID" if current_tier and current_tier["status"] == "APPROVED_FOR_DEMO" else "FREE"
-    return {"email": session.email, "surface": session.surface, "csrf": session.csrf,
-            "tier": tier}
+    response = JSONResponse({"email": session.email, "surface": session.surface, "csrf": session.csrf,
+            "tier": tier, "refresh_available": bool(session.refresh_ciphertext),
+            "expires_in": max(0, int((session.access_expires or session.expires) - time.time()))})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/customer/example")
@@ -391,13 +522,29 @@ async def totp_verify(request: Request, body: dict) -> dict:
 
 @router.post("/{surface}/logout")
 async def logout(surface: str, request: Request) -> Response:
-    session = await _session(request, surface)
+    session = await _session(request, surface, allow_expired_access=True)
     _csrf(request, session)
-    await asyncio.to_thread(get_store().delete_session, request.cookies.get(SESSION_COOKIE, ""))
+    session_id = request.cookies.get(SESSION_COOKIE, "")
+    removed = await asyncio.to_thread(get_store().take_session, session_id)
     settings = Settings.from_env()
     client_id, _, web = settings.client(surface)
+    revoked = None
+    if removed and removed.refresh_ciphertext:
+        plaintext = None
+        try:
+            cipher = _refresh_cipher()
+            if cipher:
+                plaintext = await asyncio.to_thread(cipher.open, removed.refresh_ciphertext, session_id, surface)
+                revoked = await _try_revoke(client_id, plaintext.decode("utf-8"))
+            else:
+                revoked = False
+        except (ValueError, UnicodeError, HTTPException):
+            revoked = False
+        finally:
+            if plaintext is not None:
+                plaintext[:] = b"\x00" * len(plaintext)
     logout_url = f"{settings.domain}/logout?{urlencode({'client_id': client_id, 'logout_uri': web})}"
-    response = JSONResponse({"logoutUrl": logout_url})
+    response = JSONResponse({"logoutUrl": logout_url, "cognitoTokenRevoked": revoked})
     response.delete_cookie(SESSION_COOKIE, path="/api")
     return response
 
