@@ -34,6 +34,10 @@ def main():
                 'menu': 'JEYUK', 'provenance': 'SYNTHETIC', 'source_binding': {'source_id': 'synthetic-rest',
                 'device_id': 'mockprofile-110-a-001', 'batch_id': batch}}, ConditionExpression=Attr('pk').not_exists())
             created.append((jobs, job_key))
+            binding_key = {'pk': f'JEYUK#{batch}', 'sk': 'BINDING'}
+            jobs.put_item(Item={**binding_key, 'job_pk': job_key['pk'], 'job_id': job},
+                          ConditionExpression=Attr('pk').not_exists())
+            created.append((jobs, binding_key))
             sources.put_item(Item={**source_key, 'revision': revision}, ConditionExpression=Attr('pk').not_exists())
             created.append((sources, source_key))
         guard = DynamoRecipeSourceGuard(jobs.name, sources.name, resource=resource)

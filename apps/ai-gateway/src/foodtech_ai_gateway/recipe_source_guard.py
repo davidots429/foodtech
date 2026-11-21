@@ -63,6 +63,10 @@ class DynamoRecipeSourceGuard:
             batch = binding.get('batch_id')
             if not isinstance(batch, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', batch):
                 return False
+            reverse = self.cooking.get_item(Key={'pk': f'JEYUK#{batch}', 'sk': 'BINDING'},
+                                            ConsistentRead=True).get('Item')
+            if not reverse or reverse.get('job_pk') != pk or reverse.get('job_id') != job_id:
+                return False
             source = self.data.get_item(Key={'pk': f'JEYUK#{batch}', 'sk': 'SOURCE#REVISION'},
                                         ConsistentRead=True).get('Item')
             if not source or _positive_integer(source.get('revision')) != expected_revision:

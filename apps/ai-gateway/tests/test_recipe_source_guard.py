@@ -32,6 +32,8 @@ class RecipeSourceGuardTests(unittest.TestCase):
                 'owner_subject': 'tenant-a', 'job_id': job, 'version': Decimal(version), 'menu': 'JEYUK',
                 'provenance': 'SYNTHETIC', 'source_binding': {'source_id': 'synthetic-rest',
                 'device_id': 'mockprofile-110-a-001', 'batch_id': batch}}
+            self.resource.tables['foodtech-cooking-jobs-dev'].items[(f'JEYUK#{batch}', 'BINDING')] = {
+                'job_pk': f'SCOPE#USER#tenant-a#JOB#{job}', 'job_id': job}
             self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', 'SOURCE#REVISION')] = {'revision': Decimal(revision)}
 
     def test_exact_owner_job_and_source_versions_are_checked(self):
@@ -53,6 +55,14 @@ class RecipeSourceGuardTests(unittest.TestCase):
         self.assertFalse(self.guard.verify(self.execution))
         row['source_binding']['batch_id'] = 'batch-prior'
         row['source_binding']['device_id'] = 'other'
+        self.assertFalse(self.guard.verify(self.execution))
+
+    def test_rejects_missing_or_foreign_reverse_binding(self):
+        key = ('JEYUK#batch-prior', 'BINDING')
+        binding = self.resource.tables['foodtech-cooking-jobs-dev'].items.pop(key)
+        self.assertFalse(self.guard.verify(self.execution))
+        binding['job_pk'] = f'SCOPE#USER#other#JOB#{self.prior}'
+        self.resource.tables['foodtech-cooking-jobs-dev'].items[key] = binding
         self.assertFalse(self.guard.verify(self.execution))
 
     def test_rejects_unrelated_tables(self):
