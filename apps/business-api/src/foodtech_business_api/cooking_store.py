@@ -68,6 +68,14 @@ def _meal_dirty_scope(pk, version, subject, expected_epoch):
         raise ValueError('invalid meal refresh owner') from None
 
 
+def _meal_cursor_scope(cursor: str | None, next_cursor: str | None = None) -> None:
+    if cursor is not None and (not isinstance(cursor, str) or not re.fullmatch(r'[a-f0-9]{64}', cursor)):
+        raise ValueError('invalid meal refresh cursor')
+    if next_cursor is not None and (not isinstance(next_cursor, str) or not re.fullmatch(r'[a-f0-9]{64}', next_cursor)
+                                    or (cursor is not None and next_cursor <= cursor)):
+        raise ValueError('invalid next meal refresh cursor')
+
+
 def _job_list_item(pk: str, meta: dict) -> dict:
     owner = meta["owner_subject"]
     job_id = meta["job_id"]
@@ -175,7 +183,8 @@ class CookingStore(Protocol):
     def list_meal_aggregate_groups(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def list_meal_aggregate_dependencies(self, pk: str, limit: int, cursor: str | None) -> dict: ...
     def read_meal_aggregate_dirty(self, pk: str) -> dict | None: ...
-    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int) -> None: ...
+    def checkpoint_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int, expected_cursor: str | None, next_cursor: str) -> None: ...
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int, expected_cursor: str | None = None) -> None: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
@@ -340,11 +349,27 @@ class MemoryCookingStore:
             row = self.items.get((pk, 'MEAL_AGGREGATE#DIRTY'))
             return row.copy() if row else None
 
-    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int) -> None:
+    def checkpoint_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                        expected_cursor: str | None, next_cursor: str) -> None:
         _meal_dirty_scope(pk, version, subject, expected_epoch)
+        if next_cursor is None:
+            raise ValueError('next meal refresh cursor is required')
+        _meal_cursor_scope(expected_cursor, next_cursor)
         with self.lock:
             meta, dirty = self.items.get((pk, 'META')), self.items.get((pk, 'MEAL_AGGREGATE#DIRTY'))
-            if not meta or meta.get('version') != version or not dirty or dirty.get('version') != version or dirty.get('state') != 'PENDING':
+            if not meta or meta.get('version') != version or not dirty or dirty.get('version') != version or \
+                    dirty.get('state') != 'PENDING' or dirty.get('cursor') != expected_cursor:
+                raise Conflict
+            dirty['cursor'] = next_cursor
+
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                         expected_cursor: str | None = None) -> None:
+        _meal_dirty_scope(pk, version, subject, expected_epoch)
+        _meal_cursor_scope(expected_cursor)
+        with self.lock:
+            meta, dirty = self.items.get((pk, 'META')), self.items.get((pk, 'MEAL_AGGREGATE#DIRTY'))
+            if not meta or meta.get('version') != version or not dirty or dirty.get('version') != version or \
+                    dirty.get('state') != 'PENDING' or dirty.get('cursor') != expected_cursor:
                 raise Conflict
             del self.items[(pk, 'MEAL_AGGREGATE#DIRTY')]
 
@@ -843,8 +868,36 @@ class DynamoCookingStore:
         row = self.table.get_item(Key={'pk': pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True).get('Item')
         return _api_numbers(row)
 
-    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int) -> None:
+    def checkpoint_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                        expected_cursor: str | None, next_cursor: str) -> None:
+        if next_cursor is None:
+            raise ValueError('next meal refresh cursor is required')
+        _meal_cursor_scope(expected_cursor, next_cursor)
+        self._change_meal_aggregate_dirty(pk, version, subject, expected_epoch, expected_cursor, next_cursor)
+
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                         expected_cursor: str | None = None) -> None:
+        _meal_cursor_scope(expected_cursor)
+        self._change_meal_aggregate_dirty(pk, version, subject, expected_epoch, expected_cursor, None)
+
+    def _change_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                     expected_cursor: str | None, next_cursor: str | None) -> None:
         _meal_dirty_scope(pk, version, subject, expected_epoch)
+        names = {'#version': 'version', '#state': 'state', '#cursor': 'cursor'}
+        values = {':version': version, ':pending': 'PENDING'}
+        condition = '#version = :version AND #state = :pending AND '
+        if expected_cursor is None:
+            condition += 'attribute_not_exists(#cursor)'
+        else:
+            condition += '#cursor = :cursor'
+            values[':cursor'] = expected_cursor
+        mutation = {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}),
+                    'ConditionExpression': condition, 'ExpressionAttributeNames': names}
+        if next_cursor is not None:
+            values[':next'] = next_cursor
+            mutation['UpdateExpression'] = 'SET #cursor = :next'
+        mutation['ExpressionAttributeValues'] = self._item(values)
+        operation = {'Update' if next_cursor is not None else 'Delete': mutation}
         if not self.auth_table_name or self.auth_table_name == self.table.name:
             raise ValueError('separate authentication table is required')
         operations = [
@@ -857,10 +910,7 @@ class DynamoCookingStore:
             {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'META'}),
                 'ConditionExpression': '#version = :version', 'ExpressionAttributeNames': {'#version': 'version'},
                 'ExpressionAttributeValues': self._item({':version': version})}},
-            {'Delete': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}),
-                'ConditionExpression': '#version = :version AND #state = :pending',
-                'ExpressionAttributeNames': {'#version': 'version', '#state': 'state'},
-                'ExpressionAttributeValues': self._item({':version': version, ':pending': 'PENDING'})}},
+            operation,
         ]
         try:
             self.client.transact_write_items(TransactItems=operations)

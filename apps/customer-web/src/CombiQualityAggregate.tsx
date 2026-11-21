@@ -73,10 +73,12 @@ export function CombiQualityAggregate({ csrf, mealId, mealVersion, size, riceRec
     active.current = true; setBusy(true);
     void (async () => {
       try {
-        const response = await api<{ status: "NO_PENDING" | "REFRESHED"; refreshed_group_count: number }>(
+        const response = await api<{ status: "NO_PENDING" | "REFRESHED" | "PARTIAL"; refreshed_group_count: number }>(
           `/api/customer/combi-quality-aggregates/meals/${encodeURIComponent(mealId)}/refresh-pending`, csrf, {});
-        if (response.status === "REFRESHED") {
-          setRefreshMessage(`연결된 집계 ${response.refreshed_group_count}개를 다시 계산했습니다.`);
+        if (response.status !== "NO_PENDING") {
+          setRefreshMessage(response.status === "PARTIAL" ?
+            `집계 ${response.refreshed_group_count}개를 다시 계산했습니다. 나머지는 다음 재시도에서 처리합니다.` :
+            `연결된 집계 ${response.refreshed_group_count}개를 다시 계산했습니다.`);
           setVersions([]); setVersionsGroup(""); setVersionsCursor(null); setFreshness(null); setComparison(null);
         }
       } catch (cause) {
@@ -173,9 +175,10 @@ export function CombiQualityAggregate({ csrf, mealId, mealVersion, size, riceRec
     if (active.current) return;
     active.current = true; setBusy(true); setError(""); setRefreshMessage("");
     try {
-      const response = await api<{ status: "NO_PENDING" | "REFRESHED"; refreshed_group_count: number }>(
+      const response = await api<{ status: "NO_PENDING" | "REFRESHED" | "PARTIAL"; refreshed_group_count: number }>(
         `/api/customer/combi-quality-aggregates/meals/${encodeURIComponent(mealId)}/refresh-pending`, csrf, {});
-      setRefreshMessage(response.status === "NO_PENDING" ? "처리할 변경 사항이 없습니다." :
+      setRefreshMessage(response.status === "NO_PENDING" ? "처리할 변경 사항이 없습니다." : response.status === "PARTIAL" ?
+        `집계 ${response.refreshed_group_count}개를 다시 계산했습니다. 나머지는 다음 재시도에서 처리합니다.` :
         `연결된 집계 ${response.refreshed_group_count}개를 다시 계산했습니다.`);
       setVersions([]); setVersionsGroup(""); setVersionsCursor(null); setFreshness(null); setComparison(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "대기 중인 집계를 처리하지 못했습니다."); }

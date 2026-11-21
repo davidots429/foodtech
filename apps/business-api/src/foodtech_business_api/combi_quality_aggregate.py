@@ -198,7 +198,10 @@ async def refresh_pending_for_subject(store, subject: str, epoch: int, meal_id: 
     version = marker.get('version')
     if type(version) is not int or version < 1 or marker.get('state') != 'PENDING' or meta.get('version') != version:
         raise HTTPException(409, '재집계 대기 상태가 변경되었습니다. 다시 시도해 주세요.')
-    cursor, seen, refreshed = None, set(), 0
+    initial_cursor = marker.get('cursor')
+    if initial_cursor is not None and not _valid_hash(initial_cursor):
+        raise HTTPException(409, '재집계 진행 위치를 확인할 수 없습니다.')
+    cursor, seen, refreshed = initial_cursor, set(), 0
     while True:
         page = await list_meal_dependencies_for_subject(store, subject, meal_id, limit=50, cursor=cursor)
         for group in page['items']:
@@ -214,17 +217,24 @@ async def refresh_pending_for_subject(store, subject: str, epoch: int, meal_id: 
             if result.get('group_id') != group['group_id']:
                 raise HTTPException(409, '배치의 집계 연결이 변경되었습니다.')
             refreshed += 1
-            if refreshed > 1000:
-                raise HTTPException(409, '연결된 집계가 너무 많아 한 번에 처리할 수 없습니다.')
         next_cursor = page['next_cursor']
         if next_cursor is None:
             break
-        if next_cursor in seen:
+        if not _valid_hash(next_cursor) or next_cursor in seen or (cursor is not None and next_cursor <= cursor):
             raise HTTPException(409, '집계 연결 목록이 올바르지 않습니다.')
         seen.add(next_cursor)
+        if refreshed >= 1000:
+            try:
+                await _store_call(store, store.checkpoint_meal_aggregate_dirty, meal_pk, version, subject, epoch,
+                                  initial_cursor, next_cursor)
+            except Conflict as exc:
+                raise HTTPException(409, '재집계 중 배치 또는 계정 상태가 변경되었습니다. 다시 시도해 주세요.') from exc
+            except ValueError as exc:
+                raise HTTPException(503, '재집계 진행 위치를 저장할 수 없습니다.') from exc
+            return {'status': 'PARTIAL', 'refreshed_group_count': refreshed, 'meal_version': version}
         cursor = next_cursor
     try:
-        await _store_call(store, store.acknowledge_meal_aggregate_dirty, meal_pk, version, subject, epoch)
+        await _store_call(store, store.acknowledge_meal_aggregate_dirty, meal_pk, version, subject, epoch, initial_cursor)
     except Conflict as exc:
         raise HTTPException(409, '재집계 중 배치 또는 계정 상태가 변경되었습니다. 다시 시도해 주세요.') from exc
     except ValueError as exc:

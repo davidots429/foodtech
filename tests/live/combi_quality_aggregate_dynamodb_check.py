@@ -15,7 +15,7 @@ from foodtech_business_api.auth_store import Session
 from foodtech_business_api.combi_refresh_worker import process_pending_marker, RefreshNotAuthorized
 from foodtech_business_api.combi_refresh_backfill import backfill_pending_page
 from foodtech_business_api.cooking_store import meal_aggregate_shard
-from foodtech_business_api.cooking_store import DynamoCookingStore
+from foodtech_business_api.cooking_store import DynamoCookingStore, Conflict
 from foodtech_business_api.main import app
 from foodtech_contracts.combi_quality_load import RULE_VERSION
 from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
@@ -193,6 +193,20 @@ async def scenario(store, partitions, auth, auth_keys):
             assert backfill_pending_page(SyntheticPage())['updated'] == 1
             marker = store.table.get_item(Key=marker_key, ConsistentRead=True)['Item']
             assert marker['aggregate_refresh_shard'] == meal_aggregate_shard(meal_pk)
+            checkpoint = 'a' * 64
+            store.checkpoint_meal_aggregate_dirty(meal_pk, 4, subject, 0, None, checkpoint)
+            assert store.read_meal_aggregate_dirty(meal_pk)['cursor'] == checkpoint
+            for operation in (lambda: store.checkpoint_meal_aggregate_dirty(meal_pk, 4, subject, 0, None, 'b' * 64),
+                              lambda: store.acknowledge_meal_aggregate_dirty(meal_pk, 4, subject, 0, None)):
+                try:
+                    operation()
+                    raise AssertionError('stale cursor must be rejected')
+                except Conflict:
+                    pass
+            assert store.read_meal_aggregate_dirty(meal_pk)['cursor'] == checkpoint
+            # Restore this synthetic marker so the remaining pre-existing checks exercise a complete pass.
+            store.table.update_item(Key=marker_key, UpdateExpression='REMOVE #cursor',
+                                    ExpressionAttributeNames={'#cursor': 'cursor'})
             auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :lock',
                              ExpressionAttributeValues={':lock': 'synthetic-lock'})
             try:

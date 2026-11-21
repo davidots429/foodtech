@@ -56,5 +56,25 @@ class MealAggregateStoreTests(unittest.TestCase):
         self.assertEqual(ops[2]['Delete']['ExpressionAttributeValues'][':pending'], {'S': 'PENDING'})
 
 
+    def test_checkpoint_requires_account_version_and_compare_and_set_cursor(self):
+        store = object.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name='cooking'); store.client = MagicMock(); store.serializer = TypeSerializer()
+        store.auth_table_name = 'auth'
+        subject = 'customer'; pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{uuid4()}'
+        store.checkpoint_meal_aggregate_dirty(pk, 3, subject, 7, None, 'a' * 64)
+        ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertIn('deletion_lock_request', ops[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':version'], {'N': '3'})
+        self.assertIn('attribute_not_exists(#cursor)', ops[2]['Update']['ConditionExpression'])
+        self.assertEqual(ops[2]['Update']['ExpressionAttributeValues'][':next'], {'S': 'a' * 64})
+        store.acknowledge_meal_aggregate_dirty(pk, 3, subject, 7, 'a' * 64)
+        operation = store.client.transact_write_items.call_args.kwargs['TransactItems'][2]['Delete']
+        self.assertIn('#cursor = :cursor', operation['ConditionExpression'])
+        with self.assertRaises(ValueError):
+            store.checkpoint_meal_aggregate_dirty(pk, 3, subject, 7, 'b' * 64, 'a' * 64)
+        with self.assertRaises(ValueError):
+            store.checkpoint_meal_aggregate_dirty(pk, 3, subject, 7, None, None)
+
+
 if __name__ == '__main__':
     unittest.main()
