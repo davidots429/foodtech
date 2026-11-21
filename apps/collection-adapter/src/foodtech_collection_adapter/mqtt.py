@@ -16,7 +16,7 @@ from foodtech_contracts import decode_record, stream_key
 from .aws_flow import DynamoOrderedIngestor
 from .ingestion_quarantine import IngestionQuarantine, failure as ingestion_failure
 
-INSTANCES = tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("300", "301", "302", "310", "312", "320", "322") for vendor in "abc")
+INSTANCES = tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("300", "301", "302", "310", "311", "312", "320", "321", "322") for vendor in "abc")
 TOPIC = "foodtech/synthetic/mockprofile-300-a-001/observations"
 
 
@@ -31,7 +31,7 @@ def accept_message(client, message, ingestor, quarantine, client_id, instance=IN
     if message.topic != topic_for(instance) or message.qos != 1 or message.retain:
         raise ValueError("unexpected MQTT message contract")
     record = None
-    xml = instance.startswith("mockprofile-301-")
+    xml = instance.startswith(("mockprofile-301-", "mockprofile-311-", "mockprofile-321-"))
     csv_source = instance.startswith(("mockprofile-302-", "mockprofile-312-", "mockprofile-322-"))
     try:
         raw = message.payload.decode("utf-8", errors="strict")

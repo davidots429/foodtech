@@ -31,13 +31,13 @@ internal static class MqttMock
         var instance = root.GetProperty("instanceId").GetString();
         var profile = root.GetProperty("profileId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            profile is not ("mockprofile-300" or "mockprofile-301" or "mockprofile-302" or "mockprofile-310" or "mockprofile-312" or "mockprofile-320" or "mockprofile-322") ||
+            profile is not ("mockprofile-300" or "mockprofile-301" or "mockprofile-302" or "mockprofile-310" or "mockprofile-311" or "mockprofile-312" or "mockprofile-320" or "mockprofile-321" or "mockprofile-322") ||
             instance is null || !new[] { $"{profile}-a-001", $"{profile}-b-001", $"{profile}-c-001" }.Contains(instance))
             throw new InvalidDataException("Only the approved synthetic MQTT profile is supported.");
         var topic = $"foodtech/synthetic/{instance}/observations";
         var b = instance.EndsWith("-b-001", StringComparison.Ordinal);
         var c = instance.EndsWith("-c-001", StringComparison.Ordinal);
-        var xml = profile == "mockprofile-301";
+        var xml = profile is "mockprofile-301" or "mockprofile-311" or "mockprofile-321";
         var csv = profile is "mockprofile-302" or "mockprofile-312" or "mockprofile-322";
         if ((fault == "invalid-json" && (xml || csv)) || (fault == "invalid-xml" && !xml) ||
             (fault == "invalid-csv" && !csv))
@@ -73,6 +73,13 @@ internal static class MqttMock
                     (string?)element.Element(b ? "device_id" : c ? "DeviceId" : "deviceId") != instance ||
                     (int?)element.Element(b ? "sequence_number" : c ? "SeqNo" : "sequenceNumber") != index + 1)
                     throw new InvalidDataException("Invalid synthetic MQTT XML identity or sequence.");
+                if (profile is "mockprofile-311" or "mockprofile-321") {
+                    var equipment = b ? (string?)element.Element("ext_equipment_type") : c ?
+                        (string?)element.Element("Extension")?.Element("EquipmentType") :
+                        (string?)element.Element("extensions")?.Element("equipmentType");
+                    if (equipment != (profile == "mockprofile-311" ? "STIR_FRYER" : "COMBI_OVEN"))
+                        throw new InvalidDataException("Equipment type does not match the synthetic profile.");
+                }
                 return raw;
             }
             if (item.GetProperty(b ? "source_id" : c ? "SrcId" : "sourceId").GetString() != "synthetic-mqtt" ||

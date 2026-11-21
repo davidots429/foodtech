@@ -109,3 +109,5 @@ OPC UA Binary 수집기는 `--instance mockprofile-213-{a,b,c}-001`과 `mockprof
 MQTT JSON 수집기는 `mockprofile-310-{a,b,c}-001` 볶음·교반과 `mockprofile-320-{a,b,c}-001` 콤비오븐도 지원한다. 인스턴스별 Topic·원천 스키마를 검사하고, 잘못된 입력은 해당 계열로 격리한 후 승인한다. 장비별 온도·기후·습도·팬의 의미를 유지하며 vendor별 상대 출력·속도 단계는 RPM으로 환산하지 않는다. 합성 계약이며 AWS 실저장은 별도 검증이다.
 
 MQTT CSV 수집기는 `mockprofile-312-{a,b,c}-001` 볶음·교반과 `mockprofile-322-{a,b,c}-001` 콤비오븐을 지원한다. 장비별 고정 열과 값 유형을 검사하고 습도 미지원은 빈 CSV 셀에서 `null`로 표현한다. 공식 CSV 수식 위험 문자 차단을 유지하며 격리 저장이 성공한 후에만 MQTT 수신 확인을 보낸다. AWS 실저장은 별도 검증이다.
+
+MQTT XML의 `mockprofile-311-{a,b,c}-001`과 `mockprofile-321-{a,b,c}-001`은 계열별 XSD와 원천 스키마를 적용한다. 솥 온도와 콤비오븐 기후·습도 출처·팬을 구분하고 습도 미지원은 null로 보존한다. DTD·외부 엔터티를 차단하고 격리 저장이 성공한 뒤에만 MQTT 수신을 확인한다. AWS 실저장은 별도 검증이다.
