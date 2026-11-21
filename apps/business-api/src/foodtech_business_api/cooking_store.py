@@ -48,6 +48,14 @@ def _history_number(item: dict | None) -> int | None:
     return int(value)
 
 
+def _history_relevant(event: dict | None) -> bool:
+    """Track changes that can alter a job's reusable safety evidence."""
+    return bool(event and (event.get("trigger") == "COOKING_STARTED" or event.get("domain") in {
+        "VALIDATION_CONTEXT", "SAFETY_STATUS", "JEYUK_FEED", "JEYUK_DISCHARGE",
+        "TONKATSU_BATCH", "TONKATSU_INITIAL_CONTEXT", "COOKING_JOB_STATUS",
+    }))
+
+
 def _only_result_already_exists(exc: Exception, operation_count: int) -> bool:
     reasons = exc.response.get("CancellationReasons", [])
     return (len(reasons) == operation_count and
@@ -316,7 +324,7 @@ class MemoryCookingStore:
                 raise Conflict
             if event and (pk, event["sk"]) in self.items:
                 raise Conflict
-            if event and event.get("trigger") == "COOKING_STARTED":
+            if _history_relevant(event):
                 self._advance_history(pk)
             self.items[(pk, "META")] = meta.copy()
             if assessment:
@@ -830,7 +838,7 @@ class DynamoCookingStore:
                 "Item": self._item({"pk": pk, **event}),
                 "ConditionExpression": "attribute_not_exists(pk)",
             }})
-        if event and event.get("trigger") == "COOKING_STARTED":
+        if _history_relevant(event):
             operations.append(self._history_update(pk))
         try:
             self._history_transact(operations)

@@ -26,14 +26,21 @@ class HistoryRevisionTests(unittest.TestCase):
             store.commit(pk, 2, {**meta(), "version": 3}, event={"sk": "EVENT#start", "trigger": "COOKING_STARTED"})
         store.commit(pk, 3, {**meta(), "version": 4}, event={"sk": "EVENT#other", "trigger": "SAFETY"})
         self.assertEqual(store.history_revision("owner"), 3)
-        store.create_recook(pk, 4, "SCOPE#USER#owner#JOB#two", meta("two"))
+        store.commit(pk, 4, {**meta(), "version": 5},
+                     event={"sk": "EVENT#safety", "domain": "SAFETY_STATUS", "trigger": "CORE_CHECK"})
         self.assertEqual(store.history_revision("owner"), 4)
+        with self.assertRaises(Conflict):
+            store.commit(pk, 4, {**meta(), "version": 5},
+                         event={"sk": "EVENT#safety", "domain": "SAFETY_STATUS", "trigger": "CORE_CHECK"})
+        self.assertEqual(store.history_revision("owner"), 4)
+        store.create_recook(pk, 5, "SCOPE#USER#owner#JOB#two", meta("two"))
+        self.assertEqual(store.history_revision("owner"), 5)
         key = ("SCOPE#USER#owner#JOBS", "CREATED#2026-01-01T00:00:00Z#two")
         del store.items[key]
         store.ensure_listed("SCOPE#USER#owner#JOB#two", meta("two"))
-        self.assertEqual(store.history_revision("owner"), 5)
+        self.assertEqual(store.history_revision("owner"), 6)
         store.ensure_listed("SCOPE#USER#owner#JOB#two", meta("two"))
-        self.assertEqual(store.history_revision("owner"), 5)
+        self.assertEqual(store.history_revision("owner"), 6)
 
     def test_start_and_history_revision_share_dynamo_transaction(self):
         calls = []; store = DynamoCookingStore.__new__(DynamoCookingStore)
@@ -46,6 +53,9 @@ class HistoryRevisionTests(unittest.TestCase):
         self.assertEqual(ops[-1]["Update"]["Key"], {"pk": {"S": "SCOPE#USER#owner#JOBS"},
                                                      "sk": {"S": "HISTORY#REVISION"}})
         self.assertIn("attribute_not_exists", ops[-1]["Update"]["ConditionExpression"])
+        store.commit("SCOPE#USER#owner#JOB#one", 2, {"version": 3},
+                     event={"sk": "EVENT#safety", "domain": "SAFETY_STATUS", "trigger": "CORE_CHECK"})
+        self.assertEqual(calls[1]["TransactItems"][-1]["Update"]["Key"], ops[-1]["Update"]["Key"])
 
     def test_dynamo_retries_only_explicit_transaction_conflicts(self):
         class Cancelled(Exception):

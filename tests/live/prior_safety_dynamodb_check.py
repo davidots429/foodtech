@@ -10,7 +10,7 @@ import httpx
 
 from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
-from foodtech_business_api.cooking_store import DynamoCookingStore
+from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
 from foodtech_business_api.main import app
 from foodtech_business_api.roster_audit import audit
 from process_flow_dynamodb_check import ACCOUNT, COOKING_TABLE, REGION, remove_partition
@@ -111,6 +111,19 @@ async def run() -> None:
             list(pool.map(create_one, concurrent))
         if store.history_revision(subject) != 11:
             raise AssertionError("Concurrent job creation lost or duplicated a history revision")
+        event = {"sk": "EVENT#test-safety", "domain": "SAFETY_STATUS", "trigger": "CORE_CHECK"}
+        updated = {**started, "version": 4, "safety_status": "FAILED"}
+        store.commit(new_pk, 3, updated, event=event)
+        if store.history_revision(subject) != 12:
+            raise AssertionError("Safety event and history revision were not committed together")
+        try:
+            store.commit(new_pk, 3, updated, event=event)
+        except Conflict:
+            pass
+        else:
+            raise AssertionError("Stale safety write unexpectedly succeeded")
+        if store.history_revision(subject) != 12:
+            raise AssertionError("Rejected safety write changed history revision")
         print("prior safety evidence verified; recommendation remains blocked", flush=True)
     finally:
         for pk in keys + [listing_pk]:
