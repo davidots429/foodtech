@@ -40,7 +40,7 @@ class MqttMockTests(unittest.TestCase):
             env = {**os.environ, "FOODTECH_MQTT_USER": "test-user", "FOODTECH_MQTT_PASSWORD": "test-secret",
                    "FOODTECH_MOCK_CERT_PASSWORD": "test-password"}
             server = subprocess.Popen(["dotnet", str(DLL), "serve-mqtt", "--fixture", str(FIXTURE),
-                                       "--cert", str(pfx), "--port", str(port)], env=env,
+                                       "--cert", str(pfx), "--port", str(port), "--bind-address", "0.0.0.0"], env=env,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 for _ in range(100):

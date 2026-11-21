@@ -16,7 +16,7 @@ internal static class MqttMock
 {
     private const string Publisher = "foodtech-internal-mock";
 
-    public static async Task Run(string path, string certificatePath, int port, string? fault)
+    public static async Task Run(string path, string certificatePath, int port, string? fault, IPAddress bindAddress)
     {
         if (fault is not (null or "invalid-utf8" or "invalid-json" or "invalid-xml" or "invalid-csv"))
             throw new ArgumentException("Unsupported MQTT fault scenario.");
@@ -98,7 +98,7 @@ internal static class MqttMock
         if (records.Length is < 1 or > 5000) throw new InvalidDataException("Invalid fixture length.");
         using var cert = X509CertificateLoader.LoadPkcs12FromFile(certificatePath, certificatePassword);
         var config = new MqttServerOptionsBuilder().WithEncryptedEndpoint().WithEncryptedEndpointPort(port)
-            .WithEncryptedEndpointBoundIPAddress(IPAddress.Loopback).WithEncryptedEndpointBoundIPV6Address(IPAddress.IPv6None)
+            .WithEncryptedEndpointBoundIPAddress(bindAddress).WithEncryptedEndpointBoundIPV6Address(IPAddress.IPv6None)
             .WithEncryptionCertificate(cert).WithEncryptionSslProtocol(SslProtocols.Tls12 | SslProtocols.Tls13).Build();
         config.EnablePersistentSessions = true;
         using var server = new MqttServerFactory().CreateMqttServer(config);

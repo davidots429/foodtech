@@ -39,7 +39,7 @@ class UaJsonTests(unittest.TestCase):
             env = {**os.environ, "FOODTECH_MOCK_CLIENT_ID": "test-user", "FOODTECH_MOCK_CLIENT_SECRET": "test-secret",
                    "FOODTECH_MOCK_CERT_PASSWORD": "test-password"}
             server = subprocess.Popen(["dotnet", str(DLL), "serve-ua-json", "--fixture", str(FIXTURE),
-                                       "--cert", str(pfx), "--port", str(port)], env=env,
+                                       "--cert", str(pfx), "--port", str(port), "--bind-address", "0.0.0.0"], env=env,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 with httpx.Client(base_url=base, verify=str(cert), timeout=1) as http:

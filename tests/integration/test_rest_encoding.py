@@ -36,7 +36,7 @@ class RestEncodingTests(unittest.TestCase):
             env = {**os.environ, "FOODTECH_MOCK_CLIENT_ID": "test-client", "FOODTECH_MOCK_CLIENT_SECRET": "test-secret",
                    "FOODTECH_MOCK_CERT_PASSWORD": "test-password"}
             server = subprocess.Popen(["dotnet", str(DLL), "serve", "--fixture", str(FIXTURE), "--cert", str(pfx),
-                                       "--port", str(port), "--fault", "invalid-utf8"], env=env,
+                                       "--port", str(port), "--bind-address", "0.0.0.0", "--fault", "invalid-utf8"], env=env,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 for _ in range(100):
