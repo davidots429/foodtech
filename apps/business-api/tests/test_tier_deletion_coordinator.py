@@ -31,12 +31,28 @@ class TierCoordinatorTests(unittest.TestCase):
         self.assertEqual(self.service.step(**self.scope),{'phase':'VERIFYING'})
         self.assertEqual([x.kwargs['index'] for x in self.capture.observe_and_record.call_args_list],[0,0,0])
 
+    def test_late_gsi_reappearance_reopens_observation(self):
+        import json
+        key=(self.scope['subject'],self.scope['request_id'],'TIER_COORDINATOR')
+        self.progress.items[key]={'version':1,'state':'VERIFYING','checkpoint':json.dumps(
+            {'schema':1,'phase':'VERIFYING','index':1,'total':1}).encode()}
+        self.capture.observe_and_record.side_effect=None
+        self.capture.observe_and_record.return_value={'observation':'PRESENT'}
+        self.assertEqual(self.service.recheck_index(**self.scope,index=0),{'phase':'OBSERVE','observation':'PRESENT'})
+        self.assertEqual(self.progress.items[key]['state'],'IN_PROGRESS')
+        with self.assertRaises(ValueError):self.service.recheck_index(**self.scope,index=0)
+        self.capture.observe_and_record.return_value={'observation':'NOT_OBSERVED'}
+        self.assertEqual(self.service.step(**self.scope),{'phase':'VERIFYING'})
+        self.assertEqual(self.service.recheck_index(**self.scope,index=0),{'phase':'VERIFYING','observation':'NOT_OBSERVED'})
+
     def test_recovery_failure_prevents_tier_mutation(self):
         recovery=SimpleNamespace(store=SimpleNamespace(auth_table='auth',registry_table='registry'),
                                  use_locked=Mock(side_effect=ValueError('lock unavailable')))
         boundary=TierDeletionRecovery(recovery=recovery,coordinator=self.service)
         with self.assertRaises(ValueError):boundary.step(authenticated_subject=self.scope['subject'],request_id=self.scope['request_id'])
         self.capture.capture_page.assert_not_called();self.worker.run_page.assert_not_called()
+        with self.assertRaises(ValueError):boundary.recheck_index(authenticated_subject=self.scope['subject'],request_id=self.scope['request_id'],index=0)
+        self.capture.observe_and_record.assert_not_called()
 
     def test_incorrect_store_rejected(self):
         recovery=SimpleNamespace(store=SimpleNamespace(auth_table='other',registry_table='registry'))

@@ -18,3 +18,11 @@ class TierDeletionRecovery:
         status=self.recovery.use_locked(authenticated_subject=authenticated_subject,request_id=request_id,action=action)
         if status != {'status':'DELETING'} or len(result)!=1:raise ValueError('tier recovery unavailable')
         return result[0]
+
+    def recheck_index(self, *, authenticated_subject, request_id, index):
+        result=[]
+        def action(_user,_locator):
+            result.append(self.coordinator.recheck_index(subject=authenticated_subject,request_id=request_id,index=index))
+        status=self.recovery.use_locked(authenticated_subject=authenticated_subject,request_id=request_id,action=action)
+        if status != {'status':'DELETING'} or len(result)!=1:raise ValueError('tier recovery unavailable')
+        return result[0]

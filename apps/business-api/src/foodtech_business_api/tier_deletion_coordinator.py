@@ -53,3 +53,32 @@ class TierDeletionCoordinator:
         self.progress.save_checkpoint(cipher=self.cipher,**scope,expected_version=version,
             state='VERIFYING' if state['phase']=='VERIFYING' else 'IN_PROGRESS',checkpoint=raw)
         return {'phase':state['phase']}
+
+    def recheck_index(self, *, subject, request_id, index):
+        """Reobserve one captured key; a late visible/unknown result reopens observation.
+
+        NOT_OBSERVED is a point-in-time GSI observation only. The caller must
+        arrange repeated checks and must not treat this result as a receipt.
+        """
+        if type(index) is not int or not 0 <= index < 10**12:
+            raise ValueError('invalid tier recheck index')
+        scope={'subject':subject,'request_id':request_id,'domain':'TIER_COORDINATOR'}
+        item=self.capture._load(subject,request_id,scope['domain'])
+        if not item or item.get('state')!='VERIFYING' or type(item.get('version')) is not int:
+            raise ValueError('tier verification not available')
+        state=self.capture._json(item['checkpoint'])
+        if set(state)!={'schema','phase','index','total'} or type(state['schema']) is not int or state['schema']!=1 or \
+                state['phase']!='VERIFYING' or type(state['index']) is not int or type(state['total']) is not int or \
+                not 0 <= index < state['total'] < 10**12 or state['index']!=state['total']:
+            raise ValueError('invalid tier verification checkpoint')
+        result=self.capture.observe_and_record(subject=subject,request_id=request_id,index=index)
+        observation=result.get('observation')
+        if observation not in {'PRESENT','NOT_OBSERVED','INCONCLUSIVE'}:
+            raise ValueError('invalid tier observation')
+        if observation in {'PRESENT','INCONCLUSIVE'}:
+            state.update(phase='OBSERVE',index=index)
+            raw=json.dumps(state,ensure_ascii=True,sort_keys=True,separators=(',',':')).encode('ascii')
+            self.progress.save_checkpoint(cipher=self.cipher,**scope,expected_version=item['version'],
+                                           state='IN_PROGRESS',checkpoint=raw)
+            return {'phase':'OBSERVE','observation':observation}
+        return {'phase':'VERIFYING','observation':'NOT_OBSERVED'}
