@@ -84,6 +84,58 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SOURCE_COMPLETENESS_NOT_ASSESSED", response.json()["completeness_reasons"])
         read.assert_called_once_with("test-source", "test-batch", include_settings=True)
 
+    async def test_failed_prior_job_is_owned_time_checked_and_not_claimed_immediate(self):
+        current = self.store.items[(self.pk, "META")]
+        current.update(menu="JEYUK", equipment_profile="jeyuk-small",
+                       actual_placed_at="2026-01-02T00:00:00Z", source_binding={"source_id": "synthetic-rest",
+                       "device_id": "mockprofile-110-a-001", "batch_id": "jeyuk-current"})
+        prior_id = str(uuid4()); prior_pk = cooking._pk(self.subject, prior_id)
+        prior = {"job_id": prior_id, "version": 2, "menu": "JEYUK", "provenance": "SYNTHETIC",
+                 "equipment_profile": "jeyuk-small", "status": "FAILED", "safety_status": "FAILED",
+                 "safety_version": 4, "actual_placed_at": "2026-01-01T00:00:00Z",
+                 "actual_lifted_at": "2026-01-01T00:08:00Z", "private_note": "never-return",
+                 "source_binding": {"source_id": "synthetic-rest", "device_id": "mockprofile-110-a-001",
+                                    "batch_id": "jeyuk-prior"}}
+        self.store.items[(prior_pk, "META")] = prior
+        path = f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence"
+        recorded = {"status": "MATCHED_AT_READ", "raw_count": 30,
+                    "process_observations": {"reason_codes": ["AGITATOR_FAILURE"], "basis": "SYNTHETIC_SAMPLES_ONLY"}}
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
+                patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion", return_value=recorded) as read:
+            response = await self.client.get(path, params={"prior_job_id": prior_id})
+            self.assertEqual(response.status_code, 200, response.text)
+            selected = response.json()["selected_prior_job"]
+            self.assertEqual((selected["status"], selected["safety_status"], selected["order_status"]),
+                             ("FAILED", "FAILED", "ENDED_BEFORE"))
+            self.assertFalse(selected["immediately_previous_verified"])
+            self.assertFalse(response.json()["recommendation_execution_available"])
+            self.assertNotIn("never-return", response.text)
+            prior["actual_lifted_at"] = None
+            selected = (await self.client.get(path, params={"prior_job_id": prior_id})).json()["selected_prior_job"]
+            self.assertEqual(selected["order_status"], "END_UNVERIFIED")
+            prior["safety_status"] = "PASSED"; prior["jeyuk_feed_safety_aligned"] = False
+            selected = (await self.client.get(path, params={"prior_job_id": prior_id})).json()["selected_prior_job"]
+            self.assertEqual(selected["safety_status"], "INCOMPLETE")
+            prior["safety_status"] = "FAILED"
+            prior["actual_placed_at"] = current["actual_placed_at"]
+            self.assertEqual((await self.client.get(path, params={"prior_job_id": prior_id})).status_code, 409)
+            prior["actual_placed_at"] = "2026-01-01T00:00:00Z"
+            prior["source_binding"]["device_id"] = "other-device"
+            self.assertEqual((await self.client.get(path, params={"prior_job_id": prior_id})).status_code, 409)
+            self.assertEqual((await self.client.get(path, params={"prior_job_id": str(uuid4())})).status_code, 404)
+            self.assertEqual((await self.client.get(path, params={"prior_job_id": "invalid"})).status_code, 400)
+            foreign_id = str(uuid4())
+            self.store.items[(cooking._pk("other-owner", foreign_id), "META")] = dict(prior, job_id=foreign_id)
+            self.assertEqual((await self.client.get(path, params={"prior_job_id": foreign_id})).status_code, 404)
+            prior["source_binding"]["device_id"] = "mockprofile-110-a-001"
+            def changed(_table, batch_id, **_kwargs):
+                if batch_id == "jeyuk-prior": prior["version"] += 1
+                return recorded
+            read.side_effect = changed
+            self.assertEqual((await self.client.get(path, params={"prior_job_id": prior_id})).status_code, 409)
+        self.subject = "another-customer"
+        self.assertEqual((await self.client.get(path, params={"prior_job_id": prior_id})).status_code, 404)
+
     async def test_jeyuk_temperature_evidence_excludes_unapproved_fields(self):
         meta = self.store.items[(self.pk, "META")]
         meta.update(menu="JEYUK", jeyuk_feed_safety_aligned=True, jeyuk_feed_mass_status="MATCHED",

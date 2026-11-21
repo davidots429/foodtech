@@ -242,7 +242,8 @@ def _comparison_assessment(job: dict, pointer: dict, assessment: dict | None, re
                 assessment.get("score_percent") == pointer.get("score_percent") == record.get(f"{role}_score_percent"))
 
 
-async def read_evidence(request, job_id: str, comparison_id: str | None = None) -> dict:
+async def read_evidence(request, job_id: str, comparison_id: str | None = None,
+                        prior_job_id: str | None = None) -> dict:
     from fastapi import HTTPException
     session, store, pk, job, pointer = await _read(request, job_id)
     first_process_pointer = await _store_call(store, store.process_pointer, pk)
@@ -376,6 +377,56 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
                     raise HTTPException(503, "비교 작업의 원천 설정을 조회하지 못했습니다.") from exc
         comparison_result["baseline_jeyuk_collection"] = baseline_collection
         comparison_result["baseline_jeyuk_timeline"] = _jeyuk_timeline_link(baseline, baseline_collection)
+    prior_result = None
+    prior_check = None
+    if prior_job_id is not None:
+        try:
+            prior_id = str(UUID(prior_job_id))
+            if prior_id != prior_job_id or prior_id == job_id:
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise HTTPException(400, "이전 작업 ID가 올바르지 않습니다.") from None
+        prior_pk = _pk(session.subject, prior_id)
+        prior, _ = await _store_call(store, store.read, prior_pk)
+        if not prior:
+            raise HTTPException(404, "이전 작업을 찾을 수 없습니다.")
+        prior_binding, current_binding = prior.get("source_binding"), job.get("source_binding")
+        if job.get("menu") != "JEYUK" or prior.get("menu") != "JEYUK" or \
+                job.get("provenance") != "SYNTHETIC" or prior.get("provenance") != "SYNTHETIC" or \
+                job.get("equipment_profile") != prior.get("equipment_profile") or \
+                prior.get("status") not in {"COMPLETED", "FAILED", "CANCELED"} or \
+                not isinstance(prior_binding, dict) or not isinstance(current_binding, dict) or \
+                prior_binding.get("source_id") != "synthetic-rest" or \
+                prior_binding.get("device_id") != "mockprofile-110-a-001" or \
+                any(prior_binding.get(key) != current_binding.get(key) for key in ("source_id", "device_id")) or \
+                not prior_binding.get("batch_id"):
+            raise HTTPException(409, "같은 합성 장비의 종료된 이전 작업을 선택해 주세요.")
+        prior_started, current_started = _instant(prior.get("actual_placed_at")), _instant(job.get("actual_placed_at"))
+        prior_end = _instant(prior.get("actual_lifted_at"))
+        if not prior_started or not current_started or prior_started >= current_started or \
+                (prior_end is not None and (prior_end < prior_started or prior_end > current_started)):
+            raise HTTPException(409, "이전 작업의 조리 시각을 확인할 수 없습니다.")
+        prior_collection = None
+        if not table:
+            prior_collection = {"status": "NOT_CONFIGURED", "raw_count": None}
+        else:
+            from .jeyuk_source_evidence import read_collection_completion
+            try:
+                prior_collection = await asyncio.to_thread(read_collection_completion, table,
+                    prior_binding["batch_id"], include_settings=True)
+            except Exception as exc:
+                raise HTTPException(503, "이전 작업의 원천 기록을 조회하지 못했습니다.") from exc
+        safety = prior.get("safety_status")
+        if safety == "PASSED" and prior.get("jeyuk_feed_safety_aligned") is not True:
+            safety = "INCOMPLETE"
+        prior_result = {"job_id": prior_id, "job_version": prior.get("version"), "status": prior.get("status"),
+                        "safety_status": safety, "safety_version": prior.get("safety_version"),
+                        "started_at": prior_started.isoformat(), "ended_at": prior_end.isoformat() if prior_end else None,
+                        "order_status": "ENDED_BEFORE" if prior_end else "END_UNVERIFIED",
+                        "immediately_previous_verified": False, "collection": prior_collection,
+                        "timeline": _jeyuk_timeline_link(prior, prior_collection),
+                        "feed_timing": _jeyuk_feed_timing(prior)}
+        prior_check = (prior_pk, prior)
     current_job, current_pointer = await _store_call(store, store.read, pk)
     last_process_pointer = await _store_call(store, store.process_pointer, pk)
     if comparison_check:
@@ -385,6 +436,10 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
         if latest_baseline != baseline or latest_baseline_pointer != baseline_pointer or \
                 latest_selected_pointer != selected_pointer:
             raise HTTPException(409, "선택한 비교가 조회 중 변경되었습니다. 다시 조회해 주세요.")
+    if prior_check:
+        latest_prior, _ = await _store_call(store, store.read, prior_check[0])
+        if latest_prior != prior_check[1]:
+            raise HTTPException(409, "이전 작업이 조회 중 변경되었습니다. 다시 조회해 주세요.")
     if source_pk:
         try:
             last_revision = await read_source_revision(table, source_pk)
@@ -401,5 +456,6 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
     return {**_snapshot(job, pointer, assessment, derived), "source_revision_status": source_status,
             "jeyuk_collection": jeyuk_collection,
             "jeyuk_timeline": _jeyuk_timeline_link(job, jeyuk_collection) if job.get("menu") == "JEYUK" else None,
-            "selected_comparison": comparison_result, "reheat_history_status": reheat_status,
+            "selected_comparison": comparison_result, "selected_prior_job": prior_result,
+            "reheat_history_status": reheat_status,
             "reheat_history": reheat_history}
