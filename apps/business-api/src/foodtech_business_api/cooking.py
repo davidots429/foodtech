@@ -631,6 +631,7 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                      "source_completion_record_matched": False,
                      "source_revision_stable": False}
     observed_source_revision = None
+    observed_receipt_reference = None
     source_table = os.getenv("FOODTECH_DATA_TABLE", "")
     if process_linked and context_matches_job and source_table and second <= max(
             profile.time_bands[-1] for profile in JEYUK_PROFILES.values()):
@@ -641,16 +642,19 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
             before = await read_source_revision(source_table, stream_pk)
             assessments, raws = await _read_jeyuk_source_records(source_table, binding["batch_id"], second)
             audited = audit_source_records(job, assessments, raws)
-            completion = await asyncio.to_thread(read_collection_completion, source_table, binding["batch_id"])
+            completion = await asyncio.to_thread(read_collection_completion, source_table, binding["batch_id"],
+                                                 include_reference=True)
             after = await read_source_revision(source_table, stream_pk)
             if before != after:
                 raise HTTPException(409, "원천 데이터가 조회 중 변경되었습니다. 다시 확인해 주세요.")
             matched = (completion.get("status") == "MATCHED_AT_READ" and before is not None and
-                       completion.get("source_revision") == before and before == second)
+                       completion.get("source_revision") == before and before == second and
+                       isinstance(completion.get("receipt_reference"), dict))
             source_checks = {**source_checks, **audited, "source_completion_record_matched": matched,
                              "source_revision_stable": before is not None and before == after}
             if matched:
                 observed_source_revision = before
+                observed_receipt_reference = completion["receipt_reference"]
         except HTTPException:
             raise
         except Exception as exc:
@@ -690,6 +694,7 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                               if process_linked else None),
         "source_table_configured": bool(source_table),
         "source_revision": observed_source_revision,
+        "source_receipt_reference": observed_receipt_reference,
         "activation_allowed": False,
         "remaining_verification": ["SENSOR_AND_CALIBRATION_IDENTITY",
                                    "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",

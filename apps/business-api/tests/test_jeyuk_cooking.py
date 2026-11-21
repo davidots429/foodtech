@@ -181,7 +181,8 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
                    return_value=source_checks), \
              patch("foodtech_business_api.source_revision.read_source_revision", return_value=61) as revision, \
              patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion",
-                   return_value={"status": "MATCHED_AT_READ", "source_revision": 61}) as receipt:
+                   return_value={"status": "MATCHED_AT_READ", "source_revision": 61,
+                                 "receipt_reference": {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test"}}) as receipt:
             linked = (await self.client.get(path + "/validation-evidence")).json()
             source_read.assert_called_once_with("test-source", "jeyuk-evidence-a", 61)
             receipt.return_value = {"status": "NOT_RECORDED"}
@@ -189,7 +190,8 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(missing_receipt["status"], "INCOMPLETE")
             self.assertIn("source_completion_record_matched", missing_receipt["missing_checks"])
             self.assertIsNone(missing_receipt["source_revision"])
-            receipt.return_value = {"status": "MATCHED_AT_READ", "source_revision": 61}
+            receipt.return_value = {"status": "MATCHED_AT_READ", "source_revision": 61,
+                                    "receipt_reference": {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test"}}
             revision.side_effect = [61, 62]
             changed = await self.client.get(path + "/validation-evidence")
             self.assertEqual(changed.status_code, 409)

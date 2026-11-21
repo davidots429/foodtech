@@ -47,6 +47,14 @@ class EvidenceReadTests(unittest.TestCase):
         with patch("foodtech_business_api.jeyuk_source_evidence.boto3.Session", Session):
             self.assertEqual(read_collection_completion("table", "evidence"),
                              {"status": "MATCHED_AT_READ", "raw_count": 3, "source_revision": 3})
+            table.revisions = [3, 3]
+            self.assertEqual(read_collection_completion("table", "evidence", include_reference=True)["status"],
+                             "REFERENCE_UNAVAILABLE")
+            receipt = {**receipt, "pk": "JEYUK#evidence", "sk": "COLLECTION#RECEIPT#test"}
+            table.revisions = [3, 3]
+            reference = read_collection_completion("table", "evidence", include_reference=True)["receipt_reference"]
+            self.assertEqual(reference, {"pk": "JEYUK#evidence", "sk": "COLLECTION#RECEIPT#test",
+                                         "record_count": 3, "ordered_raw_sha256": receipt["ordered_raw_sha256"]})
             # Settings are derived only from a matching, tracked complete receipt.
             for index, row in enumerate(rows):
                 value = json.loads(row["raw"]); value["heatingSetpointCelsius"] = 200

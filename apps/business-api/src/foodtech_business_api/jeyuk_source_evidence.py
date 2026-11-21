@@ -220,7 +220,8 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
     return result
 
 
-def read_collection_completion(table_name: str, batch_id: str, *, include_settings: bool = False) -> dict:
+def read_collection_completion(table_name: str, batch_id: str, *, include_settings: bool = False,
+                               include_reference: bool = False) -> dict:
     """Compare one terminal collector receipt with the full raw snapshot at read time."""
     from foodtech_contracts.jeyuk_receipt import MAX_SAMPLES, matches_jeyuk_snapshot
 
@@ -261,11 +262,17 @@ def read_collection_completion(table_name: str, batch_id: str, *, include_settin
     # cannot establish a complete tracked history when its count differs.
     if before is None or before != len(raws):
         return {"status": "REVISION_UNVERIFIED", "raw_count": len(raws)}
-    matched = any(matches_jeyuk_snapshot(receipt, batch_id, raws) for receipt in receipts)
+    matched = next((receipt for receipt in receipts if matches_jeyuk_snapshot(receipt, batch_id, raws)), None)
     result = {"status": "MATCHED_AT_READ" if matched else "NOT_MATCHED", "raw_count": len(raws)}
     if matched:
         # Version of this observed snapshot, not a promise that it stays current.
         result["source_revision"] = before
+        if include_reference:
+            sk = matched.get("sk")
+            if matched.get("pk") != pk or not isinstance(sk, str) or not sk.startswith("COLLECTION#RECEIPT#"):
+                return {"status": "REFERENCE_UNAVAILABLE", "raw_count": len(raws)}
+            result["receipt_reference"] = {"pk": pk, "sk": sk, "record_count": before,
+                                           "ordered_raw_sha256": matched["ordered_raw_sha256"]}
     if matched and include_settings:
         samples = [decode_jeyuk_mock_sample(row["raw"]) for row in raws]
         def summarize(values):
