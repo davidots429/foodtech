@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+from collection_entrypoint_support import injected_ca
 from foodtech_collection_adapter import __main__ as cli
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +30,7 @@ class RestEncodingTests(unittest.TestCase):
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
                             "-password", "pass:test-password"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cert = injected_ca(ROOT, temp, cert, 'rest')
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 port = probe.getsockname()[1]
