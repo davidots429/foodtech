@@ -113,3 +113,5 @@ MQTT CSV 수집기는 `mockprofile-312-{a,b,c}-001` 볶음·교반과 `mockprofi
 MQTT XML의 `mockprofile-311-{a,b,c}-001`과 `mockprofile-321-{a,b,c}-001`은 계열별 XSD와 원천 스키마를 적용한다. 솥 온도와 콤비오븐 기후·습도 출처·팬을 구분하고 습도 미지원은 null로 보존한다. DTD·외부 엔터티를 차단하고 격리 저장이 성공한 뒤에만 MQTT 수신을 확인한다. AWS 실저장은 별도 검증이다.
 
 REST XML 수집기는 `--profile mockprofile-111` 또는 `mockprofile-121`과 일치하는 vendor-a/b/c 인스턴스를 지원한다. 별도 커서, XSD와 원천 스키마를 적용하며 DTD·외부 엔터티를 차단한다. 솥 온도와 콤비오븐 기후·습도·팬 의미를 유지하고 습도 미지원은 null로 보존한다. AWS 실저장은 별도 검증이다.
+
+REST JSON의 `mockprofile-110-{b,c}-001`과 `mockprofile-120-{b,c}-001`은 각 인스턴스의 원천 스키마·커서와 장비별 표준화 규칙을 사용한다. `--profile mockprofile-110`의 기존 제육 시뮬레이션 기본 경로는 유지되며 vendor-b/c는 명시적 `--instance`로 선택한다. 잘못된 UTF-8은 원본 바이트를 격리하기 위해 전달한다. AWS 실저장 검증은 별도다.

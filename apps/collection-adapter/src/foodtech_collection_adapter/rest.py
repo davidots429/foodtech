@@ -16,7 +16,8 @@ class PollResult:
 
 class RestMockClient:
     def __init__(self, base_url: str, client_id: str, client_secret: str, ca_file: str,
-                 client: httpx.Client | None = None, profile_id: str = "mockprofile-100"):
+                 client: httpx.Client | None = None, profile_id: str = "mockprofile-100", *,
+                 preserve_invalid_utf8: bool = False):
         if not base_url.startswith("https://") or not ca_file:
             raise ValueError("HTTPS and a trusted CA file are required")
         if profile_id not in ("mockprofile-100", "mockprofile-101", "mockprofile-110", "mockprofile-111", "mockprofile-120", "mockprofile-121"):
@@ -25,6 +26,7 @@ class RestMockClient:
         self.authorization = "Basic " + base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         self.token: str | None = None
         self.profile_id = profile_id
+        self.preserve_invalid_utf8 = preserve_invalid_utf8
 
     def close(self) -> None:
         self.client.close()
@@ -92,7 +94,7 @@ class RestMockClient:
                     try:
                         records.append(part.decode("utf-8", errors="strict"))
                     except UnicodeDecodeError:
-                        if self.profile_id != "mockprofile-100":
+                        if self.profile_id != "mockprofile-100" and not self.preserve_invalid_utf8:
                             raise ValueError("invalid UTF-8 in Mock stream") from None
                         records.append(part)
                 if next_cursor != cursor + len(records):

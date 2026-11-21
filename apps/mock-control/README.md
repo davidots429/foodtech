@@ -128,3 +128,5 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 `serve-mqtt`는 볶음·교반 `mockprofile-311`과 콤비오븐 `mockprofile-321`의 vendor-a/b/c XML 원천을 지원한다. 장비 유형과 인스턴스가 맞는 합성 데이터만 제공하며, DTD와 외부 엔터티는 허용하지 않는다.
 
 `serve`는 볶음·교반 `mockprofile-111`과 콤비오븐 `mockprofile-121`의 vendor-a/b/c 합성 XML fixture를 인증된 읽기 전용 HTTPS로 제공한다. 장비 유형별 확장 필드는 원본 XML에 보존된다.
+
+`mockprofile-110` 볶음·교반과 `mockprofile-120` 콤비오븐의 vendor-b/c 합성 JSON 원천도 `serve`에서 읽기 전용 HTTPS로 제공한다. 기존 vendor-a의 제육·콤비 시뮬레이션 경로는 유지한다.

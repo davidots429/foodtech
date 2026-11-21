@@ -70,7 +70,7 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
     quality = "QUARANTINED" if any(item.code == "HARD_LIMIT_EXCEEDED" for item in findings) else \
         "WARNING" if findings else "VALID"
     combi_fields = {}
-    if canonical["device_id"] in {f"mockprofile-{profile}-{vendor}-001" for profile in ("121", "220", "223", "320", "321", "322") for vendor in "abc"}:
+    if canonical["device_id"] in {f"mockprofile-{profile}-{vendor}-001" for profile in ("120", "121", "220", "223", "320", "321", "322") for vendor in "abc"}:
         vendor = canonical["device_id"].split("-")[2]
         extension = record["extensions"] if vendor != "c" else record["extensions"]["vendor_extension"]
         climate, source, humidity, fan = {
@@ -93,7 +93,7 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         "sequence_number": canonical["sequence_number"],
         "event_time": canonical["event_time"],
         "device_status": "RUNNING" if canonical["device_status"] == "running" else "STOPPED",
-        ("POT_TEMPERATURE" if canonical["device_id"] in {f"mockprofile-{profile}-{vendor}-001" for profile in ("111", "210", "213", "310", "311", "312") for vendor in "abc"}
+        ("POT_TEMPERATURE" if canonical["device_id"] in {f"mockprofile-{profile}-{vendor}-001" for profile in ("110", "111", "210", "213", "310", "311", "312") for vendor in "abc"}
          else "CHAMBER_TEMPERATURE"): {"value": canonical["temperature_celsius"], "unit": "°C"},
         **({"OUTPUT_PERCENT": {"value": canonical["output_percent"], "unit": "%"}}
            if "output_percent" in canonical else
@@ -140,7 +140,7 @@ def assess(ingestion_event_id: str, raw: str, *, sequence_status: str = "IN_ORDE
         correction_rule_id=("FT-MAP-VENDOR-B-1" if "output_percent" in canonical else
                             "FT-MAP-VENDOR-C-1" if "speed_level" in canonical else "FT-MAP-VENDOR-A-1"),
         mapping_version={**{f"mockprofile-{profile}-{vendor}-001": f"mockprofile-{profile}-{vendor}-map-v1"
-                            for profile in ("111", "121", "213", "223", "310", "311", "312", "320", "321", "322") for vendor in "abc"},
+                            for profile in ("110", "111", "120", "121", "213", "223", "310", "311", "312", "320", "321", "322") for vendor in "abc"},
                          "mockprofile-220-a-001": "mockprofile-220-a-map-v1",
                          "mockprofile-220-b-001": "mockprofile-220-b-map-v1",
                          "mockprofile-220-c-001": "mockprofile-220-c-map-v1",

@@ -173,8 +173,9 @@ for _binary, _normalized in (("213", STIR_UA_JSON_NORMALIZED), ("223", COMBI_UA_
                                ("310", STIR_UA_JSON_NORMALIZED), ("320", COMBI_UA_JSON_NORMALIZED),
                                ("312", STIR_UA_JSON_NORMALIZED), ("322", COMBI_UA_JSON_NORMALIZED),
                                ("311", STIR_UA_JSON_NORMALIZED), ("321", COMBI_UA_JSON_NORMALIZED),
-                               ("111", STIR_UA_JSON_NORMALIZED), ("121", COMBI_UA_JSON_NORMALIZED)):
-    for _vendor in "abc":
+                               ("111", STIR_UA_JSON_NORMALIZED), ("121", COMBI_UA_JSON_NORMALIZED),
+                               ("110", STIR_UA_JSON_NORMALIZED), ("120", COMBI_UA_JSON_NORMALIZED)):
+    for _vendor in ("bc" if _binary in ("110", "120") else "abc"):
         _id = f"mockprofile-{_binary}-{_vendor}-001"
         _source_schema = json.loads(files("foodtech_contracts").joinpath(
             f"mockprofile-{_binary}-{_vendor}-v1.schema.json").read_text())
@@ -192,7 +193,7 @@ def _validate(record: dict) -> None:
     binary_id = record.get("deviceId")
     if binary_id in EQUIPMENT_SYNTHETIC_NORMALIZED:
         EQUIPMENT_SYNTHETIC_NORMALIZED[binary_id].validate(record)
-        if binary_id.startswith(("mockprofile-223-c-", "mockprofile-320-c-", "mockprofile-322-c-", "mockprofile-321-c-", "mockprofile-121-c-")) and record["measurements"]["speedLevel"] != record["extensions"]["vendor_extension"]["FanLevel"]:
+        if binary_id.startswith(("mockprofile-223-c-", "mockprofile-320-c-", "mockprofile-322-c-", "mockprofile-321-c-", "mockprofile-121-c-", "mockprofile-120-c-")) and record["measurements"]["speedLevel"] != record["extensions"]["vendor_extension"]["FanLevel"]:
             raise ValueError("conflicting synthetic fan levels")
         return
     for vendor, validator in COMBI_UA_JSON_NORMALIZED.items():

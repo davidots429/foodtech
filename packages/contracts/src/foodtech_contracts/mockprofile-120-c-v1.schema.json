@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://foodtech.example/contracts/mockprofile-120-c-v1.schema.json",
+  "title": "Synthetic vendor-c combi oven REST JSON record",
+  "type": "object",
+  "required": [
+    "SchVer",
+    "SrcId",
+    "DeviceId",
+    "BatchId",
+    "RecId",
+    "SeqNo",
+    "Timestamp",
+    "Status",
+    "Readings",
+    "Alarm",
+    "Extension"
+  ],
+  "properties": {
+    "SchVer": {
+      "const": "1.0"
+    },
+    "SrcId": {
+      "const": "synthetic-rest"
+    },
+    "DeviceId": {
+      "const": "mockprofile-120-c-001"
+    },
+    "BatchId": {
+      "type": "string",
+      "pattern": "^batch-c-[A-Za-z0-9-]+$"
+    },
+    "RecId": {
+      "type": "string",
+      "pattern": "^rec-c-[A-Za-z0-9-]+$"
+    },
+    "SeqNo": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "Status": {
+      "enum": [
+        "RUN",
+        "STP"
+      ]
+    },
+    "Readings": {
+      "type": "object",
+      "required": [
+        "TempC",
+        "SpeedLvl",
+        "ElapsedMin"
+      ],
+      "properties": {
+        "TempC": {
+          "type": "number",
+          "minimum": -500,
+          "maximum": 500
+        },
+        "SpeedLvl": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "ElapsedMin": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      },
+      "additionalProperties": true
+    },
+    "Alarm": {
+      "enum": [
+        "Y",
+        "N"
+      ]
+    },
+    "Err": {
+      "type": "string"
+    },
+    "Extension": {
+      "type": "object",
+      "required": [
+        "EquipmentType",
+        "ClimateSetpointPct",
+        "HumiditySource",
+        "HumidityPct",
+        "FanLevel"
+      ],
+      "properties": {
+        "EquipmentType": {
+          "const": "COMBI_OVEN"
+        },
+        "ClimateSetpointPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "HumiditySource": {
+          "enum": [
+            "MEASURED",
+            "CONTROLLER_ESTIMATE",
+            "NOT_SUPPORTED"
+          ]
+        },
+        "HumidityPct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "FanLevel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "HumiditySource": {
+                "const": "NOT_SUPPORTED"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "HumidityPct": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "HumidityPct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "additionalProperties": true
+}

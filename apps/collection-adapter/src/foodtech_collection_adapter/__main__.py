@@ -24,14 +24,15 @@ def main() -> int:
     parser.add_argument("--until-complete", action="store_true", help="poll Jeyuk until its explicit completion marker")
     parser.add_argument("--max-runtime", type=int, default=1800, help="maximum seconds for --until-complete")
     parser.add_argument("--cursor-key", default="default", help="separate cursor for each Mock fixture")
-    parser.add_argument("--profile", choices=("mockprofile-100", "mockprofile-101", "mockprofile-110", "mockprofile-111", "mockprofile-121"),
+    parser.add_argument("--profile", choices=("mockprofile-100", "mockprofile-101", "mockprofile-110", "mockprofile-111", "mockprofile-120", "mockprofile-121"),
                         default="mockprofile-100")
-    parser.add_argument("--instance", choices=tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("100", "101", "111", "121") for vendor in "abc"),
+    parser.add_argument("--instance", choices=tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("100", "101", "111", "121") for vendor in "abc") + tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("110", "120") for vendor in "bc"),
                         default="mockprofile-100-a-001")
     args = parser.parse_args()
     if args.polls < 1 or args.interval < 0 or args.max_runtime < 1:
         parser.error("polls must be positive and interval must be nonnegative")
-    if args.until_complete and args.profile != "mockprofile-110":
+    jeyuk_simulation = args.profile == "mockprofile-110" and args.instance == "mockprofile-100-a-001"
+    if args.until_complete and not jeyuk_simulation:
         parser.error("--until-complete requires the Jeyuk profile")
     if not args.cursor_key.replace("-", "").isalnum() or len(args.cursor_key) > 80:
         parser.error("cursor-key must contain only letters, digits or hyphens (max 80)")
@@ -42,16 +43,17 @@ def main() -> int:
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         parser.error("missing configuration: " + ", ".join(missing))
-    if ((args.profile != "mockprofile-110" and not args.instance.startswith(args.profile + "-")) or
-        (args.profile == "mockprofile-110" and args.instance != "mockprofile-100-a-001")):
+    if not jeyuk_simulation and not args.instance.startswith(args.profile + "-"):
         parser.error("instance does not match the requested profile")
     client_kwargs = {"profile_id": args.profile} if args.profile != "mockprofile-100" else {}
+    if not jeyuk_simulation and args.profile in {"mockprofile-110", "mockprofile-120"}:
+        client_kwargs["preserve_invalid_utf8"] = True
     client = RestMockClient(
         os.environ["FOODTECH_MOCK_BASE_URL"], os.environ["FOODTECH_MOCK_CLIENT_ID"],
         os.environ["FOODTECH_MOCK_CLIENT_SECRET"], os.environ["FOODTECH_MOCK_CA_FILE"],
         **client_kwargs,
     )
-    if args.profile == "mockprofile-110":
+    if jeyuk_simulation:
         ingestor = DynamoJeyukIngestor(os.environ["FOODTECH_DATA_TABLE"],
                                        os.environ["FOODTECH_ORDERED_QUEUE_URL"])
         try:
@@ -86,7 +88,7 @@ def main() -> int:
     quarantine = None
     cursor_key = (args.cursor_key if args.instance == "mockprofile-100-a-001" else
                   (f"xml-{args.instance.split('-')[2]}#" if args.profile == "mockprofile-101" else
-                   f"{args.instance}#" if args.profile in {"mockprofile-111", "mockprofile-121"} else
+                   f"{args.instance}#" if args.profile in {"mockprofile-110", "mockprofile-111", "mockprofile-120", "mockprofile-121"} else
                    "vendor-b#" if args.instance == "mockprofile-100-b-001" else "vendor-c#") + args.cursor_key)
     try:
         cursor, streams = ingestor.cursor_state(cursor_key)
