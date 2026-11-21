@@ -497,6 +497,7 @@ name = "foodtech-business-api"
 version = "0.0.0"
 source = { editable = "apps/business-api" }
 dependencies = [
+    { name = "aws-encryption-sdk", extra = ["mpl"] },
     { name = "boto3" },
     { name = "botocore", extra = ["crt"] },
     { name = "fastapi" },
@@ -508,6 +509,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aws-encryption-sdk", extras = ["mpl"], specifier = "==4.0.7" },
     { name = "boto3", specifier = ">=1.40,<2" },
     { name = "botocore", extras = ["crt"], specifier = ">=1.43,<2" },
     { name = "fastapi", specifier = ">=0.120,<1" },
