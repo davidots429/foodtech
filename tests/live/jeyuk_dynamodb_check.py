@@ -110,7 +110,7 @@ def collect_over_https(fixture_id: str, queue_url: str, cursor_key: str, *,
             nonempty = [line for line in polls if "received=0 " not in line]
             if realtime and len(nonempty) < 2:
                 raise AssertionError("Realtime collection did not observe multiple nonempty polls")
-            print(f"realtime_nonempty_polls={len(nonempty)}", flush=True)
+            print(f"nonempty_polls={len(nonempty)} realtime={realtime}", flush=True)
             return DynamoJeyukIngestor(DATA_TABLE, queue_url).cursor(cursor_key)
         finally:
             server.terminate()
