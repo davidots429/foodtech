@@ -6,6 +6,7 @@ import boto3
 from boto3.dynamodb.types import TypeSerializer
 
 from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
+from foodtech_business_api.legacy_profile_scan import reconcile_legacy_page
 
 
 def main():
@@ -42,7 +43,15 @@ def main():
             raise AssertionError('cross-owner inventory leak')
         table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
                        ConditionExpression='attribute_not_exists(pk)')
-        store.ensure_condition_profile_listed(subject, 'legacy', 'v1')
+        checkpoint, found = None, False
+        for _ in range(20):
+            result = reconcile_legacy_page(table, store, subject=subject, limit=100, checkpoint=checkpoint)
+            found |= ('legacy', 'v1') in result.references
+            checkpoint = result.checkpoint
+            if checkpoint is None:
+                break
+        if not found:
+            raise AssertionError('legacy profile not found within the bounded scan')
         store.ensure_condition_profile_listed(subject, 'legacy', 'v1')
         try:
             store.ensure_condition_profile_listed(subject, 'missing', 'v1')
@@ -55,7 +64,7 @@ def main():
     finally:
         for key in keys:
             table.delete_item(Key=key)
-    print('profile transaction, duplicate rejection, owner isolation, pagination, legacy reconciliation and cleanup verified')
+    print('profile transaction, duplicate rejection, owner isolation, pagination, bounded scan, legacy reconciliation and cleanup verified')
 
 
 if __name__ == '__main__':
