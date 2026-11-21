@@ -19,16 +19,20 @@ type Meal = {
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     monitored_process_source?: { raw_sha256: string; phase: string };
+    monitored_process_samples?: unknown[];
     monitored_process_assessment?: { status: string; humidity_value_source: string; reason_codes: string[];
       door_assessment?: { status: string; door_open_seconds?: number }; fan_observation?: FanObservation } };
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
-    humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null };
+    humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null;
+    samples?: unknown[]; source?: { raw_sha256: string; phase: string } };
   mackerel: { job_id: string; status: string; safety_status: string; food_unloaded_at?: string;
     current_unloaded_at?: string;
-    quality_current?: { version: number; quality_status: string; score_percent: string; quality_target: boolean };
+    quality_current?: { version: number; quality_status: string; score_percent: string; quality_target: boolean; usable?: boolean };
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
     batch_representative_core_temperature?: string | null;
     safety_probe_summaries?: ProbeSummary[];
+    monitored_process_source?: { raw_sha256: string; phase: string };
+    monitored_process_samples?: unknown[];
     monitored_process_assessment?: { status: string; recovered_at_second: number | null;
       door_open_seconds: number; reason_codes: string[]; fan_observation?: FanObservation };
     products?: { product_id: string; rack_id: string; shelf: number; pan_id: string;
@@ -248,13 +252,14 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "밥 공정 표본을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
-  async function assessSource(phase: "rice" | "transition" | "mackerel", reassessLegacyFan = false) {
+  async function assessSource(phase: "rice" | "transition" | "mackerel", reassessLegacyFan = false, reassessManualTransition = false, reassessManualMackerel = false, reassessManualRice = false) {
     if (!meal || requestActive.current) return;
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     try {
       await api(path + `/source-assessment/${phase}`, csrf, { expected_version: meal.meal.version,
-        reassess_legacy_fan: reassessLegacyFan });
+        reassess_legacy_fan: reassessLegacyFan, reassess_manual_transition: reassessManualTransition,
+        reassess_manual_mackerel: reassessManualMackerel, reassess_manual_rice: reassessManualRice });
       setMeal(await api<Meal>(path));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "원표본 판정을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
@@ -337,11 +342,13 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       {mealSteps[meal.meal.status] && <div className="field-row"><label>합성 관찰시각
         <input type="datetime-local" step="0.001" value={observedAt} onChange={event => setObservedAt(event.target.value)} /></label>
         {meal.meal.source?.first_observed_at && <button type="button" className="secondary" disabled={busy} onClick={useSourceTime}>원표본 시각 입력</button>}
-        <button type="button" disabled={busy} onClick={recordStep}>{mealSteps[meal.meal.status].label}</button></div>}
+        <button type="button" disabled={busy || (meal.meal.status === "MACKEREL_READY" && !!meal.meal.source &&
+          (meal.transition.source?.raw_sha256 !== meal.meal.source.raw_sha256 || meal.transition.source?.phase !== "TRANSITION"))}
+          onClick={recordStep}>{mealSteps[meal.meal.status].label}</button></div>}
       {meal.meal.status === "MODE_TRANSITION" && <div><p>합성 표본으로 전환 조건을 시험합니다. 전환 시작 시각 이후 30초 또는 180초가 경과해야 합니다.</p>
-        {meal.meal.source && <button type="button" disabled={busy} onClick={() => assessSource("transition")}>연결된 전환 원표본 판정</button>}{" "}
-        <button type="button" disabled={busy} onClick={() => simulateTransition(true)}>습도 지원 합성 표본</button>{" "}
-        <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></div>}
+        {meal.meal.source && !meal.transition.samples?.length && <button type="button" disabled={busy} onClick={() => assessSource("transition")}>연결된 전환 원표본 판정</button>}{" "}
+        {!meal.meal.source && <><button type="button" disabled={busy} onClick={() => simulateTransition(true)}>습도 지원 합성 표본</button>{" "}
+        <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></>}</div>}
       {meal.meal.status === "MACKEREL_UNLOADED" && <div><p>인양 후 제품 {Math.min(3, products.length)}개를 선택해 각 75°C 합성 표본을 60초간 확인합니다. 인양 후 60초가 경과해야 합니다.</p>
         <fieldset><legend>합성 안전 표본 선택</legend>
           {products.map(product => <label key={product.product_id} style={{ display: "block" }}>
@@ -364,7 +371,22 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       {["MACKEREL_UNLOADED", "MACKEREL_SAFETY_PASSED", "MACKEREL_SAFETY_FAILED"].includes(meal.meal.status) &&
         !meal.mackerel.monitored_process_assessment && <div><p>조리 구간의 220°C·문 닫힘 합성 표본으로 온도 복원과 문 상태를 확인합니다.</p>
           {meal.meal.source && <button type="button" disabled={busy} onClick={() => assessSource("mackerel")}>연결된 고등어 원표본 판정</button>}{" "}
-          <button type="button" disabled={busy} onClick={simulateMackerelProcess}>합성 공정 표본 확인</button></div>}
+          {!meal.meal.source && <button type="button" disabled={busy} onClick={simulateMackerelProcess}>합성 공정 표본 확인</button>}</div>}
+      {meal.meal.source && meal.transition.samples?.length &&
+       (meal.transition.source?.raw_sha256 !== meal.meal.source.raw_sha256 || meal.transition.source?.phase !== "TRANSITION") &&
+        <div><p className="warning">기록된 전환 판정은 연결된 원표본으로 확인되지 않았습니다.</p>
+          {["MODE_TRANSITION", "MACKEREL_READY"].includes(meal.meal.status) &&
+            <button type="button" disabled={busy} onClick={() => assessSource("transition", false, true)}>전환 원표본 다시 판정</button>}</div>}
+      {meal.meal.source && meal.rice.monitored_process_assessment &&
+       (meal.rice.monitored_process_source?.raw_sha256 !== meal.meal.source.raw_sha256 || meal.rice.monitored_process_source?.phase !== "RICE") &&
+        <div><p className="warning">기록된 밥 공정 판정은 연결된 원표본으로 확인되지 않았습니다.</p>
+          {!!meal.rice.monitored_process_samples?.length && <button type="button" disabled={busy}
+            onClick={() => assessSource("rice", false, false, false, true)}>밥 원표본 다시 판정</button>}</div>}
+      {meal.meal.source && meal.mackerel.monitored_process_assessment &&
+       (meal.mackerel.monitored_process_source?.raw_sha256 !== meal.meal.source.raw_sha256 || meal.mackerel.monitored_process_source?.phase !== "MACKEREL") &&
+        <div><p className="warning">기록된 고등어 공정 판정은 연결된 원표본으로 확인되지 않았습니다.</p>
+          {!!meal.mackerel.monitored_process_samples?.length && <button type="button" disabled={busy}
+            onClick={() => assessSource("mackerel", false, false, true)}>고등어 원표본 다시 판정</button>}</div>}
       {meal.mackerel.monitored_process_assessment && <p>고등어 온도 복원·문·시간 부분 판정: {meal.mackerel.monitored_process_assessment.status}
         {meal.mackerel.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.mackerel.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
       {meal.mackerel.monitored_process_assessment?.fan_observation && <p>고등어 팬 단계 관찰: {meal.mackerel.monitored_process_assessment.fan_observation.status}
@@ -390,6 +412,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       {(["rice", "mackerel"] as const).map(menu => <CombiQuality key={`${meal.meal.meal_batch_id}-${menu}`}
         menu={menu} mealId={meal.meal.meal_batch_id} version={meal.meal.version}
         safety={meal[menu].safety_status} jobStatus={meal[menu].status} current={meal[menu].quality_current}
+        sourceReady={!meal.meal.source || (meal[menu].monitored_process_source?.raw_sha256 === meal.meal.source.raw_sha256 &&
+          meal[menu].monitored_process_source?.phase === (menu === "rice" ? "RICE" : "MACKEREL"))}
         csrf={csrf} busy={busy} onBusy={setBusy} onUpdated={async () =>
           setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`))} />)}
       <CombiLive mealId={meal.meal.meal_batch_id} />
