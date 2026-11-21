@@ -121,7 +121,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
                     quality_version=1, quality_current=pointer)
         assessment = {'version': 1, 'safety_version': 1, 'menu': 'MACKEREL', 'status': 'COMPLETED',
                       'scale_version': 'mackerel-common-v1', 'scores': {name: 4 for name in cooking.SCORE_ITEMS},
-                      'quality_status': 'QUALITY_PASSED', 'score_percent': '80.00', 'quality_target': True,
+                      'quality_status': 'QUALITY_PASSED', 'quality_passed': True, 'score_percent': '80.00', 'quality_target': True,
                       'quality_note': 'private detail', 'actual_mass_kg': '1.2', 'actual_portions': 8}
         self.store.items[(pk, pointer['event_sk'])] = {'pk': pk, 'sk': pointer['event_sk'],
             'event': 'MACKEREL_QUALITY_ASSESSED', 'assessment': assessment}
@@ -148,6 +148,53 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
                 {'meal': {'version': 1}}, {'meal': {'version': 2}}])):
             result = await self.client.get(f'/api/customer/combi-meals/{uuid4()}/quality/rice/sample-evidence')
         self.assertEqual(result.status_code, 409)
+
+    async def test_meal_quality_aggregate_is_scoped_versioned_and_idempotent(self):
+        headers = {'X-CSRF-Token': 'csrf'}
+        created = await self.client.post('/api/customer/combi-meals', headers=headers,
+            json={**self.body, 'mackerel_recipe_version': 'fish-v1'})
+        meta = created.json()['meal']
+        pk = combi_meal._pk(self.subject, meta['meal_batch_id'])
+        step = self.store.items[(pk, f"JOB#MACKEREL#{meta['mackerel_cooking_job_id']}")]
+        pointer = {'version': 1, 'safety_version': 1, 'event_sk': 'EVENT#000000000002',
+                   'quality_status': 'QUALITY_PASSED', 'score_percent': '80.00', 'quality_target': True, 'usable': True}
+        step.update(status='UNLOADED', safety_status='PASSED', safety_version=1,
+                    quality_version=1, quality_current=pointer)
+        assessment = {'version': 1, 'safety_version': 1, 'menu': 'MACKEREL', 'status': 'COMPLETED',
+                      'scale_version': 'mackerel-common-v1', 'scores': {name: 4 for name in cooking.SCORE_ITEMS},
+                      'quality_status': 'QUALITY_PASSED', 'quality_passed': True, 'score_percent': '80.00',
+                      'quality_target': True, 'actual_mass_kg': '7.5', 'completed_at': '2026-11-22T01:00:00Z'}
+        self.store.items[(pk, pointer['event_sk'])] = {'pk': pk, 'sk': pointer['event_sk'],
+            'event': 'MACKEREL_QUALITY_ASSESSED', 'assessment': assessment}
+        body = {'meal_ids': [meta['meal_batch_id']], 'menu': 'MACKEREL', 'equipment_size': meta['equipment_size'],
+                'recipe_version': 'fish-v1', 'load_band': 'PARTIAL',
+                'period_start': '2026-11-22T00:00:00Z', 'period_end': '2026-11-23T00:00:00Z'}
+        path = '/api/customer/combi-quality-aggregates'
+        response = await self.client.post(path, headers=headers, json=body)
+        self.assertEqual(response.status_code, 201, response.text)
+        result = response.json()
+        self.assertEqual((result['sample_count'], result['mean_quality_score_percent']), (1, '80.00'))
+        self.assertEqual(result['snapshot_status'], 'HISTORICAL')
+        retry = await self.client.post(path, headers=headers, json=body)
+        self.assertEqual(retry.json()['result_id'], result['result_id'])
+        excluded = await self.client.post(path, headers=headers, json={**body, 'load_band': 'REFERENCE'})
+        self.assertEqual(excluded.status_code, 201, excluded.text)
+        self.assertEqual(excluded.json()['sample_count'], 0)
+        self.assertEqual(excluded.json()['references'][0]['exclusion_reason'], 'LOAD_BAND_MISMATCH')
+        duplicate = await self.client.post(path, headers=headers,
+            json={**body, 'meal_ids': [meta['meal_batch_id'], meta['meal_batch_id']]})
+        self.assertEqual(duplicate.status_code, 422)
+        link = f"{path}/{result['group_id']}/{result['result_id']}"
+        self.assertEqual((await self.client.get(link)).status_code, 200)
+        save = self.store.save_meal_aggregate
+        def change_before_save(*args):
+            self.store.items[(pk, 'META')]['version'] += 1
+            return save(*args)
+        with patch.object(self.store, 'save_meal_aggregate', side_effect=change_before_save):
+            self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 409)
+        self.subject = 'another-customer'
+        self.assertEqual((await self.client.get(link)).status_code, 404)
+        self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 404)
 
     async def test_linked_source_blocks_unrelated_transition_and_mackerel_samples(self):
         headers = {"X-CSRF-Token": "csrf"}

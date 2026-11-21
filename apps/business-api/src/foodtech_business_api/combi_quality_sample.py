@@ -3,7 +3,7 @@
 The caller supplies the customer-scoped, freshness-checked meal view. This
 extractor does not infer recipe versions or load bands absent from the record.
 """
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from .cooking import SCORE_ITEMS
 
@@ -55,5 +55,16 @@ def current_quality(meal_view: dict, menu: str) -> dict:
     values = [_integer(value) for value in scores.values()]
     if any(not 1 <= value <= 5 for value in values):
         raise ValueError('invalid meal quality scores')
+    try:
+        percentage = Decimal(assessment['score_percent'])
+        expected = (Decimal(sum(values)) / Decimal(35) * 100).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        passed, target = assessment['quality_passed'], assessment['quality_target']
+        if not percentage.is_finite() or percentage != expected or type(passed) is not bool or type(target) is not bool or \
+                assessment['quality_status'] != ('QUALITY_PASSED' if passed else 'QUALITY_FAILED') or \
+                (passed and (min(values) < 3 or expected < 60)) or \
+                target != (passed and min(values) >= 4 and expected >= 80):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        raise ValueError('invalid meal quality outcome') from None
     return {'status': 'ELIGIBLE', 'assessment': assessment.copy(),
             'meal_version': meta.get('version'), 'quality_version': version, 'safety_version': safety_version}

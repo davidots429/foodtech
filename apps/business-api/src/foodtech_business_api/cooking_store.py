@@ -119,6 +119,7 @@ class CookingStore(Protocol):
     def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict: ...
     def create_meal(self, pk: str, records: list[dict]) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict) -> dict: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
@@ -237,6 +238,21 @@ class MemoryCookingStore:
     def read_meal(self, pk: str) -> list[dict]:
         with self.lock:
             return [item.copy() for (item_pk, _), item in sorted(self.items.items()) if item_pk == pk]
+
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict) -> dict:
+        with self.lock:
+            for meal_pk, version in snapshots:
+                meta = self.items.get((meal_pk, 'META'))
+                if not meta or meta.get('version') != version:
+                    raise Conflict
+            key = (pk, f"RESULT#{record['result_id']}")
+            current = self.items.get(key)
+            if current is not None:
+                if current.get('selection') != record['selection'] or current.get('references') != record['references']:
+                    raise Conflict
+                return current.copy()
+            self.items[key] = {'sk': key[1], **record}
+            return self.items[key].copy()
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:
@@ -645,6 +661,30 @@ class DynamoCookingStore:
             start = page.get("LastEvaluatedKey")
             if not start:
                 return _api_numbers(rows)
+
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict) -> dict:
+        operations = [
+            {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': meal_pk, 'sk': 'META'}),
+                'ConditionExpression': '#version = :version', 'ExpressionAttributeNames': {'#version': 'version'},
+                'ExpressionAttributeValues': self._item({':version': version})}}
+            for meal_pk, version in snapshots
+        ]
+        operations.append({'Put': {'TableName': self.table.name,
+            'Item': self._item({'pk': pk, 'sk': f"RESULT#{record['result_id']}", **record}),
+            'ConditionExpression': 'attribute_not_exists(pk)'}})
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _only_result_already_exists(exc, len(operations)):
+                existing = self.aggregate(pk, record['result_id'])
+                if existing and existing.get('selection') == record['selection'] and \
+                        existing.get('references') == record['references']:
+                    return existing
+            if any(reason.get('Code') == 'ConditionalCheckFailed'
+                   for reason in exc.response.get('CancellationReasons', [])):
+                raise Conflict from exc
+            raise
+        return {'sk': f"RESULT#{record['result_id']}", **record}
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:

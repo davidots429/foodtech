@@ -11,7 +11,7 @@ class CombiQualitySampleTests(unittest.TestCase):
         scores = {name: Decimal(4) for name in SCORE_ITEMS}
         assessment = {'version': Decimal(1), 'safety_version': Decimal(2), 'menu': 'RICE',
                       'status': 'COMPLETED', 'scale_version': 'rice-common-v1', 'scores': scores,
-                      'quality_status': 'QUALITY_PASSED', 'score_percent': '80.00', 'quality_target': True}
+                      'quality_status': 'QUALITY_PASSED', 'quality_passed': True, 'score_percent': '80.00', 'quality_target': True}
         pointer = {'version': Decimal(1), 'safety_version': Decimal(2), 'event_sk': 'EVENT#1',
                    'quality_status': 'QUALITY_PASSED', 'score_percent': '80.00', 'quality_target': True, 'usable': True}
         self.view = {'meal': {'version': Decimal(3)}, 'rice': {'status': 'UNLOADED', 'safety_status': 'PASSED',
