@@ -74,7 +74,7 @@ def _history_relevant(event: dict | None) -> bool:
 
 
 def _evidence_snapshot_inputs(pk: str, expected_version: int, snapshot: dict,
-                              source_table: str, revision: int, receipt: dict) -> None:
+                              source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None:
     _history_pk(pk)
     if type(expected_version) is not int or expected_version < 1 or type(revision) is not int or revision < 1 or \
             not isinstance(source_table, str) or not re.fullmatch(r"foodtech-data-flow-[a-z0-9-]{1,32}", source_table):
@@ -132,7 +132,7 @@ class CookingStore(Protocol):
     def ensure_condition_profile_listed(self, subject: str, profile_id: str, version: str) -> None: ...
     def validation_evidence_snapshots(self, pk: str) -> list[dict]: ...
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
-                                 source_table: str, revision: int, receipt: dict) -> None: ...
+                                 source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None: ...
     def customer_restatement(self, pk: str, request_id: str) -> dict | None: ...
     def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict: ...
     def create_meal(self, pk: str, records: list[dict]) -> None: ...
@@ -229,7 +229,7 @@ class MemoryCookingStore:
                 self.items[list_key] = listing
 
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
-                                 source_table: str, revision: int, receipt: dict) -> None:
+                                 source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None:
         _evidence_snapshot_inputs(pk, expected_version, snapshot, source_table, revision, receipt)
         with self.lock:
             job = self.items.get((pk, "META"))
@@ -910,12 +910,14 @@ class DynamoCookingStore:
             "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}}
 
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
-                                 source_table: str, revision: int, receipt: dict) -> None:
+                                 source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None:
         _evidence_snapshot_inputs(pk, expected_version, snapshot, source_table, revision, receipt)
         stream_pk = receipt["pk"]
         profile = snapshot["condition_profile_reference"]
         owner_prefix = _history_pk(pk).removesuffix("#JOBS")
+        subject = owner_prefix.removeprefix("SCOPE#USER#")
         operations = [
+            self._owner_guard(subject, expected_epoch),
             {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
                                 "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
                                 "ExpressionAttributeValues": {":v": {"N": str(expected_version)}}}},

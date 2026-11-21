@@ -784,7 +784,7 @@ async def capture_validation_evidence(job_id: str, request: Request, body: Evide
                 "checks": evidence["checks"], "recorded_at": _now(), "recorded_by": session.subject}
     try:
         await _store_call(store, store.save_validation_evidence, pk, body.expected_version, snapshot,
-                          os.getenv("FOODTECH_DATA_TABLE", ""), evidence["source_revision"], receipt)
+                          os.getenv("FOODTECH_DATA_TABLE", ""), evidence["source_revision"], receipt, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "작업 또는 원천 증거가 변경되었습니다. 다시 조회해 주세요.") from exc
     except ValueError as exc:
