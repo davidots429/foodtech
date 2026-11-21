@@ -924,13 +924,15 @@ class DynamoTransactionContractTests(unittest.TestCase):
         job_pk = "SCOPE#USER#one#JOB#job"
         store.create(job_pk, meta)
         writes = calls[0]["TransactItems"]
-        self.assertEqual(len(writes), 2)
+        self.assertEqual(len(writes), 3)
+        self.assertEqual(writes[2]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
         self.assertEqual(writes[1]["Put"]["Item"]["pk"]["S"], "SCOPE#USER#one#JOBS")
         self.assertEqual(writes[1]["Put"]["Item"]["sk"]["S"],
                          "CREATED#2026-11-15T00:00:00Z#job")
         store.create_recook(job_pk, 3, "SCOPE#USER#one#JOB#recook",
                             {**meta, "job_id": "recook", "source_job_id": "job"})
-        self.assertEqual(len(calls[1]["TransactItems"]), 3)
+        self.assertEqual(len(calls[1]["TransactItems"]), 4)
+        self.assertEqual(calls[1]["TransactItems"][3]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
         self.assertEqual(calls[1]["TransactItems"][2]["Put"]["Item"]["source_job_id"]["S"], "job")
 
     def test_source_binding_and_job_version_share_transaction(self):
@@ -942,10 +944,11 @@ class DynamoTransactionContractTests(unittest.TestCase):
         stream_pk = stream_binding_key("synthetic-rest", "mockprofile-100-a-001", "batch-a-001")
         store.bind_stream("SCOPE#USER#one#JOB#job", 2, {"job_id": "job", "version": 3}, stream_pk)
         writes = calls[0]["TransactItems"]
-        self.assertEqual(len(writes), 2)
+        self.assertEqual(len(writes), 3)
         self.assertEqual(writes[0]["Put"]["ConditionExpression"], "#version = :expected")
         self.assertEqual(writes[1]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
         self.assertEqual(writes[1]["Put"]["Item"]["pk"], {"S": stream_pk})
+        self.assertEqual(writes[2]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
 
     def test_dynamodb_numeric_fields_match_local_api_types(self):
         rows = iter([

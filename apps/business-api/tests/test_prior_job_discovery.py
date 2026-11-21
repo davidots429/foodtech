@@ -56,6 +56,7 @@ class PriorDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((value["status"], value["candidate"]["job_id"], value["candidate"]["safety_status"]),
                          ("CANDIDATE", self.failed, "FAILED"))
         self.assertFalse(value["immediately_previous_verified"])
+        self.assertEqual(value["history_revision_status"], "UNCHANGED_DURING_READ")
         self.subject = "other"
         self.assertEqual((await self.client.get(self.path)).status_code, 404)
 
@@ -92,6 +93,22 @@ class PriorDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.add_job("2026-01-02T12:00:00Z", "FAILED")
             return original(subject, limit, cursor)
         with patch.object(self.store, "list_jobs", side_effect=changing):
+            self.assertEqual((await self.client.get(self.path)).status_code, 409)
+
+    async def test_legacy_missing_revision_does_not_claim_full_history(self):
+        with patch.object(self.store, "history_revision", return_value=None):
+            result = (await self.client.get(self.path)).json()
+        self.assertEqual(result["history_revision_status"], "UNTRACKED")
+        self.assertFalse(result["immediately_previous_verified"])
+
+    async def test_revision_change_without_visible_list_change_is_rejected(self):
+        original = self.store.history_revision; calls = 0
+        def changed(subject):
+            nonlocal calls
+            calls += 1
+            value = original(subject)
+            return value if calls == 1 else value + 1
+        with patch.object(self.store, "history_revision", side_effect=changed):
             self.assertEqual((await self.client.get(self.path)).status_code, 409)
 
     async def test_changed_history_during_read_is_rejected(self):

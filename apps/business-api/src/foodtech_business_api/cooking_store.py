@@ -1,7 +1,9 @@
 """Atomic cooking job revisions and append-only assessments."""
 
 import os
+import random
 import threading
+import time
 from decimal import Decimal
 from functools import lru_cache
 from typing import Protocol
@@ -27,6 +29,23 @@ def _job_list_item(pk: str, meta: dict) -> dict:
             "recipe_version": meta["recipe_version"],
             "planned_portions": meta["planned_portions"],
             "source_job_id": meta.get("source_job_id")}
+
+
+def _history_pk(job_pk: str) -> str:
+    prefix, separator, job_id = job_pk.rpartition("#JOB#")
+    if not separator or not prefix.startswith("SCOPE#USER#") or not job_id:
+        raise ValueError("invalid scoped job key")
+    return prefix + "#JOBS"
+
+
+def _history_number(item: dict | None) -> int | None:
+    if item is None:
+        return None
+    value = item.get("revision")
+    if isinstance(value, bool) or not isinstance(value, (int, Decimal)) or \
+            (isinstance(value, Decimal) and not value.is_finite()) or not 1 <= value <= 10**18 or int(value) != value:
+        raise ValueError("invalid job history revision")
+    return int(value)
 
 
 def _only_result_already_exists(exc: Exception, operation_count: int) -> bool:
@@ -74,6 +93,7 @@ class CookingStore(Protocol):
     def latest_process_result(self, pk: str) -> dict | None: ...
     def create(self, pk: str, meta: dict) -> None: ...
     def list_jobs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
+    def history_revision(self, subject: str) -> int | None: ...
     def ensure_listed(self, pk: str, meta: dict) -> None: ...
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None: ...
     def create_recook(self, parent_pk: str, expected_parent_version: int,
@@ -219,12 +239,24 @@ class MemoryCookingStore:
             result = self.items.get((pk, pointer["result_sk"]))
             return result.copy() if result else None
 
+    def _advance_history(self, job_pk: str) -> None:
+        key = (_history_pk(job_pk), "HISTORY#REVISION")
+        revision = _history_number(self.items.get(key)) or 0
+        if revision >= 10**18:
+            raise ValueError("job history revision limit reached")
+        self.items[key] = {"pk": key[0], "sk": key[1], "revision": revision + 1}
+
+    def history_revision(self, subject: str) -> int | None:
+        with self.lock:
+            return _history_number(self.items.get((f"SCOPE#USER#{subject}#JOBS", "HISTORY#REVISION")))
+
     def create(self, pk: str, meta: dict) -> None:
         with self.lock:
             listing = _job_list_item(pk, meta)
             list_key = (listing["pk"], listing["sk"])
             if (pk, "META") in self.items or list_key in self.items:
                 raise Conflict
+            self._advance_history(pk)
             self.items[(pk, "META")] = meta.copy()
             self.items[list_key] = listing
 
@@ -245,13 +277,17 @@ class MemoryCookingStore:
             listing = _job_list_item(pk, meta)
             if (pk, "META") not in self.items:
                 raise Conflict
-            self.items.setdefault((listing["pk"], listing["sk"]), listing)
+            key = (listing["pk"], listing["sk"])
+            if key not in self.items:
+                self._advance_history(pk)
+                self.items[key] = listing
 
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
         with self.lock:
             current = self.items.get((pk, "META"))
             if not current or current["version"] != expected_version or (stream_pk, "BINDING") in self.items:
                 raise Conflict
+            self._advance_history(pk)
             self.items[(pk, "META")] = meta.copy()
             self.items[(stream_pk, "BINDING")] = {"pk": stream_pk, "sk": "BINDING", "job_pk": pk,
                                                    "job_id": meta["job_id"]}
@@ -265,6 +301,7 @@ class MemoryCookingStore:
             if not parent or parent["version"] != expected_parent_version or \
                     (new_pk, "META") in self.items or list_key in self.items:
                 raise Conflict
+            self._advance_history(new_pk)
             self.items[(new_pk, "META")] = meta.copy()
             self.items[list_key] = listing
 
@@ -279,6 +316,8 @@ class MemoryCookingStore:
                 raise Conflict
             if event and (pk, event["sk"]) in self.items:
                 raise Conflict
+            if event and event.get("trigger") == "COOKING_STARTED":
+                self._advance_history(pk)
             self.items[(pk, "META")] = meta.copy()
             if assessment:
                 self.items[(pk, assessment["sk"])] = assessment.copy()
@@ -647,19 +686,46 @@ class DynamoCookingStore:
             raise ValueError("latest process result is missing")
         return _api_numbers(result)
 
+    def _history_transact(self, operations: list[dict]) -> None:
+        # All history mutations contend on one per-owner version. Retry only
+        # explicit transient transaction conflicts; never retry failed conditions.
+        for attempt in range(4):
+            try:
+                self.client.transact_write_items(TransactItems=operations)
+                return
+            except self.client.exceptions.TransactionCanceledException as exc:
+                reasons = exc.response.get("CancellationReasons", [])
+                codes = {reason.get("Code") for reason in reasons}
+                if attempt == 3 or "TransactionConflict" not in codes or \
+                        not codes <= {None, "None", "TransactionConflict"}:
+                    raise
+                time.sleep(0.05 * (2 ** attempt) + random.uniform(0, 0.05))
+
+    def _history_update(self, job_pk: str) -> dict:
+        return {"Update": {"TableName": self.table.name,
+            "Key": self._item({"pk": _history_pk(job_pk), "sk": "HISTORY#REVISION"}),
+            "UpdateExpression": "ADD revision :one",
+            "ConditionExpression": "attribute_not_exists(revision) OR revision < :max",
+            "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}}
+
+    def history_revision(self, subject: str) -> int | None:
+        item = self.table.get_item(Key={"pk": f"SCOPE#USER#{subject}#JOBS", "sk": "HISTORY#REVISION"},
+                                   ConsistentRead=True).get("Item")
+        return _history_number(item)
+
     def create(self, pk: str, meta: dict) -> None:
         listing = _job_list_item(pk, meta)
         try:
-            self.client.transact_write_items(TransactItems=[
+            self._history_transact([
                 {"Put": {"TableName": self.table.name,
                          "Item": self._item({"pk": pk, "sk": "META", **meta}),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
                 {"Put": {"TableName": self.table.name, "Item": self._item(listing),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
+                self._history_update(pk),
             ])
         except self.client.exceptions.TransactionCanceledException as exc:
-            if any(reason.get("Code") == "ConditionalCheckFailed"
-                   for reason in exc.response.get("CancellationReasons", [])):
+            if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
@@ -677,9 +743,21 @@ class DynamoCookingStore:
     def ensure_listed(self, pk: str, meta: dict) -> None:
         listing = _job_list_item(pk, meta)
         try:
-            self.table.put_item(Item=listing, ConditionExpression="attribute_not_exists(pk)")
-        except self.client.exceptions.ConditionalCheckFailedException:
-            return
+            self._history_transact([
+                {"Put": {"TableName": self.table.name, "Item": self._item(listing),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+                self._history_update(pk),
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            reasons = exc.response.get("CancellationReasons", [])
+            if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
+                existing = self.table.get_item(Key={"pk": listing["pk"], "sk": listing["sk"]},
+                                               ConsistentRead=True).get("Item")
+                if existing and existing.get("job_id") == meta["job_id"]:
+                    return
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
+            raise
 
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
         operations = [
@@ -692,12 +770,12 @@ class DynamoCookingStore:
                      "Item": self._item({"pk": stream_pk, "sk": "BINDING", "job_pk": pk,
                                          "job_id": meta["job_id"]}),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
+            self._history_update(pk),
         ]
         try:
-            self.client.transact_write_items(TransactItems=operations)
+            self._history_transact(operations)
         except self.client.exceptions.TransactionCanceledException as exc:
-            reasons = exc.response.get("CancellationReasons", [])
-            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in reasons):
+            if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
@@ -716,12 +794,12 @@ class DynamoCookingStore:
                      "ConditionExpression": "attribute_not_exists(pk)"}},
             {"Put": {"TableName": self.table.name, "Item": self._item(listing),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
+            self._history_update(new_pk),
         ]
         try:
-            self.client.transact_write_items(TransactItems=operations)
+            self._history_transact(operations)
         except self.client.exceptions.TransactionCanceledException as exc:
-            reasons = exc.response.get("CancellationReasons", [])
-            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in reasons):
+            if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
@@ -752,11 +830,12 @@ class DynamoCookingStore:
                 "Item": self._item({"pk": pk, **event}),
                 "ConditionExpression": "attribute_not_exists(pk)",
             }})
+        if event and event.get("trigger") == "COOKING_STARTED":
+            operations.append(self._history_update(pk))
         try:
-            self.client.transact_write_items(TransactItems=operations)
+            self._history_transact(operations)
         except self.client.exceptions.TransactionCanceledException as exc:
-            reasons = exc.response.get("CancellationReasons", [])
-            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in reasons):
+            if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
