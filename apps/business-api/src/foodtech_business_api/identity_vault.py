@@ -5,6 +5,7 @@ writer policy or durable provisioning recovery is provided by this component.
 """
 from dataclasses import dataclass, field
 from decimal import Decimal
+from secrets import compare_digest
 from uuid import UUID, uuid4
 
 import boto3
@@ -129,3 +130,20 @@ class IdentityVault:
                                   int(capsule["revision"]), expected_epoch), bytearray(vault["internal_user_id"].encode("utf-8")))
         except (TypeError, ValueError, AttributeError, KeyError, ArithmeticError):
             raise IdentityVaultConflict("identity linkage is unavailable or changed") from None
+
+    def verify_committed(self, *, authenticated_subject: str, prepared: PreparedIdentity) -> None:
+        """Verify a lost response while the exact prepared request is still available.
+
+        This is not durable provisioning recovery and does not grant access to the
+        returned identity. Deletion locks or changed links fail closed.
+        """
+        if not isinstance(prepared, PreparedIdentity) or prepared.subject != authenticated_subject:
+            raise ValueError("identity owner mismatch")
+        snapshot, internal_id = self.resolve_deletion(authenticated_subject=authenticated_subject,
+                                                      expected_epoch=prepared.expected_epoch)
+        try:
+            if snapshot.vault_id != prepared.vault_id or snapshot.capsule_locator != prepared.locator or \
+                    not compare_digest(internal_id, prepared.internal_id.encode("utf-8")):
+                raise IdentityVaultConflict("identity linkage does not match the prepared request")
+        finally:
+            internal_id[:] = b"\x00" * len(internal_id)

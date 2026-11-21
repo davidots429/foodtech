@@ -12,7 +12,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 from foodtech_business_api.guarded_deletion import GuardedDeletion
-from foodtech_business_api.identity_vault import IdentityVault
+from foodtech_business_api.identity_vault import IdentityVault, IdentityVaultConflict
 from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
 
 
@@ -78,6 +78,13 @@ def main():
                 capsule.get_item(Key={"pk": loser.locator, "sk": "META"}, ConsistentRead=True).get("Item"):
             raise AssertionError("Losing identity creation left an orphan")
         vault_service.commit(authenticated_subject=subject, prepared=winner)
+        vault_service.verify_committed(authenticated_subject=subject, prepared=winner)
+        try:
+            vault_service.verify_committed(authenticated_subject=subject, prepared=loser)
+        except IdentityVaultConflict:
+            pass
+        else:
+            raise AssertionError("Losing request was accepted as the committed identity")
         snapshot, internal_id = vault_service.resolve_deletion(authenticated_subject=subject, expected_epoch=0)
         try:
             if bytes(internal_id) != winner.internal_id.encode("utf-8") or snapshot.capsule_locator != winner.locator:
@@ -132,7 +139,7 @@ def main():
             auth.delete_item(Key=auth_key, ConditionExpression=Attr("provenance").eq("SYNTHETIC"))
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
-    print(json.dumps({"missing_principal_rejected": "verified", "atomic_provisioning": "verified", "stale_auth_rejected": "verified",
+    print(json.dumps({"missing_principal_rejected": "verified", "atomic_provisioning": "verified", "lost_response_verification": "verified", "stale_auth_rejected": "verified",
                       "guarded_deletion_registration": "verified", "cleanup": "verified"}))
 
 

@@ -76,6 +76,20 @@ class IdentityVaultTests(unittest.TestCase):
                 with self.assertRaises(IdentityVaultConflict):
                     self.vault.resolve_deletion(authenticated_subject=self.subject, expected_epoch=0)
 
+    def test_lost_response_verification_checks_the_exact_link_and_owner(self):
+        principal, vault, capsule = self.items()
+        self.client.responses = [principal, vault, capsule, principal]
+        self.assertIsNone(self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared))
+        self.client.responses = [principal, vault, capsule, principal]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.verify_committed(authenticated_subject=self.subject,
+                                        prepared=replace(self.prepared, internal_id=str(uuid4())))
+        with self.assertRaises(ValueError):
+            self.vault.verify_committed(authenticated_subject=str(uuid4()), prepared=self.prepared)
+        self.client.responses = [{**principal, "deletion_lock_request": {"S": str(uuid4())}}]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared)
+
     def test_prepared_action_tampering_and_owner_mismatch_fail_before_write(self):
         action = {"Put": {**self.prepared.capsule_action["Put"], "TableName": "wrong"}}
         for prepared, subject in ((replace(self.prepared, capsule_action=action), self.subject),
