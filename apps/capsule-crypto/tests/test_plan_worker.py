@@ -85,6 +85,26 @@ class WorkerTests(unittest.TestCase):
             self.worker.use_prepared(authenticated_subject=self.subject, request_id=self.request, action=seen.append)
         self.assertEqual(seen, [])
 
+    def test_later_page_corruption_never_dispatches_earlier_targets(self):
+        entries = tuple(Entry('BILLING', f'{year:04d}-{month:02d}', 'A'*43)
+                        for year in (2025, 2026) for month in range(1, 13))
+        with patch('foodtech_capsule_crypto.plan_worker.prepare_from_resolved_inventory', return_value=DeletionTargets(entries)):
+            self.worker.prepare(authenticated_subject=self.subject, request_id=self.request)
+        page = (self.subject, self.request, 'CAPSULE_PLAN_PAGE_000000000002')
+        self.progress.rows[page]['checkpoint'] = b'corrupt'
+        seen = []
+        with self.assertRaises(ValueError):
+            self.worker.use_prepared(authenticated_subject=self.subject, request_id=self.request, action=seen.append)
+        self.assertEqual(seen, [])
+
+    def test_empty_plan_dispatch_does_not_invoke_action(self):
+        with patch('foodtech_capsule_crypto.plan_worker.prepare_from_resolved_inventory', return_value=DeletionTargets(())):
+            self.worker.prepare(authenticated_subject=self.subject, request_id=self.request)
+        action = Mock()
+        result = self.worker.use_prepared(authenticated_subject=self.subject, request_id=self.request, action=action)
+        self.assertEqual(result, {'state': 'VISITED', 'target_count': 0})
+        action.assert_not_called()
+
     def test_changed_plan_or_wrong_source_is_rejected(self):
         with patch('foodtech_capsule_crypto.plan_worker.prepare_from_resolved_inventory', return_value=DeletionTargets(self.entries)):
             self.worker.prepare(authenticated_subject=self.subject, request_id=self.request)
