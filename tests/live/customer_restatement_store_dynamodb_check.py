@@ -1,6 +1,7 @@
 """Opt-in development DynamoDB check of customer restatement request history."""
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -32,6 +33,14 @@ def main() -> None:
         assert saved["status"] == "PENDING" and store.history_revision(subject) == 1
         assert store.create_customer_restatement(pk, 1, request)["request_id"] == request_id
         assert store.history_revision(subject) == 1
+        concurrent_id = str(uuid.uuid4())
+        concurrent_request = {**request, "request_id": concurrent_id,
+                              "sk": f"RESTATEMENT#REQUEST#{concurrent_id}"}
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: store.create_customer_restatement(pk, 1, concurrent_request),
+                                        range(2)))
+        assert all(item["request_id"] == concurrent_id for item in results)
+        assert store.history_revision(subject) == 2
         try:
             store.create_customer_restatement(pk, 1, {**request, "source_stream_pk": "SYNTHETIC#other"})
         except Conflict:
@@ -46,8 +55,8 @@ def main() -> None:
             pass
         else:
             raise AssertionError("stale job version was accepted")
-        assert store.history_revision(subject) == 1
-        print("customer request, replay, conflict and history revision verified")
+        assert store.history_revision(subject) == 2
+        print("customer request, concurrent replay, conflict and history revision verified")
     finally:
         for partition in (pk, history_pk):
             while True:
