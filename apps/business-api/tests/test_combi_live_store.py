@@ -25,10 +25,13 @@ class CombiLiveStoreTests(unittest.TestCase):
         store.table = SimpleNamespace(name='table'); store.client = Mock(); store.serializer = TypeSerializer()
         store.attach_meal_source('meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], 10)
         ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(ops[2]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N':'10'})
+        self.assertEqual(ops[2]['Put']['Item']['sk'], {'S': 'MEAL_AGGREGATE#DIRTY'})
+        self.assertEqual(ops[2]['Put']['Item']['version'], {'N': '2'})
+        self.assertRegex(ops[2]['Put']['Item']['aggregate_refresh_shard']['S'], r'^PENDING#0[0-9a-f]$')
+        self.assertEqual(ops[3]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N':'10'})
         store.attach_meal_source('meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], None)
         ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(ops[2]['ConditionCheck']['ConditionExpression'], 'attribute_not_exists(pk)')
+        self.assertEqual(ops[3]['ConditionCheck']['ConditionExpression'], 'attribute_not_exists(pk)')
 
     def test_dynamo_transaction_conflict_is_reported_as_conflict(self):
         class Canceled(Exception):
@@ -51,3 +54,19 @@ class CombiLiveStoreTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             store.attach_meal_source('meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], None)
         self.assertIsNone(store.read('meal')[0].get('source'))
+        self.assertNotIn(('meal', 'MEAL_AGGREGATE#DIRTY'), store.items)
+
+    def test_successful_revision_records_pending_version_and_conflict_keeps_it(self):
+        store = MemoryCookingStore()
+        store.create_meal('meal', [{'sk': 'META', 'version': 1}, {'sk': 'JOB', 'status': 'PENDING'}])
+        store.advance_meal('meal', 1, {'sk': 'META', 'version': 2},
+                           {'sk': 'JOB', 'status': 'DONE'}, {'sk': 'EVENT#2'})
+        marker = store.items[('meal', 'MEAL_AGGREGATE#DIRTY')]
+        self.assertEqual((marker['state'], marker['version']), ('PENDING', 2))
+        shard = marker['aggregate_refresh_shard']
+        self.assertRegex(shard, r'^PENDING#0[0-9a-f]$')
+        with self.assertRaises(Conflict):
+            store.advance_meal('meal', 1, {'sk': 'META', 'version': 2},
+                               {'sk': 'JOB', 'status': 'DONE'}, {'sk': 'EVENT#3'})
+        self.assertEqual(store.items[('meal', 'MEAL_AGGREGATE#DIRTY')]['version'], 2)
+        self.assertEqual(store.items[('meal', 'MEAL_AGGREGATE#DIRTY')]['aggregate_refresh_shard'], shard)
