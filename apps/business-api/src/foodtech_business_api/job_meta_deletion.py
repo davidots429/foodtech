@@ -6,6 +6,7 @@ removal is not whole-account deletion completion.
 """
 import base64
 import json
+from itertools import islice
 from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
@@ -31,11 +32,25 @@ class JobMetaDeletion:
 
     def remove_one(self, *, subject, request_id, index):
         if type(index) is not int or not 0 <= index < 10**12:raise ValueError('invalid job metadata index')
+        target=next((x for n,x in enumerate(self.inventory.targets(subject=subject,request_id=request_id)) if n==index),None)
+        if target is None:raise ValueError('job metadata target unavailable')
+        self._remove_target(subject=subject,request_id=request_id,index=index,target=target)
+        return {'index':index,'state':'VERIFYING'}
+
+    def remove_batch(self, *, subject, request_id, start, count):
+        if type(start) is not int or not 0 <= start < 10**12 or type(count) is not int or \
+                not 1 <= count <= 20 or start + count >= 10**12:
+            raise ValueError('invalid job metadata range')
+        targets=list(islice(self.inventory.targets(subject=subject,request_id=request_id),start,start+count))
+        if len(targets)!=count:raise ValueError('job metadata target range unavailable')
+        for index,target in enumerate(targets,start):
+            self._remove_target(subject=subject,request_id=request_id,index=index,target=target)
+        return {'count':count,'state':'VERIFYING'}
+
+    def _remove_target(self, *, subject, request_id, index, target):
         for check in (self.residual,self.binding_residual):
             state,_=check._checkpoint(subject,request_id)
             if not state['complete'] or state['residual']:raise ValueError('job residual checks incomplete')
-        target=next((x for n,x in enumerate(self.inventory.targets(subject=subject,request_id=request_id)) if n==index),None)
-        if target is None:raise ValueError('job metadata target unavailable')
         scope={'subject':subject,'request_id':request_id,'domain':f'JOB_META_{index:012d}'}
         saved=self.progress_store.load_checkpoint(cipher=self.cipher,**scope)
         pk=f'SCOPE#USER#{subject}#JOB#{target.job_id}'
@@ -88,4 +103,3 @@ class JobMetaDeletion:
                     x.get('Code')=='ConditionalCheckFailed' for x in (exc.response.get('CancellationReasons') or [])):
                 raise ProfileDeletionConflict from exc
             raise
-        return {'index':index,'state':'VERIFYING'}

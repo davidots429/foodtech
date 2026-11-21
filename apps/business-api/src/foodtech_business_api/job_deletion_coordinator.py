@@ -83,9 +83,10 @@ class JobDeletionCoordinator:
                 state.update(phase='META',index=0,total=head['count'])
         elif phase=='META':
             if state['index'] < state['total']:
-                result=self.metadata.remove_one(subject=subject,request_id=request_id,index=state['index'])
-                if result.get('state') != 'VERIFYING':raise ValueError('invalid job metadata cleanup result')
-                state['index']+=1
+                count=min(limit,20,state['total']-state['index'])
+                result=self.metadata.remove_batch(subject=subject,request_id=request_id,start=state['index'],count=count)
+                if result != {'state':'VERIFYING','count':count}:raise ValueError('invalid job metadata cleanup result')
+                state['index']+=count
             if state['index']==state['total']:state['phase']='HISTORY'
         elif phase in {'HISTORY','FINAL_HISTORY'}:
             result=remove_job_history(source_table=self.jobs.source_table,progress_store=self.store,

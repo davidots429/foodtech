@@ -67,10 +67,11 @@ class MealDeletionCoordinator:
                     state.update(phase='SOURCES', index=0)
         elif phase == 'META':
             if state['index'] < state['total']:
-                result = self.metadata.remove_one(subject=subject, request_id=request_id, index=state['index'])
-                if result.get('state') != 'VERIFYING':
+                count = min(limit, 20, state['total'] - state['index'])
+                result = self.metadata.remove_batch(subject=subject, request_id=request_id, start=state['index'], count=count)
+                if result != {'state': 'VERIFYING', 'count': count}:
                     raise ValueError('invalid meal metadata cleanup result')
-                state['index'] += 1
+                state['index'] += count
             if state['index'] == state['total']:
                 state['phase'] = 'LISTINGS'
         elif phase == 'LISTINGS':

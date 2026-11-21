@@ -50,5 +50,16 @@ class MetaDeletionTests(unittest.TestCase):
         with self.assertRaises(ProfileDeletionConflict):self.worker.remove_one(**self.scope)
         self.assertIn((self.subject,self.request,'JOB_META_000000000000'),self.progress.items)
 
+    def test_batch_retains_each_snapshot_across_partial_failure(self):
+        self.inventory.targets=lambda **kw:iter([SimpleNamespace(job_id='job'),SimpleNamespace(job_id='other')])
+        other={**self.meta,'pk':f'SCOPE#USER#{self.subject}#JOB#other','job_id':'other'}
+        self.source.query.side_effect=[{'Items':[self.meta]},{'Items':[other]},{'Items':[]},{'Items':[other]}]
+        self.progress.client.transact_write_items.side_effect=[None,RuntimeError('temporary'),None,None]
+        with self.assertRaises(RuntimeError):self.worker.remove_batch(subject=self.subject,request_id=self.request,start=0,count=2)
+        self.assertEqual(self.worker.remove_batch(subject=self.subject,request_id=self.request,start=0,count=2),
+                         {'count':2,'state':'VERIFYING'})
+        self.assertIn((self.subject,self.request,'JOB_META_000000000000'),self.progress.items)
+        self.assertIn((self.subject,self.request,'JOB_META_000000000001'),self.progress.items)
+
 
 if __name__=='__main__':unittest.main()

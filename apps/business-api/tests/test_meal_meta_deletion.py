@@ -55,6 +55,18 @@ class MealMetaDeletionTests(unittest.TestCase):
             self.worker.remove_one(**self.scope)
         self.assertIn((self.subject, self.request, 'MEAL_META_000000000000'), self.progress.items)
 
+    def test_batch_retains_each_snapshot_across_partial_failure(self):
+        self.inventory.targets = lambda **kw: iter([SimpleNamespace(meal_id='meal'), SimpleNamespace(meal_id='other')])
+        other = {**self.meta, 'pk': f'SCOPE#USER#{self.subject}#COMBI_MEAL#other', 'meal_batch_id': 'other'}
+        self.source.query.side_effect = [{'Items': [self.meta]}, {'Items': [other]}, {'Items': []}, {'Items': [other]}]
+        self.progress.client.transact_write_items.side_effect = [None, RuntimeError('temporary'), None, None]
+        with self.assertRaises(RuntimeError):
+            self.worker.remove_batch(subject=self.subject, request_id=self.request, start=0, count=2)
+        self.assertEqual(self.worker.remove_batch(subject=self.subject, request_id=self.request, start=0, count=2),
+                         {'count': 2, 'state': 'VERIFYING'})
+        self.assertIn((self.subject, self.request, 'MEAL_META_000000000000'), self.progress.items)
+        self.assertIn((self.subject, self.request, 'MEAL_META_000000000001'), self.progress.items)
+
 
 if __name__ == '__main__':
     unittest.main()

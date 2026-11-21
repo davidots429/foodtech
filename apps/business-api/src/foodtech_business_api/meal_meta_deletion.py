@@ -5,6 +5,7 @@ The protected snapshot is retained for downstream source review. This operation
 does not establish ownership of source data or account-deletion completion.
 """
 import json
+from itertools import islice
 from decimal import Decimal
 
 from boto3.dynamodb.conditions import Key
@@ -27,13 +28,28 @@ class MealMetaDeletion:
     def remove_one(self, *, subject, request_id, index):
         if type(index) is not int or not 0 <= index < 10**12:
             raise ValueError('invalid meal metadata index')
-        state, _ = self.residual._checkpoint(subject, request_id)
-        if not state['complete'] or state['residual']:
-            raise ValueError('meal residual check incomplete')
         target = next((item for n, item in enumerate(self.inventory.targets(
             subject=subject, request_id=request_id)) if n == index), None)
         if target is None:
             raise ValueError('meal metadata target unavailable')
+        self._remove_target(subject=subject, request_id=request_id, index=index, target=target)
+        return {'index': index, 'state': 'VERIFYING'}
+
+    def remove_batch(self, *, subject, request_id, start, count):
+        if type(start) is not int or not 0 <= start < 10**12 or type(count) is not int or \
+                not 1 <= count <= 20 or start + count >= 10**12:
+            raise ValueError('invalid meal metadata range')
+        targets = list(islice(self.inventory.targets(subject=subject, request_id=request_id), start, start + count))
+        if len(targets) != count:
+            raise ValueError('meal metadata target range unavailable')
+        for index, target in enumerate(targets, start):
+            self._remove_target(subject=subject, request_id=request_id, index=index, target=target)
+        return {'count': count, 'state': 'VERIFYING'}
+
+    def _remove_target(self, *, subject, request_id, index, target):
+        state, _ = self.residual._checkpoint(subject, request_id)
+        if not state['complete'] or state['residual']:
+            raise ValueError('meal residual check incomplete')
         scope = {'subject': subject, 'request_id': request_id, 'domain': f'MEAL_META_{index:012d}'}
         saved = self.progress_store.load_checkpoint(cipher=self.cipher, **scope)
         pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{target.meal_id}'
@@ -91,4 +107,3 @@ class MealMetaDeletion:
                     reason.get('Code') == 'ConditionalCheckFailed' for reason in (exc.response.get('CancellationReasons') or [])):
                 raise ProfileDeletionConflict from exc
             raise
-        return {'index': index, 'state': 'VERIFYING'}

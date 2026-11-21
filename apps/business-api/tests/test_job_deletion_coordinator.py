@@ -25,7 +25,7 @@ class CoordinatorTests(unittest.TestCase):
         self.binding_residual=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
             observe_page=Mock(side_effect=[{'residual_found':True,'scan_complete':False},{'residual_found':False,'scan_complete':True}]))
         self.metadata=SimpleNamespace(inventory=self.jobs,residual=self.residual,binding_residual=self.binding_residual,
-                                      remove_one=Mock(return_value={'state':'VERIFYING'}))
+                                      remove_batch=Mock(side_effect=lambda **kw: {'state':'VERIFYING','count':kw['count']}))
         self.final_jobs=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
             observe_page=Mock(side_effect=[{'residual_found':True,'scan_complete':False},{'residual_found':False,'scan_complete':True}]))
         self.final_bindings=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
