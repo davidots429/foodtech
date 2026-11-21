@@ -72,7 +72,8 @@ class IdentityVault:
         except (ValueError, TypeError, AttributeError):
             raise ValueError("invalid prepared identity") from None
         vault = {"pk": prepared.vault_id, "sk": "META", "internal_user_id": prepared.internal_id,
-                 "capsule_locator": prepared.locator, "state": "ACTIVE", "revision": 1}
+                 "capsule_locator": prepared.locator, "provision_request_id": prepared.request_id,
+                 "state": "ACTIVE", "revision": 1}
         self.client.transact_write_items(ClientRequestToken=prepared.request_id, TransactItems=[
             {"Update": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{authenticated_subject}"}),
                         "UpdateExpression": "SET vault_id = :vault, #epoch = if_not_exists(#epoch, :zero)",
@@ -142,8 +143,14 @@ class IdentityVault:
         snapshot, internal_id = self.resolve_deletion(authenticated_subject=authenticated_subject,
                                                       expected_epoch=prepared.expected_epoch)
         try:
+            raw = self.client.get_item(TableName=self.vault_table,
+                Key=self._item({"pk": snapshot.vault_id, "sk": "META"}), ConsistentRead=True).get("Item")
             if snapshot.vault_id != prepared.vault_id or snapshot.capsule_locator != prepared.locator or \
-                    not compare_digest(internal_id, prepared.internal_id.encode("utf-8")):
+                    not compare_digest(internal_id, prepared.internal_id.encode("utf-8")) or not raw or \
+                    raw.get("provision_request_id") != {"S": prepared.request_id} or \
+                    raw.get("state") != {"S": "ACTIVE"} or \
+                    raw.get("revision") != {"N": str(snapshot.vault_revision)} or \
+                    raw.get("capsule_locator") != {"S": prepared.locator}:
                 raise IdentityVaultConflict("identity linkage does not match the prepared request")
         finally:
             internal_id[:] = b"\x00" * len(internal_id)

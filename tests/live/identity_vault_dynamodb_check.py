@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -79,6 +80,13 @@ def main():
             raise AssertionError("Losing identity creation left an orphan")
         vault_service.commit(authenticated_subject=subject, prepared=winner)
         vault_service.verify_committed(authenticated_subject=subject, prepared=winner)
+        try:
+            vault_service.verify_committed(authenticated_subject=subject,
+                                           prepared=replace(winner, request_id=str(uuid.uuid4())))
+        except IdentityVaultConflict:
+            pass
+        else:
+            raise AssertionError("Different request ID was accepted as the committed identity")
         try:
             vault_service.verify_committed(authenticated_subject=subject, prepared=loser)
         except IdentityVaultConflict:

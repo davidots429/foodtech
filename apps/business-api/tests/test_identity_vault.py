@@ -32,7 +32,8 @@ class IdentityVaultTests(unittest.TestCase):
         p = self.prepared
         principal = {"pk": {"S": f"USER#{self.subject}"}, "epoch": {"N": "0"}, "vault_id": {"S": p.vault_id}}
         vault = {"pk": {"S": p.vault_id}, "sk": {"S": "META"}, "state": {"S": "ACTIVE"},
-                 "revision": {"N": "1"}, "internal_user_id": {"S": p.internal_id}, "capsule_locator": {"S": p.locator}}
+                 "revision": {"N": "1"}, "internal_user_id": {"S": p.internal_id}, "capsule_locator": {"S": p.locator},
+                 "provision_request_id": {"S": p.request_id}}
         capsule = {"pk": {"S": p.locator}, "sk": {"S": "META"}, "state": {"S": "ACTIVE"}, "revision": {"N": "1"}}
         return principal, vault, capsule
 
@@ -78,12 +79,16 @@ class IdentityVaultTests(unittest.TestCase):
 
     def test_lost_response_verification_checks_the_exact_link_and_owner(self):
         principal, vault, capsule = self.items()
-        self.client.responses = [principal, vault, capsule, principal]
+        self.client.responses = [principal, vault, capsule, principal, vault]
         self.assertIsNone(self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared))
-        self.client.responses = [principal, vault, capsule, principal]
+        self.client.responses = [principal, vault, capsule, principal, vault]
         with self.assertRaises(IdentityVaultConflict):
             self.vault.verify_committed(authenticated_subject=self.subject,
                                         prepared=replace(self.prepared, internal_id=str(uuid4())))
+        self.client.responses = [principal, vault, capsule, principal, vault]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.verify_committed(authenticated_subject=self.subject,
+                                        prepared=replace(self.prepared, request_id=str(uuid4())))
         with self.assertRaises(ValueError):
             self.vault.verify_committed(authenticated_subject=str(uuid4()), prepared=self.prepared)
         self.client.responses = [{**principal, "deletion_lock_request": {"S": str(uuid4())}}]
