@@ -80,14 +80,19 @@ async def scenario(store, partitions, auth, auth_keys):
             groups = await client.get('/api/customer/combi-quality-aggregates/groups')
             groups.raise_for_status()
             assert [item['group_id'] for item in groups.json()['items']] == [group]
+            dependency_path = f'/api/customer/combi-quality-aggregates/meals/{meal_id}/groups'
+            assert [item['group_id'] for item in (await client.get(dependency_path)).json()['items']] == [group]
             retry = await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)
             retry.raise_for_status()
             assert retry.json()['result_id'] == result['result_id']
             group_key = {'pk': f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS', 'sk': f'GROUP#{group}'}
             store.table.delete_item(Key=group_key)
+            dependency_key = {'pk': meal_pk, 'sk': f'MEAL_AGGREGATE#DEP#{group}'}
+            store.table.delete_item(Key=dependency_key)
             repaired = await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)
             repaired.raise_for_status()
             assert store.table.get_item(Key=group_key, ConsistentRead=True).get('Item')
+            assert store.table.get_item(Key=dependency_key, ConsistentRead=True).get('Item')
             auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request',
                              ExpressionAttributeValues={':request': str(uuid4())})
             blocked = await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)
@@ -116,6 +121,7 @@ async def scenario(store, partitions, auth, auth_keys):
             assert (await client.get(link)).status_code == 404
             assert (await client.get(link + '/freshness')).status_code == 404
             assert (await client.get('/api/customer/combi-quality-aggregates/groups')).json()['items'] == []
+            assert (await client.get(dependency_path)).status_code == 404
             assert (await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)).status_code == 404
             assert (await client.post('/api/customer/combi-quality-aggregates/compare', headers=headers, json=compare_body)).status_code == 404
             owner[0] = subject

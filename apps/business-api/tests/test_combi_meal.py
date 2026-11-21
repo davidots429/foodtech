@@ -178,8 +178,13 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         groups = await self.client.get(path + '/groups?limit=1')
         self.assertEqual(groups.status_code, 200, groups.text)
         self.assertEqual(groups.json()['items'][0]['group_id'], result['group_id'])
+        dependency_path = f"{path}/meals/{meta['meal_batch_id']}/groups"
+        dependencies = await self.client.get(dependency_path)
+        self.assertEqual(dependencies.json()['items'][0]['group_id'], result['group_id'])
+        del self.store.items[(pk, 'MEAL_AGGREGATE#DEP#' + result['group_id'])]
         retry = await self.client.post(path, headers=headers, json=body)
         self.assertEqual(retry.json()['result_id'], result['result_id'])
+        self.assertIn((pk, 'MEAL_AGGREGATE#DEP#' + result['group_id']), self.store.items)
         excluded = await self.client.post(path, headers=headers, json={**body, 'load_band': 'REFERENCE'})
         self.assertEqual(excluded.status_code, 201, excluded.text)
         self.assertEqual(excluded.json()['sample_count'], 0)
@@ -247,6 +252,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(link + '/freshness')).status_code, 404)
         self.assertEqual((await self.client.get(versions_path)).json()['items'], [])
         self.assertEqual((await self.client.get(path + '/groups')).json()['items'], [])
+        self.assertEqual((await self.client.get(dependency_path)).status_code, 404)
         self.assertEqual((await self.client.post(link + '/recalculate', headers=headers)).status_code, 404)
         self.assertEqual((await self.client.post(path + '/compare', headers=headers, json=comparison_body)).status_code, 404)
         self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 404)

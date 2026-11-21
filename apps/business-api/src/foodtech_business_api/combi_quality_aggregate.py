@@ -145,6 +145,31 @@ async def list_meal_aggregate_groups(request: Request, limit: int = Query(20, ge
     return {'items': groups, 'next_cursor': page['next_cursor']}
 
 
+@router.get('/meals/{meal_id}/groups')
+async def list_meal_dependencies(meal_id: UUID, request: Request, limit: int = Query(20, ge=1, le=50),
+                                 cursor: str | None = None) -> dict:
+    if cursor is not None and not _valid_hash(cursor):
+        raise HTTPException(400, '집계 그룹 목록 커서가 올바르지 않습니다.')
+    session, store = await _context(request)
+    meal_pk = _pk(session.subject, str(meal_id))
+    meta = await _store_call(store, store.read_meta, meal_pk)
+    if not meta or meta.get('meal_batch_id') != str(meal_id):
+        raise HTTPException(404, '식사 배치를 찾을 수 없습니다.')
+    page = await _store_call(store, store.list_meal_aggregate_dependencies, meal_pk, limit, cursor)
+    groups = []
+    try:
+        for row in page['items']:
+            group_id, selection = row['group_id'], row['selection']
+            if not _valid_hash(group_id) or row['pk'] != meal_pk or row['sk'] != f'MEAL_AGGREGATE#DEP#{group_id}' or \
+                    not isinstance(selection, dict) or _hash(selection) != group_id or \
+                    str(meal_id) not in selection['meal_ids']:
+                raise ValueError
+            groups.append({'group_id': group_id, 'selection': selection})
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(409, '배치의 집계 연결을 확인할 수 없습니다.') from None
+    return {'items': groups, 'next_cursor': page['next_cursor']}
+
+
 @router.get('/{group_id}/{result_id}')
 async def get_meal_aggregate(group_id: str, result_id: str, request: Request) -> dict:
     if not _valid_hash(group_id) or not _valid_hash(result_id):

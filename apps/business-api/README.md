@@ -66,6 +66,8 @@
 
 `GET /api/customer/combi-quality-aggregates/groups`와 화면 목록으로 고객 자신의 집계 그룹을 찾을 수 있다. 집계 결과와 그룹 목록은 계정·배치 버전 조건 아래 같은 트랜잭션에서 저장하며 동일 결과 재시도 시 누락된 목록을 복구한다. 개발 DynamoDB에서 합성 목록 삭제 후 복구와 다른 고객 분리를 확인했다. 그룹 목록과 결과 기록은 사용자 삭제·복원 처리에도 포함해야 하며 아직 해당 흐름과 연결되지 않았다.
 
+집계 저장 시 선택한 각 식사 배치에 그룹 의존성도 같은 트랜잭션으로 기록한다. `GET /api/customer/combi-quality-aggregates/meals/{meal_id}/groups`는 소유한 배치와 연결된 그룹을 페이지로 조회하며 고객 화면에서도 해당 목록을 제공한다. 동일 결과 재시도 시 누락된 연결을 복구한다. 개발 DynamoDB에서 합성 연결 복구·다른 고객 거부와 정리를 확인했다. 연결 기록은 자동 재계산의 기반이며 아직 작업 예약·실패 복구를 수행하지 않는다.
+
 `POST /api/customer/combi-quality-aggregates/compare`는 같은 메뉴·장비·합성 조리량 구간·규칙의 고객 소유 스냅샷 두 개를 선택해 평균 점수와 합격률의 단순 차이를 계산한다. 각 결과의 표본 수·기간·레시피와 배치 변경 관찰을 함께 반환한다. 두 집계에 포함 평가가 있어야 하며, 차이는 인과 효과나 모집단 대표성을 뜻하지 않는다. 개발 DynamoDB의 합성 집계 비교·다른 고객 거부·변경 감지를 확인했다. 비교 응답은 저장하지 않는다.
 
 `POST /api/customer/combi-meals/{meal_id}/rice-safety`는 밥 인양 후 공정 판정과 운영자의 안전 이상 여부·확인 근거를 기록한다. 별도 온도 측정은 요구하지 않는다. 공정 정상·경고와 이상 없음이 확인되면 `PASSED`, 공정 미확인·실패는 `INCOMPLETE`, 이상 의심·센서 이상 의심·원천의 치명 알람은 `SUSPECTED`로 품질평가를 차단한다. 연결된 원천이 있으면 해당 원천을 이용한 공정 판정이 필요하다. 안전 확인을 다시 기록하면 이전 품질평가 사용을 차단하며, 재평가로만 새 포인터를 활성화한다. 2026-11-21 개발용 DynamoDB에서 합성 공정·안전 확인·품질평가·이상 차단·재평가와 시험 파티션 정리를 확인했다. `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev .venv/bin/python tests/live/rice_safety_dynamodb_check.py`로 재실행하며 고객 세션은 합성 대역이다.

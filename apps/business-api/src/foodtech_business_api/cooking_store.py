@@ -144,6 +144,7 @@ class CookingStore(Protocol):
     def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict,
                             subject: str, expected_epoch: int) -> dict: ...
     def list_meal_aggregate_groups(self, subject: str, limit: int, cursor: str | None) -> dict: ...
+    def list_meal_aggregate_dependencies(self, pk: str, limit: int, cursor: str | None) -> dict: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
@@ -281,6 +282,10 @@ class MemoryCookingStore:
             index_pk, index_sk = f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS', f"GROUP#{record['group_id']}"
             self.items[(index_pk, index_sk)] = {'pk': index_pk, 'sk': index_sk,
                 'group_id': record['group_id'], 'selection': record['selection']}
+            for meal_pk, _ in snapshots:
+                dependency_sk = f"MEAL_AGGREGATE#DEP#{record['group_id']}"
+                self.items[(meal_pk, dependency_sk)] = {'pk': meal_pk, 'sk': dependency_sk,
+                    'group_id': record['group_id'], 'selection': record['selection']}
             return self.items[key].copy()
 
     def list_meal_aggregate_groups(self, subject: str, limit: int, cursor: str | None) -> dict:
@@ -288,6 +293,14 @@ class MemoryCookingStore:
         with self.lock:
             rows = [item.copy() for (item_pk, sk), item in sorted(self.items.items())
                     if item_pk == pk and sk.startswith('GROUP#') and (cursor is None or sk > f'GROUP#{cursor}')]
+            page = rows[:limit]
+            return {'items': page, 'next_cursor': page[-1]['group_id'] if len(rows) > limit else None}
+
+    def list_meal_aggregate_dependencies(self, pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = 'MEAL_AGGREGATE#DEP#'
+        with self.lock:
+            rows = [item.copy() for (item_pk, sk), item in sorted(self.items.items())
+                    if item_pk == pk and sk.startswith(prefix) and (cursor is None or sk > prefix + cursor)]
             page = rows[:limit]
             return {'items': page, 'next_cursor': page[-1]['group_id'] if len(rows) > limit else None}
 
@@ -718,6 +731,10 @@ class DynamoCookingStore:
                 'ExpressionAttributeValues': self._item({':version': version})}}
             for meal_pk, version in snapshots
         ]
+        for meal_pk, _ in snapshots:
+            dependency = {'pk': meal_pk, 'sk': f"MEAL_AGGREGATE#DEP#{record['group_id']}",
+                          'group_id': record['group_id'], 'selection': record['selection']}
+            operations.append({'Put': {'TableName': self.table.name, 'Item': self._item(dependency)}})
         index = {'pk': f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS', 'sk': f"GROUP#{record['group_id']}",
                  'group_id': record['group_id'], 'selection': record['selection']}
         operations.append({'Put': {'TableName': self.table.name, 'Item': self._item(index)}})
@@ -754,6 +771,19 @@ class DynamoCookingStore:
                 'ConsistentRead': True, 'Limit': limit + 1}
         if cursor:
             args['ExclusiveStartKey'] = {'pk': pk, 'sk': f'GROUP#{cursor}'}
+        page = self.table.query(**args)
+        rows = page.get('Items', [])
+        shown = rows[:limit]
+        has_more = len(rows) > limit or bool(page.get('LastEvaluatedKey'))
+        return {'items': [_api_numbers(row) for row in shown],
+                'next_cursor': shown[-1]['group_id'] if shown and has_more else None}
+
+    def list_meal_aggregate_dependencies(self, pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = 'MEAL_AGGREGATE#DEP#'
+        args = {'KeyConditionExpression': Key('pk').eq(pk) & Key('sk').begins_with(prefix),
+                'ConsistentRead': True, 'Limit': limit + 1}
+        if cursor:
+            args['ExclusiveStartKey'] = {'pk': pk, 'sk': prefix + cursor}
         page = self.table.query(**args)
         rows = page.get('Items', [])
         shown = rows[:limit]

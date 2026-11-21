@@ -19,13 +19,15 @@ class MealAggregateStoreTests(unittest.TestCase):
         meal_a, meal_b = (f'SCOPE#USER#{subject}#COMBI_MEAL#{uuid4()}' for _ in range(2))
         store.save_meal_aggregate(group_pk, [(meal_a, 3), (meal_b, 7)], record, subject, 4)
         ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(len(ops), 5)
+        self.assertEqual(len(ops), 7)
         self.assertIn('attribute_not_exists(deletion_lock_request)', ops[0]['ConditionCheck']['ConditionExpression'])
         self.assertEqual(ops[0]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N': '4'})
         self.assertEqual(ops[1]['ConditionCheck']['Key']['pk'], {'S': meal_a})
         self.assertEqual(ops[2]['ConditionCheck']['ExpressionAttributeValues'][':version'], {'N': '7'})
-        self.assertEqual(ops[3]['Put']['Item']['pk'], {'S': f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS'})
-        self.assertEqual(ops[4]['Put']['ConditionExpression'], 'attribute_not_exists(pk)')
+        self.assertEqual(ops[3]['Put']['Item']['sk'], {'S': f"MEAL_AGGREGATE#DEP#{record['group_id']}"})
+        self.assertEqual(ops[4]['Put']['Item']['pk'], {'S': meal_b})
+        self.assertEqual(ops[5]['Put']['Item']['pk'], {'S': f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS'})
+        self.assertEqual(ops[6]['Put']['ConditionExpression'], 'attribute_not_exists(pk)')
 
     def test_other_customer_and_missing_auth_table_are_rejected(self):
         store = object.__new__(DynamoCookingStore)

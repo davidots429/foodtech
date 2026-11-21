@@ -139,7 +139,7 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
     if (active.current) return;
     active.current = true; setBusy(true); setError("");
     try {
-      const page = await api<GroupPage>('/api/customer/combi-quality-aggregates/groups?limit=20' +
+      const page = await api<GroupPage>(`/api/customer/combi-quality-aggregates/meals/${encodeURIComponent(mealId)}/groups?limit=20` +
         (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
       setGroups(previous => cursor ? [...previous, ...page.items] : page.items);
       setGroupsCursor(page.next_cursor); setGroupsLoaded(true);
@@ -168,7 +168,7 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
       <label>결과 ID<input value={resultId} onChange={event => setResultId(event.target.value)} /></label>
     </div>
     <button type="button" className="secondary" disabled={busy || !groupId.trim() || !resultId.trim()} onClick={open}>저장된 집계 조회</button>
-    <button type="button" className="secondary" disabled={busy} onClick={() => listGroups()}>내 집계 그룹 목록</button>
+    <button type="button" className="secondary" disabled={busy} onClick={() => listGroups()}>이 배치의 집계 그룹 목록</button>
     {groupsLoaded && <div><p>집계 그룹 {groups.length}건</p><ul>{groups.map(group => <li key={group.group_id}>
       <button type="button" className="secondary" disabled={busy} onClick={() => { setGroupId(group.group_id); setResultId(""); setVersions([]); setVersionsGroup(""); setVersionsCursor(null); }}>그룹 선택</button>
       {" "}{group.selection.menu === "RICE" ? "밥" : "고등어"} · {group.selection.recipe_version} · {group.selection.load_band}
