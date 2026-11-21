@@ -59,10 +59,11 @@ class GuardedDeletionTests(unittest.TestCase):
 
     def test_recovery_requires_consistent_matching_locks_and_hides_private_values(self):
         vault, locator, request = self.snapshot.vault_id, self.snapshot.capsule_locator, self.request_id
+        internal_id = str(uuid4())
         records = [
             {'pk': {'S': f'USER#{self.subject}'}, 'vault_id': {'S': vault}, 'suspended': {'BOOL': True},
              'deletion_lock_request': {'S': request}},
-            {'pk': {'S': vault}, 'sk': {'S': 'META'}, 'capsule_locator': {'S': locator},
+            {'pk': {'S': vault}, 'sk': {'S': 'META'}, 'capsule_locator': {'S': locator}, 'internal_user_id': {'S': internal_id},
              'state': {'S': 'DELETION_LOCKED'}, 'deletion_request_id': {'S': request}},
             {'pk': {'S': locator}, 'sk': {'S': 'META'}, 'state': {'S': 'DELETION_LOCKED'},
              'deletion_request_id': {'S': request}},
@@ -70,9 +71,11 @@ class GuardedDeletionTests(unittest.TestCase):
              'status': {'S': 'DELETING'}, 'encrypted_user_id': {'B': b'id'}, 'encrypted_capsule_locator': {'B': b'locator'}},
         ]
         self.client.read_result = {'Responses': [{'Item': record} for record in records]}
-        args = {'subject': self.subject, 'request_id': request, 'vault_id': vault, 'capsule_locator': locator}
+        args = {'subject': self.subject, 'request_id': request, 'vault_id': vault, 'internal_user_id': internal_id, 'capsule_locator': locator}
         self.assertEqual(self.store.recover_locked_request(**args), {'status': 'DELETING'})
         self.assertEqual(len(self.client.requests[-1]['TransactItems']), 4)
+        with self.assertRaises(ValueError):
+            self.store.recover_locked_request(**{**args, 'internal_user_id': str(uuid4())})
         records[2]['deletion_request_id'] = {'S': str(uuid4())}
         with self.assertRaises(ValueError):
             self.store.recover_locked_request(**args)

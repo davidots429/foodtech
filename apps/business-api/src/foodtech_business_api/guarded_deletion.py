@@ -40,7 +40,8 @@ class GuardedDeletion:
     def _item(self, values: dict) -> dict:
         return {name: self.serializer.serialize(value) for name, value in values.items()}
 
-    def recover_locked_request(self, *, subject: str, request_id: str, vault_id: str, capsule_locator: str) -> dict:
+    def recover_locked_request(self, *, subject: str, request_id: str, vault_id: str, internal_user_id: str,
+                               capsule_locator: str) -> dict:
         """Confirm a known locked request from one consistent four-table snapshot.
 
         The caller must authenticate the owner and resolve identifiers through
@@ -49,6 +50,7 @@ class GuardedDeletion:
         """
         try:
             if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or str(UUID(vault_id)) != vault_id or \
+                    str(UUID(internal_user_id)) != internal_user_id or \
                     not isinstance(capsule_locator, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', capsule_locator):
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
@@ -70,6 +72,7 @@ class GuardedDeletion:
                     auth.get('suspended') != {'BOOL': True} or auth.get('deletion_lock_request') != {'S': request_id} or \
                     vault.get('pk') != {'S': vault_id} or vault.get('sk') != {'S': 'META'} or \
                     vault.get('capsule_locator') != {'S': capsule_locator} or \
+                    vault.get('internal_user_id') != {'S': internal_user_id} or \
                     capsule.get('pk') != {'S': capsule_locator} or capsule.get('sk') != {'S': 'META'} or \
                     any(item.get('state') != {'S': 'DELETION_LOCKED'} or
                         item.get('deletion_request_id') != {'S': request_id} for item in (vault, capsule)) or \

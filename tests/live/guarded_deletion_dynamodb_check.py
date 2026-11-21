@@ -30,7 +30,7 @@ def main():
         raise SystemExit("Unexpected AWS account")
     client, dynamo = session.client("dynamodb"), session.resource("dynamodb")
     auth, vault, capsule, registry = (dynamo.Table(name) for name in (AUTH, VAULT, CAPSULE, REGISTRY))
-    subject, vault_id = str(uuid.uuid4()), str(uuid.uuid4())
+    subject, vault_id, internal_id = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
     stale_id, stale_capsule_id, first_id, second_id = (str(uuid.uuid4()) for _ in range(4))
     ids = (stale_id, stale_capsule_id, first_id, second_id)
     auth_key = {"pk": f"USER#{subject}"}
@@ -49,7 +49,7 @@ def main():
                       ConditionExpression=Attr("pk").not_exists())
         auth_created = True
         vault.put_item(Item={**vault_key, "state": "ACTIVE", "revision": 2,
-                             "capsule_locator": locator, "provenance": "SYNTHETIC"},
+                             "capsule_locator": locator, "internal_user_id": internal_id, "provenance": "SYNTHETIC"},
                        ConditionExpression=Attr("pk").not_exists())
         vault_created = True
         client.transact_write_items(TransactItems=[create_action])
@@ -104,11 +104,11 @@ def main():
                 any(item.get("deletion_request_id") != winner or item.get("state") != "DELETION_LOCKED"
                     for item in (vault_item, capsule_item)):
             raise AssertionError("Lock and tombstone state differ")
-        if store.recover_locked_request(subject=subject, request_id=winner, vault_id=vault_id,
+        if store.recover_locked_request(subject=subject, request_id=winner, vault_id=vault_id, internal_user_id=internal_id,
                                         capsule_locator=locator) != {'status': 'DELETING'}:
             raise AssertionError('guarded recovery did not return safe status')
         try:
-            store.recover_locked_request(subject=subject, request_id=str(uuid.uuid4()), vault_id=vault_id,
+            store.recover_locked_request(subject=subject, request_id=str(uuid.uuid4()), vault_id=vault_id, internal_user_id=internal_id,
                                           capsule_locator=locator)
         except ValueError:
             pass
