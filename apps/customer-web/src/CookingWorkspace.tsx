@@ -44,6 +44,7 @@ type ComparisonHistoryItem = {
   score_total_delta: number; improvement_status: "OBSERVED" | "NOT_OBSERVED";
 };
 type ComparisonHistoryPage = { items: ComparisonHistoryItem[]; next_cursor: string | null };
+type CollectionEvidence = { status: "NOT_BOUND" | "NOT_RECORDED" | "NOT_MATCHED" | "MATCHED_AT_READ"; raw_count: number | null };
 type ValidationEvidence = {
   status: "INCOMPLETE" | "LINKED_UNVERIFIED";
   checks: Record<string, boolean>;
@@ -211,6 +212,7 @@ export function CookingWorkspace({ csrf }: Props) {
   const [batchId, setBatchId] = useState("batch-a-001");
   const [validationForm, setValidationForm] = useState(emptyValidationFields);
   const [validationEvidence, setValidationEvidence] = useState<ValidationEvidence | null>(null);
+  const [collectionEvidence, setCollectionEvidence] = useState<CollectionEvidence | null>(null);
   const [loadingJob, setLoadingJob] = useState(false);
   const [busy, setBusy] = useState(false);
   const activeRequest = useRef(false);
@@ -270,6 +272,7 @@ export function CookingWorkspace({ csrf }: Props) {
       const isNewJob = loadedJobId.current !== id;
       setJob(snapshot.job);
       setValidationEvidence(null);
+      setCollectionEvidence(null);
       setValidationForm(Object.fromEntries(validationFields.map(([key]) =>
         [key, snapshot.job.validation_context?.[key] ?? ""])) as Record<ValidationField, string>);
       setCurrent(snapshot.current_assessment);
@@ -508,6 +511,18 @@ export function CookingWorkspace({ csrf }: Props) {
       setValidationEvidence(await api<ValidationEvidence>(jobPath(job.job_id) + "/validation-evidence"));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "재검증 증거를 조회하지 못했습니다.");
+    }
+  }
+
+  async function inspectCollectionEvidence() {
+    if (!job || job.menu !== "JEYUK") return;
+    setError("");
+    try {
+      const evidence = await api<CollectionEvidence>(jobPath(job.job_id) + "/collection-evidence");
+      if (loadedJobId.current === job.job_id && loadedJobVersion.current === job.version) setCollectionEvidence(evidence);
+    } catch (cause) {
+      setCollectionEvidence(null);
+      setError(cause instanceof Error ? cause.message : "수집 증거를 조회하지 못했습니다.");
     }
   }
 
@@ -833,6 +848,13 @@ export function CookingWorkspace({ csrf }: Props) {
                 disabled={busy || loadingJob || !job.source_binding || !["PENDING", "READY"].includes(job.status)}>조합 기록{job.validation_context_version ? " 수정" : ""}</button>
               <button type="button" className="secondary" onClick={inspectValidationEvidence}
                 disabled={busy || loadingJob}>현재 증거 연결 확인</button>
+              <button type="button" className="secondary" onClick={inspectCollectionEvidence}
+                disabled={busy || loadingJob}>합성 수집 완료 기록 확인</button>
+              {collectionEvidence && <p className="small" role="status">수집 기록: {({
+                NOT_BOUND: "수집 배치 연결 전", NOT_RECORDED: "완료 기록 없음",
+                NOT_MATCHED: "현재 저장 표본과 완료 기록이 일치하지 않음",
+                MATCHED_AT_READ: "조회한 저장 표본과 완료 기록 일치",
+              })[collectionEvidence.status]}{collectionEvidence.raw_count != null && ` · ${collectionEvidence.raw_count}건`}. 이 결과만으로 안전성이나 AI 실행을 승인하지 않습니다.</p>}
               {validationEvidence && <div className="small" aria-live="polite">
                 <p>연결 상태: {validationEvidence.status === "LINKED_UNVERIFIED" ? "원천 기록까지 대조됨 · 조합 검증 전" : "필요한 작업·원천 기록이 부족함"} · 작업 버전 {validationEvidence.job_version}</p>
                 {!validationEvidence.source_table_configured && <p>원천 데이터 저장소가 연결되지 않아 원천 레코드를 대조하지 못했습니다.</p>}

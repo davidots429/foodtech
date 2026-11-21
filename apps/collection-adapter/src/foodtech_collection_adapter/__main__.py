@@ -15,6 +15,7 @@ from .jeyuk_aws import DynamoJeyukIngestor
 from .rest import RestMockClient
 from .ingestion_quarantine import IngestionQuarantine, failure
 from foodtech_contracts.collection_evidence import CompletionTracker
+from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -56,6 +57,7 @@ def main() -> int:
                                        os.environ["FOODTECH_ORDERED_QUEUE_URL"])
         try:
             cursor = ingestor.cursor(args.cursor_key)
+            completion = JeyukCompletionTracker(cursor)
             deadline = time.monotonic() + args.max_runtime
             index = 0
             while args.until_complete or index < args.polls:
@@ -64,6 +66,11 @@ def main() -> int:
                 result = client.poll(cursor)
                 for raw in result.records:
                     ingestor.ingest(raw)
+                    completion.record(raw)
+                receipt = completion.finish(cursor=result.next_cursor, complete=result.complete,
+                                            explicit=result.completion_explicit)
+                if receipt is not None:
+                    ingestor.save_completion_receipt(receipt, args.cursor_key)
                 ingestor.save_cursor(result.next_cursor, args.cursor_key)
                 cursor = result.next_cursor
                 print(f"poll={index + 1} received={len(result.records)} cursor={cursor}")

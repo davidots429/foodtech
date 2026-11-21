@@ -53,12 +53,13 @@ class JeyukHttpsTests(unittest.TestCase):
                         if httpx.get(base + "/health", verify=str(cert), timeout=.3).status_code == 200: break
                     except httpx.TransportError: time.sleep(.1)
                 else: self.fail("Mock did not start")
-                calls = {"records": [], "cursors": []}
+                calls = {"records": [], "cursors": [], "receipts": []}
                 class Ingestor:
                     def __init__(self, *_args): pass
                     def cursor(self, key): return 0
                     def ingest(self, raw): calls["records"].append(raw)
                     def save_cursor(self, cursor, key): calls["cursors"].append(cursor)
+                    def save_completion_receipt(self, receipt, key): calls["receipts"].append(receipt)
                 config = {"FOODTECH_MOCK_BASE_URL": base, "FOODTECH_MOCK_CA_FILE": str(cert),
                     "FOODTECH_MOCK_CLIENT_ID": "test-client", "FOODTECH_MOCK_CLIENT_SECRET": "test-secret",
                     "FOODTECH_DATA_TABLE": "test", "FOODTECH_ORDERED_QUEUE_URL": "test"}
@@ -69,6 +70,8 @@ class JeyukHttpsTests(unittest.TestCase):
                 self.assertEqual([json.loads(raw)["second"] for raw in calls["records"]], list(range(1, 7)))
                 self.assertEqual(calls["cursors"][-1], 6)
                 self.assertGreater(len(calls["cursors"]), 1)
+                self.assertEqual(len(calls["receipts"]), 1)
+                self.assertEqual(calls["receipts"][0]["record_count"], 6)
             finally:
                 server.terminate(); server.wait(timeout=5)
 

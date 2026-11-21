@@ -22,6 +22,8 @@ import boto3
 import httpx
 
 from foodtech_collection_adapter.jeyuk_aws import DynamoJeyukIngestor
+from foodtech_contracts.jeyuk_receipt import matches_jeyuk_snapshot
+from foodtech_business_api.jeyuk_source_evidence import read_collection_completion
 from foodtech_collection_adapter import __main__ as collector
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 
@@ -135,6 +137,15 @@ def main(*, mock_wire: bool = False) -> int:
             for raw in raws:
                 ingestor.ingest(raw)
             expected_count = len(raws)
+        if mock_wire:
+            from boto3.dynamodb.conditions import Key
+            rows = table.query(KeyConditionExpression=Key("pk").eq(stream_pk), ConsistentRead=True)["Items"]
+            raws = sorted((row for row in rows if row["sk"].startswith("RAW#")), key=lambda row: row["sk"])
+            receipts = [row for row in rows if row["sk"].startswith("COLLECTION#RECEIPT#")]
+            if len(receipts) != 1 or not matches_jeyuk_snapshot(receipts[0], fixture_id, raws):
+                raise AssertionError("Collected raw samples do not match the terminal receipt")
+            if read_collection_completion(DATA_TABLE, fixture_id) != {"status": "MATCHED_AT_READ", "raw_count": expected_count}:
+                raise AssertionError("Business API could not verify the stored receipt")
         for _ in range(8):
             page = sqs.receive_message(QueueUrl=ordered_url, MaxNumberOfMessages=10,
                                        WaitTimeSeconds=1, VisibilityTimeout=30)

@@ -218,3 +218,29 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
     except (AttributeError, KeyError, ValueError, TypeError, OverflowError):
         pass
     return result
+
+
+def read_collection_completion(table_name: str, batch_id: str) -> dict:
+    """Compare one terminal collector receipt with the full raw snapshot at read time."""
+    from foodtech_contracts.jeyuk_receipt import MAX_SAMPLES, matches_jeyuk_snapshot
+
+    table = boto3.Session(region_name="ap-southeast-2").resource("dynamodb").Table(table_name)
+    pk = f"JEYUK#{batch_id}"
+
+    def query(prefix: str, limit: int) -> list[dict]:
+        items = []
+        paginator = table.meta.client.get_paginator("query")
+        for page in paginator.paginate(TableName=table.name,
+                KeyConditionExpression=Key("pk").eq(pk) & Key("sk").begins_with(prefix),
+                ConsistentRead=True):
+            items.extend(page.get("Items", []))
+            if len(items) > limit:
+                raise ValueError("Jeyuk collection evidence exceeds supported size")
+        return items
+
+    receipts = query("COLLECTION#RECEIPT#", 100)
+    if not receipts:
+        return {"status": "NOT_RECORDED", "raw_count": None}
+    raws = query("RAW#", MAX_SAMPLES)
+    matched = any(matches_jeyuk_snapshot(receipt, batch_id, raws) for receipt in receipts)
+    return {"status": "MATCHED_AT_READ" if matched else "NOT_MATCHED", "raw_count": len(raws)}

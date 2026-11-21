@@ -63,6 +63,20 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
                 "process_condition_profile_id": "jeyuk-process-small",
                 "process_condition_version": "v1"}
 
+    async def test_collection_evidence_checks_binding_and_returns_only_snapshot_status(self):
+        job = await self.create()
+        path = f"/api/customer/cooking-jobs/{job['job_id']}/collection-evidence"
+        self.assertEqual((await self.client.get(path)).json()["status"], "NOT_BOUND")
+        job = await self.bind(job, "jeyuk-evidence")
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test"}), \
+                patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion",
+                      return_value={"status": "MATCHED_AT_READ", "raw_count": 30}) as read:
+            response = await self.client.get(path)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"status": "MATCHED_AT_READ", "raw_count": 30,
+                                          "job_id": job["job_id"], "job_version": job["version"]})
+        read.assert_called_once_with("test", "jeyuk-evidence")
+
     async def test_validation_context_is_declared_not_approved_and_audited(self):
         job = await self.create()
         path = f"/api/customer/cooking-jobs/{job['job_id']}"
