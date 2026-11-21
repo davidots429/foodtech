@@ -679,6 +679,7 @@ class DynamoCookingStore:
         values = self._item({":id": profile_id, ":version": version})
         try:
             self.client.transact_write_items(TransactItems=[
+                self._derived_owner_guard(subject, None),
                 {"ConditionCheck": {"TableName": self.table.name, "Key": self._item(source_key),
                     "ConditionExpression": "profile_id = :id AND profile_version = :version",
                     "ExpressionAttributeValues": values}},

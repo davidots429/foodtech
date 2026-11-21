@@ -111,6 +111,16 @@ def main():
             raise AssertionError('valid session did not create complete job history')
         auth_table.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request',
                                ExpressionAttributeValues={':request': str(uuid4())})
+        table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
+                       ConditionExpression='attribute_not_exists(pk)')
+        try:
+            store.ensure_condition_profile_listed(subject, 'legacy', 'v1')
+        except Conflict:
+            pass
+        else:
+            raise AssertionError('legacy reference accepted after deletion lock')
+        if table.get_item(Key=legacy_ref, ConsistentRead=True).get('Item'):
+            raise AssertionError('blocked reconciliation created a reference')
         try:
             store.bind_stream(job_pk, 1, {**job_meta, 'version': 2}, stream_pk, 1)
         except Conflict:
@@ -148,8 +158,6 @@ def main():
         store.bind_stream(job_pk, 2, {**job_meta, 'version': 3}, stream_pk, 1)
         if table.get_item(Key=stream_key, ConsistentRead=True).get('Item') is None:
             raise AssertionError('valid source binding was not saved')
-        table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
-                       ConditionExpression='attribute_not_exists(pk)')
         checkpoint, found = None, False
         for _ in range(20):
             result = reconcile_legacy_page(table, store, subject=subject, limit=100, checkpoint=checkpoint)

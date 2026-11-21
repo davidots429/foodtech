@@ -91,7 +91,7 @@ class ProfileInventoryTests(unittest.TestCase):
         client = boto3.client('dynamodb', region_name='ap-southeast-2',
                               aws_access_key_id='synthetic', aws_secret_access_key='synthetic')
         store = DynamoCookingStore.__new__(DynamoCookingStore)
-        store.client, store.table, store.serializer = client, SimpleNamespace(name='cooking'), TypeSerializer()
+        store.client, store.table, store.serializer, store.auth_table_name = client, SimpleNamespace(name='cooking'), TypeSerializer(), 'auth'
         requests = []
         client.meta.events.register('before-parameter-build.dynamodb.TransactWriteItems',
                                     lambda model, params, **kwargs: requests.append(params))
@@ -99,9 +99,11 @@ class ProfileInventoryTests(unittest.TestCase):
             stubber.add_response('transact_write_items', {}, {'TransactItems': ANY})
             store.ensure_condition_profile_listed('alice', 'legacy', 'v1')
         operations = requests[0]['TransactItems']
-        self.assertIn('ConditionCheck', operations[0])
-        self.assertIn('Update', operations[1])
-        self.assertIn('profile_version = :version', operations[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(operations[0]['ConditionCheck']['TableName'], 'auth')
+        self.assertIn('deletion_lock_request', operations[0]['ConditionCheck']['ConditionExpression'])
+        self.assertIn('ConditionCheck', operations[1])
+        self.assertIn('Update', operations[2])
+        self.assertIn('profile_version = :version', operations[1]['ConditionCheck']['ConditionExpression'])
 
 
 if __name__ == '__main__':
