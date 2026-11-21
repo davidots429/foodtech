@@ -63,6 +63,9 @@ class PriorDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.meta(self.failed)["source_binding"] = None
         self.assertEqual((await self.client.get(self.path)).json()["status"], "HISTORY_INCOMPLETE")
         self.meta(self.failed)["source_binding"] = self.meta(self.first)["source_binding"]
+        self.meta(self.failed).update(status="READY", actual_placed_at="invalid")
+        self.assertEqual((await self.client.get(self.path)).json()["status"], "HISTORY_INCOMPLETE")
+        self.meta(self.failed).update(status="FAILED", actual_placed_at="2026-01-02T00:00:00Z")
         self.meta(self.failed)["actual_placed_at"] = self.meta(self.first)["actual_placed_at"]
         self.assertEqual((await self.client.get(self.path)).json()["status"], "AMBIGUOUS")
         self.meta(self.failed)["actual_placed_at"] = "2026-01-02T00:00:00Z"

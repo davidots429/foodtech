@@ -71,7 +71,7 @@ async def discover(request, job_id: str) -> dict:
             continue
         started = _instant(row.get("actual_placed_at"))
         if not started:
-            if row.get("status") not in {"PENDING", "READY"}:
+            if row.get("actual_placed_at") is not None or row.get("status") not in {"PENDING", "READY"}:
                 unknown = True
             continue
         if started > current_start:
