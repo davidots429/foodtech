@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from foodtech_ai_gateway.registry import DynamoRegistry
 from foodtech_ai_gateway.vault import DynamoCredentialVault
 from foodtech_credential_registration.registration import (
-    CredentialRegistrar, TenantPseudonymizer, TransferKey,
+    CredentialRegistrar, RegistrationError, TenantPseudonymizer, TransferKey,
 )
 from foodtech_credential_registration.storage import CredentialWriter
 
@@ -46,8 +46,19 @@ def main() -> None:
         TenantPseudonymizer(stack["CredentialPseudonymKeyArn"], "v1", kms_client=kms),
         auth_table="foodtech-auth-sessions-dev", dynamodb_client=boto3.client("dynamodb", region_name=REGION))
     credential_id = None
+    tenant_id = f"synthetic-subject-{uuid4()}"
+    auth = resource.Table("foodtech-auth-sessions-dev")
+    auth_created = False
     try:
-        tenant_id = f"synthetic-subject-{uuid4()}"
+        try:
+            registrar.register(tenant_id, "openai", descriptor["key_version"],
+                               base64.b64encode(encrypted).decode(), 0)
+            raise AssertionError("missing account accepted")
+        except RegistrationError as error:
+            if error.code != "TENANT_UNAVAILABLE":
+                raise
+        auth.put_item(Item={"pk": f"USER#{tenant_id}"}, ConditionExpression="attribute_not_exists(pk)")
+        auth_created = True
         credential_id = registrar.register(tenant_id, "openai", descriptor["key_version"],
                                            base64.b64encode(encrypted).decode(), 0)
         record = DynamoRegistry(REGISTRY, "2026-11", resource=resource, auth_table="foodtech-auth-sessions-dev").credential(credential_id)
@@ -60,9 +71,11 @@ def main() -> None:
         finally:
             buffer[:] = b"\x00" * len(buffer)
         print(json.dumps({"transfer_algorithm": descriptor["algorithm"],
-                          "atomic_registration": True, "gateway_decrypt": True,
+                          "missing_account_rejected": True, "atomic_registration": True, "gateway_decrypt": True,
                           "secret_in_response": False}))
     finally:
+        if auth_created:
+            auth.delete_item(Key={"pk": f"USER#{tenant_id}"})
         if credential_id:
             key = {"pk": f"CREDENTIAL#{credential_id}", "sk": "META"}
             resource.Table(VAULT).delete_item(Key=key)
@@ -70,6 +83,8 @@ def main() -> None:
             for name in (VAULT, REGISTRY):
                 if resource.Table(name).get_item(Key=key, ConsistentRead=True).get("Item") is not None:
                     raise RuntimeError("synthetic credential cleanup failed")
+        if auth_created and auth.get_item(Key={"pk": f"USER#{tenant_id}"}, ConsistentRead=True).get("Item") is not None:
+            raise RuntimeError("synthetic account cleanup failed")
 
 
 if __name__ == "__main__":

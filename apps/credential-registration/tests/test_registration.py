@@ -94,6 +94,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(bytes(writer.buffer), b"\x00" * len(writer.buffer))
         self.assertEqual(len(dynamo.items), 3)
         self.assertEqual(dynamo.items[0]["ConditionCheck"]["ExpressionAttributeValues"][":expected"], {"N": "2"})
+        self.assertIn("attribute_exists(pk)", dynamo.items[0]["ConditionCheck"]["ConditionExpression"])
         self.assertIn("deletion_lock_request", dynamo.items[0]["ConditionCheck"]["ConditionExpression"])
         self.assertEqual([item["Put"]["TableName"] for item in dynamo.items[1:]],
                          ["vault-test", "registry-test"])
