@@ -2,6 +2,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from decimal import Decimal
+from unittest.mock import patch
 from uuid import uuid4
 
 from foodtech_business_api.recipe_scope import RecipeScopeDenied, resolve_recipe_scope
@@ -68,6 +69,12 @@ class RecipeScopeTests(unittest.TestCase):
             return self.jobs.get(key)
         with self.assertRaises(RecipeScopeDenied):
             resolve_recipe_scope(self.session, self.execution_id, lambda _: self.execution, read)
+
+    def test_session_expiring_during_reads_is_denied(self):
+        self.session.expires = 200
+        with patch('foodtech_business_api.recipe_scope.time.time', side_effect=[100, 200]):
+            with self.assertRaises(RecipeScopeDenied):
+                self.resolve()
 
 
 if __name__ == '__main__':

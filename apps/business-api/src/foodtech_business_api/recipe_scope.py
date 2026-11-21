@@ -76,6 +76,6 @@ def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
         return RecipeReadScope(subject, execution_id, tuple(jobs), tuple(sources)), versions, revisions
 
     first = snapshot()
-    if snapshot() != first:
+    if snapshot() != first or expires <= time.time():
         raise RecipeScopeDenied('recipe scope changed')
     return first[0]
