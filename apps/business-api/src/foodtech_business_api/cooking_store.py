@@ -156,7 +156,7 @@ class CookingStore(Protocol):
     def ensure_listed(self, pk: str, meta: dict) -> None: ...
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None: ...
     def create_recook(self, parent_pk: str, expected_parent_version: int,
-                      new_pk: str, meta: dict) -> None: ...
+                      new_pk: str, meta: dict, expected_epoch: int = 0) -> None: ...
     def commit(self, pk: str, expected_version: int, meta: dict,
                assessment: dict | None = None, pointer: dict | None = None,
                event: dict | None = None) -> None: ...
@@ -415,7 +415,9 @@ class MemoryCookingStore:
                                                    "job_id": meta["job_id"]}
 
     def create_recook(self, parent_pk: str, expected_parent_version: int,
-                      new_pk: str, meta: dict) -> None:
+                      new_pk: str, meta: dict, expected_epoch: int = 0) -> None:
+        if _history_pk(parent_pk) != _history_pk(new_pk):
+            raise ValueError('recook owner mismatch')
         with self.lock:
             parent = self.items.get((parent_pk, "META"))
             listing = _job_list_item(new_pk, meta)
@@ -1023,9 +1025,12 @@ class DynamoCookingStore:
             raise
 
     def create_recook(self, parent_pk: str, expected_parent_version: int,
-                      new_pk: str, meta: dict) -> None:
+                      new_pk: str, meta: dict, expected_epoch: int = 0) -> None:
+        if _history_pk(parent_pk) != _history_pk(new_pk):
+            raise ValueError('recook owner mismatch')
         listing = _job_list_item(new_pk, meta)
         operations = [
+            self._owner_guard(meta['owner_subject'], expected_epoch),
             {"ConditionCheck": {
                 "TableName": self.table.name, "Key": self._item({"pk": parent_pk, "sk": "META"}),
                 "ConditionExpression": "#version = :expected",

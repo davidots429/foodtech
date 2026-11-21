@@ -1537,7 +1537,7 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
             "process_time_status": "NOT_MEASURED"}
     try:
         await _store_call(store, store.create_recook, parent_pk, body.expected_version,
-                          _pk(session.subject, new_id), meta)
+                          _pk(session.subject, new_id), meta, session.epoch)
     except Conflict as exc:
         raise _conflict() from exc
     return meta

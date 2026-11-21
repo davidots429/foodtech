@@ -934,9 +934,12 @@ class DynamoTransactionContractTests(unittest.TestCase):
                          "CREATED#2026-11-15T00:00:00Z#job")
         store.create_recook(job_pk, 3, "SCOPE#USER#one#JOB#recook",
                             {**meta, "job_id": "recook", "source_job_id": "job"})
-        self.assertEqual(len(calls[1]["TransactItems"]), 4)
-        self.assertEqual(calls[1]["TransactItems"][3]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
-        self.assertEqual(calls[1]["TransactItems"][2]["Put"]["Item"]["source_job_id"]["S"], "job")
+        self.assertEqual(len(calls[1]["TransactItems"]), 5)
+        self.assertEqual(calls[1]["TransactItems"][0]["ConditionCheck"]["TableName"], "auth-table")
+        self.assertEqual(calls[1]["TransactItems"][4]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
+        self.assertEqual(calls[1]["TransactItems"][3]["Put"]["Item"]["source_job_id"]["S"], "job")
+        with self.assertRaises(ValueError):
+            store.create_recook(job_pk, 3, "SCOPE#USER#other#JOB#recook", {**meta, "job_id": "recook"})
 
     def test_source_binding_and_job_version_share_transaction(self):
         calls = []
