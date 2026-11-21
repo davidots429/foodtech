@@ -20,6 +20,7 @@ from foodtech_contracts.combi_transition_live import observe as observe_transiti
 from foodtech_contracts.combi_live_events import events_for
 from foodtech_contracts.combi_sampling import selection_issues
 from foodtech_contracts.combi_probe import summarize as summarize_probe
+from foodtech_contracts.combi_quality_load import classify as classify_quality_load
 
 from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
@@ -685,12 +686,26 @@ async def meal_quality_sample_evidence(meal_id: UUID, menu: Literal['rice', 'mac
         return {'status': 'EXCLUDED', 'reason': sample['reason']}
     assessment = sample['assessment']
     recipe = second['meal'].get(f'{menu}_recipe_version')
-    missing = ['LOAD_BAND']
+    missing = []
     if not isinstance(recipe, str) or not recipe.strip():
         recipe = None
-        missing.insert(0, 'RECIPE_VERSION')
-    return {'status': 'DIMENSIONS_INCOMPLETE', 'missing_dimensions': missing,
+        missing.append('RECIPE_VERSION')
+    mass = assessment.get('actual_mass_kg')
+    load = None
+    if mass is None:
+        missing.append('ACTUAL_MASS')
+    else:
+        try:
+            load = classify_quality_load(menu.upper(), second['meal'].get('equipment_size'), mass)
+        except ValueError as exc:
+            raise HTTPException(409, '평가의 조리량을 확인할 수 없습니다.') from exc
+    return {'status': 'DIMENSIONS_INCOMPLETE' if missing else 'SAMPLE_EVIDENCE_READY',
+            'missing_dimensions': missing,
             'menu': menu.upper(), 'recipe_version': recipe,
+            'equipment_size': second['meal'].get('equipment_size'),
+            'load_band': load.band if load else None, 'load_rule_version': load.rule_version if load else None,
+            'reference_mass_kg': str(load.reference_mass_kg) if load else None,
+            'reference_mass_ratio': str(load.ratio) if load else None,
             'meal_version': sample['meal_version'], 'quality_version': sample['quality_version'],
             'safety_version': sample['safety_version'], 'scores': assessment['scores'],
             'score_percent': assessment.get('score_percent'), 'completed_at': assessment.get('completed_at'),

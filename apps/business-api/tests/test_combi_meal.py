@@ -127,9 +127,16 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
             'event': 'MACKEREL_QUALITY_ASSESSED', 'assessment': assessment}
         response = await self.client.get(path)
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()['missing_dimensions'], ['LOAD_BAND'])
+        self.assertEqual(response.json()['missing_dimensions'], [])
+        self.assertEqual(response.json()['status'], 'SAMPLE_EVIDENCE_READY')
+        self.assertEqual(response.json()['load_band'], 'PARTIAL')
+        self.assertEqual(response.json()['reference_mass_kg'], '15')
         self.assertEqual(response.json()['recipe_version'], 'fish-v1')
         self.assertNotIn('private detail', response.text)
+        self.store.items[(pk, 'META')].pop('mackerel_recipe_version')
+        legacy = await self.client.get(path)
+        self.assertEqual(legacy.json()['status'], 'DIMENSIONS_INCOMPLETE')
+        self.assertEqual(legacy.json()['missing_dimensions'], ['RECIPE_VERSION'])
         step['quality_current']['usable'] = False
         self.assertEqual((await self.client.get(path)).json()['reason'], 'CURRENT_ASSESSMENT_BLOCKED')
         self.subject = 'another-customer'
