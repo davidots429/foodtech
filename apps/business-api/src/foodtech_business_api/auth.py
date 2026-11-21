@@ -235,9 +235,12 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
         await asyncio.to_thread(store.delete_session, old_session_id)
     session_id = secrets.token_urlsafe(32)
     refresh_fields = await _refresh_fields(session_id, surface, tokens.get("refresh_token"))
+    access_expires = int(min(time.time() + SESSION_SECONDS, float(access["exp"])))
+    if refresh_fields:
+        refresh_fields["access_expires"] = access_expires
     await asyncio.to_thread(store.save_session, session_id, Session(
         surface, identity["sub"], identity.get("email"), secrets.token_urlsafe(32),
-        int(min(time.time() + SESSION_SECONDS, float(access["exp"]))),
+        refresh_fields.get("refresh_deadline", access_expires),
         int(principal.get("epoch", 0)),
         tokens["access_token"], **refresh_fields,
     ))
@@ -318,9 +321,12 @@ async def admin_totp(request: Request, body: dict) -> Response:
         await asyncio.to_thread(store.delete_session, old_session_id)
     session_id = secrets.token_urlsafe(32)
     refresh_fields = await _refresh_fields(session_id, "admin", tokens.get("RefreshToken"))
+    access_expires = int(min(time.time() + SESSION_SECONDS, float(access["exp"])))
+    if refresh_fields:
+        refresh_fields["access_expires"] = access_expires
     await asyncio.to_thread(store.save_session, session_id, Session(
         "admin", identity["sub"], identity.get("email"), secrets.token_urlsafe(32),
-        int(min(time.time() + SESSION_SECONDS, float(access["exp"]))), int(principal.get("epoch", 0)),
+        refresh_fields.get("refresh_deadline", access_expires), int(principal.get("epoch", 0)),
         tokens["AccessToken"], **refresh_fields,
     ))
     response = JSONResponse({"authenticated": True})
@@ -330,7 +336,7 @@ async def admin_totp(request: Request, body: dict) -> Response:
     return response
 
 
-async def _session(request: Request, surface: str) -> Session:
+async def _session(request: Request, surface: str, *, allow_expired_access: bool = False) -> Session:
     if surface not in {"customer", "admin"}:
         raise HTTPException(404)
     session_id = request.cookies.get(SESSION_COOKIE, "")
@@ -338,6 +344,8 @@ async def _session(request: Request, surface: str) -> Session:
     session = await asyncio.to_thread(store.read_session, session_id) if session_id else None
     if not session or session.surface != surface:
         raise HTTPException(401, "로그인이 필요합니다.")
+    if not allow_expired_access and session.access_expires is not None and session.access_expires <= time.time():
+        raise HTTPException(401, "세션 갱신이 필요합니다.")
     principal = await asyncio.to_thread(store.principal, session.subject)
     if (int(principal.get("epoch", 0)) != session.epoch or principal.get("suspended")
             or (surface == "admin" and principal.get("admin_blocked"))):
@@ -351,7 +359,7 @@ async def _session(request: Request, surface: str) -> Session:
 
 @router.post("/{surface}/session/refresh")
 async def refresh_session(surface: str, request: Request) -> Response:
-    session = await _session(request, surface)
+    session = await _session(request, surface, allow_expired_access=True)
     _csrf(request, session)
     cipher = _refresh_cipher()
     if not cipher or not session.refresh_ciphertext:
@@ -399,7 +407,6 @@ async def refresh_session(surface: str, request: Request) -> Response:
             plaintext[:] = b"\x00" * len(plaintext)
     response = JSONResponse({"authenticated": True, "expires_in": max(0, expires - int(time.time()))})
     response.headers["Cache-Control"] = "no-store"
-    _cookie(response, SESSION_COOKIE, session_id, max(0, claimed.refresh_deadline - int(time.time())), settings.secure_cookies)
     return response
 
 
@@ -409,7 +416,8 @@ async def me(surface: str, request: Request) -> dict:
     current_tier = await asyncio.to_thread(get_tier_store().current, session.subject) if surface == "customer" else None
     tier = None if surface == "admin" else "DEMO_PAID" if current_tier and current_tier["status"] == "APPROVED_FOR_DEMO" else "FREE"
     return {"email": session.email, "surface": session.surface, "csrf": session.csrf,
-            "tier": tier}
+            "tier": tier, "refresh_available": bool(session.refresh_ciphertext),
+            "expires_in": max(0, int((session.access_expires or session.expires) - time.time()))}
 
 
 @router.get("/customer/example")
@@ -480,7 +488,7 @@ async def totp_verify(request: Request, body: dict) -> dict:
 
 @router.post("/{surface}/logout")
 async def logout(surface: str, request: Request) -> Response:
-    session = await _session(request, surface)
+    session = await _session(request, surface, allow_expired_access=True)
     _csrf(request, session)
     await asyncio.to_thread(get_store().delete_session, request.cookies.get(SESSION_COOKIE, ""))
     settings = Settings.from_env()

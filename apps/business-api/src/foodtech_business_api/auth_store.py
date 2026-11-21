@@ -47,6 +47,7 @@ class Session:
     refresh_lock: str | None = None
     refresh_lock_until: int = 0
     refresh_deadline: int = 0
+    access_expires: int | None = None
 
 
 class AuthStore(Protocol):
@@ -112,10 +113,10 @@ class MemoryStore:
             current = self.sessions.get(session_id)
             if not current or current.expires <= now or current.refresh_lock != lease or \
                     current.refresh_lock_until <= now or current.refresh_version != expected_version or \
-                    expires > current.refresh_deadline:
+                    expires > current.refresh_deadline or expires > current.expires:
                 return False
             self.sessions[session_id] = replace(current, access_token=access_token, refresh_ciphertext=ciphertext,
-                refresh_version=expected_version + 1, refresh_lock=None, refresh_lock_until=0, expires=expires)
+                refresh_version=expected_version + 1, refresh_lock=None, refresh_lock_until=0, access_expires=expires)
             return True
 
     def principal(self, subject: str) -> dict:
@@ -167,7 +168,8 @@ class DynamoAuthStore:
         return Session(**{key: item[key] for key in ("surface", "subject", "email", "csrf", "expires", "epoch")},
             access_token=item.get("access_token"), refresh_ciphertext=bytes(cipher) if cipher else None,
             refresh_version=int(item.get("refresh_version", 0)), refresh_lock=item.get("refresh_lock"),
-            refresh_lock_until=int(item.get("refresh_lock_until", 0)), refresh_deadline=int(item.get("refresh_deadline", 0)))
+            refresh_lock_until=int(item.get("refresh_lock_until", 0)), refresh_deadline=int(item.get("refresh_deadline", 0)),
+            access_expires=int(item["access_expires"]) if item.get("access_expires") is not None else None)
 
     def delete_session(self, session_id: str) -> None:
         self.table.delete_item(Key={"pk": f"SESSION#{session_id}"})
@@ -193,10 +195,10 @@ class DynamoAuthStore:
         try:
             self.table.update_item(Key={"pk": f"SESSION#{session_id}"},
                 UpdateExpression="SET access_token = :access, refresh_ciphertext = :cipher, "
-                                 "refresh_version = :next, refresh_lock_until = :zero, expires = :expires REMOVE refresh_lock",
+                                 "refresh_version = :next, refresh_lock_until = :zero, access_expires = :expires REMOVE refresh_lock",
                 ConditionExpression=Attr("pk").exists() & Attr("expires").gt(now) & Attr("refresh_lock").eq(lease) &
                     Attr("refresh_lock_until").gt(now) & Attr("refresh_version").eq(expected_version) &
-                    Attr("refresh_deadline").gte(expires),
+                    Attr("refresh_deadline").gte(expires) & Attr("expires").gte(expires),
                 ExpressionAttributeValues={":access": access_token, ":cipher": ciphertext,
                     ":next": expected_version + 1, ":zero": 0, ":expires": expires})
             return True

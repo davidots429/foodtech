@@ -7,7 +7,7 @@ from foodtech_business_api.auth_store import MemoryStore, Session
 class RefreshStoreTests(unittest.TestCase):
     def setUp(self):
         self.store = MemoryStore()
-        self.store.save_session('id', Session('customer', 'subject', None, 'csrf', 200, 0,
+        self.store.save_session('id', Session('customer', 'subject', None, 'csrf', 300, 0,
                                               refresh_ciphertext=b'cipher', refresh_deadline=300))
 
     def test_only_one_concurrent_claim_and_rotation(self):
@@ -39,7 +39,7 @@ class RefreshStoreTests(unittest.TestCase):
     def test_missing_expired_and_legacy_sessions_cannot_claim(self):
         lease = 'lease-1234567890123456'
         self.assertIsNone(self.store.claim_refresh('missing', lease, 100, 130))
-        self.assertIsNone(self.store.claim_refresh('id', lease, 200, 230))
+        self.assertIsNone(self.store.claim_refresh('id', lease, 300, 330))
         self.store.sessions['id'].refresh_ciphertext = None
         self.assertIsNone(self.store.claim_refresh('id', lease, 100, 130))
         with self.assertRaises(ValueError): self.store.claim_refresh('id', lease, 100, 161)

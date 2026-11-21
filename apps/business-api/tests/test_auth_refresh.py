@@ -36,7 +36,7 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         self.env = patch.dict('os.environ', ENV, clear=True); self.env.start()
         self.store = MemoryStore()
         now = int(time.time())
-        self.store.save_session('session-id', Session('customer', 'subject', None, 'csrf', now + 500, 0,
+        self.store.save_session('session-id', Session('customer', 'subject', None, 'csrf', now + 800, 0,
             access_token='old-access', refresh_ciphertext=b'encrypted', refresh_deadline=now + 800))
         self.store_patch = patch.object(auth, 'get_store', return_value=self.store); self.store_patch.start()
         self.cipher_patch = patch.object(auth, '_refresh_cipher', return_value=FakeCipher()); self.cipher_patch.start()
@@ -70,3 +70,13 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
             response = await asyncio.wait_for(self.client.post('/api/customer/session/refresh', headers={'X-CSRF-Token': 'csrf'}), 3)
         self.assertEqual(response.status_code, 409)
         self.assertNotIn('session-id', self.store.sessions)
+
+    async def test_expired_access_may_only_use_refresh_path(self):
+        self.store.sessions['session-id'].access_expires = int(time.time()) - 1
+        self.assertEqual((await self.client.get('/api/customer/me')).status_code, 401)
+        tokens = {'IdToken': 'id', 'AccessToken': 'access', 'RefreshToken': 'new-refresh'}
+        claims = [{'sub': 'subject'}, {'sub': 'subject', 'exp': time.time() + 400}]
+        with patch.object(auth, '_cognito_refresh', return_value=tokens), patch.object(auth, '_claims', side_effect=claims):
+            result = await self.client.post('/api/customer/session/refresh', headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual((await self.client.get('/api/customer/me')).status_code, 200)

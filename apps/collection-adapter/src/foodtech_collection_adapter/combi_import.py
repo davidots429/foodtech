@@ -110,6 +110,21 @@ def _api_url(value: str) -> str:
     return value.rstrip("/")
 
 
+async def _keep_session_alive(api: httpx.AsyncClient, csrf: str, expires_in: int) -> None:
+    """Refresh the server-owned session while a long synthetic import runs."""
+    while True:
+        if type(expires_in) is not int or expires_in <= 0:
+            raise ValueError("invalid session expiry")
+        await asyncio.sleep(max(10, expires_in - 300))
+        response = await api.post("/api/customer/session/refresh", headers={"X-CSRF-Token": csrf})
+        if response.status_code == 409:
+            # Another client is refreshing the same server session.
+            expires_in = 310
+            continue
+        response.raise_for_status()
+        expires_in = response.json().get("expires_in")
+
+
 async def _main() -> None:
     parser = argparse.ArgumentParser(description="Import a synthetic combi stream into a customer meal")
     parser.add_argument("--meal-id", required=True)
@@ -127,7 +142,23 @@ async def _main() -> None:
         async with httpx.AsyncClient(base_url=api_url, cookies={"ft_session": session}, timeout=30) as api:
             me = await api.get("/api/customer/me")
             me.raise_for_status()
-            source = await import_meal(mock, api, args.meal_id, args.device_id, me.json()["csrf"], publish_live=args.live)
+            identity = me.json()
+            work = asyncio.create_task(import_meal(mock, api, args.meal_id, args.device_id,
+                                                   identity["csrf"], publish_live=args.live))
+            keepalive = asyncio.create_task(_keep_session_alive(api, identity["csrf"], identity["expires_in"])) \
+                if identity.get("refresh_available") else None
+            try:
+                if keepalive:
+                    done, _ = await asyncio.wait({work, keepalive}, return_when=asyncio.FIRST_COMPLETED)
+                    if keepalive in done:
+                        keepalive.result()
+                        raise RuntimeError("session refresh stopped unexpectedly")
+                source = await work
+            finally:
+                for task in (work, keepalive):
+                    if task and not task.done():
+                        task.cancel()
+                await asyncio.gather(*(task for task in (work, keepalive) if task), return_exceptions=True)
             print(f"Imported {source['record_count']} synthetic records; SHA-256: {source['raw_sha256']}")
     finally:
         mock.close()

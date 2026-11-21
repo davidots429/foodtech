@@ -19,7 +19,7 @@ def main():
     now = int(time.time())
     try:
         store.save_session(session_id, Session('customer', 'synthetic-subject', None, 'synthetic-csrf',
-            now + 300, 0, refresh_ciphertext=b'synthetic-ciphertext', refresh_deadline=now + 600))
+            now + 600, 0, refresh_ciphertext=b'synthetic-ciphertext', refresh_deadline=now + 600))
         leases = ['synthetic-lease-' + uuid.uuid4().hex for _ in range(4)]
         with ThreadPoolExecutor(max_workers=4) as executor:
             results = list(executor.map(lambda lease: store.claim_refresh(session_id, lease, now, now + 30), leases))

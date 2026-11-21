@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { useSessionRefresh } from "./useSessionRefresh";
 import { TierReview } from "./TierReview";
 import "./style.css";
 
-type Session = { email: string | null; surface: "admin"; csrf: string };
+type Session = { email: string | null; surface: "admin"; csrf: string; refresh_available: boolean; expires_in: number };
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  useSessionRefresh("admin", session, setError);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");

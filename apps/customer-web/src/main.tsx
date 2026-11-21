@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { useSessionRefresh } from "./useSessionRefresh";
 import { CookingWorkspace } from "./CookingWorkspace";
 import { CombiMeal } from "./CombiMeal";
 import { CredentialEnrollment } from "./CredentialEnrollment";
@@ -8,7 +9,7 @@ import { LocalChat } from "./LocalChat";
 import { TierConversion } from "./TierConversion";
 import "./style.css";
 
-type Session = { email: string | null; surface: "customer"; csrf: string; tier: "FREE" | "DEMO_PAID" };
+type Session = { email: string | null; surface: "customer"; csrf: string; refresh_available: boolean; expires_in: number; tier: "FREE" | "DEMO_PAID" };
 type Example = { source: "SYNTHETIC"; readOnly: true; title: string; message: string };
 const notice = "실제 과금이 발생하지 않으며 사업자 진위 조회를 수행하지 않는 비영리 시연 기능입니다.";
 
@@ -17,6 +18,7 @@ function App() {
   const [example, setExample] = useState<Example | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  useSessionRefresh("customer", session, setError);
   const [totpSecret, setTotpSecret] = useState("");
   const [totpCode, setTotpCode] = useState("");
   const [totpStatus, setTotpStatus] = useState("");
