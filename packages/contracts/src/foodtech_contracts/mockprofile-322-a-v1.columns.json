@@ -1,0 +1,23 @@
+{
+  "provenance": "SYNTHETIC",
+  "columns": [
+    "schemaVersion",
+    "sourceId",
+    "deviceId",
+    "batchId",
+    "recordId",
+    "sequenceNumber",
+    "eventTime",
+    "deviceStatus",
+    "measurements.temperatureCelsius",
+    "measurements.speedRpm",
+    "measurements.elapsedSeconds",
+    "errorReason",
+    "extensions.firmwareVersion",
+    "extensions.equipmentType",
+    "extensions.climateSetpointPercent",
+    "extensions.humiditySource",
+    "extensions.humidityPercent",
+    "extensions.fanLevel"
+  ]
+}

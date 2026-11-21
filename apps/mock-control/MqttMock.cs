@@ -31,14 +31,14 @@ internal static class MqttMock
         var instance = root.GetProperty("instanceId").GetString();
         var profile = root.GetProperty("profileId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            profile is not ("mockprofile-300" or "mockprofile-301" or "mockprofile-302" or "mockprofile-310" or "mockprofile-320") ||
+            profile is not ("mockprofile-300" or "mockprofile-301" or "mockprofile-302" or "mockprofile-310" or "mockprofile-312" or "mockprofile-320" or "mockprofile-322") ||
             instance is null || !new[] { $"{profile}-a-001", $"{profile}-b-001", $"{profile}-c-001" }.Contains(instance))
             throw new InvalidDataException("Only the approved synthetic MQTT profile is supported.");
         var topic = $"foodtech/synthetic/{instance}/observations";
         var b = instance.EndsWith("-b-001", StringComparison.Ordinal);
         var c = instance.EndsWith("-c-001", StringComparison.Ordinal);
         var xml = profile == "mockprofile-301";
-        var csv = profile == "mockprofile-302";
+        var csv = profile is "mockprofile-302" or "mockprofile-312" or "mockprofile-322";
         if ((fault == "invalid-json" && (xml || csv)) || (fault == "invalid-xml" && !xml) ||
             (fault == "invalid-csv" && !csv))
             throw new ArgumentException("Fault does not match the source format.");
@@ -56,6 +56,12 @@ internal static class MqttMock
                     !cells.TryGetValue(b ? "device_id" : c ? "DeviceId" : "deviceId", out var device) || device != instance ||
                     !cells.TryGetValue(b ? "sequence_number" : c ? "SeqNo" : "sequenceNumber", out var seq) || seq != (index + 1).ToString())
                     throw new InvalidDataException("Invalid synthetic MQTT CSV identity or sequence.");
+                if (profile is "mockprofile-312" or "mockprofile-322") {
+                    var equipmentKey = b ? "ext_equipment_type" : c ? "Extension_EquipmentType" : "extensions.equipmentType";
+                    if (!cells.TryGetValue(equipmentKey, out var equipment) ||
+                        equipment != (profile == "mockprofile-312" ? "STIR_FRYER" : "COMBI_OVEN"))
+                        throw new InvalidDataException("Equipment type does not match the synthetic profile.");
+                }
                 return raw;
             }
             if (xml) {

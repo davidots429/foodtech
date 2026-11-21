@@ -7,7 +7,7 @@ from foodtech_collection_adapter.mqtt import accept_message, topic_for
 
 class EquipmentQuarantineTests(unittest.TestCase):
     def test_malformed_data_is_stored_under_its_profile_before_ack(self):
-        for profile in ("310", "320"):
+        for profile in ("310", "312", "320", "322"):
             for vendor in "abc":
                 with self.subTest(profile=profile, vendor=vendor):
                     instance = f"mockprofile-{profile}-{vendor}-001"

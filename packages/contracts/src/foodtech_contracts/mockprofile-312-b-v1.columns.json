@@ -1,0 +1,18 @@
+{
+  "provenance": "SYNTHETIC",
+  "columns": [
+    "schema_version",
+    "source_id",
+    "device_id",
+    "batch_id",
+    "record_id",
+    "sequence_number",
+    "event_time_ms",
+    "device_status",
+    "temperature_f",
+    "output_percent",
+    "elapsed_ms",
+    "ext_firmware_version",
+    "ext_equipment_type"
+  ]
+}

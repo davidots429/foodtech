@@ -1,0 +1,27 @@
+{
+  "contractVersion": "1.0",
+  "profileId": "mockprofile-322",
+  "instanceId": "mockprofile-322-a-001",
+  "fixture": "vendor-a",
+  "provenance": "SYNTHETIC",
+  "generatorVersion": "1.0.0",
+  "seed": 322001,
+  "logicalStartTime": "2026-11-01T00:00:00Z",
+  "records": [
+    "schemaVersion,sourceId,deviceId,batchId,recordId,sequenceNumber,eventTime,deviceStatus,measurements.temperatureCelsius,measurements.speedRpm,measurements.elapsedSeconds,errorReason,extensions.firmwareVersion,extensions.equipmentType,extensions.climateSetpointPercent,extensions.humiditySource,extensions.humidityPercent,extensions.fanLevel\n1.0,synthetic-mqtt-csv,mockprofile-322-a-001,batch-a-001,rec-a-001,1,2026-11-01T00:00:00Z,running,180.0,60,0,,synthetic-1,COMBI_OVEN,100,MEASURED,98,4\n",
+    "schemaVersion,sourceId,deviceId,batchId,recordId,sequenceNumber,eventTime,deviceStatus,measurements.temperatureCelsius,measurements.speedRpm,measurements.elapsedSeconds,errorReason,extensions.firmwareVersion,extensions.equipmentType,extensions.climateSetpointPercent,extensions.humiditySource,extensions.humidityPercent,extensions.fanLevel\n1.0,synthetic-mqtt-csv,mockprofile-322-a-001,batch-a-001,rec-a-002,2,2026-11-01T00:00:05Z,running,181.5,60,5,,synthetic-1,COMBI_OVEN,100,MEASURED,98,4\n",
+    "schemaVersion,sourceId,deviceId,batchId,recordId,sequenceNumber,eventTime,deviceStatus,measurements.temperatureCelsius,measurements.speedRpm,measurements.elapsedSeconds,errorReason,extensions.firmwareVersion,extensions.equipmentType,extensions.climateSetpointPercent,extensions.humiditySource,extensions.humidityPercent,extensions.fanLevel\n1.0,synthetic-mqtt-csv,mockprofile-322-a-001,batch-a-001,rec-a-003,3,2026-11-01T00:00:10Z,running,182,60,10,,synthetic-1,COMBI_OVEN,100,MEASURED,98,4\n"
+  ],
+  "expected": {
+    "releaseSequence": [
+      1,
+      2,
+      3
+    ],
+    "qualityStatus": [
+      "VALID",
+      "VALID",
+      "VALID"
+    ]
+  }
+}

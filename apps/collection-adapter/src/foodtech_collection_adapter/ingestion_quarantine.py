@@ -90,7 +90,7 @@ class IngestionQuarantine:
     def preserve_mqtt(self, payload: bytes, *, topic: str, client_id: str, reason: str, missing: list[str],
                       profile_id: str = "mockprofile-300") -> str:
         """Record each delivered message independently, including non-UTF-8 bytes."""
-        if profile_id not in {"mockprofile-300", "mockprofile-301", "mockprofile-302", "mockprofile-310", "mockprofile-320"}:
+        if profile_id not in {"mockprofile-300", "mockprofile-301", "mockprofile-302", "mockprofile-310", "mockprofile-312", "mockprofile-320", "mockprofile-322"}:
             raise ValueError("unsupported MQTT quarantine profile")
         if not isinstance(payload, bytes) or len(payload) > MAX_PAYLOAD_BYTES:
             raise ValueError("payload exceeds quarantine limit")

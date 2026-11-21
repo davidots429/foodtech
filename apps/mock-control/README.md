@@ -122,3 +122,5 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 `serve-opcua`는 기본 `mockprofile-203`뿐 아니라 볶음·교반 `mockprofile-213`과 콤비오븐 `mockprofile-223`의 vendor-a/b/c 합성 fixture를 제공한다. 각 계열은 별도 namespace와 읽기 전용 SignAndEncrypt 연결을 사용하며, 볶음 솥 온도와 콤비오븐 기후·습도·팬 확장은 원표본에 보존한다. 프로젝트 시험 계약이며 실제 제조사 사양이나 OPC UA 표준 이력 서비스를 주장하지 않는다.
 
 `serve-mqtt`는 `mockprofile-310` 볶음·교반과 `mockprofile-320` 콤비오븐의 vendor-a/b/c JSON 원천도 TLS·QoS 1 인스턴스 전용 Topic으로 제공한다. 합성 장비 유형과 원천 식별자를 검사하고 원표본의 장비별 확장 필드를 보존한다.
+
+`serve-mqtt`는 볶음·교반 `mockprofile-312`와 콤비오븐 `mockprofile-322`의 vendor-a/b/c CSV 원천도 제공한다. 각 계열은 명시적인 열 계약과 인스턴스 전용 Topic을 사용하며, 장비 유형과 원천 식별자를 검증한다.

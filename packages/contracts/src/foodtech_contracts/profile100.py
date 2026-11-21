@@ -170,7 +170,8 @@ for _vendor, _base in (("b", NORMALIZED_B_SCHEMA), ("c", NORMALIZED_C_SCHEMA)):
 EQUIPMENT_SYNTHETIC_SOURCE = {}
 EQUIPMENT_SYNTHETIC_NORMALIZED = {}
 for _binary, _normalized in (("213", STIR_UA_JSON_NORMALIZED), ("223", COMBI_UA_JSON_NORMALIZED),
-                               ("310", STIR_UA_JSON_NORMALIZED), ("320", COMBI_UA_JSON_NORMALIZED)):
+                               ("310", STIR_UA_JSON_NORMALIZED), ("320", COMBI_UA_JSON_NORMALIZED),
+                               ("312", STIR_UA_JSON_NORMALIZED), ("322", COMBI_UA_JSON_NORMALIZED)):
     for _vendor in "abc":
         _id = f"mockprofile-{_binary}-{_vendor}-001"
         _source_schema = json.loads(files("foodtech_contracts").joinpath(
@@ -189,7 +190,7 @@ def _validate(record: dict) -> None:
     binary_id = record.get("deviceId")
     if binary_id in EQUIPMENT_SYNTHETIC_NORMALIZED:
         EQUIPMENT_SYNTHETIC_NORMALIZED[binary_id].validate(record)
-        if binary_id.startswith(("mockprofile-223-c-", "mockprofile-320-c-")) and record["measurements"]["speedLevel"] != record["extensions"]["vendor_extension"]["FanLevel"]:
+        if binary_id.startswith(("mockprofile-223-c-", "mockprofile-320-c-", "mockprofile-322-c-")) and record["measurements"]["speedLevel"] != record["extensions"]["vendor_extension"]["FanLevel"]:
             raise ValueError("conflicting synthetic fan levels")
         return
     for vendor, validator in COMBI_UA_JSON_NORMALIZED.items():
@@ -243,7 +244,9 @@ def decode_record(raw: str | bytes) -> dict:
                                           "mockprofile-301-a-001", "mockprofile-301-b-001", "mockprofile-301-c-001"}
                           for key in ("deviceId", "device_id", "DeviceId")):
         raise ValueError("XML source profile requires XML input")
-    if not csv_source and any(isinstance(record.get(key), str) and record[key] in {"mockprofile-302-a-001", "mockprofile-302-b-001", "mockprofile-302-c-001"} for key in ("deviceId", "device_id", "DeviceId")):
+    if not csv_source and any(isinstance(record.get(key), str) and record[key] in
+            {f"mockprofile-{profile}-{vendor}-001" for profile in ("302", "312", "322") for vendor in "abc"}
+            for key in ("deviceId", "device_id", "DeviceId")):
         raise ValueError("CSV source profile requires CSV input")
     if (record.get("deviceId") in EQUIPMENT_SYNTHETIC_SOURCE and "-c-" in record["deviceId"] and record.get("DeviceId") != record["deviceId"]) or (record.get("deviceId") in {"mockprofile-220-c-001", "mockprofile-210-c-001", "mockprofile-302-c-001", "mockprofile-100-c-001", "mockprofile-101-c-001", "mockprofile-301-c-001", "mockprofile-200-c-001", "mockprofile-203-c-001", "mockprofile-300-c-001"} and record.get("DeviceId") != record.get("deviceId")):
         raise ValueError("vendor-c input must use its source schema")
