@@ -13,7 +13,8 @@ def main():
     resources = template["Resources"]
     tables = {value["Properties"]["TableName"]: value for value in resources.values()
               if value["Type"] == "AWS::DynamoDB::Table"}
-    expected = {"foodtech-identity-vault-dev", "foodtech-link-capsule-dev", "foodtech-deletion-registry-dev"}
+    expected = {"foodtech-identity-vault-dev", "foodtech-link-capsule-dev", "foodtech-deletion-registry-dev",
+                "foodtech-deletion-progress-dev"}
     assert set(tables) == expected
     key_ids = set()
     for name, table in tables.items():
@@ -34,9 +35,11 @@ def main():
         assert ttl == ({"AttributeName": "ttl_delete_after", "Enabled": True}
                        if name == "foodtech-deletion-registry-dev" else None)
     keys = {name: value for name, value in resources.items() if value["Type"] == "AWS::KMS::Key"}
-    assert len(keys) == 4 and key_ids <= set(keys)
+    assert len(keys) == 6 and key_ids <= set(keys)
     locator_key, attribute = template["Outputs"]["DeletionLocatorKeyArn"]["Value"]["Fn::GetAtt"]
     assert attribute == "Arn" and locator_key in keys and locator_key not in key_ids
+    progress_key, attribute = template["Outputs"]["DeletionProgressEnvelopeKeyArn"]["Value"]["Fn::GetAtt"]
+    assert attribute == "Arn" and progress_key in keys and progress_key not in key_ids and progress_key != locator_key
     assert all(key["Properties"]["EnableKeyRotation"] is True and key["DeletionPolicy"] == "Retain"
                for key in keys.values())
     assert not any(value["Type"] == "AWS::IAM::Role" for value in resources.values())

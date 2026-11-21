@@ -42,6 +42,8 @@ class PrivacyStorageStack extends Stack {
     const vaultKey = key("IdentityVaultStorage", "Identity Vault DynamoDB encryption");
     const capsuleKey = key("LinkCapsuleStorage", "Link Capsule DynamoDB encryption");
     const registryKey = key("DeletionRegistryStorage", "Deletion Registry DynamoDB encryption");
+    const progressStorageKey = key("DeletionProgressStorage", "Deletion progress DynamoDB encryption");
+    const progressEnvelopeKey = key("DeletionProgressEnvelope", "Deletion progress checkpoint envelope encryption");
     // This key protects registry locator ciphertext, independently of table SSE.
     // Its KMS permissions are intentionally not granted to any service here.
     const locatorKey = key("DeletionLocator", "Deletion Registry locator envelope encryption");
@@ -61,10 +63,13 @@ class PrivacyStorageStack extends Stack {
     const vault = table("IdentityVault", `foodtech-identity-vault-${stage}`, vaultKey);
     const capsule = table("LinkCapsule", `foodtech-link-capsule-${stage}`, capsuleKey);
     const registry = table("DeletionRegistry", `foodtech-deletion-registry-${stage}`, registryKey, "ttl_delete_after");
+    const progress = table("DeletionProgress", `foodtech-deletion-progress-${stage}`, progressStorageKey);
     new CfnOutput(this, "IdentityVaultTableName", { value: vault.tableName });
     new CfnOutput(this, "LinkCapsuleTableName", { value: capsule.tableName });
     new CfnOutput(this, "DeletionRegistryTableName", { value: registry.tableName });
     new CfnOutput(this, "DeletionLocatorKeyArn", { value: locatorKey.keyArn });
+    new CfnOutput(this, "DeletionProgressTableName", { value: progress.tableName });
+    new CfnOutput(this, "DeletionProgressEnvelopeKeyArn", { value: progressEnvelopeKey.keyArn });
   }
 }
 
