@@ -58,6 +58,10 @@ class CapsuleInventoryTests(unittest.TestCase):
         staged = []
         result = self.inventory(client).stage(LOCATOR, REQUEST_ID, lambda sk, blob, metadata: staged.append((sk, blob, metadata)))
         self.assertEqual((result.revision, result.entry_count), (1, 2))
+        self.assertEqual(result.wrapped_user_key.encrypted_dek, b"wrapped")
+        self.assertEqual(result.wrapped_user_key.user_key_id, staged[0][2]["user_key_id"])
+        self.assertNotIn("wrapped", repr(result))
+        self.assertNotIn("wrapped", repr(result.wrapped_user_key))
         self.assertEqual([row[0] for row in staged], ["ENTRY#BILLING#2026-01", "ENTRY#USAGE#2026-11"])
         self.assertEqual(staged[0][2]["pool_version"], "pool-v1")
         self.assertTrue(client.paginator.request["ConsistentRead"])
@@ -65,7 +69,8 @@ class CapsuleInventoryTests(unittest.TestCase):
         self.assertEqual(len(client.gets), 2)
 
     def test_changed_or_unlocked_capsule_is_not_accepted(self):
-        for metadata in ([meta("1"), meta("2")], [meta("1", "ACTIVE")]):
+        changed_key = {**meta(), "encrypted_user_dek": {"B": b"other-wrapped"}}
+        for metadata in ([meta("1"), meta("2")], [meta("1", "ACTIVE")], [meta(), changed_key]):
             with self.subTest(metadata=metadata):
                 client = Client([{"Items": [entry("ENTRY#BILLING#2026-01")]}], metadata)
                 with self.assertRaises(CapsuleInventoryError):
@@ -99,8 +104,10 @@ class CapsuleInventoryTests(unittest.TestCase):
     def test_unkeyed_empty_capsule_is_allowed_but_partial_or_mismatched_key_is_not(self):
         unkeyed = {name: value for name, value in meta().items() if name not in {
             "user_key_id", "encrypted_user_dek", "pool_version", "shard_id", "key_arn"}}
-        self.assertEqual(self.inventory(Client([{"Items": []}], [unkeyed, unkeyed])).stage(
-            LOCATOR, REQUEST_ID, lambda *_: None).entry_count, 0)
+        empty = self.inventory(Client([{"Items": []}], [unkeyed, unkeyed])).stage(
+            LOCATOR, REQUEST_ID, lambda *_: None)
+        self.assertEqual(empty.entry_count, 0)
+        self.assertIsNone(empty.wrapped_user_key)
         with self.assertRaises(CapsuleInventoryError):
             self.inventory(Client([{"Items": [entry("ENTRY#BILLING#2026-01")]}], [unkeyed])).stage(
                 LOCATOR, REQUEST_ID, lambda *_: None)

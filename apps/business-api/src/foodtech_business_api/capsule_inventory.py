@@ -5,7 +5,7 @@ worker or proof that writers obey a deletion lock. Access requires a separately
 authorized service and IAM role before integration.
 """
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 from uuid import UUID
 
@@ -19,9 +19,19 @@ class CapsuleInventoryError(Exception):
 
 
 @dataclass(frozen=True)
+class WrappedUserKey:
+    user_key_id: str
+    pool_version: str
+    shard_id: str
+    key_arn: str
+    encrypted_dek: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
 class InventoryResult:
     revision: int
     entry_count: int
+    wrapped_user_key: WrappedUserKey | None = field(repr=False)
 
 
 class CapsuleInventory:
@@ -73,6 +83,8 @@ class CapsuleInventory:
 
         ``stage_entry`` may persist a provisional plan but must not delete data or
         mark the plan complete. A caller must discard that plan on any exception.
+        The wrapped key is returned only after the full inventory and second META
+        check succeed; it must remain within the authorized deletion boundary.
         The service must independently prevent all Capsule writers while locked and
         enforce revision increments for every change; this method cannot prove it.
         """
@@ -124,4 +136,8 @@ class CapsuleInventory:
         after = self._read_meta(locator, request_id)
         if before != after:
             raise CapsuleInventoryError("capsule changed during inventory")
-        return InventoryResult(revision=before["revision"], entry_count=count)
+        wrapped_key = None
+        if "user_key_id" in before:
+            wrapped_key = WrappedUserKey(user_key_id=before["user_key_id"], pool_version=before["pool_version"],
+                shard_id=before["shard_id"], key_arn=before["key_arn"], encrypted_dek=before["encrypted_user_dek"])
+        return InventoryResult(revision=before["revision"], entry_count=count, wrapped_user_key=wrapped_key)
