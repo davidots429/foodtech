@@ -128,13 +128,15 @@ async def scenario(store, partitions, auth, auth_keys):
             original = store.save_meal_aggregate
 
             def change_before_save(*args):
-                store.table.update_item(Key={'pk': meal_pk, 'sk': 'META'}, UpdateExpression='SET #v = :new',
-                    ExpressionAttributeNames={'#v': 'version'}, ExpressionAttributeValues={':new': 2})
+                store.advance_meal(meal_pk, 1, {**records[0], 'version': 2}, records[3],
+                                   {'sk': 'EVENT#000000000003', 'event': 'SYNTHETIC_CHANGE'})
                 return original(*args)
 
             with patch.object(store, 'save_meal_aggregate', side_effect=change_before_save):
                 changed = await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)
             assert changed.status_code == 409, changed.text
+            dirty = store.table.get_item(Key={'pk': meal_pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True)['Item']
+            assert int(dirty['version']) == 2 and dirty['state'] == 'PENDING'
             freshness = await client.get(link + '/freshness')
             assert freshness.json()['status'] == 'CHANGED'
             assert freshness.json()['changed'] == [{'meal_id': meal_id, 'reason': 'VERSION_CHANGED'}]

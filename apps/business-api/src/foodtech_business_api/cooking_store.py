@@ -39,6 +39,13 @@ def _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch):
         raise ValueError('invalid meal aggregate owner or version') from None
 
 
+def _meal_aggregate_dirty(expected_version, meta):
+    if type(expected_version) is not int or expected_version < 1 or not isinstance(meta, dict) or \
+            type(meta.get('version')) is not int or meta['version'] != expected_version + 1:
+        raise ValueError('invalid meal revision for aggregate refresh')
+    return {'sk': 'MEAL_AGGREGATE#DIRTY', 'version': meta['version'], 'state': 'PENDING'}
+
+
 def _job_list_item(pk: str, meta: dict) -> dict:
     owner = meta["owner_subject"]
     job_id = meta["job_id"]
@@ -306,6 +313,7 @@ class MemoryCookingStore:
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:
+        dirty = _meal_aggregate_dirty(expected_version, meta)
         with self.lock:
             current = self.items.get((pk, "META"))
             if (not current or current["version"] != expected_version or
@@ -313,9 +321,11 @@ class MemoryCookingStore:
                 raise Conflict
             for row in (meta, step, event):
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
+            self.items[(pk, dirty['sk'])] = {'pk': pk, **dirty}
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
                            event: dict, chunks: list[dict], live_count: int | None = None) -> None:
+        dirty = _meal_aggregate_dirty(expected_version, meta)
         source_pk = pk + "#SOURCE"
         with self.lock:
             current = self.items.get((pk, "META"))
@@ -326,6 +336,7 @@ class MemoryCookingStore:
                 raise Conflict
             self.items[(pk, "META")] = {"pk": pk, **meta}
             self.items[(pk, event["sk"])] = {"pk": pk, **event}
+            self.items[(pk, dirty['sk'])] = {'pk': pk, **dirty}
             for row in chunks:
                 self.items[(source_pk, row["sk"])] = {"pk": source_pk, **row}
 
@@ -793,6 +804,7 @@ class DynamoCookingStore:
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:
+        dirty = _meal_aggregate_dirty(expected_version, meta)
         operations = [
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected",
@@ -802,6 +814,7 @@ class DynamoCookingStore:
                      "ConditionExpression": "attribute_exists(pk)"}},
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **event}),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **dirty})}},
         ]
         try:
             self.client.transact_write_items(TransactItems=operations)
@@ -813,12 +826,14 @@ class DynamoCookingStore:
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
                            event: dict, chunks: list[dict], live_count: int | None = None) -> None:
+        dirty = _meal_aggregate_dirty(expected_version, meta)
         operations = [
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected", "ExpressionAttributeNames": {"#v": "version"},
                      "ExpressionAttributeValues": {":expected": {"N": str(expected_version)}}}},
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **event}),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **dirty})}},
         ]
         live_check = {"TableName": self.table.name, "Key": self._item({"pk": pk + "#LIVE", "sk": "META"}),
                       "ConditionExpression": "attribute_not_exists(pk)" if live_count is None else "#count = :expected"}
