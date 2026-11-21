@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import boto3
 import rfc8785
-from boto3.dynamodb.conditions import Attr, Key
+from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.collection_evidence import matches_snapshot
@@ -106,6 +106,9 @@ class DynamoProcessRestatement:
     """Process pending requests; derived results never rewrite META or evaluation pointers."""
 
     def __init__(self, cooking_table: str, data_table: str, region: str = "ap-southeast-2"):
+        self.auth_table_name = os.getenv('FOODTECH_AUTH_TABLE', '')
+        if not self.auth_table_name:
+            raise ValueError('authentication table is required for process restatement')
         session = boto3.Session(region_name=region)
         resource = session.resource("dynamodb")
         self.cooking = resource.Table(cooking_table)
@@ -115,6 +118,19 @@ class DynamoProcessRestatement:
 
     def _item(self, value: dict) -> dict:
         return {key: self.serializer.serialize(item) for key, item in value.items()}
+
+    def _owner_guard(self, job_pk: str, job: dict) -> dict:
+        prefix, separator, job_id = job_pk.rpartition('#JOB#')
+        if not separator or not prefix.startswith('SCOPE#USER#') or not job_id:
+            raise ValueError('invalid scoped job key')
+        owner = prefix.removeprefix('SCOPE#USER#')
+        if not owner or ('owner_subject' in job and job['owner_subject'] != owner) or \
+                ('job_id' in job and job['job_id'] != job_id) or not getattr(self, 'auth_table_name', ''):
+            raise ValueError('invalid job owner or authentication table')
+        return {'ConditionCheck': {'TableName': self.auth_table_name, 'Key': self._item({'pk': f'USER#{owner}'}),
+                'ConditionExpression': '(attribute_not_exists(suspended) OR suspended = :false) '
+                                       'AND attribute_not_exists(deletion_lock_request)',
+                'ExpressionAttributeValues': self._item({':false': False})}}
 
     def has_new_source(self, job_pk: str, assessment: dict) -> bool:
         pointer = self.cooking.get_item(
@@ -226,11 +242,17 @@ class DynamoProcessRestatement:
             return "JOB_NOT_BOUND"
         if request.get("reason") == "CUSTOMER_REFRESH" and \
                 int(request.get("job_version_at_detection", -1)) != int(job["version"]):
+            operations = [{"Update": {"TableName": self.cooking.name, "Key": self._item(request_key),
+                "UpdateExpression": "SET #status = :stale", "ConditionExpression": "#status = :pending",
+                "ExpressionAttributeNames": {"#status": "status"},
+                "ExpressionAttributeValues": self._item({":stale": "STALE", ":pending": "PENDING"})}},
+                self._owner_guard(job_pk, job)]
             try:
-                self.cooking.update_item(Key=request_key, UpdateExpression="SET #status = :stale",
-                    ConditionExpression=Attr("status").eq("PENDING"), ExpressionAttributeNames={"#status": "status"},
-                    ExpressionAttributeValues={":stale": "STALE"})
-            except self.cooking.meta.client.exceptions.ConditionalCheckFailedException:
+                self.client.transact_write_items(TransactItems=operations)
+            except self.client.exceptions.TransactionCanceledException as exc:
+                reasons = exc.response.get('CancellationReasons', [])
+                if len(reasons) == len(operations) and reasons[-1].get('Code') == 'ConditionalCheckFailed':
+                    raise RuntimeError('owner is suspended or deletion-locked; retry after reconciliation') from exc
                 current = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")
                 if not current or current.get("status") not in {"STALE", "COMPLETED"}:
                     raise
@@ -327,7 +349,7 @@ class DynamoProcessRestatement:
                 revision_check.update({"ConditionExpression": "#r = :r",
                     "ExpressionAttributeNames": {"#r": "revision"},
                     "ExpressionAttributeValues": {":r": {"N": str(source_revision)}}})
-            self.client.transact_write_items(TransactItems=[
+            operations = [
                 {"ConditionCheck": {"TableName": self.cooking.name,
                                     "Key": self._item({"pk": job_pk, "sk": "META"}),
                                     "ConditionExpression": "#v = :v",
@@ -347,8 +369,13 @@ class DynamoProcessRestatement:
                             "UpdateExpression": "ADD revision :one",
                             "ConditionExpression": "attribute_not_exists(revision) OR revision < :max",
                             "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}},
-            ])
-        except self.client.exceptions.TransactionCanceledException:
+                self._owner_guard(job_pk, job),
+            ]
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            reasons = exc.response.get('CancellationReasons', [])
+            if len(reasons) == len(operations) and reasons[-1].get('Code') == 'ConditionalCheckFailed':
+                raise RuntimeError('owner is suspended or deletion-locked; retry after reconciliation') from exc
             current = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")
             if current and current["status"] == "COMPLETED":
                 self._refresh_dependents(job_pk)

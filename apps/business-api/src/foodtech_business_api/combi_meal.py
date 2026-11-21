@@ -390,7 +390,7 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
              "records": body.records, "sha256": digest,
              "events": [{**event, "recorded_at": now} for event in events]}
     try:
-        await _store_call(store, store.append_meal_live, pk, count, next_state, chunk)
+        await _store_call(store, store.append_meal_live, pk, count, next_state, chunk, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "수집 순서 또는 배치 상태가 변경되었습니다.") from exc
     return {"next_cursor": next_state["count"], "duplicate": False}
@@ -455,7 +455,7 @@ async def import_combi_source(meal_id: UUID, request: Request, body: CombiSource
              "observed_at": now, "recorded_at": now, "actor": session.subject,
              "source_sha256": digest, "record_count": len(body.records)}
     try:
-        await _store_call(store, store.attach_meal_source, pk, body.expected_version, meta, event, chunks, live_count)
+        await _store_call(store, store.attach_meal_source, pk, body.expected_version, meta, event, chunks, live_count, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "event": event}
@@ -576,7 +576,7 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
          "safety_status": "NOT_MEASURED", "quality_status": "PENDING"},
     ]
     try:
-        await _store_call(store, store.create_meal, _pk(session.subject, meal_id), records)
+        await _store_call(store, store.create_meal, _pk(session.subject, meal_id), records, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "식사 배치 생성이 충돌했습니다. 다시 시도해 주세요.") from exc
     return {"meal": records[0], "rice": records[1], "transition": records[2], "mackerel": records[3]}
@@ -697,7 +697,7 @@ async def record_rice_preparation(meal_id: UUID, request: Request, body: RicePre
              "recorded_at": _now(), "actor": session.subject, "previous": previous, "preparation": current,
              "reason": body.reason.strip() if body.reason else None}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -788,7 +788,7 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
     event = {"sk": f"EVENT#{version:012d}", "event": body.event, "from_status": old["status"],
              "to_status": next_status, "observed_at": at, "recorded_at": _now(), "actor": session.subject}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -837,7 +837,7 @@ async def record_transition_evidence(meal_id: UUID, request: Request, body: Tran
              "from_status": old["status"], "to_status": status, "observed_at": observed_at,
              "recorded_at": _now(), "actor": session.subject, "assessment": result}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -894,7 +894,7 @@ async def record_mackerel_safety(meal_id: UUID, request: Request, body: Mackerel
              "probes": [probe.model_dump(mode="json") for probe in body.probes],
              "products": step["products"], "selection_issues": issues, "selection_note": body.selection_note}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -941,7 +941,7 @@ async def record_mackerel_reheat(meal_id: UUID, request: Request, body: Mackerel
              "from_status": old["status"], "to_status": meta["status"], "observed_at": iso(unloaded),
              "recorded_at": _now(), "actor": session.subject}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -978,7 +978,7 @@ async def record_mackerel_process(meal_id: UUID, request: Request, body: Mackere
              "observed_at": step["program_completed_at"], "recorded_at": _now(),
              "actor": session.subject, "assessment": assessment}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -1015,7 +1015,7 @@ async def record_rice_process(meal_id: UUID, request: Request, body: RiceProcess
              "observed_at": step["program_completed_at"], "recorded_at": _now(),
              "actor": session.subject, "assessment": assessment}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -1201,7 +1201,7 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
         event["previous_assessment"] = prior_assessment
         event["previous_source"] = prior_source
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -1251,7 +1251,7 @@ async def confirm_rice_safety(meal_id: UUID, request: Request, body: RiceSafetyC
              "critical_alarm_observed": step.get("rice_critical_alarm_observed"),
              "source_checked": source_checked, "fan_checked": fan_checked, "climate_checked": climate_checked}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "event": event}
@@ -1341,7 +1341,7 @@ async def assess_combi_quality(meal_id: UUID, menu: Literal["rice", "mackerel"],
              "to_status": old["status"], "observed_at": now, "recorded_at": now,
              "actor": session.subject, "assessment": assessment}
     try:
-        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
+        await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "배치 상태가 변경되었습니다. 다시 조회해 주세요.") from exc
     return {"meal": meta, "step": updated, "assessment": assessment}

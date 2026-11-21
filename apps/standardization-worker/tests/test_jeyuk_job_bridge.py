@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 from foodtech_standardization_worker.jeyuk_job_bridge import DynamoJeyukJobBridge
+from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 
 
 class TransactionCanceled(Exception):
@@ -29,10 +30,17 @@ class Client:
     def __init__(self, table):
         self.table = table
         self.decoder = TypeDeserializer()
+        self.owner_locked = False
 
     def transact_write_items(self, *, TransactItems):
         writes = []
-        for operation in TransactItems:
+        for index, operation in enumerate(TransactItems):
+            if 'ConditionCheck' in operation:
+                if self.owner_locked:
+                    reasons = [{'Code': 'None'} for _ in TransactItems]
+                    reasons[index] = {'Code': 'ConditionalCheckFailed'}
+                    raise TransactionCanceled(reasons)
+                continue
             put = operation["Put"]
             item = {key: self.decoder.deserialize(value) for key, value in put["Item"].items()}
             key = (item["pk"], item["sk"])
@@ -81,6 +89,29 @@ class JeyukJobBridgeTests(unittest.TestCase):
         self.bridge.table = self.table
         self.bridge.client = Client(self.table)
         self.bridge.serializer = TypeSerializer()
+        self.bridge.auth_table_name = 'auth-table'
+
+    def test_locked_owner_does_not_write_and_requests_retry(self):
+        self.bridge.client.owner_locked = True
+        with self.assertRaisesRegex(RuntimeError, 'deletion-locked'):
+            self.bridge.apply(decision(1, 'NORMAL'))
+        self.assertEqual(self.table.items[(self.job_pk, 'META')]['version'], 1)
+        self.assertNotIn((self.job_pk, 'EVENT#JEYUK#000001'), self.table.items)
+        self.bridge.client.owner_locked = False
+        self.assertEqual(self.bridge.apply(decision(1, 'NORMAL')), 'NORMAL')
+
+    def test_locked_failure_does_not_acknowledge_sqs_message(self):
+        deleted = []
+        worker = DynamoStandardizationWorker.__new__(DynamoStandardizationWorker)
+        worker.queue_url = 'queue'
+        worker.sqs = SimpleNamespace(receive_message=lambda **_: {'Messages': [
+            {'Body': '{}', 'ReceiptHandle': 'synthetic'}]}, delete_message=lambda **kw: deleted.append(kw))
+        def process(_):
+            raise RuntimeError('owner is suspended or deletion-locked; retry after reconciliation')
+        worker.process = process
+        with self.assertRaisesRegex(RuntimeError, 'deletion-locked'):
+            worker.run_once()
+        self.assertEqual(deleted, [])
 
     def test_warning_failure_and_replay_change_only_bound_job(self):
         for second in range(1, 31):

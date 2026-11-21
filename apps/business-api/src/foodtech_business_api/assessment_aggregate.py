@@ -166,7 +166,7 @@ async def _calculate(session, store, body: AggregateRequest) -> dict:
               "recipe_improvement_status": "NOT_EVALUATED", "provenance": "SYNTHETIC"}
     analysis_pk = f"SCOPE#USER#{session.subject}#AGGREGATE#{group_id}"
     try:
-        return await _store_call(store, store.save_aggregate, analysis_pk, snapshots, record)
+        return await _store_call(store, store.save_aggregate, analysis_pk, snapshots, record, getattr(session, 'epoch', None))
     except Conflict as exc:
         raise HTTPException(409, "집계 중 평가 또는 안전 상태가 변경되었습니다. 다시 계산해 주세요.") from exc
 

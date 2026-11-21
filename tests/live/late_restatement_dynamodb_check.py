@@ -52,6 +52,9 @@ def main() -> None:
     resource = session.resource("dynamodb")
     cooking, data = resource.Table(COOKING_TABLE), resource.Table(DATA_TABLE)
     run_id = uuid.uuid4().hex[:12]
+    auth = resource.Table('foodtech-auth-sessions-dev')
+    auth_key = {'pk': f'USER#synthetic-restatement-{run_id}'}
+    auth_created = False
     job_pk = f"SCOPE#USER#synthetic-restatement-{run_id}#JOB#test"
     history_pk = f"SCOPE#USER#synthetic-restatement-{run_id}#JOBS"
     event_pks = [f"EVENT#synthetic-restatement-{run_id}-{name}"
@@ -112,6 +115,35 @@ def main() -> None:
         data.put_item(Item={"pk": stream_pk, "sk": "SOURCE#REVISION", "revision": 4})
         with patch.dict(os.environ, {"FOODTECH_COOKING_TABLE": COOKING_TABLE}):
             worker = DynamoStandardizationWorker(DATA_TABLE, "unused", "unused")
+        assert worker.process_bridge._request_restatement(job_pk, late_assessment) == 'RESTATEMENT_PENDING'
+        auth.put_item(Item={**auth_key, 'epoch': 1, 'suspended': False,
+                            'deletion_lock_request': str(uuid.uuid4())}, ConditionExpression='attribute_not_exists(pk)')
+        auth_created = True
+        try:
+            worker.process_bridge.restatement.process(job_pk, late_assessment['ingestion_event_id'])
+        except RuntimeError as exc:
+            if 'deletion-locked' not in str(exc):
+                raise
+        else:
+            raise AssertionError('locked owner accepted restatement')
+        locked_request = cooking.get_item(Key={'pk': job_pk, 'sk': request_sk}, ConsistentRead=True)['Item']
+        if locked_request['status'] != 'PENDING' or cooking.get_item(
+                Key={'pk': job_pk, 'sk': 'PROCESS#LATEST_RESTATED'}, ConsistentRead=True).get('Item'):
+            raise AssertionError('locked restatement wrote result or changed request')
+        stale_key = {'pk': job_pk, 'sk': 'RESTATEMENT#REQUEST#synthetic-stale'}
+        cooking.put_item(Item={**stale_key, 'status': 'PENDING', 'reason': 'CUSTOMER_REFRESH',
+                               'job_version_at_detection': 6}, ConditionExpression='attribute_not_exists(pk)')
+        try:
+            worker.process_bridge.restatement.process(job_pk, 'synthetic-stale')
+        except RuntimeError as exc:
+            if 'deletion-locked' not in str(exc):
+                raise
+        else:
+            raise AssertionError('locked owner accepted stale request update')
+        if cooking.get_item(Key=stale_key, ConsistentRead=True)['Item']['status'] != 'PENDING':
+            raise AssertionError('locked stale request was modified')
+        cooking.delete_item(Key=stale_key)
+        auth.update_item(Key=auth_key, UpdateExpression='REMOVE deletion_lock_request')
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
         assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 2
         processor = DynamoProcessRestatement(COOKING_TABLE, DATA_TABLE)
@@ -215,6 +247,8 @@ def main() -> None:
                           "source_revision_race": "STALE_RETRY", "customer_revision_status": [
                               "MATCHED_AT_READ", "CHANGED"], "cleanup_partitions": 10}))
     finally:
+        if auth_created:
+            auth.delete_item(Key=auth_key)
         clean_partition(cooking, job_pk)
         clean_partition(cooking, history_pk)
         clean_partition(cooking, stream_pk)
