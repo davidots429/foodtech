@@ -25,21 +25,23 @@ class UaJsonTests(unittest.TestCase):
     def test_https_read_only_and_collection(self):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
+            host = os.environ.get('FOODTECH_MOCK_TEST_HOST', 'localhost')
+            san = 'DNS:localhost,IP:127.0.0.1' + (f',IP:{host}' if host != 'localhost' else '')
             key, cert, pfx = (temp / name for name in ("key.pem", "cert.pem", "cert.pfx"))
             subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
                             "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
-                            "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+                            "-addext", f"subjectAltName={san}"],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
                             "-password", "pass:test-password"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 port = probe.getsockname()[1]
-            base = f"https://localhost:{port}"
+            base = f"https://{host}:{port}"
             env = {**os.environ, "FOODTECH_MOCK_CLIENT_ID": "test-user", "FOODTECH_MOCK_CLIENT_SECRET": "test-secret",
                    "FOODTECH_MOCK_CERT_PASSWORD": "test-password"}
             server = subprocess.Popen(["dotnet", str(DLL), "serve-ua-json", "--fixture", str(FIXTURE),
-                                       "--cert", str(pfx), "--port", str(port)], env=env,
+                                       "--cert", str(pfx), "--port", str(port), "--bind-address", "0.0.0.0"], env=env,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 with httpx.Client(base_url=base, verify=str(cert), timeout=1) as http:
@@ -95,7 +97,7 @@ class UaJsonTests(unittest.TestCase):
                 server.terminate(); server.wait(timeout=5)
                 def start_server():
                     return subprocess.Popen(["dotnet", str(DLL), "serve-ua-json", "--fixture", str(FIXTURE),
-                        "--cert", str(pfx), "--port", str(port)], env=env,
+                        "--cert", str(pfx), "--port", str(port), "--bind-address", "0.0.0.0"], env=env,
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 def wait_healthy(process):
                     for _ in range(100):
