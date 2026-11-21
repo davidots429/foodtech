@@ -115,6 +115,12 @@ def main():
             raise AssertionError('valid session did not create complete job history')
         auth_table.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request',
                                ExpressionAttributeValues={':request': str(uuid4())})
+        try:
+            store.ensure_listed(job_pk, job_meta)
+        except Conflict:
+            pass
+        else:
+            raise AssertionError('job listing reconciliation accepted after deletion lock')
         table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
                        ConditionExpression='attribute_not_exists(pk)')
         try:

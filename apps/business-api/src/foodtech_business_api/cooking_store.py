@@ -453,7 +453,9 @@ class MemoryCookingStore:
     def ensure_listed(self, pk: str, meta: dict) -> None:
         with self.lock:
             listing = _job_list_item(pk, meta)
-            if (pk, "META") not in self.items:
+            source = self.items.get((pk, "META"))
+            if not source or any(source.get(field) != meta.get(field) for field in
+                                 ("owner_subject", "job_id", "created_at")):
                 raise Conflict
             key = (listing["pk"], listing["sk"])
             if key not in self.items:
@@ -1102,16 +1104,23 @@ class DynamoCookingStore:
         listing = _job_list_item(pk, meta)
         try:
             self._history_transact([
+                self._derived_owner_guard(meta["owner_subject"], None),
+                {"ConditionCheck": {"TableName": self.table.name,
+                    "Key": self._item({"pk": pk, "sk": "META"}),
+                    "ConditionExpression": "owner_subject = :owner AND job_id = :id AND created_at = :created",
+                    "ExpressionAttributeValues": self._item({":owner": meta["owner_subject"],
+                        ":id": meta["job_id"], ":created": meta["created_at"]})}},
                 {"Put": {"TableName": self.table.name, "Item": self._item(listing),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
                 self._history_update(pk),
             ])
         except self.client.exceptions.TransactionCanceledException as exc:
             reasons = exc.response.get("CancellationReasons", [])
-            if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
+            if len(reasons) == 4 and reasons[2].get("Code") == "ConditionalCheckFailed" and \
+                    all(reason.get("Code") in (None, "None") for i, reason in enumerate(reasons) if i != 2):
                 existing = self.table.get_item(Key={"pk": listing["pk"], "sk": listing["sk"]},
                                                ConsistentRead=True).get("Item")
-                if existing and existing.get("job_id") == meta["job_id"]:
+                if existing and all(existing.get(field) == listing.get(field) for field in ("job_id", "created_at")):
                     return
             if _is_transaction_contention(exc):
                 raise Conflict from exc
