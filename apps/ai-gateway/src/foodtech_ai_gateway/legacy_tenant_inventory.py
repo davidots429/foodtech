@@ -298,6 +298,28 @@ def delete_registry_key(table, client, *, auth_table: str, tenant: str, request_
         raise
 
 
+def delete_registry_partition_page(table, client, *, auth_table: str, tenant: str, request_id: str,
+                                   partition: str, limit: int, cursor: str | None = None) -> dict:
+    """Remove a bounded page of child keys, then remove META after a final check.
+
+    Progress is returned only after the whole page succeeds. The caller must
+    protect cursors, authenticate the deletion and stop legacy writers. A
+    removed partition is not evidence of full customer deletion.
+    """
+    page = list_partition_keys(table, tenant=tenant, partition=partition, limit=limit, cursor=cursor)
+    removed = 0
+    for sk in page['keys']:
+        if sk != 'META':
+            delete_registry_key(table, client, auth_table=auth_table, tenant=tenant, request_id=request_id,
+                                partition=partition, sk=sk)
+            removed += 1
+    if page['next_cursor'] is None:
+        delete_registry_key(table, client, auth_table=auth_table, tenant=tenant, request_id=request_id,
+                            partition=partition, sk='META')
+        return {'deleted_children': removed, 'next_cursor': None, 'partition_removed': True}
+    return {'deleted_children': removed, 'next_cursor': page['next_cursor'], 'partition_removed': False}
+
+
 def delete_credential_pair(client, *, auth_table: str, registry_table: str, vault_table: str,
                            tenant: str, request_id: str, location: VaultLocation) -> None:
     """Delete matched metadata and vault entry under the exact deletion lock.

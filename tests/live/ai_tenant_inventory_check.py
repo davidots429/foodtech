@@ -5,6 +5,7 @@ from uuid import uuid4
 import boto3
 from foodtech_ai_gateway.legacy_tenant_inventory import (ActiveReconciliationConflict, CredentialDeletionConflict,
                                                          RegistryDeletionConflict, delete_credential_pair, delete_registry_key,
+                                                         delete_registry_partition_page,
                                                          ensure_reserved_marker,
                                                          list_partition_keys, reconcile_reserved_page, resolve_credential_vault,
                                                          scan_registry_partitions)
@@ -119,9 +120,16 @@ def main():
             pass
         else:
             raise AssertionError('execution parent deleted before children')
-        for sk in ('CALL#1', 'RESULT', 'META'):
-            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
-                                request_id=request, partition=exec_pk, sk=sk)
+        cursor, removed = None, 0
+        while True:
+            page = delete_registry_partition_page(table, session.client('dynamodb'), auth_table=auth.name,
+                tenant=tenant, request_id=request, partition=exec_pk, limit=1, cursor=cursor)
+            removed += page['deleted_children']
+            cursor = page['next_cursor']
+            if page['partition_removed']:
+                break
+        if removed != 2:
+            raise AssertionError('execution child deletion count mismatch')
         for partition in (consent_pk, limit_pk):
             delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
                                 request_id=request, partition=partition, sk='META')

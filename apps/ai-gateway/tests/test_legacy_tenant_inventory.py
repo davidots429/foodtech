@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from foodtech_ai_gateway.legacy_tenant_inventory import (RegistryDeletionConflict, VaultLocation, delete_credential_pair,
-                                                         delete_registry_key, ensure_reserved_marker,
+                                                         delete_registry_key, delete_registry_partition_page, ensure_reserved_marker,
                                                          InventoryPage, list_partition_keys, reconcile_reserved_page, resolve_credential_vault,
                                                          scan_registry_partitions)
 
@@ -144,6 +144,29 @@ class TenantInventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             delete_registry_key(table, client, auth_table='auth', tenant='alice', request_id=request,
                                 partition='CREDENTIAL#one', sk='META')
+
+    def test_partition_page_deletes_children_before_parent_and_does_not_advance_on_failure(self):
+        table, client, request = Mock(), Mock(), str(uuid4())
+        kwargs = dict(auth_table='auth', tenant='alice', request_id=request, partition='EXEC#one', limit=2)
+        with patch('foodtech_ai_gateway.legacy_tenant_inventory.list_partition_keys',
+                   return_value={'keys': ['CALL#1', 'META'], 'next_cursor': 'META'}), \
+             patch('foodtech_ai_gateway.legacy_tenant_inventory.delete_registry_key') as delete:
+            page = delete_registry_partition_page(table, client, **kwargs)
+            self.assertFalse(page['partition_removed'])
+            self.assertEqual(page['next_cursor'], 'META')
+            self.assertEqual(delete.call_args.kwargs['sk'], 'CALL#1')
+        with patch('foodtech_ai_gateway.legacy_tenant_inventory.list_partition_keys',
+                   return_value={'keys': ['RESULT'], 'next_cursor': None}), \
+             patch('foodtech_ai_gateway.legacy_tenant_inventory.delete_registry_key',
+                   side_effect=[None, RegistryDeletionConflict()]):
+            with self.assertRaises(RegistryDeletionConflict):
+                delete_registry_partition_page(table, client, cursor='META', **kwargs)
+        with patch('foodtech_ai_gateway.legacy_tenant_inventory.list_partition_keys',
+                   return_value={'keys': ['RESULT'], 'next_cursor': None}), \
+             patch('foodtech_ai_gateway.legacy_tenant_inventory.delete_registry_key') as delete:
+            page = delete_registry_partition_page(table, client, cursor='META', **kwargs)
+            self.assertTrue(page['partition_removed'])
+            self.assertEqual([call.kwargs['sk'] for call in delete.call_args_list], ['RESULT', 'META'])
 
 
 if __name__ == '__main__':
