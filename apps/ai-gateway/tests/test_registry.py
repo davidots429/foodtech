@@ -10,7 +10,7 @@ from botocore.session import get_session
 from botocore.validate import validate_parameters
 
 from foodtech_ai_gateway.policy import Caller, Consent, Credential, Execution, Feature, Model, Tier
-from foodtech_ai_gateway.registry import DynamoRegistry, RegistryConflict
+from foodtech_ai_gateway.registry import DynamoRegistry, RegistryConflict, _transaction_token
 from foodtech_ai_gateway.service import GatewayService
 from foodtech_ai_gateway.ollama import OllamaResult
 from foodtech_contracts.recommendation_guard import Evidence
@@ -178,6 +178,14 @@ class RegistryTests(unittest.TestCase):
                                                   "synthetic-tier1", None, "SYNTHETIC", Decimal("0")))
         self.resource.table.items[("LIMIT#2026-11#TENANT#tenant-a", "META")]["calls_remaining"] = 3
         self.assertTrue(self.service.prepare(Caller("business-api", "tenant-a"), "recipe-1").allowed)
+
+    def test_transaction_token_stable_for_same_content_and_changes_with_parameters(self):
+        original = [{"Update": {"Key": {"pk": {"S": "tenant"}}, "Version": {"N": "1"}}}]
+        changed = [{"Update": {"Key": {"pk": {"S": "tenant"}}, "Version": {"N": "2"}}}]
+        for operation in ("confirm", "reserve", "finish"):
+            token = _transaction_token("registry-test", operation, "id", original)
+            self.assertEqual(token, _transaction_token("registry-test", operation, "id", original))
+            self.assertNotEqual(token, _transaction_token("registry-test", operation, "id", changed))
 
     def test_local_recipe_retries_debit_each_call_once_in_order(self):
         self.recipe_execution()

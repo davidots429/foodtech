@@ -77,6 +77,32 @@ def main():
         if accepted != 3 or reserved != 3 or remaining != 0:
             raise AssertionError("Retry did not consume exactly the remaining calls")
         print("Freshly authorized retries consumed only the remaining budget")
+        execution_id = next(key["pk"].removeprefix("EXEC#") for key in keys[3:]
+                            if table.get_item(Key=key, ConsistentRead=True)["Item"]["state"] == "RESERVED")
+        keys.append({"pk": f"EXEC#{execution_id}", "sk": "RESULT"})
+        original_client = registry.client
+        class ConflictOnce:
+            def __getattr__(self, name):
+                return getattr(original_client, name)
+            def transact_write_items(self, **kwargs):
+                table.update_item(Key=keys[1], UpdateExpression="ADD #v :one",
+                                  ExpressionAttributeNames={"#v": "version"},
+                                  ExpressionAttributeValues={":one": 1})
+                return original_client.transact_write_items(**kwargs)
+        registry.client = ConflictOnce()
+        registry.begin_request()
+        try:
+            registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal("0"), response_text="synthetic")
+        except RegistryConflict:
+            pass
+        else:
+            raise AssertionError("Expected settlement conflict")
+        registry.client = original_client
+        registry.begin_request()
+        registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal("0"), response_text="synthetic")
+        if table.get_item(Key={"pk": f"EXEC#{execution_id}", "sk": "META"}, ConsistentRead=True)["Item"]["state"] != "SUCCEEDED":
+            raise AssertionError("Settlement retry did not succeed")
+        print("Settlement after a known conditional conflict verified")
     finally:
         for key in reversed(keys):
             table.delete_item(Key=key)
