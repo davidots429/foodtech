@@ -62,6 +62,7 @@ class RecipeJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: UUID
     job_version: int = Field(strict=True, ge=1)
+    comparison_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class RecipeConfirmRequest(RecipeJobRequest):
@@ -73,7 +74,7 @@ async def _recipe_job(request: Request, body: RecipeJobRequest):
     from .cooking import _read
     from .recommendation_evidence import read_evidence
     session, _, _, job, _ = await _read(request, str(body.job_id), write=True)
-    evidence = await read_evidence(request, str(body.job_id))
+    evidence = await read_evidence(request, str(body.job_id), comparison_id=body.comparison_id)
     if job["version"] != body.job_version or evidence["job_version"] != body.job_version:
         raise HTTPException(409, "조리 기록이 변경되었습니다. 근거를 다시 조회해 주세요.")
     if evidence["recorded"].get("provenance") != "SYNTHETIC" or \
@@ -84,6 +85,13 @@ async def _recipe_job(request: Request, body: RecipeJobRequest):
     if evidence.get("process_stale") or evidence.get("source_revision_status") in {"CHANGED", "INCONSISTENT"}:
         raise HTTPException(409, "원천 자료가 변경되었거나 연결이 맞지 않습니다. 공정 근거를 다시 확인해 주세요.")
     return session
+
+
+def _recipe_binding(body: RecipeJobRequest) -> dict:
+    result = {"job_id": str(body.job_id), "job_version": body.job_version}
+    if body.comparison_id is not None:
+        result["comparison_id"] = body.comparison_id
+    return result
 
 
 async def _recipe_gateway(path: str, body: dict) -> dict:
@@ -103,7 +111,7 @@ async def _recipe_gateway(path: str, body: dict) -> dict:
 async def recipe_request(request: Request, body: RecipeJobRequest) -> dict:
     session = await _recipe_job(request, body)
     return await _recipe_gateway("/internal/ai/recipe-requests", {
-        "tenant_id": session.subject, "job_id": str(body.job_id), "job_version": body.job_version})
+        "tenant_id": session.subject, **_recipe_binding(body)})
 
 
 @router.post("/recipe-requests/{parent_id}/local-preview", status_code=201)
@@ -111,7 +119,7 @@ async def recipe_local_preview(request: Request, parent_id: UUID, body: RecipeJo
     session = await _recipe_job(request, body)
     return await _recipe_gateway("/internal/ai/recipe-downgrades/preview", {
         "tenant_id": session.subject, "parent_execution_id": str(parent_id),
-        "job_id": str(body.job_id), "job_version": body.job_version})
+        **_recipe_binding(body)})
 
 
 @router.post("/recipe-quotes/{quote_id}/confirm", status_code=201)
@@ -120,7 +128,7 @@ async def recipe_local_confirm(request: Request, quote_id: UUID, body: RecipeCon
     result = await _recipe_gateway(f"/internal/ai/recipe-downgrades/{quote_id}/confirm", {
         "tenant_id": session.subject, "notice_version": body.notice_version,
         "quality_warning_acknowledged": body.quality_warning_acknowledged,
-        "job_id": str(body.job_id), "job_version": body.job_version})
+        **_recipe_binding(body)})
     return {**result, "execution_available": False}
 
 

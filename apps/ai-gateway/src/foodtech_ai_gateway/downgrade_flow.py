@@ -28,7 +28,10 @@ class DowngradeFlow:
         if not parent or parent.tenant_id != tenant or parent.feature != Feature.RECIPE_CORRECTION or \
                 parent.data_classification != "SYNTHETIC" or self.registry.execution_state(parent_id) != "PENDING":
             raise DowngradeError("PARENT_UNAVAILABLE")
-        if (parent.job_id is None) != (parent.job_version is None) or \
+        if (parent.comparison_id is not None and (parent.job_id is None or not isinstance(parent.comparison_id, str) or
+                len(parent.comparison_id) != 64 or
+                any(char not in "0123456789abcdef" for char in parent.comparison_id))) or \
+                (parent.job_id is None) != (parent.job_version is None) or \
                 (parent.job_id is not None and (not parent.job_id or parent.job_version < 1)):
             raise DowngradeError("PARENT_CONFIGURATION_INVALID")
         if self.registry.snapshot_versions().get(f"EXEC#{parent_id}") != first_versions.get(f"EXEC#{parent_id}"):
@@ -63,11 +66,11 @@ class DowngradeFlow:
         self.registry.create_quote(quote_id, {"quote_id": quote_id, "execution_id": execution_id,
             "parent_execution_id": parent_id, "tenant_id": tenant, "purpose": PURPOSE,
             "source_model_id": parent.model_id,
-            "job_id": parent.job_id, "job_version": parent.job_version,
+            "job_id": parent.job_id, "job_version": parent.job_version, "comparison_id": parent.comparison_id,
             "model_id": MODEL_ID, "notice_version": NOTICE_VERSION, "estimated_cost_usd": Decimal("0"),
             "created_at": now.isoformat(), "expires": int(expires.timestamp())})
         return {"quote_id": quote_id, "parent_execution_id": parent_id, "execution_id": execution_id,
-                "job_id": parent.job_id, "job_version": parent.job_version,
+                "job_id": parent.job_id, "job_version": parent.job_version, "comparison_id": parent.comparison_id,
                 "model_id": MODEL_ID, "notice_version": NOTICE_VERSION, "transmission_location": "LOCAL",
                 "estimated_cost_usd": "0", "quality_warning": True,
                 "quality_notice": "Tier 1보다 분석·권고 품질이 낮을 수 있습니다. 운영자 검토가 필요합니다.",
@@ -83,13 +86,13 @@ class DowngradeFlow:
                 quote.get("expires", 0) <= int(datetime.now(timezone.utc).timestamp()):
             raise DowngradeError("NOTICE_UNAVAILABLE")
         parent = self._check(tenant, quote["parent_execution_id"])
-        if (parent.job_id, parent.job_version) != (quote.get("job_id"), quote.get("job_version")) or \
+        if (parent.job_id, parent.job_version, parent.comparison_id) != (quote.get("job_id"), quote.get("job_version"), quote.get("comparison_id")) or \
                 (quote.get("source_model_id") is not None and parent.model_id != quote["source_model_id"]):
             raise DowngradeError("PARENT_CHANGED")
         execution = Execution(quote["execution_id"], tenant, Feature.RECIPE_CORRECTION, MODEL_ID,
                               None, "SYNTHETIC", Decimal("0"), downgrade_consent_id=quote_id,
                               parent_execution_id=quote["parent_execution_id"],
-                              job_id=parent.job_id, job_version=parent.job_version)
+                              job_id=parent.job_id, job_version=parent.job_version, comparison_id=parent.comparison_id)
         consent = Consent(quote_id, execution.execution_id, tenant, MODEL_ID, "TIER_DOWNGRADE", NOTICE_VERSION,
                           datetime.now(timezone.utc), parent_execution_id=execution.parent_execution_id,
                           quality_warning_acknowledged=True, transmission_location="LOCAL", estimated_cost_usd=Decimal("0"))

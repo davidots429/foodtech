@@ -60,6 +60,29 @@ class RecipeRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post(path, headers=self.headers, json=self.body)).status_code, 409)
         ai._recipe_gateway.assert_not_awaited()
 
+    async def test_selected_comparison_is_revalidated_for_each_step(self):
+        from foodtech_business_api.recommendation_evidence import read_evidence
+        comparison = "a" * 64
+        body = {**self.body, "comparison_id": comparison}
+        parent, quote = str(uuid4()), str(uuid4())
+        paths = [("/api/customer/ai/recipe-requests", body),
+                 (f"/api/customer/ai/recipe-requests/{parent}/local-preview", body),
+                 (f"/api/customer/ai/recipe-quotes/{quote}/confirm", {**body,
+                     "notice_version": "local-recipe-downgrade-v1", "quality_warning_acknowledged": True})]
+        for path, payload in paths:
+            with self.subTest(path=path):
+                response = await self.client.post(path, headers=self.headers, json=payload)
+                self.assertEqual(response.status_code, 201, response.text)
+                self.assertEqual(read_evidence.await_args.kwargs["comparison_id"], comparison)
+                self.assertEqual(ai._recipe_gateway.await_args.args[1]["comparison_id"], comparison)
+        read_evidence.side_effect = __import__("fastapi").HTTPException(409, "비교가 변경되었습니다")
+        ai._recipe_gateway.reset_mock()
+        for path, payload in paths:
+            self.assertEqual((await self.client.post(path, headers=self.headers, json=payload)).status_code, 409)
+        ai._recipe_gateway.assert_not_awaited()
+        self.assertEqual((await self.client.post(paths[0][0], headers=self.headers,
+                              json={**body, "comparison_id": "invalid"})).status_code, 422)
+
     async def test_preview_and_confirm_forward_binding_and_strict_acknowledgement(self):
         parent, quote = str(uuid4()), str(uuid4())
         preview = await self.client.post(f"/api/customer/ai/recipe-requests/{parent}/local-preview",

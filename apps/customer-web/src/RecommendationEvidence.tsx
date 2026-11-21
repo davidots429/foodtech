@@ -19,7 +19,7 @@ type Evidence = {
   reheat_history_status: "NOT_RECORDED" | "RECORDED" | "INCONSISTENT";
   reheat_history: { segment_id: string; started_at: string; lifted_at: string; duration_seconds: string;
     rechecks: { status: string; recorded_at: string | null }[] }[];
-  selected_comparison: { baseline_job_id: string; baseline_recipe_version: string; baseline_score_percent: string;
+  selected_comparison: { comparison_id: string; baseline_job_id: string; baseline_recipe_version: string; baseline_score_percent: string;
     candidate_score_percent: string; immediately_previous_verified: boolean } | null;
 };
 
@@ -87,7 +87,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
     if (!value || busy) return;
     setBusy(true); setError("");
     try { setRequested(await api<RecipeRequest>("/api/customer/ai/recipe-requests", csrf,
-      { job_id: jobId, job_version: value.job_version })); }
+      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null })); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "권고 요청을 기록하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -118,7 +118,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
     if (!value || !requested || busy) return;
     setBusy(true); setError("");
     try { setNotice(await api<LocalNotice>(`/api/customer/ai/recipe-requests/${requested.execution_id}/local-preview`, csrf,
-      { job_id: jobId, job_version: value.job_version })); }
+      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null })); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "전환 고지를 조회하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -126,7 +126,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
     if (!value || !notice || !acknowledged || busy) return;
     setBusy(true); setError("");
     try { await api(`/api/customer/ai/recipe-quotes/${notice.quote_id}/confirm`, csrf,
-      { job_id: jobId, job_version: value.job_version, notice_version: notice.notice_version,
+      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, notice_version: notice.notice_version,
         quality_warning_acknowledged: true }); setConfirmed(true); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "전환 동의를 기록하지 못했습니다."); }
     finally { setBusy(false); }
