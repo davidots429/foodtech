@@ -64,6 +64,13 @@ class Execution:
 
 
 @dataclass(frozen=True)
+class ExecutionSnapshot:
+    execution: Execution
+    state: str
+    version: int
+
+
+@dataclass(frozen=True)
 class Model:
     model_id: str
     provider: str

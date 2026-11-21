@@ -17,7 +17,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
 
-from .policy import Budget, Consent, Credential, Execution, Feature, Model, Tier, UNCONFIGURED_TIER1
+from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, Model, Tier, UNCONFIGURED_TIER1
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -252,6 +252,10 @@ class DynamoRegistry:
         item = self._get("EXEC", execution_id)
         if not item:
             return None
+        return self._execution_from_item(item)
+
+    @staticmethod
+    def _execution_from_item(item: dict) -> Execution:
         fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"} else item[name]
                   for name in Execution.__dataclass_fields__}
         if fields["job_version"] is not None:
@@ -263,6 +267,20 @@ class DynamoRegistry:
                 fields[name] = int(fields[name])
         fields["feature"] = Feature(fields["feature"])
         return Execution(**fields)
+
+    def execution_snapshot(self, execution_id: str) -> ExecutionSnapshot | None:
+        """Read execution, state and version from the same consistent item."""
+        item = self._get("EXEC", execution_id)
+        if not item:
+            return None
+        version = item.get('version')
+        if isinstance(version, bool) or not isinstance(version, (int, Decimal)) or \
+                not Decimal(version).is_finite() or not 1 <= version < 2**63 or version != int(version):
+            raise ValueError('invalid execution version')
+        state = item.get('state')
+        if not isinstance(state, str):
+            raise ValueError('invalid execution state')
+        return ExecutionSnapshot(self._execution_from_item(item), state, int(version))
 
     def execution_state(self, execution_id: str) -> str | None:
         item = self._get("EXEC", execution_id)

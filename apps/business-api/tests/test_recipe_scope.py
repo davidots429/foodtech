@@ -30,8 +30,11 @@ class RecipeScopeTests(unittest.TestCase):
                 'menu': 'JEYUK', 'provenance': 'SYNTHETIC', 'source_binding': {'source_id': 'synthetic-rest',
                 'device_id': 'mockprofile-110-a-001', 'batch_id': batch}}
 
+    def snapshot_reader(self, _):
+        return SimpleNamespace(execution=self.execution, state='PENDING', version=1)
+
     def resolve(self):
-        return resolve_recipe_scope(self.session, self.execution_id, lambda _: self.execution, self.jobs.get)
+        return resolve_recipe_scope(self.session, self.execution_id, self.snapshot_reader, self.jobs.get)
 
     def test_scope_is_derived_from_customer_owned_execution_and_jobs(self):
         scope = self.resolve()
@@ -75,7 +78,7 @@ class RecipeScopeTests(unittest.TestCase):
                 self.jobs[key]['source_binding']['batch_id'] = 'jeyuk-changed'
             return self.jobs.get(key)
         with self.assertRaises(RecipeScopeDenied):
-            resolve_recipe_scope(self.session, self.execution_id, lambda _: self.execution, read)
+            resolve_recipe_scope(self.session, self.execution_id, self.snapshot_reader, read)
 
     def test_session_expiring_during_reads_is_denied(self):
         self.session.expires = 200
@@ -83,15 +86,30 @@ class RecipeScopeTests(unittest.TestCase):
             with self.assertRaises(RecipeScopeDenied):
                 self.resolve()
 
+    def test_execution_state_and_record_version_are_checked(self):
+        for state in ('FAILED', 'SUCCEEDED', 'CANCELLED'):
+            with self.subTest(state=state), self.assertRaises(RecipeScopeDenied):
+                resolve_recipe_scope(self.session, self.execution_id,
+                    lambda _: SimpleNamespace(execution=self.execution, state=state, version=1), self.jobs.get)
+        results = iter((SimpleNamespace(execution=self.execution, state='PENDING', version=1),
+                        SimpleNamespace(execution=self.execution, state='RESERVED', version=2)))
+        with self.assertRaises(RecipeScopeDenied):
+            resolve_recipe_scope(self.session, self.execution_id, lambda _: next(results), self.jobs.get)
+        scope = resolve_recipe_scope(self.session, self.execution_id,
+            lambda _: SimpleNamespace(execution=self.execution, state='RESERVED', version=2), self.jobs.get)
+        self.assertEqual(scope.owner, self.subject)
+
 
 class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
+    snapshot_reader = RecipeScopeTests.snapshot_reader
+
     def setUp(self):
         RecipeScopeTests.setUp(self)
 
     async def test_session_is_rechecked_after_store_reads(self):
         with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
                    side_effect=[self.session, self.session]) as check:
-            scope = await authenticated_recipe_scope(object(), self.execution_id, lambda _: self.execution, self.jobs.get)
+            scope = await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
         self.assertEqual(scope.owner, self.subject)
         self.assertEqual(check.await_count, 2)
 
@@ -100,11 +118,11 @@ class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
         with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
                    side_effect=[self.session, changed]):
             with self.assertRaises(RecipeScopeDenied):
-                await authenticated_recipe_scope(object(), self.execution_id, lambda _: self.execution, self.jobs.get)
+                await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
         with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
                    side_effect=[self.session, PermissionError('revoked')]):
             with self.assertRaises(PermissionError):
-                await authenticated_recipe_scope(object(), self.execution_id, lambda _: self.execution, self.jobs.get)
+                await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
 
     async def test_real_session_boundary_rejects_suspension_during_job_reads(self):
         store = MemoryStore()
@@ -123,7 +141,7 @@ class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
              patch.object(auth.Settings, 'from_env', return_value=SimpleNamespace()), \
              patch.object(auth, '_cognito_access', return_value=True):
             with self.assertRaises(HTTPException) as error:
-                await authenticated_recipe_scope(request, self.execution_id, lambda _: self.execution, read)
+                await authenticated_recipe_scope(request, self.execution_id, self.snapshot_reader, read)
         self.assertEqual(error.exception.status_code, 401)
         self.assertIsNone(store.read_session('synthetic-session'))
 

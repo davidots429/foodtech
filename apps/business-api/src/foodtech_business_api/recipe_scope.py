@@ -47,8 +47,12 @@ def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
         raise RecipeScopeDenied('recipe scope unavailable')
 
     def snapshot():
-        execution = execution_reader(execution_id)
-        if not execution or getattr(execution, 'execution_id', None) != execution_id or \
+        execution_snapshot = execution_reader(execution_id)
+        execution = getattr(execution_snapshot, 'execution', None)
+        state, record_version = getattr(execution_snapshot, 'state', None), getattr(execution_snapshot, 'version', None)
+        if not isinstance(state, str) or state not in {'PENDING', 'RESERVED'} or type(record_version) is not int or \
+                not 1 <= record_version < 2**63 or not execution or \
+                getattr(execution, 'execution_id', None) != execution_id or \
                 getattr(execution, 'tenant_id', None) != subject or \
                 getattr(execution, 'feature', None) != 'RECIPE_CORRECTION':
             raise RecipeScopeDenied('recipe scope unavailable')
@@ -76,7 +80,7 @@ def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
             sources.append('JEYUK#' + binding['batch_id'])
         if sources[0] == sources[1]:
             raise RecipeScopeDenied('recipe scope unavailable')
-        return RecipeReadScope(subject, execution_id, tuple(jobs), tuple(sources)), versions, revisions
+        return RecipeReadScope(subject, execution_id, tuple(jobs), tuple(sources)), versions, revisions, state, record_version
 
     first = snapshot()
     if snapshot() != first or expires <= time.time():

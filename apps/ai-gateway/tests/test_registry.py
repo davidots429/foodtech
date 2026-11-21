@@ -170,6 +170,16 @@ class RegistryTests(unittest.TestCase):
         self.registry.create_limit("PROJECT", "GLOBAL", Decimal("1"))
         self.service = GatewayService(self.registry)
 
+    def test_execution_snapshot_contains_consistent_state_and_version(self):
+        snapshot = self.registry.execution_snapshot('run-1')
+        self.assertEqual(snapshot.execution.execution_id, 'run-1')
+        self.assertEqual((snapshot.state, snapshot.version), ('PENDING', 1))
+        self.assertIsNone(self.registry.execution_snapshot('unknown'))
+        self.resource.table.items[('EXEC#run-1', 'META')]['state'] = 'FAILED'
+        self.resource.table.items[('EXEC#run-1', 'META')]['version'] = 2
+        snapshot = self.registry.execution_snapshot('run-1')
+        self.assertEqual((snapshot.state, snapshot.version), ('FAILED', 2))
+
     def recipe_execution(self):
         self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
                                          True, NOW, NOW))

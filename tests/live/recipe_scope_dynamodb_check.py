@@ -58,19 +58,32 @@ def main():
                     'batch_id': 'jeyuk-' + identifier}}, ConditionExpression=Attr('pk').not_exists())
             created.append((jobs.table, key, Attr('owner_subject').eq(subject)))
         saved = auth.read_session(session_id)
-        scope = resolve_recipe_scope(saved, execution_id, registry.execution, jobs.read_meta)
+        scope = resolve_recipe_scope(saved, execution_id, registry.execution_snapshot, jobs.read_meta)
         assert scope.source_partitions == ('JEYUK#jeyuk-' + current, 'JEYUK#jeyuk-' + prior)
         try:
             resolve_recipe_scope(replace(saved, subject='another-customer'), execution_id,
-                                 registry.execution, jobs.read_meta)
+                                 registry.execution_snapshot, jobs.read_meta)
         except RecipeScopeDenied:
             pass
         else:
             raise AssertionError('other customer accepted')
+        execution_key = {'pk': f'EXEC#{execution_id}', 'sk': 'META'}
+        registry.table.update_item(Key=execution_key, UpdateExpression='SET #state = :state ADD #version :one',
+            ExpressionAttributeNames={'#state': 'state', '#version': 'version'},
+            ExpressionAttributeValues={':state': 'FAILED', ':one': 1}, ConditionExpression=Attr('tenant_id').eq(subject))
+        try:
+            resolve_recipe_scope(saved, execution_id, registry.execution_snapshot, jobs.read_meta)
+        except RecipeScopeDenied:
+            pass
+        else:
+            raise AssertionError('finished execution accepted')
+        registry.table.update_item(Key=execution_key, UpdateExpression='SET #state = :state ADD #version :one',
+            ExpressionAttributeNames={'#state': 'state', '#version': 'version'},
+            ExpressionAttributeValues={':state': 'PENDING', ':one': 1}, ConditionExpression=Attr('tenant_id').eq(subject))
         request = Request({'type': 'http', 'method': 'GET', 'path': '/', 'headers': [
             (b'cookie', f'{auth_module.SESSION_COOKIE}={session_id}'.encode())]})
         def scope_read():
-            return authenticated_recipe_scope(request, execution_id, registry.execution, jobs.read_meta)
+            return authenticated_recipe_scope(request, execution_id, registry.execution_snapshot, jobs.read_meta)
         with patch.object(auth_module, 'get_store', return_value=auth), \
              patch.object(auth_module.Settings, 'from_env', return_value=SimpleNamespace()), \
              patch.object(auth_module, '_cognito_access', return_value=True):
@@ -84,7 +97,7 @@ def main():
                     created.append((auth.table, {'pk': f'USER#{subject}'}, Attr('suspended').eq(True)))
                 return jobs.read_meta(key)
             try:
-                asyncio.run(authenticated_recipe_scope(request, execution_id, registry.execution, suspend_during_read))
+                asyncio.run(authenticated_recipe_scope(request, execution_id, registry.execution_snapshot, suspend_during_read))
             except HTTPException as error:
                 if error.status_code != 401:
                     raise
@@ -96,7 +109,7 @@ def main():
         jobs.table.update_item(Key=current_key, UpdateExpression='SET #v = :new',
             ExpressionAttributeNames={'#v': 'version'}, ExpressionAttributeValues={':new': 3})
         try:
-            resolve_recipe_scope(saved, execution_id, registry.execution, jobs.read_meta)
+            resolve_recipe_scope(saved, execution_id, registry.execution_snapshot, jobs.read_meta)
         except RecipeScopeDenied:
             pass
         else:
