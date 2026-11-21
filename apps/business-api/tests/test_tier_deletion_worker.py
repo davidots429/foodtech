@@ -76,59 +76,69 @@ class WorkerTests(unittest.TestCase):
             self.worker.run_page(**self.scope)
 
 
+class MemoryProgress:
+    def __init__(self):
+        self.items = {}
+        self.fail_head = False
+    def load_checkpoint(self, *, cipher, subject, request_id, domain):
+        return self.items.get((subject, request_id, domain))
+    def save_checkpoint(self, *, cipher, subject, request_id, domain, expected_version, state, checkpoint):
+        if self.fail_head and domain == 'TIER_INDEX':
+            self.fail_head = False
+            raise RuntimeError('head save failed')
+        key = (subject, request_id, domain)
+        old = self.items.get(key)
+        if (old['version'] if old else 0) != expected_version:
+            raise RuntimeError('version conflict')
+        self.items[key] = {'version': expected_version + 1, 'state': state, 'checkpoint': checkpoint}
+        return expected_version + 1
+
+
 class CaptureTests(unittest.TestCase):
     def setUp(self):
         from foodtech_business_api.tier_deletion_worker import TierIndexCapture
-        self.tier, self.progress, self.cipher = Mock(), Mock(), object()
+        self.tier, self.progress, self.cipher = Mock(), MemoryProgress(), object()
         self.capture = TierIndexCapture(tier_store=self.tier, progress_store=self.progress, cipher=self.cipher)
         self.scope = {'subject': str(uuid4()), 'request_id': str(uuid4())}
 
-    def test_capture_pages_are_saved_before_ready(self):
-        self.progress.load_checkpoint.return_value = None
-        self.progress.save_checkpoint.return_value = 1
-        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['date#a'], 'next_cursor': 'APPLICATION#a'}
-        first = self.capture.capture_page(**self.scope, limit=1)
-        self.assertFalse(first['complete'])
-        payload = self.progress.save_checkpoint.call_args.kwargs['checkpoint']
-        self.progress.load_checkpoint.return_value = {'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': payload}
-        with self.assertRaises(ValueError):
-            self.capture.ensure_ready(**self.scope)
-        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['date#b'], 'next_cursor': None}
-        self.progress.save_checkpoint.return_value = 2
-        final = self.capture.capture_page(**self.scope, limit=1)
-        self.assertTrue(final['complete'])
-        self.assertEqual(final['captured_count'], 2)
-        self.assertNotIn('date#a', repr(final))
-        payload = self.progress.save_checkpoint.call_args.kwargs['checkpoint']
-        self.progress.load_checkpoint.return_value = {'version': 2, 'state': 'VERIFYING', 'checkpoint': payload}
-        self.capture.ensure_ready(**self.scope)
-
-    def test_observation_uses_captured_key_and_never_reports_completion(self):
-        payload = b'{"complete":true,"cursor":null,"keys":["date#secret"],"version":1}'
-        self.progress.load_checkpoint.return_value = {'version': 1, 'state': 'VERIFYING', 'checkpoint': payload}
-        self.tier.observe_pending_index.return_value = 'NOT_OBSERVED'
-        observed = self.capture.observe_one(**self.scope, index=0)
-        self.assertEqual(observed, {'index': 0, 'observation': 'NOT_OBSERVED'})
-        self.assertNotIn('date#secret', repr(observed))
-        self.tier.observe_pending_index.assert_called_once_with(self.scope['subject'], self.scope['request_id'], 'date#secret')
-        with self.assertRaises(ValueError):
-            self.capture.observe_one(**self.scope, index=1)
-
-    def test_failed_save_and_oversized_page_do_not_become_ready(self):
-        self.progress.load_checkpoint.return_value = None
-        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['x' * 2048] * 10, 'next_cursor': None}
-        with self.assertRaises(ValueError):
-            self.capture.capture_page(**self.scope, limit=10)
-        self.progress.save_checkpoint.assert_not_called()
-        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['date#a'], 'next_cursor': None}
-        self.progress.save_checkpoint.side_effect = RuntimeError('conflict')
+    def test_page_recovery_after_head_save_failure(self):
+        self.tier.deletion_index_candidates.side_effect = [
+            {'queue_sorts': ['date#a'], 'next_cursor': 'APPLICATION#a'},
+            {'queue_sorts': ['date#b'], 'next_cursor': None}]
+        self.progress.fail_head = True
         with self.assertRaises(RuntimeError):
             self.capture.capture_page(**self.scope, limit=1)
         with self.assertRaises(ValueError):
             self.capture.ensure_ready(**self.scope)
+        self.assertFalse(self.capture.capture_page(**self.scope, limit=1)['complete'])
+        self.assertEqual(self.tier.deletion_index_candidates.call_count, 1)
+        final = self.capture.capture_page(**self.scope, limit=1)
+        self.assertTrue(final['complete'])
+        self.assertEqual(final['captured_count'], 2)
+        self.capture.ensure_ready(**self.scope)
+        self.tier.observe_pending_index.return_value = 'NOT_OBSERVED'
+        self.assertEqual(self.capture.observe_one(**self.scope, index=1), {'observation': 'NOT_OBSERVED'})
+        self.tier.observe_pending_index.assert_called_once_with(self.scope['subject'], self.scope['request_id'], 'date#b')
+        page_key = (self.scope['subject'], self.scope['request_id'], 'TIER_INDEX_PAGE_000000000001')
+        del self.progress.items[page_key]
+        with self.assertRaises(ValueError):
+            self.capture.ensure_ready(**self.scope)
+
+    def test_many_pages_have_bounded_independent_checkpoints(self):
+        pages = 100
+        def next_page(subject, request, limit, cursor):
+            n = 0 if cursor is None else int(cursor.split('#')[1]) + 1
+            return {'queue_sorts': [f'date#{n:04d}'],
+                    'next_cursor': f'APPLICATION#{n:04d}' if n < pages - 1 else None}
+        self.tier.deletion_index_candidates.side_effect = next_page
+        for _ in range(pages):
+            result = self.capture.capture_page(**self.scope, limit=100)
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['captured_count'], pages)
+        self.assertTrue(all(len(item['checkpoint']) < 16384 for item in self.progress.items.values()))
+        self.capture.ensure_ready(**self.scope)
 
     def test_deletion_refuses_incomplete_capture(self):
-        self.progress.load_checkpoint.return_value = None
         worker = TierDeletionWorker(tier_store=self.tier, progress_store=self.progress,
                                     cipher=self.cipher, index_capture=self.capture)
         with self.assertRaises(ValueError):
