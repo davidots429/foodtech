@@ -263,6 +263,9 @@ def read_collection_completion(table_name: str, batch_id: str, *, include_settin
         return {"status": "REVISION_UNVERIFIED", "raw_count": len(raws)}
     matched = any(matches_jeyuk_snapshot(receipt, batch_id, raws) for receipt in receipts)
     result = {"status": "MATCHED_AT_READ" if matched else "NOT_MATCHED", "raw_count": len(raws)}
+    if matched:
+        # Version of this observed snapshot, not a promise that it stays current.
+        result["source_revision"] = before
     if matched and include_settings:
         samples = [decode_jeyuk_mock_sample(row["raw"]) for row in raws]
         def summarize(values):

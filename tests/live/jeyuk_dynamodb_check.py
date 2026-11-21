@@ -147,7 +147,8 @@ def main(*, mock_wire: bool = False) -> int:
             receipts = [row for row in rows if row["sk"].startswith("COLLECTION#RECEIPT#")]
             if len(receipts) != 1 or not matches_jeyuk_snapshot(receipts[0], fixture_id, raws):
                 raise AssertionError("Collected raw samples do not match the terminal receipt")
-            if read_collection_completion(DATA_TABLE, fixture_id) != {"status": "MATCHED_AT_READ", "raw_count": expected_count}:
+            if read_collection_completion(DATA_TABLE, fixture_id) != {"status": "MATCHED_AT_READ", "raw_count": expected_count,
+                                                                      "source_revision": expected_count}:
                 raise AssertionError("Business API could not verify the stored receipt")
             source = read_collection_completion(DATA_TABLE, fixture_id, include_settings=True)
             settings = source.get("settings", {})
