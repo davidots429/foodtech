@@ -52,7 +52,7 @@
 
 `GET /api/customer/combi-meals/{id}/quality/{rice|mackerel}/sample-evidence`는 고객 소유 배치의 현재 평가·안전 상태와 이력을 두 번 조회해 변경 여부를 확인하고, 유효한 평가의 점수와 실제 양을 반환한다. 자유 의견·관찰 기록은 반환하지 않는다. 합성 기준 식재료 중량에 대한 비율이 50% 이하면 `PARTIAL`, 50% 초과 100% 이하면 `REFERENCE`, 초과하면 `OVER_RECOMMENDED`다. 이 비율은 별도로 기록된 장비 정격 적재율과 다르며 실제 장비 한계나 안전 판정이 아니다. 레시피 버전이나 실제 중량이 없으면 누락된 조건을 표시한다. 이 결과는 조회 시점 확인이며 집계 생성·원천 완전성·이후 변경 방지를 보장하지 않는다.
 
-`POST /api/customer/combi-quality-aggregates`는 같은 메뉴·장비·레시피·합성 조리량 구간·기간에서 고객이 선택한 최대 20개 배치의 품질 점수와 합격률을 불변 스냅샷으로 저장한다. 각 배치의 버전을 저장 트랜잭션에서 확인하며 불일치·미기록 자료는 사유와 함께 제외한다. `GET /api/customer/combi-quality-aggregates/{group_id}/{result_id}`는 같은 고객의 과거 스냅샷을 조회한다. 자동 재계산·현재 포인터·UI·배포된 AWS 검증과 사용자 삭제 시 이 저장소 정리는 아직 연결되지 않았다. 스냅샷은 대표성이나 실시간 최신 상태를 주장하지 않는다.
+`POST /api/customer/combi-quality-aggregates`는 같은 메뉴·장비·레시피·합성 조리량 구간·기간에서 고객이 선택한 최대 20개 배치의 품질 점수와 합격률을 불변 스냅샷으로 저장한다. 각 배치의 버전을 저장 트랜잭션에서 확인하며 불일치·미기록 자료는 사유와 함께 제외한다. `GET /api/customer/combi-quality-aggregates/{group_id}/{result_id}`는 같은 고객의 과거 스냅샷을 조회한다. 고객 식사 배치 화면에서 배치 ID를 선택해 집계하고 그룹·결과 ID로 과거 결과를 불러올 수 있다. 자동 재계산·현재 포인터·배포된 AWS 검증과 사용자 삭제 시 이 저장소 정리는 아직 연결되지 않았다. 스냅샷은 대표성이나 실시간 최신 상태를 주장하지 않는다.
 
 `POST /api/customer/combi-meals/{meal_id}/rice-safety`는 밥 인양 후 공정 판정과 운영자의 안전 이상 여부·확인 근거를 기록한다. 별도 온도 측정은 요구하지 않는다. 공정 정상·경고와 이상 없음이 확인되면 `PASSED`, 공정 미확인·실패는 `INCOMPLETE`, 이상 의심·센서 이상 의심·원천의 치명 알람은 `SUSPECTED`로 품질평가를 차단한다. 연결된 원천이 있으면 해당 원천을 이용한 공정 판정이 필요하다. 안전 확인을 다시 기록하면 이전 품질평가 사용을 차단하며, 재평가로만 새 포인터를 활성화한다. 2026-11-21 개발용 DynamoDB에서 합성 공정·안전 확인·품질평가·이상 차단·재평가와 시험 파티션 정리를 확인했다. `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev .venv/bin/python tests/live/rice_safety_dynamodb_check.py`로 재실행하며 고객 세션은 합성 대역이다.
 

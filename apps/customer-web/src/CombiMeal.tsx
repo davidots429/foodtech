@@ -4,6 +4,7 @@ import { CombiQuality } from "./CombiQuality";
 import { CombiWindows } from "./CombiWindows";
 import { CombiLive } from "./CombiLive";
 import { RicePreparation, type RicePreparationRecord } from "./RicePreparation";
+import { CombiQualityAggregate } from "./CombiQualityAggregate";
 
 type FanObservation = { status: string; target_level: number; deviation_seconds: number; missing_seconds: number };
 type ClimateObservation = { status: string; target_percent: string; deviation_seconds: number; missing_seconds: number };
@@ -445,6 +446,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>
       <p>시간 판정은 전체 공정·안전 판정과 별도입니다. 화면의 전환 자료는 합성 표본입니다.</p>
       {meal.events && <ul>{meal.events.map((event, index) => <li key={index}>{event.event} · {new Date(event.observed_at).toLocaleString()}</li>)}</ul>}
+      <CombiQualityAggregate key={meal.meal.meal_batch_id} csrf={csrf} mealId={meal.meal.meal_batch_id}
+        size={meal.meal.equipment_size} riceRecipe={meal.meal.rice_recipe_version} mackerelRecipe={meal.meal.mackerel_recipe_version} />
     </div>}
   </section>;
 }
