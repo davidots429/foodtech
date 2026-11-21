@@ -181,6 +181,25 @@ class RegistryTests(unittest.TestCase):
         snapshot = self.registry.execution_snapshot('run-1')
         self.assertEqual((snapshot.state, snapshot.version), ('FAILED', 2))
 
+    def test_status_snapshot_rejects_foreign_and_concurrent_changes(self):
+        snapshot, result = self.registry.execution_status_snapshot('run-1', 'tenant-a')
+        self.assertEqual(snapshot.state, 'PENDING')
+        self.assertIsNone(result)
+        original = self.registry.execution_result
+        def forbidden(_):
+            raise AssertionError('foreign tenant must not read result')
+        self.registry.execution_result = forbidden
+        self.assertIsNone(self.registry.execution_status_snapshot('run-1', 'other'))
+        def race(execution_id):
+            self.resource.table.items[('EXEC#run-1', 'META')]['version'] += 1
+            return original(execution_id)
+        self.registry.execution_result = race
+        with self.assertRaises(RegistryConflict):
+            self.registry.execution_status_snapshot('run-1', 'tenant-a')
+        self.registry.execution_result = lambda _: {'state': 'SUCCEEDED', 'response_text': 'unexpected'}
+        with self.assertRaises(RegistryConflict):
+            self.registry.execution_status_snapshot('run-1', 'tenant-a')
+
     def test_settlement_rejects_corrupt_execution_without_storing_response(self):
         execution = self.registry.execution('run-1')
         self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)

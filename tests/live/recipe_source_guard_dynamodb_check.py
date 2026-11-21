@@ -234,6 +234,27 @@ def main():
         outcome = invoke(GatewayService(registry, recipe_source_guard=next_guard), next_execution)
         if outcome.state != 'SUCCEEDED':
             raise AssertionError(f'synthetic guarded gateway failed: {outcome.error_code}')
+        status, result = registry.execution_status_snapshot(next_execution.execution_id, owner)
+        if status.state != 'SUCCEEDED' or result.get('state') != 'SUCCEEDED' or \
+                registry.execution_status_snapshot(next_execution.execution_id, 'other-customer') is not None:
+            raise AssertionError('owner-bound execution status failed')
+        original_result = registry.execution_result
+        def racing_result(execution_id):
+            result = original_result(execution_id)
+            registry.table.update_item(Key={'pk': f'EXEC#{execution_id}', 'sk': 'META'},
+                                       UpdateExpression='ADD #version :one',
+                                       ExpressionAttributeNames={'#version': 'version'},
+                                       ExpressionAttributeValues={':one': 1})
+            return result
+        registry.execution_result = racing_result
+        try:
+            registry.execution_status_snapshot(next_execution.execution_id, owner)
+        except RegistryConflict:
+            pass
+        else:
+            raise AssertionError('concurrent status change was accepted')
+        finally:
+            registry.execution_result = original_result
         racing_execution, racing_guard = start_execution()
         original_finish = registry.finish
         def race_before_settlement(*args, **kwargs):

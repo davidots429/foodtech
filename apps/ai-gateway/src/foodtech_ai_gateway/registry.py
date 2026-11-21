@@ -296,6 +296,20 @@ class DynamoRegistry:
             return None
         return item
 
+    def execution_status_snapshot(self, execution_id: str, tenant_id: str):
+        """Return a stable owner-bound status; fail closed on concurrent changes."""
+        first = self.execution_snapshot(execution_id)
+        if first is None or first.execution.tenant_id != tenant_id:
+            return None
+        result = self.execution_result(execution_id)
+        second = self.execution_snapshot(execution_id)
+        if second != first:
+            raise RegistryConflict('execution changed during status lookup')
+        if result is not None and (first.state not in {'SUCCEEDED', 'FAILED'} or
+                                   result.get('state') != first.state):
+            raise RegistryConflict('execution result and state disagree')
+        return first, result
+
     def model(self, model_id: str) -> Model | None:
         item = self._get("MODEL", model_id)
         if not item:
