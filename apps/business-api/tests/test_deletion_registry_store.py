@@ -11,6 +11,7 @@ class TransactionClient:
     def __init__(self):
         self.items = {}
         self.requests = []
+        self.reads = []
         self.fail = None
 
     def transact_write_items(self, *, TransactItems):
@@ -27,6 +28,7 @@ class TransactionClient:
 
     def get_item(self, *, TableName, Key, ConsistentRead, **kwargs):
         assert ConsistentRead is True
+        self.reads.append((TableName, kwargs))
         item = self.items.get((TableName, Key["pk"]["S"], Key.get("sk", {}).get("S", "")))
         return {"Item": item} if item else {}
 
@@ -92,6 +94,10 @@ class DeletionRegistryStoreTests(unittest.TestCase):
         self.assertEqual(recovered, {"request_id": self.request["request_id"], "status": "DELETING", "version": 1,
                                      "requested_at": self.request["requested_at"], "policy_version": "v1"})
         self.assertNotIn("encrypted", str(recovered))
+        registry_reads = [options for table, options in self.client.reads if table == "registry"]
+        self.assertEqual(len(registry_reads), 1)
+        self.assertNotIn("encrypted", registry_reads[0]["ProjectionExpression"])
+        self.assertIn("#status", registry_reads[0]["ProjectionExpression"])
 
     def test_missing_tombstone_or_inconsistent_lock_is_not_treated_as_success(self):
         self.store.lock_and_register(**self.request)
