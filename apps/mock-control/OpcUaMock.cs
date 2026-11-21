@@ -6,8 +6,17 @@ using Opc.Ua.Server.Fluent;
 
 internal static class OpcUaMock
 {
-    public static async Task Run(string fixturePath, string pkiDirectory, int port)
+    public static async Task Run(string fixturePath, string pkiDirectory, int port, string? endpointHost)
     {
+        var advertisedHost = "localhost";
+        if (endpointHost is not null) {
+            System.Net.IPAddress address;
+            try { address = MockListenAddress.Parse(endpointHost); }
+            catch (ArgumentException) { throw new ArgumentException("--endpoint-host must be loopback or private IPv4."); }
+            if (address.Equals(System.Net.IPAddress.Any))
+                throw new ArgumentException("--endpoint-host cannot be a wildcard address.");
+            advertisedHost = address.ToString();
+        }
         if (port is < 1024 or > 65535 || !Path.IsPathFullyQualified(pkiDirectory))
             throw new ArgumentException("A valid port and absolute PKI directory are required.");
         using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
@@ -79,7 +88,7 @@ internal static class OpcUaMock
             options.ApplicationName = "FoodtechSyntheticUa";
             options.ApplicationUri = "urn:localhost:foodtech:synthetic-ua";
             options.ProductUri = "urn:foodtech:synthetic-ua";
-            options.EndpointUrls.Add($"opc.tcp://localhost:{port}/foodtech");
+            options.EndpointUrls.Add($"opc.tcp://{advertisedHost}:{port}/foodtech");
             options.PkiRoot = pkiDirectory;
             options.AutoAcceptUntrustedCertificates = false;
             options.IncludeUnsecurePolicyNone = false;

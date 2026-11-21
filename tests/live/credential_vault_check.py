@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -53,7 +54,7 @@ def main() -> None:
     table = session.resource("dynamodb").Table(TABLE)
     registry_table = session.resource("dynamodb").Table(REGISTRY_TABLE)
     credential_id = f"synthetic-vault-check-{uuid4().hex}"
-    tenant_pseudonym = f"synthetic-pseudo-{uuid4().hex}"
+    tenant_pseudonym = f"psn:v1:credential:2026-11:v1:{secrets.token_urlsafe(32)}"
     tenant_id = f"synthetic-tenant-{uuid4().hex}"
     execution_id = str(uuid4())
     consent_id = str(uuid4())

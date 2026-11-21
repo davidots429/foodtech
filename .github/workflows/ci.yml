@@ -98,3 +98,39 @@ jobs:
           esac
           docker run --rm --entrypoint python foodtech-ci/${{ matrix.package }}:test -c "import importlib; importlib.import_module('$module')"
 
+  mock-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/containers/mock-control.Dockerfile
+          push: false
+          load: true
+          tags: foodtech-ci/mock-control:test
+      - name: Verify synthetic fixture hash
+        run: docker run --rm foodtech-ci/mock-control:test hash --fixture fixtures/mockprofile-100-a-001.json | grep -Fx 'rec-a-001 f76cb5275bb85fc7c0c0da0309dc96cb5b64d29588d902cf28b6c5140e8d5ff2'
+
+  collection-adapter-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/containers/collection-adapter.Dockerfile
+          push: false
+          load: true
+          tags: foodtech-ci/collection-adapter:test
+      - name: Verify REST collection entrypoint
+        run: docker run --rm foodtech-ci/collection-adapter:test --help
+      - name: Verify MQTT collection entrypoint
+        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=mqtt foodtech-ci/collection-adapter:test --help
+      - name: Verify OPC UA JSON collection entrypoint
+        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=opcua-json foodtech-ci/collection-adapter:test --help
+      - name: Verify OPC UA Binary collection entrypoint
+        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=opcua-binary foodtech-ci/collection-adapter:test --help
+

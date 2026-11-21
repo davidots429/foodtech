@@ -1,6 +1,8 @@
 """Real certificate-trusted OPC UA Binary Browse/Read/Subscription boundary."""
 
 import asyncio
+import base64
+import importlib.util
 import json
 import os
 import shutil
@@ -10,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from asyncua import Client, ua
@@ -45,16 +48,17 @@ class OpcUaMockTests(unittest.IsolatedAsyncioTestCase):
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 port = probe.getsockname()[1]
-            endpoint = f"opc.tcp://localhost:{port}/foodtech"
+            endpoint_host = os.environ.get("FOODTECH_OPCUA_TEST_HOST", "127.0.0.1")
+            endpoint = f"opc.tcp://{endpoint_host}:{port}/foodtech"
             server = subprocess.Popen(["dotnet", str(DLL), "serve-opcua", "--fixture", str(FIXTURE),
-                                       "--pki", str(pki), "--port", str(port)], env=os.environ.copy(),
+                                       "--pki", str(pki), "--port", str(port), "--endpoint-host", endpoint_host], env=os.environ.copy(),
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 for _ in range(150):
                     if server.poll() is not None:
                         self.fail("OPC UA Mock exited during startup")
                     try:
-                        with socket.create_connection(("127.0.0.1", port), timeout=.1):
+                        with socket.create_connection((endpoint_host, port), timeout=.1):
                             break
                     except OSError:
                         await asyncio.sleep(.1)
@@ -62,6 +66,28 @@ class OpcUaMockTests(unittest.IsolatedAsyncioTestCase):
                     self.fail("OPC UA Mock did not start")
                 server_cert = next(path for path in (pki / "certs").glob("*.der")
                                    if isinstance(x509.load_der_x509_certificate(path.read_bytes()).public_key(), rsa.RSAPublicKey))
+                # Exercise the same secret-to-file adapter used by the ECS image.
+                spec = importlib.util.spec_from_file_location('collection_entrypoint',
+                    ROOT / 'infra/containers/collection_entrypoint.py')
+                entrypoint = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(entrypoint)
+                injected = temp / 'injected'
+                injected.mkdir()
+                secrets = {'FOODTECH_COLLECTION_PROTOCOL': 'opcua-binary',
+                    'FOODTECH_OPCUA_CLIENT_CERT_PEM': client_pem.read_text(),
+                    'FOODTECH_OPCUA_CLIENT_KEY_PEM': client_key.read_text(),
+                    'FOODTECH_OPCUA_SERVER_CERT_DER_BASE64': base64.b64encode(server_cert.read_bytes()).decode('ascii')}
+                captured = {}
+                def capture_exec(_program, _argv, child):
+                    captured.update(child)
+                with patch.dict(os.environ, secrets, clear=True), patch.object(entrypoint.sys, 'argv', ['entry']), \
+                        patch.object(entrypoint.tempfile, 'mkdtemp', return_value=str(injected)), \
+                        patch.object(entrypoint.os, 'execvpe', side_effect=capture_exec):
+                    entrypoint.main()
+                self.assertNotIn('FOODTECH_OPCUA_CLIENT_KEY_PEM', captured)
+                client_pem = Path(captured['FOODTECH_OPCUA_CLIENT_CERT'])
+                client_key = Path(captured['FOODTECH_OPCUA_CLIENT_KEY'])
+                server_cert = Path(captured['FOODTECH_OPCUA_SERVER_CERT'])
                 validate_server_certificate(endpoint, str(server_cert))
                 with self.assertRaises(ValueError):
                     validate_server_certificate(endpoint, str(trusted / "client.der"))
@@ -141,7 +167,7 @@ class OpcUaMockTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.to_thread(server.wait, timeout=10)
                 await asyncio.sleep(2)
                 server = subprocess.Popen(["dotnet", str(DLL), "serve-opcua", "--fixture", str(FIXTURE),
-                                           "--pki", str(pki), "--port", str(port)], env=os.environ.copy(),
+                                           "--pki", str(pki), "--port", str(port), "--endpoint-host", endpoint_host], env=os.environ.copy(),
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.assertEqual(await task, 3)
                 self.assertEqual([record["sequenceNumber"] for record in ingestor.records], [1, 2, 3])

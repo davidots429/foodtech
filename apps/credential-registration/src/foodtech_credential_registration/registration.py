@@ -3,6 +3,7 @@
 import base64
 import binascii
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -71,20 +72,28 @@ class TransferKey:
 
 class TenantPseudonymizer:
     def __init__(self, key_arn: str, key_version: str, *, kms_client: Any = None):
-        if not key_arn.startswith("arn:aws:kms:") or not key_version:
+        if not isinstance(key_arn, str) or not key_arn.startswith("arn:aws:kms:") or \
+                not isinstance(key_version, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", key_version):
             raise ValueError("HMAC key ARN and version are required")
         self.key_arn = key_arn
         self.key_version = key_version
         self.kms = kms_client or boto3.client("kms")
 
     def create(self, subject: str, epoch: str) -> str:
-        if not subject or len(subject) > 128 or len(epoch) != 7 or epoch[4] != "-":
+        if not isinstance(subject, str) or not subject or len(subject) > 128 or \
+                not isinstance(epoch, str) or not re.fullmatch(r"[0-9]{4}-(?:0[1-9]|1[0-2])", epoch) or \
+                int(epoch[:4]) < 1:
             raise RegistrationError("TENANT_SCOPE_INVALID")
         parts = ("v1", "credential", epoch, self.key_version, subject)
-        message = b"".join(len(value.encode("utf-8")).to_bytes(4, "big") + value.encode("utf-8")
-                           for value in parts)
+        try:
+            encoded = tuple(value.encode("utf-8") for value in parts)
+        except UnicodeEncodeError:
+            raise RegistrationError("TENANT_SCOPE_INVALID") from None
+        message = b"".join(len(value).to_bytes(4, "big") + value for value in encoded)
         mac = self.kms.generate_mac(KeyId=self.key_arn, Message=message,
                                     MacAlgorithm="HMAC_SHA_256")["Mac"]
+        if not isinstance(mac, bytes) or len(mac) != 32:
+            raise RegistrationError("PSEUDONYM_MAC_INVALID")
         digest = base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
         return f"psn:v1:credential:{epoch}:{self.key_version}:{digest}"
 
