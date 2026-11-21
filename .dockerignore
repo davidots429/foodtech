@@ -37,6 +37,7 @@
 !infra/
 !infra/containers/
 !infra/containers/ai_service_entrypoint.py
+!infra/containers/collection_entrypoint.py
 **/__pycache__/
 **/*.pyc
 **/bin/
