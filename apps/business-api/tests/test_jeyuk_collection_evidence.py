@@ -80,6 +80,24 @@ class EvidenceReadTests(unittest.TestCase):
             self.assertEqual(read_collection_completion("table", "evidence", include_settings=True)
                              ["settings"]["heating_setpoint_celsius"]["status"], "NOT_RECORDED")
             table.revisions = [3, 3]
+            for index, row in enumerate(rows):
+                from datetime import datetime, timedelta, timezone
+                value = json.loads(row["raw"])
+                value["observedAt"] = (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=index + 1)).isoformat()
+                value["actualRpm"] = 20; value["motorLoadPercent"] = 95
+                rows[index] = {**row, "raw": json.dumps(value)}
+            receipt = refresh_receipt(); table.revisions = [3, 3]
+            observed = read_collection_completion("table", "evidence", include_settings=True)
+            self.assertEqual(observed["sample_timeline"]["status"], "RECORDED")
+            self.assertEqual(observed["sample_timeline"]["sample_count"], 3)
+            self.assertEqual(observed["process_observations"]["reason_codes"], [])
+            # A broken sample clock never becomes a verified timeline.
+            value = json.loads(rows[1]["raw"]); value["observedAt"] = "2026-01-01T00:00:04+00:00"
+            rows[1] = {**rows[1], "raw": json.dumps(value)}
+            receipt = refresh_receipt(); table.revisions = [3, 3]
+            self.assertEqual(read_collection_completion("table", "evidence", include_settings=True)
+                             ["sample_timeline"]["status"], "INCONSISTENT")
+            table.revisions = [3, 3]
             rows[1] = {**rows[1], "raw": rows[1]["raw"] + " "}
             table.revisions = [3, 3]
             self.assertEqual(read_collection_completion("table", "evidence")["status"], "NOT_MATCHED")
@@ -91,3 +109,48 @@ class EvidenceReadTests(unittest.TestCase):
             self.assertEqual(read_collection_completion("table", "evidence")["status"], "REVISION_UNVERIFIED")
             table.revisions = [2, 2]
             self.assertEqual(read_collection_completion("table", "evidence")["status"], "REVISION_UNVERIFIED")
+
+
+class TimelineLinkTests(unittest.TestCase):
+    def test_exact_job_span_is_required(self):
+        from foodtech_business_api.recommendation_evidence import _jeyuk_timeline_link
+        job = {"actual_placed_at": "2026-01-01T00:00:00Z", "actual_lifted_at": "2026-01-01T00:00:03Z",
+               "actual_cooking_seconds": 3}
+        timeline = {"status": "MATCHED_AT_READ", "sample_timeline": {"status": "RECORDED",
+                    "first_at": "2026-01-01T00:00:01Z", "last_at": "2026-01-01T00:00:03Z", "sample_count": 3}}
+        self.assertEqual(_jeyuk_timeline_link(job, timeline), "MATCHED")
+        timeline["sample_timeline"]["last_at"] = "2026-01-01T00:00:04Z"
+        self.assertEqual(_jeyuk_timeline_link(job, timeline), "NOT_MATCHED")
+        timeline["status"] = "REVISION_UNVERIFIED"
+        self.assertEqual(_jeyuk_timeline_link(job, timeline), "NOT_ASSESSED")
+        self.assertEqual(_jeyuk_timeline_link(job, None), "NOT_ASSESSED")
+
+
+class ProcessObservationTests(unittest.TestCase):
+    def test_only_recorded_synthetic_samples_produce_jam_observation(self):
+        tracker = JeyukCompletionTracker(0)
+        rows = []
+        for second in range(1, 7):
+            value = json.loads(sample(second)); value.update(actualRpm=20, motorLoadPercent=95)
+            raw = json.dumps(value); tracker.record(raw)
+            rows.append({"pk": "JEYUK#evidence", "sk": f"RAW#{second:06d}", "raw": raw,
+                         "provenance": "SYNTHETIC"})
+        receipt = tracker.finish(cursor=6, complete=True, explicit=True)
+        class Table:
+            name = "table"
+            def __init__(self): self.meta = self; self.client = self; self.calls = 0
+            def get_item(self, **_kwargs): return {"Item": {"revision": 6}}
+            def get_paginator(self, _operation): return self
+            def paginate(self, **_kwargs):
+                self.calls += 1
+                return [{"Items": [receipt] if self.calls == 1 else rows}]
+        table = Table()
+        class Session:
+            def __init__(self, **_kwargs): pass
+            def resource(self, _service): return self
+            def Table(self, _name): return table
+        with patch("foodtech_business_api.jeyuk_source_evidence.boto3.Session", Session):
+            result = read_collection_completion("table", "evidence", include_settings=True)
+        self.assertEqual(result["sample_timeline"]["status"], "NOT_RECORDED")
+        self.assertEqual(result["process_observations"]["reason_codes"], ["AGITATOR_JAM_WARNING"])
+        self.assertEqual(result["process_observations"]["basis"], "SYNTHETIC_SAMPLES_ONLY")

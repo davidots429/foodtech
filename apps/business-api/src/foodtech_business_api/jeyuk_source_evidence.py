@@ -276,4 +276,24 @@ def read_collection_completion(table_name: str, batch_id: str, *, include_settin
             return {"status": "STABLE", "value": str(recorded[0])}
         result["settings"] = {"heating_setpoint_celsius": summarize([item.heating_setpoint_celsius for item in samples]),
                               "target_rpm": summarize([item.target_rpm for item in samples])}
+        first, last = samples[0].observed_at, samples[-1].observed_at
+        if any(sample.observed_at is None for sample in samples):
+            result["sample_timeline"] = {"status": "NOT_RECORDED"}
+        elif any(sample.observed_at != first + timedelta(seconds=index)
+                 for index, sample in enumerate(samples)):
+            result["sample_timeline"] = {"status": "INCONSISTENT"}
+        else:
+            result["sample_timeline"] = {"status": "RECORDED", "first_at": first.isoformat(),
+                                         "last_at": last.isoformat(), "sample_count": len(samples)}
+        monitor = ProcessMonitor(samples[0].profile, samples[0].actual_load_kg)
+        found = set()
+        for sample in samples:
+            reading = monitor.observe(sample.second, surface_celsius=sample.surface_celsius,
+                                      actual_rpm=sample.actual_rpm, target_rpm=sample.target_rpm,
+                                      motor_load_percent=sample.motor_load_percent)
+            found.update(set(reading.reason_codes) & {"AGITATOR_JAM_WARNING", "AGITATOR_FAILURE",
+                                                     "OVER_RECOMMENDED_LOAD", "RATED_LOAD_EXCEEDED"})
+        result["process_observations"] = {"reason_codes": sorted(found),
+                                          "basis": "SYNTHETIC_SAMPLES_ONLY",
+                                          "rule_version": PROCESS_RULE_VERSION}
     return result

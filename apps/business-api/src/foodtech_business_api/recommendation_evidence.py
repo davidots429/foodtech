@@ -190,6 +190,24 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
             "completeness_rule_version": completeness["rule_version"], "recommendation_execution_available": False}
 
 
+def _jeyuk_timeline_link(job: dict, collection: dict | None) -> str:
+    """Check the recorded complete source span against the job's declared interval."""
+    if not collection or collection.get("status") != "MATCHED_AT_READ":
+        return "NOT_ASSESSED"
+    timeline = collection.get("sample_timeline") or {}
+    if timeline.get("status") != "RECORDED":
+        return "NOT_ASSESSED"
+    placed, lifted = _instant(job.get("actual_placed_at")), _instant(job.get("actual_lifted_at"))
+    first, last = _instant(timeline.get("first_at")), _instant(timeline.get("last_at"))
+    duration = job.get("actual_cooking_seconds")
+    if not placed or not lifted or not first or not last or type(duration) is not int or duration <= 0:
+        return "NOT_ASSESSED"
+    from datetime import timedelta
+    return "MATCHED" if (lifted - placed == timedelta(seconds=duration) and
+                         first == placed + timedelta(seconds=1) and last == lifted and
+                         timeline.get("sample_count") == duration) else "NOT_MATCHED"
+
+
 def _comparison_usable(job: dict | None, pointer: dict | None, record: dict, role: str) -> bool:
     return bool(job and pointer and job.get("status") == "COMPLETED" and job.get("safety_status") == "PASSED" and
                 (job.get("menu") != "JEYUK" or job.get("jeyuk_feed_safety_aligned") is True) and
@@ -342,6 +360,22 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
                                                             include_settings=True)
             except Exception as exc:
                 raise HTTPException(503, "제육볶음 원천 설정을 조회하지 못했습니다.") from exc
+    if comparison_result is not None and job.get("menu") == "JEYUK":
+        baseline_binding = baseline.get("source_binding")
+        baseline_collection = None
+        if isinstance(baseline_binding, dict) and baseline_binding.get("source_id") == "synthetic-rest" and \
+                baseline_binding.get("device_id") == "mockprofile-110-a-001" and baseline_binding.get("batch_id"):
+            if not table:
+                baseline_collection = {"status": "NOT_CONFIGURED", "raw_count": None}
+            else:
+                from .jeyuk_source_evidence import read_collection_completion
+                try:
+                    baseline_collection = await asyncio.to_thread(read_collection_completion, table,
+                        baseline_binding["batch_id"], include_settings=True)
+                except Exception as exc:
+                    raise HTTPException(503, "비교 작업의 원천 설정을 조회하지 못했습니다.") from exc
+        comparison_result["baseline_jeyuk_collection"] = baseline_collection
+        comparison_result["baseline_jeyuk_timeline"] = _jeyuk_timeline_link(baseline, baseline_collection)
     current_job, current_pointer = await _store_call(store, store.read, pk)
     last_process_pointer = await _store_call(store, store.process_pointer, pk)
     if comparison_check:
@@ -366,5 +400,6 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
         raise HTTPException(409, "조리 근거가 변경되었습니다. 다시 조회해 주세요.")
     return {**_snapshot(job, pointer, assessment, derived), "source_revision_status": source_status,
             "jeyuk_collection": jeyuk_collection,
+            "jeyuk_timeline": _jeyuk_timeline_link(job, jeyuk_collection) if job.get("menu") == "JEYUK" else None,
             "selected_comparison": comparison_result, "reheat_history_status": reheat_status,
             "reheat_history": reheat_history}

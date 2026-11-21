@@ -6,6 +6,10 @@ type FeedTiming = { status: "RECORDED"; vegetable_start_offset_us: number; sauce
 
 type Setting = { status: "NOT_RECORDED" | "PARTIAL" | "CHANGED" | "STABLE"; value: string | null };
 
+type JeyukCollection = { status: "NOT_CONFIGURED" | "NOT_RECORDED" | "REVISION_UNVERIFIED" | "CHANGED_DURING_READ" | "NOT_MATCHED" | "MATCHED_AT_READ";
+  raw_count: number | null; settings?: { heating_setpoint_celsius: Setting; target_rpm: Setting };
+  process_observations?: { reason_codes: string[]; basis: "SYNTHETIC_SAMPLES_ONLY" } };
+
 type Evidence = {
   job_version: number; process_view: "AS_PROCESSED" | "LATEST_RESTATED"; process_stale: boolean;
   recorded: { menu: string | null; recipe_version: string | null; safety_status: string | null; process_status: string | null;
@@ -20,14 +24,20 @@ type Evidence = {
   completeness: "INSUFFICIENT" | "NOT_ASSESSED";
   completeness_reasons: string[];
   collection_snapshot_matches_receipt: boolean;
-  jeyuk_collection: { status: "NOT_CONFIGURED" | "NOT_RECORDED" | "REVISION_UNVERIFIED" | "CHANGED_DURING_READ" | "NOT_MATCHED" | "MATCHED_AT_READ";
-    raw_count: number | null; settings?: { heating_setpoint_celsius: Setting; target_rpm: Setting } } | null;
+  jeyuk_collection: JeyukCollection | null;
+  jeyuk_timeline: "MATCHED" | "NOT_MATCHED" | "NOT_ASSESSED" | null;
   source_revision_status: "NOT_TRACKED" | "NOT_CONFIGURED" | "INCONSISTENT" | "MATCHED_AT_READ" | "CHANGED";
   reheat_history_status: "NOT_RECORDED" | "RECORDED" | "INCONSISTENT";
   reheat_history: { segment_id: string; started_at: string; lifted_at: string; duration_seconds: string;
     rechecks: { status: string; recorded_at: string | null }[] }[];
   selected_comparison: { comparison_id: string; baseline_job_id: string; baseline_recipe_version: string; baseline_score_percent: string;
-    candidate_score_percent: string; baseline_jeyuk_feed_timing: FeedTiming | null; immediately_previous_verified: boolean } | null;
+    candidate_score_percent: string; baseline_jeyuk_feed_timing: FeedTiming | null; immediately_previous_verified: boolean;
+    baseline_jeyuk_collection?: JeyukCollection | null; baseline_jeyuk_timeline?: "MATCHED" | "NOT_MATCHED" | "NOT_ASSESSED" } | null;
+};
+
+const processObservationLabels: Record<string, string> = {
+  AGITATOR_JAM_WARNING: "교반기 걸림 의심", AGITATOR_FAILURE: "교반기 장애",
+  OVER_RECOMMENDED_LOAD: "권장 적재량 초과", RATED_LOAD_EXCEEDED: "정격 적재량 초과",
 };
 
 function settingLabel(setting: Setting, unit: string): string {
@@ -173,6 +183,16 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
       </div>}
       {value.selected_comparison && <FeedTimingView label="선택한 이전 작업"
         timing={value.selected_comparison.baseline_jeyuk_feed_timing} />}
+      {value.selected_comparison?.baseline_jeyuk_collection && <div>
+        <p>선택한 이전 작업의 수집 기록: {value.selected_comparison.baseline_jeyuk_collection.status === "MATCHED_AT_READ" ? "원천 대조됨" : "원천 확인 필요"}
+          {" "}· 조리 구간 {({ MATCHED: "일치", NOT_MATCHED: "불일치", NOT_ASSESSED: "미확인" })[value.selected_comparison.baseline_jeyuk_timeline ?? "NOT_ASSESSED"]}</p>
+        {value.selected_comparison.baseline_jeyuk_collection.settings && <p>이전 수집 설정: 열원 {settingLabel(value.selected_comparison.baseline_jeyuk_collection.settings.heating_setpoint_celsius, "°C")}
+          {" "}· 목표 회전속도 {settingLabel(value.selected_comparison.baseline_jeyuk_collection.settings.target_rpm, "rpm")}</p>}
+        {value.selected_comparison.baseline_jeyuk_collection.process_observations && <p>이전 합성 표본의 걸림·적재 이상 신호: {value.selected_comparison.baseline_jeyuk_collection.process_observations.reason_codes.length ?
+          value.selected_comparison.baseline_jeyuk_collection.process_observations.reason_codes.map(code => processObservationLabels[code] ?? "추가 확인 필요").join(", ") : "표본에서 감지되지 않음"}</p>}
+        <p className="small">선택한 이전 작업의 합성 표본만 분석합니다. 가장 직전 작업 여부와 표본 밖 이상은 확인하지 않습니다.</p>
+      </div>}
+      {value.jeyuk_timeline && <p>현재 작업과 수집 시각: {({ MATCHED: "일치", NOT_MATCHED: "불일치", NOT_ASSESSED: "미확인" })[value.jeyuk_timeline]}</p>}
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}
         {" "}· 품질평가 {value.recorded.quality?.score_percent == null ? "현재 유효 평가 없음" : `${value.recorded.quality.score_percent}점`}</p>
       {value.reheat_history_status === "INCONSISTENT" && <p className="warning">추가 가열 이력의 연결을 확인할 수 없습니다.</p>}
