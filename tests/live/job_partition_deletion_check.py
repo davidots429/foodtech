@@ -12,6 +12,7 @@ from foodtech_business_api.job_binding_inventory import JobBindingInventory
 from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
 from foodtech_business_api.job_deletion_residual import JobResidualScan
 from foodtech_business_api.job_binding_residual import JobBindingResidualScan
+from foodtech_business_api.job_meta_deletion import JobMetaDeletion
 from boto3.dynamodb.conditions import Key
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_JOB_DELETION_LIVE') != '1':
@@ -23,7 +24,7 @@ outputs=s.client('cloudformation').describe_stacks(StackName='FoodtechCredential
 u,q=str(uuid4()),str(uuid4()); pk=f'SCOPE#USER#{u}#JOB#job'; other=f'SCOPE#USER#{uuid4()}#JOB#other'
 ak={'pk':f'USER#{u}'}; rk={'pk':'REGISTRY','sk':f'REQ#{q}'}
 entries=[(auth,{**ak,'suspended':True,'deletion_lock_request':q}),(reg,{**rk,'status':'DELETING'}),
- (src,{'pk':pk,'sk':'META','owner_subject':u,'job_id':'job','menu':'JEYUK',
+ (src,{'pk':pk,'sk':'META','owner_subject':u,'job_id':'job','version':1,'menu':'JEYUK',
        'source_binding':{'source_id':'synthetic-rest','device_id':'mockprofile-110-a-001','batch_id':'jeyuk-'+u}}),
  (src,{'pk':'JEYUK#jeyuk-'+u,'sk':'BINDING','job_pk':pk,'job_id':'job'}),
  (src,{'pk':'JEYUK#jeyuk-orphan-'+u,'sk':'BINDING','job_pk':f'SCOPE#USER#{u}#JOB#orphan','job_id':'orphan'}),(src,{'pk':pk,'sk':'EVENT#1'}),
@@ -107,6 +108,12 @@ try:
  assert src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'HISTORY#REVISION'},ConsistentRead=True).get('Item')
  assert worker.delete_one(subject=u,request_id=q,index=0)=={'index':0,'state':'META_ONLY','removed':False}
  assert src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')
+ meta_worker=JobMetaDeletion(inventory=inventory,residual=residual,binding_residual=binding_residual)
+ assert meta_worker.remove_one(subject=u,request_id=q,index=0)['state']=='VERIFYING'
+ assert meta_worker.remove_one(subject=u,request_id=q,index=0)['state']=='VERIFYING'
+ assert not src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')
+ snapshot=store.load_checkpoint(cipher=cipher,subject=u,request_id=q,domain='JOB_META_000000000000')
+ assert b'source_binding' in snapshot['checkpoint']
  assert src.get_item(Key={'pk':other,'sk':'EVENT#1'},ConsistentRead=True).get('Item')
  print('locked job record deletion, inactive request rejection and other partition isolation verified')
 finally:
