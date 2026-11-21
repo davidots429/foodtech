@@ -32,12 +32,55 @@ class GuardedDeletion:
         if any(not isinstance(table, str) or not table for table in tables) or len(set(tables)) != 4:
             raise ValueError("separate security-domain tables are required")
         self.auth_table, self.registry_table, self.vault_table = auth_table, registry_table, vault_table
+        self.capsule_table = capsule_table
         self.client = client or boto3.client("dynamodb", region_name="ap-southeast-2")
         self.writer = CapsuleWriter(capsule_table, approved_purposes, client=self.client)
         self.serializer = TypeSerializer()
 
     def _item(self, values: dict) -> dict:
         return {name: self.serializer.serialize(value) for name, value in values.items()}
+
+    def recover_locked_request(self, *, subject: str, request_id: str, vault_id: str, capsule_locator: str) -> dict:
+        """Confirm a known locked request from one consistent four-table snapshot.
+
+        The caller must authenticate the owner and resolve identifiers through
+        the trusted recovery boundary. No ciphertext or locator is returned. This
+        checks the lock only; it does not prove deletion or backup reconciliation.
+        """
+        try:
+            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or str(UUID(vault_id)) != vault_id or \
+                    not isinstance(capsule_locator, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', capsule_locator):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError('invalid guarded recovery scope') from None
+        get = lambda table, key: {'Get': {'TableName': table, 'Key': self._item(key)}}
+        result = self.client.transact_get_items(TransactItems=[
+            get(self.auth_table, {'pk': f'USER#{subject}'}),
+            get(self.vault_table, {'pk': vault_id, 'sk': 'META'}),
+            get(self.capsule_table, {'pk': capsule_locator, 'sk': 'META'}),
+            get(self.registry_table, {'pk': 'REGISTRY', 'sk': f'REQ#{request_id}'}),
+        ])
+        try:
+            records = result['Responses']
+            if not isinstance(records, list) or len(records) != 4:
+                raise ValueError
+            auth, vault, capsule, registry = (record.get('Item') for record in records)
+            if not all(isinstance(item, dict) for item in (auth, vault, capsule, registry)) or \
+                    auth.get('pk') != {'S': f'USER#{subject}'} or auth.get('vault_id') != {'S': vault_id} or \
+                    auth.get('suspended') != {'BOOL': True} or auth.get('deletion_lock_request') != {'S': request_id} or \
+                    vault.get('pk') != {'S': vault_id} or vault.get('sk') != {'S': 'META'} or \
+                    vault.get('capsule_locator') != {'S': capsule_locator} or \
+                    capsule.get('pk') != {'S': capsule_locator} or capsule.get('sk') != {'S': 'META'} or \
+                    any(item.get('state') != {'S': 'DELETION_LOCKED'} or
+                        item.get('deletion_request_id') != {'S': request_id} for item in (vault, capsule)) or \
+                    registry.get('pk') != {'S': 'REGISTRY'} or registry.get('sk') != {'S': f'REQ#{request_id}'} or \
+                    registry.get('request_id') != {'S': request_id} or registry.get('status') != {'S': 'DELETING'} or \
+                    any(not isinstance(registry.get(field, {}).get('B'), bytes) or not registry[field]['B']
+                        for field in ('encrypted_user_id', 'encrypted_capsule_locator')):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ValueError('guarded deletion recovery unavailable') from None
+        return {'status': 'DELETING'}
 
     def lock_and_register(self, *, subject: str, request_id: str, snapshot: VaultSnapshot,
                           encrypted_user_id: bytes, encrypted_capsule_locator: bytes,

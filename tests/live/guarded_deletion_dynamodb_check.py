@@ -104,6 +104,16 @@ def main():
                 any(item.get("deletion_request_id") != winner or item.get("state") != "DELETION_LOCKED"
                     for item in (vault_item, capsule_item)):
             raise AssertionError("Lock and tombstone state differ")
+        if store.recover_locked_request(subject=subject, request_id=winner, vault_id=vault_id,
+                                        capsule_locator=locator) != {'status': 'DELETING'}:
+            raise AssertionError('guarded recovery did not return safe status')
+        try:
+            store.recover_locked_request(subject=subject, request_id=str(uuid.uuid4()), vault_id=vault_id,
+                                          capsule_locator=locator)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('recovery accepted a different request')
         loser = second_id if winner == first_id else first_id
         if registry.get_item(Key={"pk": "REGISTRY", "sk": f"REQ#{loser}"}, ConsistentRead=True).get("Item"):
             raise AssertionError("Losing request created a tombstone")
@@ -127,7 +137,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":

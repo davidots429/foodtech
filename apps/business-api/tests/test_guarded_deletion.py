@@ -10,6 +10,11 @@ from foodtech_business_api.guarded_deletion import GuardedDeletion, VaultSnapsho
 class Client:
     def __init__(self):
         self.requests = []
+        self.read_result = None
+
+    def transact_get_items(self, **kwargs):
+        self.requests.append(kwargs)
+        return self.read_result
 
     def transact_write_items(self, **kwargs):
         self.requests.append(kwargs)
@@ -51,6 +56,30 @@ class GuardedDeletionTests(unittest.TestCase):
             with self.subTest(snapshot=snapshot), self.assertRaises(ValueError):
                 self.store.lock_and_register(**{**self.arguments, "snapshot": snapshot})
         self.assertEqual(self.client.requests, [])
+
+    def test_recovery_requires_consistent_matching_locks_and_hides_private_values(self):
+        vault, locator, request = self.snapshot.vault_id, self.snapshot.capsule_locator, self.request_id
+        records = [
+            {'pk': {'S': f'USER#{self.subject}'}, 'vault_id': {'S': vault}, 'suspended': {'BOOL': True},
+             'deletion_lock_request': {'S': request}},
+            {'pk': {'S': vault}, 'sk': {'S': 'META'}, 'capsule_locator': {'S': locator},
+             'state': {'S': 'DELETION_LOCKED'}, 'deletion_request_id': {'S': request}},
+            {'pk': {'S': locator}, 'sk': {'S': 'META'}, 'state': {'S': 'DELETION_LOCKED'},
+             'deletion_request_id': {'S': request}},
+            {'pk': {'S': 'REGISTRY'}, 'sk': {'S': f'REQ#{request}'}, 'request_id': {'S': request},
+             'status': {'S': 'DELETING'}, 'encrypted_user_id': {'B': b'id'}, 'encrypted_capsule_locator': {'B': b'locator'}},
+        ]
+        self.client.read_result = {'Responses': [{'Item': record} for record in records]}
+        args = {'subject': self.subject, 'request_id': request, 'vault_id': vault, 'capsule_locator': locator}
+        self.assertEqual(self.store.recover_locked_request(**args), {'status': 'DELETING'})
+        self.assertEqual(len(self.client.requests[-1]['TransactItems']), 4)
+        records[2]['deletion_request_id'] = {'S': str(uuid4())}
+        with self.assertRaises(ValueError):
+            self.store.recover_locked_request(**args)
+        records[2]['deletion_request_id'] = {'S': request}
+        del records[3]['encrypted_user_id']
+        with self.assertRaises(ValueError):
+            self.store.recover_locked_request(**args)
 
     def test_tables_must_remain_separate(self):
         with self.assertRaises(ValueError):
