@@ -134,7 +134,11 @@ async def main() -> None:
     gateway_task: asyncio.Task | None = None
     gateway_server: uvicorn.Server | None = None
     gateway_listener: socket.socket | None = None
+    auth = dynamodb.Table("foodtech-auth-sessions-dev")
+    auth_key, auth_created = {"pk": f"USER#{tenant}"}, False
     try:
+        auth.put_item(Item=auth_key, ConditionExpression="attribute_not_exists(pk)")
+        auth_created = True
         def created(kind: str, identifier: str) -> None:
             keys.append(item_key(kind, identifier))
 
@@ -247,6 +251,8 @@ async def main() -> None:
                 for key in reversed(keys):
                     table.delete_item(Key=key)
             finally:
+                if auth_created:
+                    auth.delete_item(Key=auth_key)
                 temp.cleanup()
 
 

@@ -31,6 +31,9 @@ async def main():
     keys = []
     def mark(kind, identifier, sk="META"):
         keys.append({"pk": f"{kind}#{identifier}", "sk": sk})
+    auth = session.resource("dynamodb").Table("foodtech-auth-sessions-dev")
+    auth_key = {"pk": f"USER#{tenant}"}
+    auth.put_item(Item=auth_key, ConditionExpression="attribute_not_exists(pk)")
     try:
         now = datetime.now(timezone.utc)
         registry.create_model(Model(model, "ollama", Tier.TIER_1, "ACTIVE", True, True, now, now))
@@ -61,6 +64,7 @@ async def main():
         assert "bad" not in str(registry.execution_result(execution))
         print("Three calls, two retry reservations and validated result: PASS")
     finally:
+        auth.delete_item(Key=auth_key)
         table.delete_item(Key={"pk": f"ACTIVE#{tenant}", "sk": f"EXEC#{execution}"})
         for key in reversed(keys):
             table.delete_item(Key=key)

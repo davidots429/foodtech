@@ -28,6 +28,9 @@ def main():
     registry = DynamoRegistry(TABLE, period, resource=resource, client=session.client("dynamodb"), auth_table="foodtech-auth-sessions-dev")
     keys = []
     barrier = threading.Barrier(len(ids))
+    auth = session.resource("dynamodb").Table("foodtech-auth-sessions-dev")
+    auth_key = {"pk": f"USER#{tenant}"}
+    auth.put_item(Item=auth_key, ConditionExpression="attribute_not_exists(pk)")
     try:
         for scope, identifier, calls in (("TENANT", tenant, 3), ("PROVIDER", provider, None),
                                          ("PROJECT", "GLOBAL", None)):
@@ -104,6 +107,7 @@ def main():
             raise AssertionError("Settlement retry did not succeed")
         print("Settlement after a known conditional conflict verified")
     finally:
+        auth.delete_item(Key=auth_key)
         for execution_id in ids:
             table.delete_item(Key={"pk": f"ACTIVE#{tenant}", "sk": f"EXEC#{execution_id}"})
         for key in reversed(keys):

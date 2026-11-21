@@ -55,7 +55,11 @@ async def check() -> None:
                                            f"synthetic-key-{suffix}")
     created: list[tuple[str, str]] = []
     quote = None
+    auth = resource.Table("foodtech-auth-sessions-dev")
+    auth_key, auth_created = {"pk": f"USER#{tenant_id}"}, False
     try:
+        auth.put_item(Item=auth_key, ConditionExpression="attribute_not_exists(pk)")
+        auth_created = True
         now = datetime.now(timezone.utc)
         registry.create_model(Model(
             model_id, "openai", Tier.TIER_3, "ACTIVE", False, True, now, now,
@@ -105,6 +109,8 @@ async def check() -> None:
                           "reservation_and_settlement": True, "overage_freeze": True,
                           "real_provider_called": False}))
     finally:
+        if auth_created:
+            auth.delete_item(Key=auth_key)
         if quote:
             created.extend((("QUOTE", quote["quote_id"]),
                             ("CONSENT", quote["quote_id"]),

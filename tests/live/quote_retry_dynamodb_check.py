@@ -28,6 +28,9 @@ def main():
     registry = DynamoRegistry(TABLE, period, resource=resource, client=session.client("dynamodb"), auth_table="foodtech-auth-sessions-dev")
     keys = []
     def key(kind, identifier): return {"pk": f"{kind}#{identifier}", "sk": "META"}
+    auth = session.resource("dynamodb").Table("foodtech-auth-sessions-dev")
+    auth_key = {"pk": f"USER#{tenant}"}
+    auth.put_item(Item=auth_key, ConditionExpression="attribute_not_exists(pk)")
     try:
         now = datetime.now(timezone.utc)
         registry.create_model(Model(model, "openai", Tier.TIER_3, "ACTIVE", False, True, now, now,
@@ -67,6 +70,7 @@ def main():
             raise AssertionError("Quote, consent or execution missing")
         print("Quote confirmation after known conflict verified")
     finally:
+        auth.delete_item(Key=auth_key)
         for k in reversed(keys): table.delete_item(Key=k)
         if any(table.get_item(Key=k, ConsistentRead=True).get("Item") for k in keys):
             raise RuntimeError("Synthetic quote records remain")
