@@ -68,6 +68,8 @@ class AtomicClient:
         self.decoder = TypeDeserializer()
         self.before_commit = None
         self.calls = []
+        self.auth_states = {f'USER#{name}': {} for name in
+                            ('tenant-a', 'customer-1', 'customer-a', 'new-customer')}
 
     def _decode(self, values):
         return {name: self.decoder.deserialize(value) for name, value in values.items()}
@@ -94,8 +96,9 @@ class AtomicClient:
             spec = action.get("Update") or action["ConditionCheck"]
             key = self._decode(spec["Key"])
             if spec.get("TableName") == "auth-test":
-                state = getattr(self, "auth_states", {}).get(key["pk"], {})
-                if state.get("suspended") or "deletion_lock_request" in state:
+                state = self.auth_states.get(key["pk"])
+                assert "attribute_exists(pk)" in spec["ConditionExpression"]
+                if state is None or state.get("suspended") or "deletion_lock_request" in state:
                     raise TransactionCanceledException()
                 continue
             if spec.get("ConditionExpression") == "attribute_not_exists(pk)":
@@ -476,6 +479,17 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(self.registry.execution_state('run-1'), 'PENDING')
         self.assertEqual(self.registry.budget('tenant-a', 'ollama').calls_remaining, 1)
+
+    def test_missing_account_rejects_new_work_and_reservation(self):
+        self.client.auth_states = {}
+        with self.assertRaises(RegistryConflict):
+            self.registry.create_execution(Execution('new-run', 'tenant-a', Feature.GENERAL_GUIDE,
+                'local-model', None, 'SYNTHETIC', Decimal('0')))
+        decision = self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1')
+        self.assertFalse(decision.allowed)
+        self.assertEqual(self.registry.execution_state('run-1'), 'PENDING')
+        self.assertEqual(self.registry.budget('tenant-a', 'ollama').calls_remaining, 1)
+        self.assertNotIn(('ACTIVE#tenant-a', 'EXEC#run-1'), self.resource.table.items)
 
     def test_locked_tenant_cannot_create_execution_quote_or_new_limit(self):
         self.client.auth_states = {'USER#tenant-a': {'deletion_lock_request': 'synthetic'},
