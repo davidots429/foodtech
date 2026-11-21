@@ -95,6 +95,18 @@ type PriorCandidate = { status: "NOT_BOUND" | "CURRENT_NOT_STARTED" | "HISTORY_I
   immediately_previous_verified: false };
 
 type RecipeRequest = { execution_id: string; state: string; reason: string };
+const recipeBlockedMessages: Record<string, string> = {
+  TIER1_MODEL_NOT_CONFIGURED: "Tier 1 모델이 설정되지 않아 실행할 수 없습니다.",
+  MODEL_NOT_ACTIVE: "Tier 1 모델의 승인 또는 활성 상태를 확인해야 합니다.",
+  MODEL_CONFIGURATION_INVALID: "Tier 1 모델 설정을 확인해야 합니다.",
+  EXTERNAL_TRANSFER_CONSENT_REQUIRED: "외부 전송 동의를 확인해야 합니다.",
+  EXTERNAL_TRANSFER_BLOCKED: "현재 데이터의 외부 전송은 허용되지 않습니다.",
+  CREDENTIAL_NOT_USABLE: "외부 공급자 자격증명을 확인해야 합니다.",
+  LIMIT_ACTION_REQUIRED: "AI 사용 한도를 확인해야 합니다.",
+  RECOMMENDATION_EVIDENCE_UNVERIFIED: "모델이 준비되어 있지만 조리 근거 검증이 끝나지 않아 실행할 수 없습니다.",
+};
+const downgradeEligible = new Set(["TIER1_MODEL_NOT_CONFIGURED", "MODEL_NOT_ACTIVE", "MODEL_CONFIGURATION_INVALID",
+  "EXTERNAL_TRANSFER_CONSENT_REQUIRED", "EXTERNAL_TRANSFER_BLOCKED", "CREDENTIAL_NOT_USABLE", "LIMIT_ACTION_REQUIRED"]);
 type LocalNotice = { quote_id: string; notice_version: string; model_id: string; quality_notice: string;
   transmission_location: "LOCAL"; estimated_cost_usd: string; expires_at: string };
 
@@ -289,8 +301,8 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
       </div>}
       {!requested && <button type="button" onClick={() => void requestRecipe()}
         disabled={busy || value.completeness === "INSUFFICIENT"}>AI 권고 요청 기록</button>}
-      {requested && <><p>Tier 1 모델이 설정되지 않아 요청의 실행이 차단되어 있습니다.</p>
-        {!notice && <button type="button" disabled={busy} onClick={() => void preview()}>로컬 모델 전환 고지 보기</button>}</>}
+      {requested && <><p>{recipeBlockedMessages[requested.reason] ?? "요청의 실행 조건을 확인해야 합니다."}</p>
+        {!notice && downgradeEligible.has(requested.reason) && <button type="button" disabled={busy} onClick={() => void preview()}>로컬 모델 전환 고지 보기</button>}</>}
       {notice && !confirmed && <div>
         <p>{notice.quality_notice}</p>
         <p>모델: {notice.model_id} · 처리 위치: 로컬 서버 · 예상 API 호출 비용: 00원</p>
