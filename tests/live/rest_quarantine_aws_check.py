@@ -32,7 +32,11 @@ def main():
         raise SystemExit("Unexpected AWS account")
     outputs = session.client("cloudformation").describe_stacks(StackName=STACK)["Stacks"][0].get("Outputs", [])
     values = {item["OutputKey"]: item["OutputValue"] for item in outputs}
-    bucket = values.get("IngestionDlqBucketName")
+    temporary_bucket = os.getenv("FOODTECH_TEMP_QUARANTINE_BUCKET")
+    if temporary_bucket and (os.getenv("FOODTECH_TEMP_QUARANTINE_LIVE") != "1" or
+                             not temporary_bucket.startswith("foodtech-rest-quarantine-test-")):
+        raise SystemExit("An explicitly opted-in temporary test bucket is required")
+    bucket = temporary_bucket or values.get("IngestionDlqBucketName")
     if values.get("DataTableName") != DATA_TABLE or not bucket:
         raise SystemExit("The development stack has no dedicated ingestion quarantine bucket")
     ordered = session.client("sqs").get_queue_url(QueueName=ORDERED_QUEUE)["QueueUrl"]
