@@ -80,6 +80,16 @@ def main():
             raise AssertionError('first bounded deletion did not remove one key')
         if len(store.inventory_keys(customer, 10, None)['keys']) != len(keys) - 1:
             raise AssertionError('bounded deletion removed an unexpected number of keys')
+        other_request = str(uuid4())
+        auth.update_item(Key=auth_keys[0], UpdateExpression='SET deletion_lock_request = :id',
+                         ExpressionAttributeValues={':id': other_request})
+        blocked(lambda: store.delete_inventory_page(customer, request, 10))
+        if len(store.inventory_keys(customer, 10, None)['keys']) != len(keys) - 1:
+            raise AssertionError('old request changed data after lock replacement')
+        auth.update_item(Key=auth_keys[0], UpdateExpression='REMOVE deletion_lock_request')
+        blocked(lambda: store.delete_inventory_page(customer, request, 10))
+        auth.update_item(Key=auth_keys[0], UpdateExpression='SET deletion_lock_request = :id',
+                         ExpressionAttributeValues={':id': request})
         if store.delete_inventory_page(customer, request, 10) != len(keys) - 1:
             raise AssertionError('resumed deletion did not remove remaining keys')
         store.delete_inventory_key(customer, request, inventory[0])
