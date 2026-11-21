@@ -1,7 +1,8 @@
 """Internal preparation of an owner-bound deletion registration.
 
-Not a user endpoint: authentication, an authoritative Capsule lookup, durable
-retry storage and saga execution must be provided before enabling this path.
+Not a user endpoint: this early two-table primitive does not lock Vault or
+Capsule. Do not connect it to a deletion API. Use the guarded four-domain path
+only after the resolver, IAM, durable recovery and all writers are verified.
 """
 from dataclasses import dataclass, field
 from uuid import UUID

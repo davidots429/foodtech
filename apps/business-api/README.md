@@ -265,3 +265,7 @@
 2026-11-21 기존 개발 DynamoDB 테이블의 무작위 합성 파티션에서 동시 쓰기 두 건 중 한 건만 성공하는 것, 별도 합성 marker와 Capsule 잠금을 함께 저장한 뒤 목록 조회와 추가 쓰기 거부, 시험 파티션 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/capsule_concurrency_dynamodb_check.py`. 테스트는 합성 바이트와 개발자 자격증명을 사용했으며 별도 Capsule 테이블·실제 암호화·서비스 역할·Vault 연동을 검증한 결과가 아니다.
 
 Vault와 Capsule의 원자적 생성 연결 및 응답 유실 시 복구는 아직 구현되지 않았다. 가입 경로에 연결하기 전 두 저장소의 같은 트랜잭션 연결과 안전한 재시도 절차를 마련해야 한다.
+
+`GuardedDeletionRegistration`은 서버에서 확인한 Vault·Capsule 스냅샷을 기준으로 두 연결정보를 암호화하고, `GuardedDeletion`은 인증 사용자·Vault·Capsule 잠금과 암호문 Tombstone 등록을 별도 네 테이블의 단일 트랜잭션으로 처리한다. Vault와 Capsule의 상태·revision 및 Vault의 Capsule 위치를 조건 검사한다. 동일 요청의 동일 트랜잭션은 DynamoDB 클라이언트 토큰의 제한된 기간 안에서 재시도한다. 기존 두 테이블만 잠그는 `DeletionRegistration`은 Vault·Capsule 경쟁을 막지 못하므로 삭제 API에 연결하지 않는다. 이 경로도 인증된 소유자의 Vault 스냅샷을 반환하는 실제 resolver, 모든 작성자의 잠금·revision 준수, 전용 권한과 프로세스 재시작 후 재개가 구현되기 전에는 사용할 수 없다.
+
+2026-11-21 기존 개발 테이블 네 개의 무작위 합성 항목으로 오래된 Vault·Capsule revision에서 네 영역 모두 변경 없이 취소되는 것, 동시 요청 중 하나만 성공하는 것과 동일 토큰 재전송·시험 데이터 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/guarded_deletion_dynamodb_check.py`. 합성 암호문과 개발자 자격증명을 사용했으며 전용 Vault/Registry/Capsule 테이블·실제 암호화·최소권한 역할·전체 삭제 Saga 검증이 아니다.
