@@ -49,6 +49,43 @@ class FakeClient:
 
 
 class ProcessBridgeTests(unittest.TestCase):
+    def test_history_contention_retries_from_new_revision(self):
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001", "batch_id": "race"}
+        stream_pk = stream_binding_key(**binding)
+        job_pk = "SCOPE#USER#customer-1#JOB#race"
+        history_key = ("SCOPE#USER#customer-1#JOBS", "HISTORY#REVISION")
+        table = FakeTable({(stream_pk, "BINDING"): {"job_pk": job_pk},
+            (job_pk, "META"): {"pk": job_pk, "sk": "META", "source_binding": binding,
+                "status": "RUNNING", "version": 1, "process_thickness_status": "IN_RANGE",
+                "process_time_status": "NORMAL", "process_assessment_status": "INSUFFICIENT_DATA"},
+            history_key: {"pk": history_key[0], "sk": history_key[1], "revision": 1}})
+
+        class Cancelled(Exception):
+            response = {"CancellationReasons": [{"Code": "None"}, {"Code": "None"},
+                                                  {"Code": "ConditionalCheckFailed"}]}
+
+        class ContendedClient(FakeClient):
+            def __init__(self, table):
+                super().__init__(table)
+                self.exceptions.TransactionCanceledException = Cancelled
+
+            def transact_write_items(self, *, TransactItems):
+                if not self.calls:
+                    self.calls += 1
+                    self.table.items[history_key]["revision"] = 2
+                    raise Cancelled()
+                super().transact_write_items(TransactItems=TransactItems)
+
+        bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.table, bridge.client, bridge.serializer = table, ContendedClient(table), TypeSerializer()
+        assessment = {"pk": "EVENT#race", "ingestion_event_id": "race", "dedup_status": "UNIQUE",
+            "quality_status": "VALID", "finding_codes": [], "normalized": {**binding,
+                "device_status": "RUNNING", "event_time": "2026-11-02T00:00:00Z",
+                "CHAMBER_TEMPERATURE": {"value": "170", "unit": "°C"}}}
+        bridge.apply(assessment)
+        self.assertEqual(bridge.client.calls, 2)
+        self.assertEqual(table.items[history_key]["revision"], 3)
+
     def test_gap_remains_a_warning_after_subsequent_normal_samples(self):
         binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001", "batch_id": "gap"}
         stream_pk = stream_binding_key(**binding)
@@ -72,6 +109,8 @@ class ProcessBridgeTests(unittest.TestCase):
         meta = table.items[(job_pk, "META")]
         self.assertTrue(meta["process_assessment"]["data_gap"])
         self.assertEqual(meta["process_assessment_status"], "WARNING")
+        history = table.items[("SCOPE#USER#customer-1#JOBS", "HISTORY#REVISION")]
+        self.assertGreaterEqual(history["revision"], 2)
 
     def test_legacy_gap_history_remains_unverified(self):
         binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001", "batch_id": "legacy"}
@@ -124,8 +163,12 @@ class ProcessBridgeTests(unittest.TestCase):
         self.assertEqual(table.items[(job_pk, "META")]["status"], "FAILED")
         self.assertEqual(table.items[(job_pk, "META")]["last_transition_event"], "PROCESS_FAILURE_DETECTED")
         self.assertEqual(table.items[(job_pk, "EVENT#PROCESS#event-5")]["source_assessment_pk"], "EVENT#event-5")
+        self.assertEqual(table.items[(job_pk, "EVENT#PROCESS#event-5")]["validation_change_reason"], "PROCESS_ANOMALY")
+        history_key = ("SCOPE#USER#customer-1#JOBS", "HISTORY#REVISION")
+        revision = table.items[history_key]["revision"]
         self.assertEqual(bridge.apply(assessment), "REPLAYED")
         self.assertEqual(bridge.client.calls, 5)
+        self.assertEqual(table.items[history_key]["revision"], revision)
 
     def test_unbound_event_has_no_job_effect(self):
         table = FakeTable({})
