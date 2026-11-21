@@ -401,7 +401,10 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "discharge_check_version": 0, "discharge_check_status": "NOT_MEASURED",
         "process_time_status": "NOT_MEASURED",
     }
-    await _store_call(store, store.create, _pk(session.subject, job_id), meta)
+    try:
+        await _store_call(store, store.create, _pk(session.subject, job_id), meta)
+    except Conflict as exc:
+        raise _conflict() from exc
     return meta
 
 
@@ -424,7 +427,10 @@ async def list_jobs(request: Request, limit: int = Query(20, ge=1, le=50),
 @router.post("/{job_id}/list-entry")
 async def register_job_in_list(job_id: str, request: Request) -> dict:
     _, store, pk, meta, _ = await _read(request, job_id, write=True)
-    await _store_call(store, store.ensure_listed, pk, meta)
+    try:
+        await _store_call(store, store.ensure_listed, pk, meta)
+    except Conflict as exc:
+        raise _conflict() from exc
     return {"job_id": meta["job_id"]}
 
 

@@ -1,5 +1,6 @@
 """Opt-in scoped prior safety evidence against the existing development table."""
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import os
 import uuid
 from unittest.mock import patch
@@ -63,6 +64,45 @@ async def run() -> None:
                     raise AssertionError("Unexpected prior safety evidence")
                 if result.json()["recommendation_execution_available"]:
                     raise AssertionError("Unverified prior must not enable recommendation execution")
+        if store.history_revision(subject) != 2:
+            raise AssertionError("Job creation did not advance history revision")
+        prior_meta = store.read_meta(keys[0])
+        store.ensure_listed(keys[0], prior_meta)
+        if store.history_revision(subject) != 2:
+            raise AssertionError("Idempotent listing changed history revision")
+        listing_key = {"pk": listing_pk, "sk": f"CREATED#{prior_meta['created_at']}#{ids[0]}"}
+        table.delete_item(Key=listing_key)
+        store.ensure_listed(keys[0], prior_meta)
+        if store.history_revision(subject) != 3:
+            raise AssertionError("Restoring a missing listing did not advance history revision")
+        new_id = str(uuid.uuid4()); new_pk = cooking._pk(subject, new_id); keys.append(new_pk)
+        extra = {**{key: value for key, value in prior_meta.items() if key not in {"pk", "sk"}},
+                 "job_id": new_id, "version": 1, "created_at": "2026-01-03T00:00:00Z",
+                 "status": "READY", "actual_placed_at": None, "source_binding": None}
+        store.create(new_pk, extra)
+        stream_pk = f"JEYUK#jeyuk-history-{uuid.uuid4().hex[:12]}"; keys.append(stream_pk)
+        binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-110-a-001", "batch_id": stream_pk[6:]}
+        bound = {**extra, "version": 2, "source_binding": binding}
+        store.bind_stream(new_pk, 1, bound, stream_pk)
+        started = {**bound, "version": 3, "status": "RUNNING", "actual_placed_at": "2026-01-03T00:00:00Z"}
+        store.commit(new_pk, 2, started, event={"sk": "EVENT#test-start", "trigger": "COOKING_STARTED"})
+        recook_id = str(uuid.uuid4()); recook_pk = cooking._pk(subject, recook_id); keys.append(recook_pk)
+        recook = {**extra, "job_id": recook_id, "created_at": "2026-01-04T00:00:00Z"}
+        store.create_recook(new_pk, 3, recook_pk, recook)
+        if store.history_revision(subject) != 7:
+            raise AssertionError("Create, bind, start or recook history revision was not atomic")
+        concurrent = []
+        for index in range(4):
+            item_id = str(uuid.uuid4()); item_pk = cooking._pk(subject, item_id); keys.append(item_pk)
+            item = {**extra, "job_id": item_id, "created_at": f"2026-01-{index + 5:02d}T00:00:00Z"}
+            concurrent.append((item_pk, item))
+        def create_one(args):
+            item_pk, item = args
+            DynamoCookingStore(COOKING_TABLE).create(item_pk, item)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(create_one, concurrent))
+        if store.history_revision(subject) != 11:
+            raise AssertionError("Concurrent job creation lost or duplicated a history revision")
         print("prior safety evidence verified; recommendation remains blocked", flush=True)
     finally:
         for pk in keys + [listing_pk]:

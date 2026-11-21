@@ -44,6 +44,7 @@ async def discover(request, job_id: str) -> dict:
     current_start = _instant(job.get("actual_placed_at"))
     if not current_start:
         return {"status": "CURRENT_NOT_STARTED", "candidate": None, "immediately_previous_verified": False}
+    before_revision = await _store_call(store, store.history_revision, session.subject)
     roster = await _roster(store, session.subject)
     if roster is None or job_id not in roster:
         return {"status": "HISTORY_INCOMPLETE", "candidate": None, "immediately_previous_verified": False}
@@ -91,6 +92,9 @@ async def discover(request, job_id: str) -> dict:
         raise HTTPException(409, "작업 목록이 조회 중 변경되었습니다. 다시 시도해 주세요.")
     if await read_roster() != snapshots:
         raise HTTPException(409, "작업 이력이 조회 중 변경되었습니다. 다시 시도해 주세요.")
+    after_revision = await _store_call(store, store.history_revision, session.subject)
+    if before_revision != after_revision:
+        raise HTTPException(409, "작업 이력이 조회 중 변경되었습니다. 다시 시도해 주세요.")
     if unknown:
         status, candidate = "HISTORY_INCOMPLETE", None
     elif not eligible:
@@ -111,4 +115,5 @@ async def discover(request, job_id: str) -> dict:
             candidate = {"job_id": selected_id, "status": selected.get("status"),
                          "safety_status": selected.get("safety_status"), "started_at": started.isoformat()}
     return {"status": status, "candidate": candidate, "listed_jobs_checked": len(roster),
+            "history_revision_status": "UNTRACKED" if before_revision is None else "UNCHANGED_DURING_READ",
             "immediately_previous_verified": False}
