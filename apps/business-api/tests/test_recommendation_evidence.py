@@ -97,6 +97,12 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
             "start_separation_us": 30000000, "simultaneous": True})
         self.assertNotIn("private-group", response.text)
         self.assertNotIn("private", response.text)
+        meta["jeyuk_feeds"]["SAUCE"]["started_at"] = "2026-01-01T00:01:00.250001Z"
+        meta["jeyuk_additions_simultaneous"] = False
+        over = (await self.client.get(path)).json()["recorded"]["jeyuk_feed_timing"]
+        self.assertEqual((over["start_separation_us"], over["simultaneous"]), (30_000_001, False))
+        meta["jeyuk_feeds"]["SAUCE"]["started_at"] = "2026-01-01T00:01:00.25Z"
+        meta["jeyuk_additions_simultaneous"] = True
         original = deepcopy(meta)
         for mutate in (lambda m: m["jeyuk_feeds"]["SAUCE"].update(addition_group_id="other"),
                        lambda m: m["jeyuk_feeds"]["SAUCE"].update(started_at="2026-01-01T00:01:00.250001Z"),
