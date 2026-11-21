@@ -23,6 +23,12 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(delete.call_args.kwargs['job_id'],'captured')
         self.assertNotIn('captured',repr(delete.call_args.kwargs.get('request_id')))
 
+    def test_binding_cleanup_uses_captured_job(self):
+        with patch('foodtech_business_api.job_deletion_worker.delete_job_binding',
+                   return_value={'state':'VERIFYING'}) as delete:
+            self.assertEqual(self.worker.remove_binding(**self.scope,index=0),{'index':0,'state':'VERIFYING'})
+        self.assertEqual(delete.call_args.kwargs['job_id'],'captured')
+
     def test_missing_target_and_mismatched_dependencies_fail(self):
         self.inventory.targets=Mock(return_value=iter([]))
         with patch('foodtech_business_api.job_deletion_worker.delete_one_job_record') as delete:

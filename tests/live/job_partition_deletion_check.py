@@ -19,7 +19,9 @@ outputs=s.client('cloudformation').describe_stacks(StackName='FoodtechCredential
 u,q=str(uuid4()),str(uuid4()); pk=f'SCOPE#USER#{u}#JOB#job'; other=f'SCOPE#USER#{u}#JOB#other'
 ak={'pk':f'USER#{u}'}; rk={'pk':'REGISTRY','sk':f'REQ#{q}'}
 entries=[(auth,{**ak,'suspended':True,'deletion_lock_request':q}),(reg,{**rk,'status':'DELETING'}),
- (src,{'pk':pk,'sk':'META','owner_subject':u,'job_id':'job'}),(src,{'pk':pk,'sk':'EVENT#1'}),
+ (src,{'pk':pk,'sk':'META','owner_subject':u,'job_id':'job','menu':'JEYUK',
+       'source_binding':{'source_id':'synthetic-rest','device_id':'mockprofile-110-a-001','batch_id':'jeyuk-'+u}}),
+ (src,{'pk':'JEYUK#jeyuk-'+u,'sk':'BINDING','job_pk':pk,'job_id':'job'}),(src,{'pk':pk,'sk':'EVENT#1'}),
  (src,{'pk':pk,'sk':'ASSESSMENT#1'}),(src,{'pk':other,'sk':'EVENT#1'})]
 created=[]
 if progress.query(KeyConditionExpression=Key('pk').eq(f'REQ#{q}'),ConsistentRead=True)['Items']:
@@ -37,6 +39,15 @@ try:
  else: raise AssertionError('bounded job scan incomplete')
  assert [item.job_id for item in inventory.targets(subject=u,request_id=q)]==['job']
  worker=JobDeletionWorker(inventory=inventory,source_table=src,progress_store=store,cipher=cipher)
+ binding_key={'pk':'JEYUK#jeyuk-'+u,'sk':'BINDING'}
+ src.update_item(Key=binding_key,UpdateExpression='SET job_pk=:other',ExpressionAttributeValues={':other':other})
+ try: worker.remove_binding(subject=u,request_id=q,index=0)
+ except ProfileDeletionConflict: pass
+ else: raise AssertionError('other job binding accepted')
+ src.update_item(Key=binding_key,UpdateExpression='SET job_pk=:pk',ExpressionAttributeValues={':pk':pk})
+ assert worker.remove_binding(subject=u,request_id=q,index=0)['state']=='VERIFYING'
+ assert worker.remove_binding(subject=u,request_id=q,index=0)['state']=='VERIFYING'
+ assert not src.get_item(Key=binding_key,ConsistentRead=True).get('Item')
  reg.update_item(Key=rk,UpdateExpression='SET #s=:s',ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'PAUSED'})
  stale=SimpleNamespace(auth_table=auth.name,registry_table=reg.name,progress_table=progress.name,client=store.client,load_checkpoint=lambda **kw:None)
  try: delete_one_job_record(**{**args,'progress_store':stale})
