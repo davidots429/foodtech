@@ -8,6 +8,7 @@ from boto3.dynamodb.types import TypeSerializer
 
 from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
 from foodtech_business_api.legacy_profile_scan import reconcile_legacy_page
+from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict, delete_profile_pair
 
 
 def main():
@@ -176,6 +177,35 @@ def main():
             raise AssertionError('missing legacy profile was listed')
         if any(table.get_item(Key=key, ConsistentRead=True).get('Item') is None for key in keys):
             raise AssertionError('missing profile or reference')
+        request = str(uuid4())
+        auth_table.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request, suspended = :yes',
+                               ExpressionAttributeValues={':request': request, ':yes': True})
+        def remove_profile(request_id, version):
+            delete_profile_pair(table, store.client, auth_table=auth_table.name, subject=subject,
+                                request_id=request_id, profile_id='p1', version=version)
+        try:
+            remove_profile(str(uuid4()), 'v1')
+        except ProfileDeletionConflict:
+            pass
+        else:
+            raise AssertionError('wrong deletion request accepted')
+        table.update_item(Key=keys[2], UpdateExpression='SET profile_version = :wrong',
+                          ExpressionAttributeValues={':wrong': 'wrong'})
+        try:
+            remove_profile(request, 'v1')
+        except ProfileDeletionConflict:
+            pass
+        else:
+            raise AssertionError('changed profile reference accepted')
+        if table.get_item(Key=keys[0], ConsistentRead=True).get('Item') is None:
+            raise AssertionError('failed pair deletion removed source')
+        table.update_item(Key=keys[2], UpdateExpression='SET profile_version = :right',
+                          ExpressionAttributeValues={':right': 'v1'})
+        remove_profile(request, 'v1')
+        remove_profile(request, 'v1')
+        if any(table.get_item(Key=k, ConsistentRead=True).get('Item') for k in (keys[0], keys[2])) or \
+                any(not table.get_item(Key=k, ConsistentRead=True).get('Item') for k in (keys[1], keys[3])):
+            raise AssertionError('profile pair deletion crossed version boundary')
     finally:
         for key in keys:
             table.delete_item(Key=key)
@@ -188,7 +218,7 @@ def main():
         table.delete_item(Key=stream_key)
         if auth_created:
             auth_table.delete_item(Key=auth_key)
-    print('profile and job write guards, concurrent profile creation, owner isolation, bounded scan and cleanup verified')
+    print('profile and job guards, profile pair deletion, owner isolation and cleanup verified')
 
 
 if __name__ == '__main__':
