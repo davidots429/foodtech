@@ -16,6 +16,8 @@ def main() -> None:
         raise ValueError("mTLS certificate files are required")
     if not os.getenv("FOODTECH_AI_REGISTRY_TABLE"):
         raise ValueError("AI registry table is required")
+    if not os.getenv("FOODTECH_AUTH_TABLE"):
+        raise ValueError("authentication table is required")
     app.state.mtls_listener = True
     uvicorn.run(app, host=os.getenv("FOODTECH_GATEWAY_BIND_HOST", "127.0.0.1"),
                 port=int(os.getenv("FOODTECH_GATEWAY_PORT", "8443")),

@@ -37,7 +37,7 @@
 
 `POST /internal/ai/executions`는 인증된 업무 API가 전달한 tenant 범위에 `GENERAL_GUIDE`·`llama3.1:8b` 로컬 실행을 생성한다. `POST /internal/ai/executions/{execution_id}/invoke`는 요청의 실행 ID로 기록을 다시 읽고 정책·한도 예약 후 로컬 실행은 loopback Ollama `/api/generate`에 `stream=false`, `num_ctx=4096`으로 요청한다. 이 일반 경로는 외부 모델에 임의 프롬프트를 전달하지 않는다. 결과 또는 정규화된 실패 코드를 `RESULT` 항목과 종료 상태·실제 비용 정산에 함께 기록한다. 프롬프트 원문은 레지스트리에 넣지 않는다. 결과 원문에는 90일 TTL을 설정했으며 정해진 시점의 Hard Delete 보장은 별도 삭제 작업에서 구현해야 한다.
 
-필수 환경변수는 Gateway의 `FOODTECH_AI_REGISTRY_TABLE`, `FOODTECH_GATEWAY_SERVER_CERT`, `FOODTECH_GATEWAY_SERVER_KEY`, `FOODTECH_GATEWAY_BUSINESS_CA`와 업무 API의 `FOODTECH_GATEWAY_URL`, `FOODTECH_GATEWAY_CA`, `FOODTECH_BUSINESS_CLIENT_CERT`, `FOODTECH_BUSINESS_CLIENT_KEY`다. Gateway의 `FOODTECH_OLLAMA_URL` 기본값은 `http://127.0.0.1:11434`이며 loopback URL만 허용한다. 현재 월의 tenant·ollama provider·project 한도와 승인된 `llama3.1:8b` 모델 레코드를 먼저 준비해야 실행된다.
+필수 환경변수는 Gateway의 `FOODTECH_AI_REGISTRY_TABLE`, `FOODTECH_AUTH_TABLE`, `FOODTECH_GATEWAY_SERVER_CERT`, `FOODTECH_GATEWAY_SERVER_KEY`, `FOODTECH_GATEWAY_BUSINESS_CA`와 업무 API의 `FOODTECH_GATEWAY_URL`, `FOODTECH_GATEWAY_CA`, `FOODTECH_BUSINESS_CLIENT_CERT`, `FOODTECH_BUSINESS_CLIENT_KEY`다. 인증 테이블 설정이 없으면 Gateway는 시작하지 않는다. Gateway의 `FOODTECH_OLLAMA_URL` 기본값은 `http://127.0.0.1:11434`이며 loopback URL만 허용한다. 현재 월의 tenant·ollama provider·project 한도와 승인된 `llama3.1:8b` 모델 레코드를 먼저 준비해야 실행된다.
 
 서버 배포 시 Ollama는 Gateway가 접근하는 같은 호스트의 loopback에서 실행하는 첫 계약이다. 서버의 GPU 드라이버·VRAM·실제 사용 가능 메모리, 4K context의 모델 적재 여부, CPU offload, 동시 요청·대기열·OOM·p95 지연을 서버에서 재검증한다. 승인된 최소 목표인 전용 GPU VRAM 8GB 이상은 서버 선정 기준이며, 개발 PC의 성공 여부를 서버 성능 증거로 대체하지 않는다. 서버가 별도 AI 호스트를 써야 한다면 loopback 제한을 해제하기 전에 내부 전송 인증·네트워크 경계를 다시 설계한다.
 
