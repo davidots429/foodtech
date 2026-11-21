@@ -12,11 +12,15 @@ REQUEST_ID = "12c5f2d4-c6d2-4165-adf7-e7fed537af06"
 def entry(sk, ciphertext=b"ciphertext"):
     return {"pk": {"S": LOCATOR}, "sk": {"S": sk}, "ciphertext": {"B": ciphertext},
             "pool_version": {"S": "pool-v1"}, "shard_id": {"S": "shard-0"},
-            "key_arn": {"S": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key"}}
+            "key_arn": {"S": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key"},
+            "user_key_id": {"S": "d9b699c2-61c7-462e-a65d-15f019a0cf13"}}
 
 
 def meta(revision="1", state="DELETION_LOCKED"):
-    return {"pk": {"S": LOCATOR}, "sk": {"S": "META"}, "revision": {"N": revision}, "state": {"S": state}, "deletion_request_id": {"S": REQUEST_ID}}
+    return {"pk": {"S": LOCATOR}, "sk": {"S": "META"}, "revision": {"N": revision}, "state": {"S": state},
+            "deletion_request_id": {"S": REQUEST_ID}, "user_key_id": {"S": "d9b699c2-61c7-462e-a65d-15f019a0cf13"},
+            "encrypted_user_dek": {"B": b"wrapped"}, "pool_version": {"S": "pool-v1"}, "shard_id": {"S": "shard-0"},
+            "key_arn": {"S": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key"}}
 
 
 class Paginator:
@@ -74,6 +78,7 @@ class CapsuleInventoryTests(unittest.TestCase):
         invalid = [entry("ENTRY#OTHER#2026-01"), entry("ENTRY#BILLING#2026-13"),
                    entry("ENTRY#BILLING#0000-01"), entry("ENTRY#BILLING#2026-01", b""),
                    {**entry("ENTRY#BILLING#2026-01"), "key_arn": {"S": "not-a-key"}},
+                   {**entry("ENTRY#BILLING#2026-01"), "user_key_id": {"S": "ba246043-0dd0-49b0-b5e6-0615c8b0bfb3"}},
                    {**entry("ENTRY#BILLING#2026-01"), "pk": {"S": "B" * 43}}]
         for item in invalid:
             with self.subTest(item=item), self.assertRaises(CapsuleInventoryError):
@@ -90,6 +95,18 @@ class CapsuleInventoryTests(unittest.TestCase):
         count = self.inventory(Client([{"Items": entries[:500]}, {"Items": entries[500:]}])).stage(
             LOCATOR, REQUEST_ID, lambda *_: None).entry_count
         self.assertEqual(count, 1080)
+
+    def test_unkeyed_empty_capsule_is_allowed_but_partial_or_mismatched_key_is_not(self):
+        unkeyed = {name: value for name, value in meta().items() if name not in {
+            "user_key_id", "encrypted_user_dek", "pool_version", "shard_id", "key_arn"}}
+        self.assertEqual(self.inventory(Client([{"Items": []}], [unkeyed, unkeyed])).stage(
+            LOCATOR, REQUEST_ID, lambda *_: None).entry_count, 0)
+        with self.assertRaises(CapsuleInventoryError):
+            self.inventory(Client([{"Items": [entry("ENTRY#BILLING#2026-01")]}], [unkeyed])).stage(
+                LOCATOR, REQUEST_ID, lambda *_: None)
+        partial = {**unkeyed, "user_key_id": meta()["user_key_id"]}
+        with self.assertRaises(CapsuleInventoryError):
+            self.inventory(Client([{"Items": []}], [partial])).stage(LOCATOR, REQUEST_ID, lambda *_: None)
 
     def test_stage_failure_cannot_return_a_complete_inventory(self):
         client = Client([{"Items": [entry("ENTRY#BILLING#2026-01")]}])
