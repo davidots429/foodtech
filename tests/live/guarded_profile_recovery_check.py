@@ -28,6 +28,13 @@ from foodtech_business_api.profile_deletion_worker import ProfileDeletionWorker
 from foodtech_business_api.profile_deletion_residual import ProfileResidualScan
 from foodtech_business_api.profile_deletion_coordinator import ProfileDeletionCoordinator
 from foodtech_business_api.profile_deletion_recovery import ProfileDeletionRecovery
+from foodtech_business_api.job_deletion_inventory import JobDeletionInventory
+from foodtech_business_api.job_deletion_worker import JobDeletionWorker
+from foodtech_business_api.job_binding_inventory import JobBindingInventory
+from foodtech_business_api.job_deletion_residual import JobResidualScan
+from foodtech_business_api.job_binding_residual import JobBindingResidualScan
+from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
+from foodtech_business_api.job_deletion_recovery import JobDeletionRecovery
 from foodtech_business_api.deletion_progress import DeletionProgressStore
 from foodtech_business_api.deletion_checkpoint_cipher import DeletionCheckpointCipher
 from foodtech_capsule_crypto.tenant_scope import TenantScope, TenantScopeResolver
@@ -77,6 +84,7 @@ def main():
     auth_created = vault_created = capsule_created = False
     plan_request = None
     profile_created = []
+    job_created = []
     try:
         auth.put_item(Item={**auth_key, "epoch": 0, "vault_id": vault_id, "provenance": "SYNTHETIC"},
                       ConditionExpression=Attr("pk").not_exists())
@@ -217,6 +225,30 @@ def main():
             profile_recovery.step(authenticated_subject=str(uuid.uuid4()), request_id=winner)
         except ValueError: pass
         else: raise AssertionError('other subject recovered profile deletion')
+        job_pk=f'SCOPE#USER#{subject}#JOB#job'
+        for job_item in ({'pk':job_pk,'sk':'META','owner_subject':subject,'job_id':'job'},
+                         {'pk':job_pk,'sk':'EVENT#1'}):
+            vault.put_item(Item=job_item,ConditionExpression=Attr('pk').not_exists())
+            job_created.append({'pk':job_item['pk'],'sk':job_item['sk']})
+        jobs=JobDeletionInventory(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
+        job_worker=JobDeletionWorker(inventory=jobs,source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
+        job_bindings=JobBindingInventory(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
+        job_residual=JobResidualScan(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
+        binding_residual=JobBindingResidualScan(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
+        job_coordinator=JobDeletionCoordinator(jobs=jobs,worker=job_worker,bindings=job_bindings,
+                                                residual=job_residual,binding_residual=binding_residual)
+        job_recovery=JobDeletionRecovery(recovery=recovery,coordinator=job_coordinator)
+        for _ in range(1000):
+            job_result=job_recovery.step(authenticated_subject=subject,request_id=winner,limit=100)
+            if job_result.get('residual_found'):raise AssertionError('unexpected synthetic job residual')
+            if job_result['phase']=='VERIFYING':break
+        else:raise AssertionError('bounded job recovery did not finish')
+        if vault.get_item(Key=job_created[1],ConsistentRead=True).get('Item') or \
+                not vault.get_item(Key=job_created[0],ConsistentRead=True).get('Item'):
+            raise AssertionError('job recovery did not preserve META or remove event')
+        try:job_recovery.step(authenticated_subject=str(uuid.uuid4()),request_id=winner)
+        except ValueError:pass
+        else:raise AssertionError('other subject recovered job deletion')
         worker = CapsulePlanWorker(recovery=recovery, inventory=CapsuleInventory(CAPSULE, purposes, client=client),
             source_table=capsule, progress_store=plan_progress, progress_cipher=plan_cipher,
             tenant_resolver=resolver, key_map=key_map, approved_purposes=purposes,
@@ -238,7 +270,7 @@ def main():
             raise AssertionError("Losing request created a tombstone")
     finally:
         if plan_request:
-            for profile_key in profile_created:
+            for profile_key in profile_created + job_created:
                 vault.delete_item(Key=profile_key)
             cursor = None
             while True:
@@ -247,7 +279,7 @@ def main():
                     query['ExclusiveStartKey'] = cursor
                 pages = progress_table.query(**query)
                 for item in pages['Items']:
-                    if item['sk'].startswith('DOMAIN#PROFILE_'):
+                    if item['sk'].startswith(('DOMAIN#PROFILE_', 'DOMAIN#JOB_')):
                         profile_progress_key = {'pk': item['pk'], 'sk': item['sk']}
                         progress_table.delete_item(Key=profile_progress_key)
                         if progress_table.get_item(Key=profile_progress_key, ConsistentRead=True).get('Item'):
@@ -255,7 +287,7 @@ def main():
                 cursor = pages.get('LastEvaluatedKey')
                 if not cursor:
                     break
-            for profile_key in profile_created:
+            for profile_key in profile_created + job_created:
                 if vault.get_item(Key=profile_key, ConsistentRead=True).get('Item'):
                     raise RuntimeError('synthetic profile cleanup failed')
             for domain in ('CAPSULE_PLAN', 'CAPSULE_PLAN_PAGE_000000000001'):
@@ -282,7 +314,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "profile_recovery": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "profile_recovery": "verified", "job_recovery": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
