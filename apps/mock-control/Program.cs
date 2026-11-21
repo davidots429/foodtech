@@ -58,25 +58,30 @@ var fixturePath = Required(options, "fixture");
 using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath, Encoding.UTF8));
 var root = fixture.RootElement;
 var jeyuk = root.TryGetProperty("fixtureId", out _);
-var combi = root.TryGetProperty("profileId", out var profile) && profile.GetString() == "mockprofile-120";
+var equipmentJson = root.TryGetProperty("profileId", out var equipmentProfile) &&
+    (equipmentProfile.GetString() is "mockprofile-110" or "mockprofile-120") && root.TryGetProperty("instanceId", out _);
+var combi = root.TryGetProperty("profileId", out var profile) && profile.GetString() == "mockprofile-120" && !equipmentJson;
 var xml = root.TryGetProperty("profileId", out var xmlProfile) && xmlProfile.GetString() is "mockprofile-101" or "mockprofile-111" or "mockprofile-121";
-if (!jeyuk && !combi && !xml && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
+if (!jeyuk && !combi && !xml && !equipmentJson && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
     root.GetProperty("instanceId").GetString() is not ("mockprofile-100-a-001" or "mockprofile-100-b-001" or "mockprofile-100-c-001")))
     throw new InvalidDataException("Only approved synthetic profiles are supported.");
+if (equipmentJson && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
+    !new[] { $"{equipmentProfile.GetString()}-b-001", $"{equipmentProfile.GetString()}-c-001" }.Contains(root.GetProperty("instanceId").GetString())))
+    throw new InvalidDataException("Only approved synthetic equipment profiles are supported.");
 if (xml && (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
             !new[] { $"{xmlProfile.GetString()}-a-001", $"{xmlProfile.GetString()}-b-001", $"{xmlProfile.GetString()}-c-001" }.Contains(root.GetProperty("instanceId").GetString())))
     throw new InvalidDataException("Only approved synthetic XML is supported.");
 if ((jeyuk || combi || xml) && (args.Length == 0 || args[0] != "serve"))
     throw new ArgumentException("Use the matching simulation command or serve for this fixture.");
 var instanceId = jeyuk || combi ? "" : root.GetProperty("instanceId").GetString();
-if (!jeyuk && !combi && !xml && root.GetProperty("profileId").GetString() != "mockprofile-100")
+if (!jeyuk && !combi && !xml && !equipmentJson && root.GetProperty("profileId").GetString() != "mockprofile-100")
     throw new InvalidDataException("Unexpected synthetic profile.");
 var records = jeyuk || combi ? Array.Empty<JsonElement>() :
     root.GetProperty("records").EnumerateArray().Select(item => item.Clone()).ToArray();
 var recordLines = jeyuk ? JeyukSimulation.Expand(root).ToArray() : combi ? CombiSimulation.Generate(root).Raw :
     xml ? records.Select(item => item.GetString() ?? throw new InvalidDataException("Invalid XML fixture.")).ToArray() :
     records.Select(item => JsonSerializer.Serialize(item)).ToArray();
-var profileId = jeyuk ? "mockprofile-110" : combi ? "mockprofile-120" : xml ? xmlProfile.GetString()! : "mockprofile-100";
+var profileId = jeyuk ? "mockprofile-110" : combi ? "mockprofile-120" : xml ? xmlProfile.GetString()! : equipmentJson ? equipmentProfile.GetString()! : "mockprofile-100";
 
 if (args.Length > 0 && args[0] == "hash")
 {
