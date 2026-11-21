@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record"><xs:complexType><xs:sequence>
+    <xs:element name="schema_version" type="xs:string" fixed="1.0"/>
+    <xs:element name="source_id" type="xs:string" fixed="synthetic-mqtt-xml"/>
+    <xs:element name="device_id" type="xs:string" fixed="mockprofile-311-b-001"/>
+    <xs:element name="batch_id" type="xs:string"/><xs:element name="record_id" type="xs:string"/>
+    <xs:element name="sequence_number" type="xs:positiveInteger"/><xs:element name="event_time_ms" type="xs:nonNegativeInteger"/>
+    <xs:element name="device_status" type="xs:nonNegativeInteger"/><xs:element name="temperature_f" type="xs:decimal"/>
+    <xs:element name="output_percent" type="xs:decimal"/><xs:element name="elapsed_ms" type="xs:nonNegativeInteger"/>
+    <xs:any namespace="##any" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>
