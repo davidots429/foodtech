@@ -315,6 +315,9 @@ class DynamoProcessRestatement:
                               "ExpressionAttributeNames": {"#v": "version"},
                               "ExpressionAttributeValues": {":previous": {"N": str(previous_pointer["version"])}}}
                              if previous_pointer else {"ConditionExpression": "attribute_not_exists(pk)"})
+        owner_prefix, separator, job_id = job_pk.rpartition("#JOB#")
+        if not separator or not owner_prefix.startswith("SCOPE#USER#") or not job_id:
+            raise ValueError("invalid scoped job key")
         try:
             revision_check = {"TableName": self.data.name,
                               "Key": self._item({"pk": stream_pk, "sk": "SOURCE#REVISION"})}
@@ -339,6 +342,11 @@ class DynamoProcessRestatement:
                 {"Put": {"TableName": self.cooking.name, "Item": self._item(pointer),
                          **pointer_condition}},
                 {"ConditionCheck": revision_check},
+                {"Update": {"TableName": self.cooking.name,
+                            "Key": self._item({"pk": owner_prefix + "#JOBS", "sk": "HISTORY#REVISION"}),
+                            "UpdateExpression": "ADD revision :one",
+                            "ConditionExpression": "attribute_not_exists(revision) OR revision < :max",
+                            "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}},
             ])
         except self.client.exceptions.TransactionCanceledException:
             current = self.cooking.get_item(Key=request_key, ConsistentRead=True).get("Item")

@@ -53,6 +53,7 @@ def main() -> None:
     cooking, data = resource.Table(COOKING_TABLE), resource.Table(DATA_TABLE)
     run_id = uuid.uuid4().hex[:12]
     job_pk = f"SCOPE#USER#synthetic-restatement-{run_id}#JOB#test"
+    history_pk = f"SCOPE#USER#synthetic-restatement-{run_id}#JOBS"
     event_pks = [f"EVENT#synthetic-restatement-{run_id}-{name}"
                  for name in ("preload", "first", "late", "third", "followup", "race")]
     binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
@@ -112,6 +113,7 @@ def main() -> None:
         with patch.dict(os.environ, {"FOODTECH_COOKING_TABLE": COOKING_TABLE}):
             worker = DynamoStandardizationWorker(DATA_TABLE, "unused", "unused")
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
+        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 1
         processor = DynamoProcessRestatement(COOKING_TABLE, DATA_TABLE)
         request = cooking.get_item(Key={"pk": job_pk, "sk": request_sk}, ConsistentRead=True)["Item"]
         result = cooking.get_item(Key={"pk": job_pk, "sk": request["result_sk"]},
@@ -161,6 +163,7 @@ def main() -> None:
             evidence = asyncio.run(recommendation_evidence.read_evidence(None, "test"))
             assert evidence["source_revision_status"] == "CHANGED"
         assert worker._publish_process(followup) == "RESTATEMENT_DERIVED"
+        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 2
         followup_request = cooking.get_item(
             Key={"pk": job_pk, "sk": f"RESTATEMENT#REQUEST#{followup_id}"},
             ConsistentRead=True)["Item"]
@@ -180,6 +183,7 @@ def main() -> None:
         assert cooking.get_item(Key={"pk": job_pk, "sk": "META"}, ConsistentRead=True)["Item"] == job
         assert worker._publish_process(late_assessment) == "RESTATEMENT_DERIVED"
         assert processor.process(job_pk, f"synthetic-restatement-{run_id}-late") == "ALREADY_COMPLETED"
+        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 2
         race_id = f"synthetic-restatement-{run_id}-race"
         race = {**followup, "pk": f"EVENT#{race_id}", "ingestion_event_id": race_id,
                 "normalized": {**followup["normalized"], "sequence_number": 6,
@@ -200,6 +204,7 @@ def main() -> None:
         processor.client = SimpleNamespace(exceptions=original_client.exceptions,
                                            transact_write_items=racing_transaction)
         assert processor.process(job_pk, race_id) == "STALE_RETRY"
+        assert cooking.get_item(Key={"pk": history_pk, "sk": "HISTORY#REVISION"}, ConsistentRead=True)["Item"]["revision"] == 2
         assert cooking.get_item(Key={"pk": job_pk, "sk": "PROCESS#LATEST_RESTATED"},
                                 ConsistentRead=True)["Item"]["version"] == 2
         print(json.dumps({"account": ACCOUNT, "region": REGION, "result": "DERIVED_ONLY",
@@ -208,9 +213,10 @@ def main() -> None:
                           "latest_version": int(latest["version"]),
                           "job_unchanged": True, "replay": "ALREADY_COMPLETED",
                           "source_revision_race": "STALE_RETRY", "customer_revision_status": [
-                              "MATCHED_AT_READ", "CHANGED"], "cleanup_partitions": 9}))
+                              "MATCHED_AT_READ", "CHANGED"], "cleanup_partitions": 10}))
     finally:
         clean_partition(cooking, job_pk)
+        clean_partition(cooking, history_pk)
         clean_partition(cooking, stream_pk)
         for pk in event_pks:
             clean_partition(data, pk)
