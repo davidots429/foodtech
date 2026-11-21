@@ -210,6 +210,13 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         freshness = await self.client.get(link + '/freshness')
         self.assertEqual(freshness.json()['status'], 'CHANGED')
         self.assertEqual(freshness.json()['changed'], [{'meal_id': meta['meal_batch_id'], 'reason': 'VERSION_CHANGED'}])
+        self.assertEqual((await self.client.post(link + '/recalculate')).status_code, 403)
+        refreshed = await self.client.post(link + '/recalculate', headers=headers)
+        self.assertEqual(refreshed.status_code, 201, refreshed.text)
+        self.assertEqual(refreshed.json()['group_id'], result['group_id'])
+        self.assertNotEqual(refreshed.json()['result_id'], result['result_id'])
+        self.assertEqual((await self.client.post(link + '/recalculate', headers=headers)).json()['result_id'],
+                         refreshed.json()['result_id'])
         changed_compare = await self.client.post(path + '/compare', headers=headers, json=comparison_body)
         self.assertEqual(changed_compare.json()['baseline']['freshness']['status'], 'CHANGED')
         self.assertEqual((await self.client.get(link)).json()['result_id'], result['result_id'])
@@ -219,6 +226,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.subject = 'another-customer'
         self.assertEqual((await self.client.get(link)).status_code, 404)
         self.assertEqual((await self.client.get(link + '/freshness')).status_code, 404)
+        self.assertEqual((await self.client.post(link + '/recalculate', headers=headers)).status_code, 404)
         self.assertEqual((await self.client.post(path + '/compare', headers=headers, json=comparison_body)).status_code, 404)
         self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 404)
 

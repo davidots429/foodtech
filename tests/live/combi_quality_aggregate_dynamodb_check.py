@@ -122,6 +122,10 @@ async def scenario(store, partitions, auth, auth_keys):
             freshness = await client.get(link + '/freshness')
             assert freshness.json()['status'] == 'CHANGED'
             assert freshness.json()['changed'] == [{'meal_id': meal_id, 'reason': 'VERSION_CHANGED'}]
+            refreshed = await client.post(link + '/recalculate', headers=headers)
+            refreshed.raise_for_status()
+            assert refreshed.json()['group_id'] == group and refreshed.json()['result_id'] != result['result_id']
+            assert (await client.get(link)).json()['result_id'] == result['result_id']
             compared = await client.post('/api/customer/combi-quality-aggregates/compare', headers=headers,
                                          json=compare_body)
             assert compared.json()['baseline']['freshness']['status'] == 'CHANGED'

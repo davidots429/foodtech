@@ -90,6 +90,16 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
     finally { active.current = false; setBusy(false); }
   }
 
+  async function recalculate() {
+    if (active.current || !result) return;
+    active.current = true; setBusy(true); setError(""); setFreshness(null); setComparison(null);
+    try {
+      const value = await api<Result>(`/api/customer/combi-quality-aggregates/${encodeURIComponent(result.group_id)}/${encodeURIComponent(result.result_id)}/recalculate`, csrf, {});
+      setResult(value); setGroupId(value.group_id); setResultId(value.result_id);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "다시 집계하지 못했습니다."); }
+    finally { active.current = false; setBusy(false); }
+  }
+
   async function compare() {
     if (active.current || !result) return;
     active.current = true; setBusy(true); setError(""); setComparison(null);
@@ -132,6 +142,7 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
       {result.references.filter(item => !item.included).length > 0 && <ul>{result.references.filter(item => !item.included).map(item =>
         <li key={item.meal_id}>{item.meal_id}: {reasons[item.exclusion_reason ?? ""] ?? item.exclusion_reason}</li>)}</ul>}
       <button type="button" className="secondary" disabled={busy} onClick={checkFreshness}>배치 변경 여부 확인</button>
+      <button type="button" className="secondary" disabled={busy} onClick={recalculate}>같은 조건으로 다시 집계</button>
       {freshness && <div><p>{freshness.status === "CHANGED" ? "집계 후 변경된 배치가 있습니다." : "확인 시점에 배치 버전이 변경되지 않았습니다."} · {freshness.checked_at}</p>
         {freshness.changed.length > 0 && <ul>{freshness.changed.map(item => <li key={item.meal_id}>{item.meal_id}: {item.reason === "UNAVAILABLE" ? "배치를 찾을 수 없음" : "배치 버전 변경"}</li>)}</ul>}</div>}
       <div className="field-grid"><label>기준 집계 그룹 ID<input value={baselineGroup} onChange={event => setBaselineGroup(event.target.value)} /></label>

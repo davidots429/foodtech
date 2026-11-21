@@ -5,7 +5,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from foodtech_contracts.combi_quality_load import RULE_VERSION, classify
 
@@ -167,6 +167,23 @@ async def meal_aggregate_freshness(group_id: str, result_id: str, request: Reque
             changed.append({'meal_id': ref['meal_id'], 'reason': 'VERSION_CHANGED'})
     return {'status': 'CHANGED' if changed else 'UNCHANGED_AS_OBSERVED', 'changed': changed,
             'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+@router.post('/{group_id}/{result_id}/recalculate', status_code=201)
+async def recalculate_meal_aggregate(group_id: str, result_id: str, request: Request) -> dict:
+    """Create a new historical snapshot using the stored selection."""
+    await _context(request, write=True)
+    record = await get_meal_aggregate(group_id, result_id, request)
+    await meal_aggregate_freshness(group_id, result_id, request)
+    try:
+        selection = record['selection']
+        if selection['load_rule_version'] != RULE_VERSION:
+            raise ValueError
+        body = MealAggregateRequest.model_validate({key: selection[key] for key in (
+            'meal_ids', 'menu', 'equipment_size', 'recipe_version', 'load_band', 'period_start', 'period_end')})
+    except (KeyError, TypeError, ValueError, ValidationError):
+        raise HTTPException(409, '기존 집계의 비교 조건을 확인할 수 없습니다.') from None
+    return await create_meal_aggregate(request, body)
 
 
 @router.post('/compare')
