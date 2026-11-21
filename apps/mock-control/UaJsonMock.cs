@@ -6,7 +6,7 @@ using System.Text.Json;
 // A project-specific synthetic HTTPS contract, not an OPC UA standard implementation.
 internal static class UaJsonMock
 {
-    public static async Task Run(string fixturePath, string certPath, int port)
+    public static async Task Run(string fixturePath, string certPath, int port, System.Net.IPAddress? bindAddress)
     {
         if (port is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
         var clientId = Environment.GetEnvironmentVariable("FOODTECH_MOCK_CLIENT_ID");
@@ -35,7 +35,10 @@ internal static class UaJsonMock
             Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(lines)) > 2_000_000)
             throw new InvalidDataException("Synthetic source history is too large.");
         var builder = WebApplication.CreateBuilder(Array.Empty<string>());
-        builder.WebHost.ConfigureKestrel(server => server.ListenLocalhost(port, listen => listen.UseHttps(certPath, password)));
+        builder.WebHost.ConfigureKestrel(server => {
+            if (bindAddress is null) server.ListenLocalhost(port, listen => listen.UseHttps(certPath, password));
+            else server.Listen(bindAddress, port, listen => listen.UseHttps(certPath, password));
+        });
         var app = builder.Build();
         var tokens = new Dictionary<string, DateTimeOffset>();
         var gate = new object();

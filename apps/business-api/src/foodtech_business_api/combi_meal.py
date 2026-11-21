@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
 from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
 from foodtech_contracts.combi_transition import TransitionSample, assess_transition
@@ -20,9 +20,11 @@ from foodtech_contracts.combi_transition_live import observe as observe_transiti
 from foodtech_contracts.combi_live_events import events_for
 from foodtech_contracts.combi_sampling import selection_issues
 from foodtech_contracts.combi_probe import summarize as summarize_probe
+from foodtech_contracts.combi_quality_load import classify as classify_quality_load
 
 from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
+from .combi_quality_sample import current_quality
 
 router = APIRouter(prefix="/api/customer/combi-meals", tags=["combi-meals"])
 
@@ -37,6 +39,18 @@ class CreateMeal(BaseModel):
     added_water_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
     pan_tare_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
     rack_tare_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
+    rice_recipe_version: str | None = Field(default=None, max_length=80)
+    mackerel_recipe_version: str | None = Field(default=None, max_length=80)
+
+    @field_validator('rice_recipe_version', 'mackerel_recipe_version')
+    @classmethod
+    def validate_recipe_version(cls, value):
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError('recipe version cannot be blank')
+        return value
 
 
 class RicePreparation(BaseModel):
@@ -575,6 +589,10 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
          "target_program_seconds": 720, "process_status": "NOT_MEASURED",
          "safety_status": "NOT_MEASURED", "quality_status": "PENDING"},
     ]
+    for name in ('rice_recipe_version', 'mackerel_recipe_version'):
+        value = getattr(body, name)
+        if value is not None:
+            records[0][name] = value
     try:
         await _store_call(store, store.create_meal, _pk(session.subject, meal_id), records)
     except Conflict as exc:
@@ -614,7 +632,12 @@ def _display_climate_legacy(step: dict) -> dict:
 @router.get("/{meal_id}")
 async def get_meal(meal_id: UUID, request: Request) -> dict:
     session, store = await _context(request)
-    records = await _store_call(store, store.read_meal, _pk(session.subject, str(meal_id)))
+    return await read_meal_for_subject(store, session.subject, meal_id)
+
+
+async def read_meal_for_subject(store, subject: str, meal_id: UUID) -> dict:
+    """Read a scoped meal for an already-authorized customer or trusted worker."""
+    records = await _store_call(store, store.read_meal, _pk(subject, str(meal_id)))
     rows = {row["sk"]: {k: v for k, v in row.items() if k != "pk"} for row in records}
     meta = rows.get("META")
     if not meta:
@@ -651,6 +674,48 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
     if events:
         result["events"] = events
     return result
+
+
+@router.get('/{meal_id}/quality/{menu}/sample-evidence')
+async def meal_quality_sample_evidence(meal_id: UUID, menu: Literal['rice', 'mackerel'], request: Request) -> dict:
+    """Return a customer-scoped quality snapshot without inventing comparison dimensions."""
+    first = await get_meal(meal_id, request)
+    second = await get_meal(meal_id, request)
+    if first != second:
+        raise HTTPException(409, '조회 중 식사 배치가 변경되었습니다. 다시 조회해 주세요.')
+    try:
+        sample = current_quality(second, menu.upper())
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(409, '현재 품질평가 이력을 확인할 수 없습니다.') from exc
+    if sample['status'] == 'EXCLUDED':
+        return {'status': 'EXCLUDED', 'reason': sample['reason']}
+    assessment = sample['assessment']
+    recipe = second['meal'].get(f'{menu}_recipe_version')
+    missing = []
+    if not isinstance(recipe, str) or not recipe.strip():
+        recipe = None
+        missing.append('RECIPE_VERSION')
+    mass = assessment.get('actual_mass_kg')
+    load = None
+    if mass is None:
+        missing.append('ACTUAL_MASS')
+    else:
+        try:
+            load = classify_quality_load(menu.upper(), second['meal'].get('equipment_size'), mass)
+        except ValueError as exc:
+            raise HTTPException(409, '평가의 조리량을 확인할 수 없습니다.') from exc
+    return {'status': 'DIMENSIONS_INCOMPLETE' if missing else 'SAMPLE_EVIDENCE_READY',
+            'missing_dimensions': missing,
+            'menu': menu.upper(), 'recipe_version': recipe,
+            'equipment_size': second['meal'].get('equipment_size'),
+            'load_band': load.band if load else None, 'load_rule_version': load.rule_version if load else None,
+            'reference_mass_kg': str(load.reference_mass_kg) if load else None,
+            'reference_mass_ratio': str(load.ratio) if load else None,
+            'meal_version': sample['meal_version'], 'quality_version': sample['quality_version'],
+            'safety_version': sample['safety_version'], 'scores': assessment['scores'],
+            'score_percent': assessment.get('score_percent'), 'completed_at': assessment.get('completed_at'),
+            'actual_mass_kg': assessment.get('actual_mass_kg'),
+            'actual_portions': assessment.get('actual_portions'), 'load_ratio': assessment.get('load_ratio')}
 
 
 @router.post("/{meal_id}/rice-preparation", status_code=201)
