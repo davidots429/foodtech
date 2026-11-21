@@ -4,8 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import boto3
-from botocore.exceptions import ClientError
-from foodtech_credential_registration.registration import CredentialRegistrar
+from foodtech_credential_registration.registration import CredentialRegistrar, RegistrationError
 
 
 def main():
@@ -39,8 +38,8 @@ def main():
         def rejected(epoch):
             try:
                 registrar.register(tenant, 'openai', 'v1', 'unused', epoch)
-            except ClientError as exc:
-                if exc.response.get('Error', {}).get('Code') != 'TransactionCanceledException':
+            except RegistrationError as exc:
+                if exc.code != 'TENANT_UNAVAILABLE':
                     raise
                 return
             raise AssertionError('registration was accepted')

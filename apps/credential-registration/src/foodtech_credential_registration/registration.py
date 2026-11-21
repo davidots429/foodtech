@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import boto3
 from boto3.dynamodb.types import TypeSerializer
+from botocore.exceptions import ClientError
 
 from .storage import CredentialWriter
 
@@ -133,6 +134,11 @@ class CredentialRegistrar:
                          "ConditionExpression": "attribute_not_exists(pk)"}},
             ])
             return credential_id
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") == "TransactionCanceledException" and any(
+                    reason.get("Code") == "ConditionalCheckFailed" for reason in error.response.get("CancellationReasons", [])):
+                raise RegistrationError("TENANT_UNAVAILABLE") from None
+            raise
         finally:
             plaintext[:] = b"\x00" * len(plaintext)
 

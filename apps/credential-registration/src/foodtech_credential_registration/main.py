@@ -56,5 +56,5 @@ async def register(request: Request, body: EncryptedCredential, response: Respon
         credential_id = _registrar(request).register(
             body.tenant_id, body.provider, body.key_version, body.ciphertext_base64, body.expected_epoch)
     except RegistrationError as error:
-        raise HTTPException(400, error.code) from None
+        raise HTTPException(409 if error.code == "TENANT_UNAVAILABLE" else 400, error.code) from None
     return {"credential_id": credential_id, "provider": body.provider, "state": "ACTIVE"}
