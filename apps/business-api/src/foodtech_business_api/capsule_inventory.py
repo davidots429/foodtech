@@ -12,7 +12,7 @@ from uuid import UUID
 import boto3
 from boto3.dynamodb.types import Binary, TypeDeserializer, TypeSerializer
 
-from .capsule_metadata import validate_key_metadata, validate_user_key_id
+from .capsule_metadata import validate_key_metadata, validate_tenant_scope, validate_user_key_id
 
 class CapsuleInventoryError(Exception):
     pass
@@ -24,6 +24,9 @@ class WrappedUserKey:
     pool_version: str
     shard_id: str
     key_arn: str
+    scope_purpose: str
+    scope_epoch: str
+    scope_key_version: str
     encrypted_dek: bytes = field(repr=False)
 
 
@@ -48,7 +51,7 @@ class CapsuleInventory:
         item = self.client.get_item(TableName=self.table_name, ConsistentRead=True,
             Key={"pk": self.serializer.serialize(locator), "sk": self.serializer.serialize("META")},
             ProjectionExpression="pk, sk, #revision, #state, deletion_request_id, user_key_id, encrypted_user_dek, "
-                                 "pool_version, shard_id, key_arn",
+                                 "pool_version, shard_id, key_arn, scope_purpose, scope_epoch, scope_key_version",
             ExpressionAttributeNames={"#revision": "revision", "#state": "state"}).get("Item")
         if not item:
             raise CapsuleInventoryError("capsule metadata is unavailable")
@@ -60,7 +63,8 @@ class CapsuleInventory:
                     value["deletion_request_id"] != request_id or \
                     not revision.is_finite() or revision < 1 or revision != int(revision):
                 raise ValueError
-            key_fields = ("user_key_id", "encrypted_user_dek", "pool_version", "shard_id", "key_arn")
+            key_fields = ("user_key_id", "encrypted_user_dek", "pool_version", "shard_id", "key_arn",
+                          "scope_purpose", "scope_epoch", "scope_key_version")
             present = [name in item for name in key_fields]
             if any(present):
                 if not all(present):
@@ -71,6 +75,7 @@ class CapsuleInventory:
                     value["encrypted_user_dek"] = bytes(value["encrypted_user_dek"])
                 validate_user_key_id(value["user_key_id"])
                 validate_key_metadata(value["pool_version"], value["shard_id"], value["key_arn"])
+                validate_tenant_scope(value["scope_purpose"], value["scope_epoch"], value["scope_key_version"])
                 if not isinstance(value["encrypted_user_dek"], bytes) or not 1 <= len(value["encrypted_user_dek"]) <= 8192:
                     raise ValueError
             value["revision"] = int(revision)
@@ -139,5 +144,7 @@ class CapsuleInventory:
         wrapped_key = None
         if "user_key_id" in before:
             wrapped_key = WrappedUserKey(user_key_id=before["user_key_id"], pool_version=before["pool_version"],
-                shard_id=before["shard_id"], key_arn=before["key_arn"], encrypted_dek=before["encrypted_user_dek"])
+                shard_id=before["shard_id"], key_arn=before["key_arn"], scope_purpose=before["scope_purpose"],
+                scope_epoch=before["scope_epoch"], scope_key_version=before["scope_key_version"],
+                encrypted_dek=before["encrypted_user_dek"])
         return InventoryResult(revision=before["revision"], entry_count=count, wrapped_user_key=wrapped_key)

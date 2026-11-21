@@ -59,7 +59,8 @@ class InventoryCryptoTests(unittest.TestCase):
         common = {'user_key_id': record.key_id, 'pool_version': record.pool_version,
                   'shard_id': record.shard_id, 'key_arn': record.key_arn}
         meta = item({'pk': locator, 'sk': 'META', 'revision': 1, 'state': 'DELETION_LOCKED',
-                     'deletion_request_id': request_id, 'encrypted_user_dek': record.encrypted_dek, **common})
+                     'deletion_request_id': request_id, 'encrypted_user_dek': record.encrypted_dek,
+                     'scope_purpose': 'credential', 'scope_epoch': '2026-11', 'scope_key_version': 'v1', **common})
         row = item({'pk': locator, 'sk': 'ENTRY#BILLING#2026-11',
                     'ciphertext': sealed.entry.ciphertext, **common})
         staged = []

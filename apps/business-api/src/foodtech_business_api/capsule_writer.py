@@ -10,7 +10,7 @@ from uuid import UUID
 import boto3
 from boto3.dynamodb.types import TypeSerializer
 
-from .capsule_metadata import validate_key_metadata, validate_user_key_id
+from .capsule_metadata import validate_key_metadata, validate_tenant_scope, validate_user_key_id
 
 class CapsuleWriter:
     def __init__(self, table_name: str, allowed_purposes: frozenset[str], *, client=None):
@@ -79,24 +79,30 @@ class CapsuleWriter:
         ])
 
     def attach_user_key(self, *, locator: str, expected_revision: int, user_key_id: str, encrypted_dek: bytes,
-                        pool_version: str, shard_id: str, key_arn: str) -> None:
+                        pool_version: str, shard_id: str, key_arn: str, scope_purpose: str,
+                        scope_epoch: str, scope_key_version: str) -> None:
         """Attach one wrapped user key to an unlocked Capsule without overwriting it."""
         self._locator(locator)
         self._revision(expected_revision)
         validate_key_metadata(pool_version, shard_id, key_arn)
         validate_user_key_id(user_key_id)
+        validate_tenant_scope(scope_purpose, scope_epoch, scope_key_version)
         if not isinstance(encrypted_dek, bytes) or not 1 <= len(encrypted_dek) <= 8192:
             raise ValueError("invalid encrypted user key")
         self.client.update_item(TableName=self.table_name, Key=self._item({"pk": locator, "sk": "META"}),
             UpdateExpression="SET user_key_id = :user_key, encrypted_user_dek = :dek, pool_version = :pool, "
-                             "shard_id = :shard, key_arn = :key_arn, #revision = :next",
+                             "shard_id = :shard, key_arn = :key_arn, scope_purpose = :scope_purpose, "
+                             "scope_epoch = :scope_epoch, scope_key_version = :scope_version, #revision = :next",
             ConditionExpression="#state = :active AND #revision = :expected AND attribute_not_exists(user_key_id) "
                                 "AND attribute_not_exists(encrypted_user_dek) AND attribute_not_exists(pool_version) "
-                                "AND attribute_not_exists(shard_id) AND attribute_not_exists(key_arn)",
+                                "AND attribute_not_exists(shard_id) AND attribute_not_exists(key_arn) "
+                                "AND attribute_not_exists(scope_purpose) AND attribute_not_exists(scope_epoch) "
+                                "AND attribute_not_exists(scope_key_version)",
             ExpressionAttributeNames={"#state": "state", "#revision": "revision"},
             ExpressionAttributeValues=self._item({":active": "ACTIVE", ":expected": expected_revision,
                 ":next": expected_revision + 1, ":user_key": user_key_id, ":dek": encrypted_dek,
-                ":pool": pool_version, ":shard": shard_id, ":key_arn": key_arn}))
+                ":pool": pool_version, ":shard": shard_id, ":key_arn": key_arn,
+                ":scope_purpose": scope_purpose, ":scope_epoch": scope_epoch, ":scope_version": scope_key_version}))
 
     def lock_action(self, *, locator: str, request_id: str, expected_revision: int) -> dict:
         """Build an update for the transaction that also locks the user and registers the tombstone.

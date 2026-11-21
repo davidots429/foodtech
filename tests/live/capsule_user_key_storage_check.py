@@ -48,7 +48,8 @@ def main():
     client.transact_write_items(TransactItems=[create_action])
     try:
         writer.attach_user_key(locator=locator, expected_revision=1, user_key_id=record.key_id,
-            encrypted_dek=record.encrypted_dek, pool_version=record.pool_version, shard_id=record.shard_id,
+            encrypted_dek=record.encrypted_dek, scope_purpose='credential', scope_epoch='2026-11',
+            scope_key_version='v1', pool_version=record.pool_version, shard_id=record.shard_id,
             key_arn=record.key_arn)
         writer.put_entry(locator=locator, purpose=entry.purpose, epoch=entry.epoch, ciphertext=encrypted.entry.ciphertext,
             expected_revision=2, user_key_id=record.key_id, pool_version=record.pool_version,

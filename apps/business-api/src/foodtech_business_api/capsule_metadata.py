@@ -16,3 +16,11 @@ def validate_user_key_id(key_id: str) -> None:
             raise ValueError
     except (ValueError, TypeError, AttributeError):
         raise ValueError("invalid capsule user key ID") from None
+
+
+def validate_tenant_scope(purpose: str, epoch: str, key_version: str) -> None:
+    if not isinstance(purpose, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,31}', purpose) or \
+            not isinstance(epoch, str) or not re.fullmatch(r'[0-9]{4}-(0[1-9]|1[0-2])', epoch) or \
+            epoch.startswith('0000-') or not isinstance(key_version, str) or \
+            not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', key_version):
+        raise ValueError('invalid capsule tenant scope metadata')

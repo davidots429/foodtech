@@ -76,7 +76,8 @@ def main():
             use_key=lambda key, record: seal_entry(key=key, record=record, key_map=key_map, tenant=tenant,
                 entry=target, approved_purposes=purposes, approved_tenant_purposes=tenant_purposes))
         writer.attach_user_key(locator=locator, expected_revision=1, user_key_id=user_key.key_id,
-            encrypted_dek=user_key.encrypted_dek, pool_version=user_key.pool_version,
+            encrypted_dek=user_key.encrypted_dek, scope_purpose='credential', scope_epoch='2026-11',
+            scope_key_version='v1', pool_version=user_key.pool_version,
             shard_id=user_key.shard_id, key_arn=user_key.key_arn)
         writer.put_entry(locator=locator, purpose=target.purpose, epoch=target.epoch,
             ciphertext=entry.entry.ciphertext, expected_revision=2, user_key_id=user_key.key_id,

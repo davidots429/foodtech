@@ -20,7 +20,8 @@ def meta(revision="1", state="DELETION_LOCKED"):
     return {"pk": {"S": LOCATOR}, "sk": {"S": "META"}, "revision": {"N": revision}, "state": {"S": state},
             "deletion_request_id": {"S": REQUEST_ID}, "user_key_id": {"S": "d9b699c2-61c7-462e-a65d-15f019a0cf13"},
             "encrypted_user_dek": {"B": b"wrapped"}, "pool_version": {"S": "pool-v1"}, "shard_id": {"S": "shard-0"},
-            "key_arn": {"S": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key"}}
+            "key_arn": {"S": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key"},
+            "scope_purpose": {"S": "credential"}, "scope_epoch": {"S": "2026-11"}, "scope_key_version": {"S": "v1"}}
 
 
 class Paginator:
@@ -103,7 +104,8 @@ class CapsuleInventoryTests(unittest.TestCase):
 
     def test_unkeyed_empty_capsule_is_allowed_but_partial_or_mismatched_key_is_not(self):
         unkeyed = {name: value for name, value in meta().items() if name not in {
-            "user_key_id", "encrypted_user_dek", "pool_version", "shard_id", "key_arn"}}
+            "user_key_id", "encrypted_user_dek", "pool_version", "shard_id", "key_arn",
+            "scope_purpose", "scope_epoch", "scope_key_version"}}
         empty = self.inventory(Client([{"Items": []}], [unkeyed, unkeyed])).stage(
             LOCATOR, REQUEST_ID, lambda *_: None)
         self.assertEqual(empty.entry_count, 0)
@@ -114,6 +116,18 @@ class CapsuleInventoryTests(unittest.TestCase):
         partial = {**unkeyed, "user_key_id": meta()["user_key_id"]}
         with self.assertRaises(CapsuleInventoryError):
             self.inventory(Client([{"Items": []}], [partial])).stage(LOCATOR, REQUEST_ID, lambda *_: None)
+
+    def test_scope_metadata_is_required_valid_and_stable(self):
+        for changed in ({'scope_epoch': {'S': '2026-13'}}, {'scope_purpose': {'S': 'BAD'}},
+                        {'scope_key_version': {'S': ''}}):
+            with self.subTest(changed=changed), self.assertRaises(CapsuleInventoryError):
+                self.inventory(Client([{'Items': []}], [{**meta(), **changed}])).stage(LOCATOR, REQUEST_ID, lambda *_: None)
+        without_scope = {name: value for name, value in meta().items() if name != 'scope_epoch'}
+        with self.assertRaises(CapsuleInventoryError):
+            self.inventory(Client([{'Items': []}], [without_scope])).stage(LOCATOR, REQUEST_ID, lambda *_: None)
+        with self.assertRaises(CapsuleInventoryError):
+            self.inventory(Client([{'Items': []}], [meta(), {**meta(), 'scope_epoch': {'S': '2026-12'}}])).stage(
+                LOCATOR, REQUEST_ID, lambda *_: None)
 
     def test_stage_failure_cannot_return_a_complete_inventory(self):
         client = Client([{"Items": [entry("ENTRY#BILLING#2026-01")]}])

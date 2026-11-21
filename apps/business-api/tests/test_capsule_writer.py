@@ -71,12 +71,15 @@ class CapsuleWriterTests(unittest.TestCase):
         self.assertEqual(self.client.transactions, [])
 
     def test_user_key_attachment_is_conditioned_and_stores_only_wrapped_key(self):
-        self.writer.attach_user_key(locator=LOCATOR, expected_revision=1, encrypted_dek=b"wrapped", **KEY_METADATA)
+        self.writer.attach_user_key(locator=LOCATOR, expected_revision=1, encrypted_dek=b"wrapped", scope_purpose="credential", scope_epoch="2026-11",
+                                    scope_key_version="v1", **KEY_METADATA)
         update = self.client.updates[0]
         self.assertIn("attribute_not_exists(encrypted_user_dek)", update["ConditionExpression"])
         for field in ("pool_version", "shard_id", "key_arn"):
             self.assertIn(f"attribute_not_exists({field})", update["ConditionExpression"])
         self.assertEqual(update["ExpressionAttributeValues"][":dek"], {"B": b"wrapped"})
+        self.assertEqual(update["ExpressionAttributeValues"][":scope_epoch"], {"S": "2026-11"})
+        self.assertIn("attribute_not_exists(scope_key_version)", update["ConditionExpression"])
         self.assertEqual(update["ExpressionAttributeValues"][":next"], {"N": "2"})
 
     def test_invalid_input_cannot_issue_write(self):

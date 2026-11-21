@@ -38,14 +38,16 @@ def main():
         table.update_item(Key={"pk": locator, "sk": "META"}, UpdateExpression="SET pool_version = :v",
                           ExpressionAttributeValues={":v": "orphaned"})
         try:
-            writer.attach_user_key(locator=locator, expected_revision=1, encrypted_dek=b"synthetic-wrapped-key", **KEY_METADATA)
+            writer.attach_user_key(locator=locator, expected_revision=1, encrypted_dek=b"synthetic-wrapped-key",
+                                   scope_purpose="credential", scope_epoch="2026-11", scope_key_version="v1", **KEY_METADATA)
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
         else:
             raise AssertionError("Partial key metadata was overwritten")
         table.update_item(Key={"pk": locator, "sk": "META"}, UpdateExpression="REMOVE pool_version")
-        writer.attach_user_key(locator=locator, expected_revision=1, encrypted_dek=b"synthetic-wrapped-key", **KEY_METADATA)
+        writer.attach_user_key(locator=locator, expected_revision=1, encrypted_dek=b"synthetic-wrapped-key",
+                                   scope_purpose="credential", scope_epoch="2026-11", scope_key_version="v1", **KEY_METADATA)
         table.update_item(Key={"pk": locator, "sk": "META"}, UpdateExpression="REMOVE encrypted_user_dek")
         try:
             writer.put_entry(locator=locator, purpose="BILLING", epoch="2026-09", ciphertext=b"synthetic",
