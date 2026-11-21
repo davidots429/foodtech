@@ -102,6 +102,8 @@ def _api_numbers(value):
 
 
 class CookingStore(Protocol):
+    def create_condition_profile(self, subject: str, profile: dict) -> None: ...
+    def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None: ...
     def validation_evidence_snapshots(self, pk: str) -> list[dict]: ...
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
                                  source_table: str, revision: int, receipt: dict) -> None: ...
@@ -160,6 +162,19 @@ class MemoryCookingStore:
         self.items: dict[tuple[str, str], dict] = {}
         self.validation_sources: dict[tuple[str, str], dict] = {}
         self.lock = threading.RLock()
+
+    def create_condition_profile(self, subject: str, profile: dict) -> None:
+        key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}", f"VERSION#{profile['profile_version']}")
+        with self.lock:
+            if key in self.items:
+                raise Conflict
+            self.items[key] = {"pk": key[0], "sk": key[1], **profile}
+
+    def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None:
+        key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", f"VERSION#{version}")
+        with self.lock:
+            value = self.items.get(key)
+            return value.copy() if value else None
 
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
                                  source_table: str, revision: int, receipt: dict) -> None:
@@ -546,6 +561,19 @@ class DynamoCookingStore:
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
+
+    def create_condition_profile(self, subject: str, profile: dict) -> None:
+        item = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}",
+                "sk": f"VERSION#{profile['profile_version']}", **profile}
+        try:
+            self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
+        except self.client.exceptions.ConditionalCheckFailedException as exc:
+            raise Conflict from exc
+
+    def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None:
+        key = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", "sk": f"VERSION#{version}"}
+        item = self.table.get_item(Key=key, ConsistentRead=True).get("Item")
+        return _api_numbers(item)
 
     def customer_restatement(self, pk: str, request_id: str) -> dict | None:
         item = self.table.get_item(Key={"pk": pk, "sk": f"RESTATEMENT#REQUEST#{request_id}"},

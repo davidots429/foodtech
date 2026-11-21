@@ -174,6 +174,11 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             "source_validation_identity_matches",
             "source_relative_duration_covers_cooking",
             "source_process_span_covers_cooking")}
+        self.store.create_condition_profile("jeyuk-customer", {"profile_id": "jeyuk-process-small", "profile_version": "v1",
+            "provenance": "SYNTHETIC", "status": "DECLARED_UNVERIFIED", "equipment_profile": "jeyuk-small",
+            "heating_setpoint_celsius": "200", "target_rpm": "30"})
+        settings = {"heating_setpoint_celsius": {"status": "STABLE", "value": "200"},
+                    "target_rpm": {"status": "STABLE", "value": "30"}}
         with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
              patch.object(cooking, "_read_jeyuk_source_records",
                           return_value=([], [])) as source_read, \
@@ -182,7 +187,8 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
              patch("foodtech_business_api.source_revision.read_source_revision", return_value=61) as revision, \
              patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion",
                    return_value={"status": "MATCHED_AT_READ", "source_revision": 61,
-                                 "receipt_reference": {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test"}}) as receipt:
+                                 "receipt_reference": {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test"},
+                                 "settings": settings}) as receipt:
             linked = (await self.client.get(path + "/validation-evidence")).json()
             source_read.assert_called_once_with("test-source", "jeyuk-evidence-a", 61)
             receipt.return_value = {"status": "NOT_RECORDED"}
@@ -191,7 +197,18 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("source_completion_record_matched", missing_receipt["missing_checks"])
             self.assertIsNone(missing_receipt["source_revision"])
             receipt.return_value = {"status": "MATCHED_AT_READ", "source_revision": 61,
-                                    "receipt_reference": {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test"}}
+                                    "receipt_reference": {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test"},
+                                    "settings": settings}
+            settings["target_rpm"]["value"] = "31"
+            mismatched = (await self.client.get(path + "/validation-evidence")).json()
+            self.assertFalse(mismatched["checks"]["source_condition_profile_matches"])
+            self.assertEqual(mismatched["status"], "INCOMPLETE")
+            settings["target_rpm"]["value"] = "30"
+            profile_key = ("SCOPE#USER#jeyuk-customer#CONDITION_PROFILE#jeyuk-process-small", "VERSION#v1")
+            profile = self.store.items.pop(profile_key)
+            missing_profile = (await self.client.get(path + "/validation-evidence")).json()
+            self.assertFalse(missing_profile["checks"]["source_condition_profile_matches"])
+            self.store.items[profile_key] = profile
             revision.side_effect = [61, 62]
             changed = await self.client.get(path + "/validation-evidence")
             self.assertEqual(changed.status_code, 409)

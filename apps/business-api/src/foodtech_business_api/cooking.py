@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -143,6 +144,14 @@ class StrictModel(BaseModel):
 
 class EvidenceSnapshotRequest(StrictModel):
     expected_version: StrictInt = Field(ge=1)
+
+
+class ConditionProfileRequest(StrictModel):
+    profile_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    profile_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    equipment_profile: Literal["jeyuk-small", "jeyuk-medium", "jeyuk-large"]
+    heating_setpoint_celsius: Decimal = Field(ge=Decimal("-273.15"), le=Decimal("300"), allow_inf_nan=False)
+    target_rpm: Decimal = Field(ge=Decimal("0"), max_digits=8, decimal_places=2, allow_inf_nan=False)
 
 
 class NewJob(StrictModel):
@@ -533,6 +542,29 @@ async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dic
     return meta
 
 
+@router.post("/condition-profiles", status_code=201)
+async def create_condition_profile(request: Request, body: ConditionProfileRequest) -> dict:
+    session, store = await _context(request, write=True)
+    profile = {**body.model_dump(mode="json"), "provenance": "SYNTHETIC", "status": "DECLARED_UNVERIFIED",
+               "created_at": _now(), "created_by": session.subject}
+    try:
+        await _store_call(store, store.create_condition_profile, session.subject, profile)
+    except Conflict as exc:
+        raise HTTPException(409, "이미 기록된 공정조건 버전입니다. 다른 버전으로 기록해 주세요.") from exc
+    return profile
+
+
+@router.get("/condition-profiles/{profile_id}/{profile_version}")
+async def get_condition_profile(profile_id: str, profile_version: str, request: Request) -> dict:
+    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", value) for value in (profile_id, profile_version)):
+        raise HTTPException(404, "공정조건을 찾을 수 없습니다.")
+    session, store = await _context(request)
+    profile = await _store_call(store, store.condition_profile, session.subject, profile_id, profile_version)
+    if not profile:
+        raise HTTPException(404, "공정조건을 찾을 수 없습니다.")
+    return {key: value for key, value in profile.items() if key not in {"pk", "sk"}}
+
+
 @router.post("/{job_id}/validation-context")
 async def record_jeyuk_validation_context(job_id: str, request: Request,
                                           body: JeyukValidationContext) -> dict:
@@ -605,7 +637,7 @@ async def jeyuk_collection_evidence(job_id: str, request: Request) -> dict:
 
 @router.get("/{job_id}/validation-evidence")
 async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
-    _, store, pk, job, _ = await _read(request, job_id)
+    session, store, pk, job, _ = await _read(request, job_id)
     if job["menu"] != "JEYUK":
         raise HTTPException(422, "제육볶음 작업에만 재검증 증거를 조회할 수 있습니다.")
     binding = job.get("source_binding")
@@ -633,7 +665,8 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                      "source_relative_duration_covers_cooking": False,
                      "source_process_span_covers_cooking": False,
                      "source_completion_record_matched": False,
-                     "source_revision_stable": False}
+                     "source_revision_stable": False,
+                     "source_condition_profile_matches": False}
     observed_source_revision = None
     observed_receipt_reference = None
     source_table = os.getenv("FOODTECH_DATA_TABLE", "")
@@ -647,15 +680,31 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
             assessments, raws = await _read_jeyuk_source_records(source_table, binding["batch_id"], second)
             audited = audit_source_records(job, assessments, raws)
             completion = await asyncio.to_thread(read_collection_completion, source_table, binding["batch_id"],
-                                                 include_reference=True)
+                                                 include_reference=True, include_settings=True)
             after = await read_source_revision(source_table, stream_pk)
             if before != after:
                 raise HTTPException(409, "원천 데이터가 조회 중 변경되었습니다. 다시 확인해 주세요.")
             matched = (completion.get("status") == "MATCHED_AT_READ" and before is not None and
                        completion.get("source_revision") == before and before == second and
                        isinstance(completion.get("receipt_reference"), dict))
+            profile = None
+            profile_id, profile_version = context.get("process_condition_profile_id"), context.get("process_condition_version")
+            if isinstance(profile_id, str) and isinstance(profile_version, str):
+                profile = await _store_call(store, store.condition_profile, session.subject, profile_id, profile_version)
+            settings = completion.get("settings") or {}
+            heat, rpm = settings.get("heating_setpoint_celsius") or {}, settings.get("target_rpm") or {}
+            profile_matches = False
+            if matched and isinstance(profile, dict) and profile.get("provenance") == "SYNTHETIC" and \
+                    profile.get("status") == "DECLARED_UNVERIFIED" and profile.get("equipment_profile") == job["equipment_profile"] and \
+                    heat.get("status") == "STABLE" and rpm.get("status") == "STABLE":
+                try:
+                    profile_matches = (Decimal(str(heat["value"])) == Decimal(str(profile["heating_setpoint_celsius"])) and
+                                       Decimal(str(rpm["value"])) == Decimal(str(profile["target_rpm"])))
+                except (KeyError, ValueError, ArithmeticError):
+                    profile_matches = False
             source_checks = {**source_checks, **audited, "source_completion_record_matched": matched,
-                             "source_revision_stable": before is not None and before == after}
+                             "source_revision_stable": before is not None and before == after,
+                             "source_condition_profile_matches": profile_matches}
             if matched:
                 observed_source_revision = before
                 observed_receipt_reference = completion["receipt_reference"]
