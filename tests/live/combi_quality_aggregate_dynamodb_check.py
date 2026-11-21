@@ -51,6 +51,9 @@ async def scenario(store, partitions):
     group = _hash(selection)
     aggregate_pk = f'SCOPE#USER#{subject}#MEAL_AGGREGATE#{group}'
     partitions.append(aggregate_pk)
+    candidate_selection = {**selection, 'period_start': (start - timedelta(days=1)).isoformat()}
+    candidate_group = _hash(candidate_selection)
+    partitions.append(f'SCOPE#USER#{subject}#MEAL_AGGREGATE#{candidate_group}')
     for record in records:
         store.table.put_item(Item=record, ConditionExpression='attribute_not_exists(pk)')
     owner = [subject]
@@ -76,10 +79,22 @@ async def scenario(store, partitions):
             link = f"/api/customer/combi-quality-aggregates/{group}/{result['result_id']}"
             assert (await client.get(link)).status_code == 200
             assert (await client.get(link + '/freshness')).json()['status'] == 'UNCHANGED_AS_OBSERVED'
+            candidate_body = {key: value for key, value in candidate_selection.items() if key != 'load_rule_version'}
+            candidate_response = await client.post('/api/customer/combi-quality-aggregates', headers=headers,
+                                                   json=candidate_body)
+            candidate_response.raise_for_status()
+            candidate = candidate_response.json()
+            compare_body = {'baseline_group_id': group, 'baseline_result_id': result['result_id'],
+                            'candidate_group_id': candidate_group, 'candidate_result_id': candidate['result_id']}
+            compared = await client.post('/api/customer/combi-quality-aggregates/compare', headers=headers,
+                                         json=compare_body)
+            compared.raise_for_status()
+            assert compared.json()['deltas']['mean_quality_score_percent'] == '0.00'
             owner[0] = 'synthetic-other-' + uuid4().hex
             assert (await client.get(link)).status_code == 404
             assert (await client.get(link + '/freshness')).status_code == 404
             assert (await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)).status_code == 404
+            assert (await client.post('/api/customer/combi-quality-aggregates/compare', headers=headers, json=compare_body)).status_code == 404
             owner[0] = subject
             original = store.save_meal_aggregate
 
@@ -94,6 +109,9 @@ async def scenario(store, partitions):
             freshness = await client.get(link + '/freshness')
             assert freshness.json()['status'] == 'CHANGED'
             assert freshness.json()['changed'] == [{'meal_id': meal_id, 'reason': 'VERSION_CHANGED'}]
+            compared = await client.post('/api/customer/combi-quality-aggregates/compare', headers=headers,
+                                         json=compare_body)
+            assert compared.json()['baseline']['freshness']['status'] == 'CHANGED'
     print('synthetic meal aggregate, retry, version conflict and customer scope verified')
 
 

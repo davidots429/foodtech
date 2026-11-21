@@ -30,6 +30,14 @@ class MealAggregateRequest(BaseModel):
     period_end: datetime
 
 
+class MealAggregateComparisonRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    baseline_group_id: str
+    baseline_result_id: str
+    candidate_group_id: str
+    candidate_result_id: str
+
+
 @router.post('', status_code=201)
 async def create_meal_aggregate(request: Request, body: MealAggregateRequest) -> dict:
     session, store = await _context(request, write=True)
@@ -157,3 +165,48 @@ async def meal_aggregate_freshness(group_id: str, result_id: str, request: Reque
             changed.append({'meal_id': ref['meal_id'], 'reason': 'VERSION_CHANGED'})
     return {'status': 'CHANGED' if changed else 'UNCHANGED_AS_OBSERVED', 'changed': changed,
             'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+@router.post('/compare')
+async def compare_meal_aggregates(request: Request, body: MealAggregateComparisonRequest) -> dict:
+    if (body.baseline_group_id, body.baseline_result_id) == (body.candidate_group_id, body.candidate_result_id):
+        raise HTTPException(422, '서로 다른 집계 결과를 선택해 주세요.')
+    baseline = await get_meal_aggregate(body.baseline_group_id, body.baseline_result_id, request)
+    candidate = await get_meal_aggregate(body.candidate_group_id, body.candidate_result_id, request)
+    before = await meal_aggregate_freshness(body.baseline_group_id, body.baseline_result_id, request)
+    after = await meal_aggregate_freshness(body.candidate_group_id, body.candidate_result_id, request)
+    try:
+        left, right = baseline['selection'], candidate['selection']
+        if any(left[key] != right[key] for key in ('menu', 'equipment_size', 'load_band', 'load_rule_version')) or \
+                left['load_rule_version'] != RULE_VERSION or baseline['formula_version'] != FORMULA_VERSION or \
+                candidate['formula_version'] != FORMULA_VERSION:
+            raise HTTPException(422, '메뉴·장비·조리량 구간이 같은 집계를 선택해 주세요.')
+        if any(type(record['sample_count']) is not int or record['sample_count'] < 1 for record in (baseline, candidate)):
+            raise HTTPException(422, '두 집계 모두 포함된 평가가 필요합니다.')
+
+        def difference(field, maximum):
+            left_value, right_value = Decimal(baseline[field]), Decimal(candidate[field])
+            if not left_value.is_finite() or not right_value.is_finite() or \
+                    not (0 <= left_value <= maximum and 0 <= right_value <= maximum):
+                raise ValueError
+            return str((right_value - left_value).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+        deltas = {field: difference(field, 100) for field in
+                  ('mean_quality_score_percent', 'quality_pass_rate_percent', 'quality_target_rate_percent')}
+        if set(baseline['item_score_means']) != set(SCORE_ITEMS) or set(candidate['item_score_means']) != set(SCORE_ITEMS):
+            raise ValueError
+        item_deltas = {}
+        for item in SCORE_ITEMS:
+            left_value, right_value = Decimal(baseline['item_score_means'][item]), Decimal(candidate['item_score_means'][item])
+            if not left_value.is_finite() or not right_value.is_finite() or \
+                    not (1 <= left_value <= 5 and 1 <= right_value <= 5):
+                raise ValueError
+            item_deltas[item] = str((right_value - left_value).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        raise HTTPException(409, '집계 결과의 비교 정보를 확인할 수 없습니다.') from None
+    return {'baseline': {'group_id': body.baseline_group_id, 'result_id': body.baseline_result_id,
+                         'selection': left, 'sample_count': baseline['sample_count'], 'freshness': before},
+            'candidate': {'group_id': body.candidate_group_id, 'result_id': body.candidate_result_id,
+                          'selection': right, 'sample_count': candidate['sample_count'], 'freshness': after},
+            'deltas': deltas, 'item_score_deltas': item_deltas, 'interpretation': 'DESCRIPTIVE_ONLY',
+            'provenance': 'SYNTHETIC'}

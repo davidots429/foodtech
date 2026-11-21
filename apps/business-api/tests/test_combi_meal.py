@@ -184,6 +184,19 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         duplicate = await self.client.post(path, headers=headers,
             json={**body, 'meal_ids': [meta['meal_batch_id'], meta['meal_batch_id']]})
         self.assertEqual(duplicate.status_code, 422)
+        candidate = await self.client.post(path, headers=headers,
+            json={**body, 'period_start': '2026-11-21T00:00:00Z'})
+        self.assertEqual(candidate.status_code, 201, candidate.text)
+        comparison_body = {'baseline_group_id': result['group_id'], 'baseline_result_id': result['result_id'],
+                           'candidate_group_id': candidate.json()['group_id'],
+                           'candidate_result_id': candidate.json()['result_id']}
+        compared = await self.client.post(path + '/compare', headers=headers, json=comparison_body)
+        self.assertEqual(compared.status_code, 200, compared.text)
+        self.assertEqual(compared.json()['deltas']['mean_quality_score_percent'], '0.00')
+        self.assertEqual(compared.json()['interpretation'], 'DESCRIPTIVE_ONLY')
+        bad_comparison = {**comparison_body, 'candidate_group_id': excluded.json()['group_id'],
+                          'candidate_result_id': excluded.json()['result_id']}
+        self.assertEqual((await self.client.post(path + '/compare', headers=headers, json=bad_comparison)).status_code, 422)
         link = f"{path}/{result['group_id']}/{result['result_id']}"
         self.assertEqual((await self.client.get(link)).status_code, 200)
         unchanged = await self.client.get(link + '/freshness')
@@ -197,6 +210,8 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         freshness = await self.client.get(link + '/freshness')
         self.assertEqual(freshness.json()['status'], 'CHANGED')
         self.assertEqual(freshness.json()['changed'], [{'meal_id': meta['meal_batch_id'], 'reason': 'VERSION_CHANGED'}])
+        changed_compare = await self.client.post(path + '/compare', headers=headers, json=comparison_body)
+        self.assertEqual(changed_compare.json()['baseline']['freshness']['status'], 'CHANGED')
         self.assertEqual((await self.client.get(link)).json()['result_id'], result['result_id'])
         del self.store.items[(pk, 'META')]
         missing = await self.client.get(link + '/freshness')
@@ -204,6 +219,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.subject = 'another-customer'
         self.assertEqual((await self.client.get(link)).status_code, 404)
         self.assertEqual((await self.client.get(link + '/freshness')).status_code, 404)
+        self.assertEqual((await self.client.post(path + '/compare', headers=headers, json=comparison_body)).status_code, 404)
         self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 404)
 
     async def test_linked_source_blocks_unrelated_transition_and_mackerel_samples(self):

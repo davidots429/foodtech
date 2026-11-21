@@ -14,6 +14,10 @@ type Result = {
 };
 type Freshness = { status: "CHANGED" | "UNCHANGED_AS_OBSERVED"; checked_at: string;
   changed: { meal_id: string; reason: "UNAVAILABLE" | "VERSION_CHANGED" }[] };
+type Comparison = { baseline: { sample_count: number; freshness: Freshness; selection: Result["selection"] };
+  candidate: { sample_count: number; freshness: Freshness; selection: Result["selection"] };
+  deltas: { mean_quality_score_percent: string; quality_pass_rate_percent: string; quality_target_rate_percent: string };
+  item_score_deltas: Record<ScoreKey, string> };
 
 const reasons: Record<string, string> = {
   NO_CURRENT_ASSESSMENT: "현재 평가 없음", CURRENT_ASSESSMENT_BLOCKED: "안전 또는 평가 사용 불가",
@@ -47,12 +51,15 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [freshness, setFreshness] = useState<Freshness | null>(null);
+  const [baselineGroup, setBaselineGroup] = useState("");
+  const [baselineResult, setBaselineResult] = useState("");
+  const [comparison, setComparison] = useState<Comparison | null>(null);
   const active = useRef(false);
 
   async function calculate() {
     if (active.current) return;
     active.current = true;
-    setBusy(true); setError(""); setResult(null); setFreshness(null);
+    setBusy(true); setError(""); setResult(null); setFreshness(null); setComparison(null);
     try {
       const mealIds = ids.split(/[\s,]+/).filter(Boolean);
       const value = await api<Result>("/api/customer/combi-quality-aggregates", csrf, {
@@ -67,7 +74,7 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
   async function open() {
     if (active.current) return;
     active.current = true;
-    setBusy(true); setError(""); setResult(null); setFreshness(null);
+    setBusy(true); setError(""); setResult(null); setFreshness(null); setComparison(null);
     try {
       setResult(await api<Result>(`/api/customer/combi-quality-aggregates/${encodeURIComponent(groupId.trim())}/${encodeURIComponent(resultId.trim())}`));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "집계를 불러오지 못했습니다."); }
@@ -80,6 +87,18 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
     try {
       setFreshness(await api<Freshness>(`/api/customer/combi-quality-aggregates/${encodeURIComponent(result.group_id)}/${encodeURIComponent(result.result_id)}/freshness`));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "배치 변경 여부를 확인하지 못했습니다."); }
+    finally { active.current = false; setBusy(false); }
+  }
+
+  async function compare() {
+    if (active.current || !result) return;
+    active.current = true; setBusy(true); setError(""); setComparison(null);
+    try {
+      setComparison(await api<Comparison>('/api/customer/combi-quality-aggregates/compare', csrf, {
+        baseline_group_id: baselineGroup.trim(), baseline_result_id: baselineResult.trim(),
+        candidate_group_id: result.group_id, candidate_result_id: result.result_id,
+      }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "집계 결과를 비교하지 못했습니다."); }
     finally { active.current = false; setBusy(false); }
   }
 
@@ -115,6 +134,19 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
       <button type="button" className="secondary" disabled={busy} onClick={checkFreshness}>배치 변경 여부 확인</button>
       {freshness && <div><p>{freshness.status === "CHANGED" ? "집계 후 변경된 배치가 있습니다." : "확인 시점에 배치 버전이 변경되지 않았습니다."} · {freshness.checked_at}</p>
         {freshness.changed.length > 0 && <ul>{freshness.changed.map(item => <li key={item.meal_id}>{item.meal_id}: {item.reason === "UNAVAILABLE" ? "배치를 찾을 수 없음" : "배치 버전 변경"}</li>)}</ul>}</div>}
+      <div className="field-grid"><label>기준 집계 그룹 ID<input value={baselineGroup} onChange={event => setBaselineGroup(event.target.value)} /></label>
+        <label>기준 결과 ID<input value={baselineResult} onChange={event => setBaselineResult(event.target.value)} /></label></div>
+      <button type="button" className="secondary" disabled={busy || !baselineGroup.trim() || !baselineResult.trim()} onClick={compare}>현재 결과와 비교</button>
+      {comparison && <div><p>기준 {comparison.baseline.sample_count}건 · 비교 {comparison.candidate.sample_count}건</p>
+        <p>레시피 {comparison.baseline.selection.recipe_version} → {comparison.candidate.selection.recipe_version}</p>
+        <p>기준 기간: {new Date(comparison.baseline.selection.period_start).toLocaleString()} 이상 ~ {new Date(comparison.baseline.selection.period_end).toLocaleString()} 미만</p>
+        <p>비교 기간: {new Date(comparison.candidate.selection.period_start).toLocaleString()} 이상 ~ {new Date(comparison.candidate.selection.period_end).toLocaleString()} 미만</p>
+        <p>평균 점수 차이 {comparison.deltas.mean_quality_score_percent}%p · 합격률 차이 {comparison.deltas.quality_pass_rate_percent}%p · 목표 달성률 차이 {comparison.deltas.quality_target_rate_percent}%p</p>
+        <ul>{scoreItems.map(item => <li key={item.key}>{item.label}: {comparison.item_score_deltas[item.key]}</li>)}</ul>
+        {(comparison.baseline.freshness.status === "CHANGED" || comparison.candidate.freshness.status === "CHANGED") &&
+          <p role="alert">집계 이후 변경되거나 없어진 배치가 포함돼 있습니다.</p>}
+        <p className="small">선택 표본의 단순 차이이며 레시피가 차이를 유발했음을 뜻하지 않습니다.</p>
+      </div>}
       <p className="small">이 결과는 저장 시점의 선택 표본입니다. 이후 변경은 자동 반영되지 않으며 전체 모집단을 대표하지 않습니다.</p>
     </div>}
   </section>;
