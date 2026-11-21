@@ -10,6 +10,7 @@ from uuid import UUID
 import boto3
 from boto3.dynamodb.types import TypeSerializer
 
+from .capsule_metadata import validate_key_metadata
 
 class CapsuleWriter:
     def __init__(self, table_name: str, allowed_purposes: frozenset[str], *, client=None):
@@ -49,10 +50,12 @@ class CapsuleWriter:
             "Item": self._item({"pk": locator, "sk": "META", "state": "ACTIVE", "revision": 1}),
             "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}}
 
-    def put_entry(self, *, locator: str, purpose: str, epoch: str, ciphertext: bytes, expected_revision: int) -> None:
+    def put_entry(self, *, locator: str, purpose: str, epoch: str, ciphertext: bytes, expected_revision: int,
+                  pool_version: str, shard_id: str, key_arn: str) -> None:
         """Create a new encrypted ENTRY and advance META in one transaction."""
         self._locator(locator)
         self._revision(expected_revision)
+        validate_key_metadata(pool_version, shard_id, key_arn)
         if not isinstance(purpose, str) or purpose not in self.allowed_purposes or not isinstance(epoch, str) or \
                 not re.fullmatch(r"[0-9]{4}-(?:0[1-9]|1[0-2])", epoch) or int(epoch[:4]) < 1 or \
                 not isinstance(ciphertext, bytes) or not 1 <= len(ciphertext) <= 400_000:
@@ -65,7 +68,8 @@ class CapsuleWriter:
                         "ExpressionAttributeValues": self._item({":active": "ACTIVE", ":expected": expected_revision,
                                                                    ":next": expected_revision + 1})}},
             {"Put": {"TableName": self.table_name,
-                     "Item": self._item({"pk": locator, "sk": f"ENTRY#{purpose}#{epoch}", "ciphertext": ciphertext}),
+                     "Item": self._item({"pk": locator, "sk": f"ENTRY#{purpose}#{epoch}", "ciphertext": ciphertext,
+                                         "pool_version": pool_version, "shard_id": shard_id, "key_arn": key_arn}),
                      "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}},
         ])
 

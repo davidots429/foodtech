@@ -10,7 +10,9 @@ REQUEST_ID = "12c5f2d4-c6d2-4165-adf7-e7fed537af06"
 
 
 def entry(sk, ciphertext=b"ciphertext"):
-    return {"pk": {"S": LOCATOR}, "sk": {"S": sk}, "ciphertext": {"B": ciphertext}}
+    return {"pk": {"S": LOCATOR}, "sk": {"S": sk}, "ciphertext": {"B": ciphertext},
+            "pool_version": {"S": "pool-v1"}, "shard_id": {"S": "shard-0"},
+            "key_arn": {"S": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key"}}
 
 
 def meta(revision="1", state="DELETION_LOCKED"):
@@ -50,9 +52,10 @@ class CapsuleInventoryTests(unittest.TestCase):
         client = Client([{"Items": [entry("ENTRY#BILLING#2026-01")]},
                          {"Items": [entry("ENTRY#USAGE#2026-11", b"other-ciphertext")]}])
         staged = []
-        result = self.inventory(client).stage(LOCATOR, REQUEST_ID, lambda sk, blob: staged.append((sk, blob)))
+        result = self.inventory(client).stage(LOCATOR, REQUEST_ID, lambda sk, blob, metadata: staged.append((sk, blob, metadata)))
         self.assertEqual((result.revision, result.entry_count), (1, 2))
         self.assertEqual([row[0] for row in staged], ["ENTRY#BILLING#2026-01", "ENTRY#USAGE#2026-11"])
+        self.assertEqual(staged[0][2]["pool_version"], "pool-v1")
         self.assertTrue(client.paginator.request["ConsistentRead"])
         self.assertTrue(all(request["ConsistentRead"] for request in client.gets))
         self.assertEqual(len(client.gets), 2)
@@ -70,6 +73,7 @@ class CapsuleInventoryTests(unittest.TestCase):
     def test_malformed_duplicate_unknown_and_cross_capsule_entries_fail(self):
         invalid = [entry("ENTRY#OTHER#2026-01"), entry("ENTRY#BILLING#2026-13"),
                    entry("ENTRY#BILLING#0000-01"), entry("ENTRY#BILLING#2026-01", b""),
+                   {**entry("ENTRY#BILLING#2026-01"), "key_arn": {"S": "not-a-key"}},
                    {**entry("ENTRY#BILLING#2026-01"), "pk": {"S": "B" * 43}}]
         for item in invalid:
             with self.subTest(item=item), self.assertRaises(CapsuleInventoryError):
