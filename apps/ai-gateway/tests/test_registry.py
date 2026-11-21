@@ -174,6 +174,7 @@ class RegistryTests(unittest.TestCase):
         self.registry.create_limit("PROVIDER", "ollama", Decimal("1"))
         self.registry.create_limit("PROJECT", "GLOBAL", Decimal("1"))
         self.service = GatewayService(self.registry)
+        self.client.calls.clear()
 
     def recipe_execution(self):
         self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
@@ -469,6 +470,20 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(self.registry.execution_state('run-1'), 'PENDING')
         self.assertEqual(self.registry.budget('tenant-a', 'ollama').calls_remaining, 1)
+
+    def test_locked_tenant_cannot_create_execution_quote_or_new_limit(self):
+        self.client.auth_states = {'USER#tenant-a': {'deletion_lock_request': 'synthetic'},
+                                   'USER#other-locked': {'deletion_lock_request': 'synthetic'}}
+        execution = Execution('new-run', 'tenant-a', Feature.GENERAL_GUIDE, 'local-model', None,
+                              'SYNTHETIC', Decimal('0'))
+        with self.assertRaises(RegistryConflict):
+            self.registry.create_execution(execution)
+        with self.assertRaises(RegistryConflict):
+            self.registry.create_quote('new-quote', {'tenant_id': 'tenant-a'})
+        with self.assertRaises(RegistryConflict):
+            self.registry.ensure_trial_tenant_limit('other-locked', Decimal('0'), 1)
+        self.assertNotIn(('EXEC#new-run', 'META'), self.resource.table.items)
+        self.assertNotIn(('QUOTE#new-quote', 'META'), self.resource.table.items)
 
     def test_local_retry_rejects_deletion_lock(self):
         self.recipe_execution()

@@ -66,6 +66,15 @@ class ExecutionFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.registry.execution_result(execution_id)["response_text"],
                              "합성 답변")
 
+    async def test_locked_customer_gets_sanitized_creation_conflict(self):
+        self.registry.client.auth_states = {'USER#customer-1': {'deletion_lock_request': 'synthetic'}}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url='https://gateway.local') as client:
+            response = await client.post('/internal/ai/executions', json={'tenant_id': 'customer-1'})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json(), {'detail': 'EXECUTION_CONFLICT'})
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+
     async def test_new_customer_gets_configured_limit_once_without_refill(self):
         settings = {"FOODTECH_FREE_TRIAL_AUTO_PROVISION": "true",
                     "FOODTECH_FREE_TRIAL_MONTHLY_CALLS": "2", "FOODTECH_FREE_TRIAL_MONTHLY_USD": "0"}

@@ -88,13 +88,24 @@ class DynamoRegistry:
         item = {**_key(kind, identifier), **fields, "version": 1}
         self.table.put_item(Item=item, ConditionExpression=Attr("pk").not_exists())
 
+    def _put_tenant_new(self, kind: str, identifier: str, fields: dict[str, Any], tenant: str) -> None:
+        item = {**_key(kind, identifier), **fields, "version": 1}
+        try:
+            self.client.transact_write_items(TransactItems=[
+                self._active_tenant_guard(tenant),
+                {"Put": {"TableName": self.table_name, "Item": self._av(item),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+            ], ClientRequestToken=str(uuid4()))
+        except self.client.exceptions.TransactionCanceledException as error:
+            raise RegistryConflict("tenant unavailable or record already exists") from error
+
     def create_execution(self, value: Execution) -> None:
         if value.estimated_cost_usd < 0:
             raise ValueError("estimated cost must be nonnegative")
         fields = asdict(value)
         fields["feature"] = value.feature.value
         fields["state"] = "PENDING"
-        self._put_new("EXEC", value.execution_id, fields)
+        self._put_tenant_new("EXEC", value.execution_id, fields, value.tenant_id)
 
     def create_model(self, value: Model) -> None:
         if value.model_id == UNCONFIGURED_TIER1:
@@ -111,17 +122,17 @@ class DynamoRegistry:
         fields = asdict(value)
         fields["expires_at"] = _iso(value.expires_at)
         fields["vault_ref"] = vault_ref
-        self._put_new("CREDENTIAL", value.credential_id, fields)
+        self._put_tenant_new("CREDENTIAL", value.credential_id, fields, value.tenant_id)
 
     def create_consent(self, value: Consent) -> None:
         if not value.consented_at.tzinfo:
             raise ValueError("consent time must have a timezone")
         fields = asdict(value)
         fields["consented_at"] = _iso(value.consented_at)
-        self._put_new("CONSENT", value.consent_id, fields)
+        self._put_tenant_new("CONSENT", value.consent_id, fields, value.tenant_id)
 
     def create_quote(self, quote_id: str, fields: dict[str, Any]) -> None:
-        self._put_new("QUOTE", quote_id, {**fields, "state": "OPEN"})
+        self._put_tenant_new("QUOTE", quote_id, {**fields, "state": "OPEN"}, fields.get("tenant_id"))
 
     def quote(self, quote_id: str) -> dict[str, Any] | None:
         return self._get("QUOTE", quote_id)
@@ -145,7 +156,7 @@ class DynamoRegistry:
         execution_fields["feature"] = execution.feature.value
         execution_fields["state"] = "PENDING"
         now = int(datetime.now(timezone.utc).timestamp())
-        items = [{"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
+        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
                   "UpdateExpression": "SET #s = :used, #v = #v + :one",
                   "ConditionExpression": "#s = :open AND #v = :v AND expires > :now AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
@@ -198,7 +209,7 @@ class DynamoRegistry:
         execution_fields = asdict(execution)
         execution_fields["feature"] = execution.feature.value
         execution_fields["state"] = "PENDING"
-        items = [{"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
+        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
                   "UpdateExpression": "SET #s = :used, #v = #v + :one",
                   "ConditionExpression": "#s = :open AND #v = :v AND expires > :now AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
@@ -234,7 +245,10 @@ class DynamoRegistry:
         fields: dict[str, Any] = {"remaining_usd": remaining_usd, "period": self.period}
         if calls_remaining is not None:
             fields["calls_remaining"] = calls_remaining
-        self._put_new("LIMIT", f"{self.period}#{scope}#{identifier}", fields)
+        if scope == "TENANT":
+            self._put_tenant_new("LIMIT", f"{self.period}#{scope}#{identifier}", fields, identifier)
+        else:
+            self._put_new("LIMIT", f"{self.period}#{scope}#{identifier}", fields)
 
     def ensure_trial_tenant_limit(self, tenant_id: str, remaining_usd: Decimal, calls: int) -> None:
         """Create an absent monthly tenant limit once; never refill or overwrite it."""
@@ -243,12 +257,12 @@ class DynamoRegistry:
             raise ValueError("invalid free-trial limit")
         identifier = f"{self.period}#TENANT#{tenant_id}"
         try:
-            self._put_new("LIMIT", identifier, {"remaining_usd": remaining_usd, "period": self.period,
-                                               "calls_remaining": calls, "origin": "FREE_TRIAL"})
-        except self.client.exceptions.ConditionalCheckFailedException:
-            # A concurrent request or administrator already created the limit.
-            # Preserve its current balances and version, including an exhausted limit.
-            return
+            self._put_tenant_new("LIMIT", identifier, {"remaining_usd": remaining_usd, "period": self.period,
+                                                      "calls_remaining": calls, "origin": "FREE_TRIAL"}, tenant_id)
+        except RegistryConflict:
+            # Only an already-present limit may be treated as an idempotent replay.
+            if self._get("LIMIT", identifier) is None:
+                raise
 
     def execution(self, execution_id: str) -> Execution | None:
         item = self._get("EXEC", execution_id)

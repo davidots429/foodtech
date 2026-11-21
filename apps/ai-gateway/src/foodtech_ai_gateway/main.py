@@ -4,12 +4,13 @@ from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from typing import Literal
 
 from .ollama import OllamaClient
 from .policy import Caller, Execution, Feature, Tier, UNCONFIGURED_TIER1
-from .registry import DynamoRegistry
+from .registry import DynamoRegistry, RegistryConflict
 from .service import GatewayService
 from .provider import LiteLLMProvider
 from .vault import DynamoCredentialVault
@@ -17,6 +18,12 @@ from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 from .downgrade_flow import DowngradeFlow, DowngradeError
 
 app = FastAPI(title="Foodtech AI Gateway")
+
+
+@app.exception_handler(RegistryConflict)
+async def registry_conflict(_request: Request, _error: RegistryConflict) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": "EXECUTION_CONFLICT"},
+                        headers={"Cache-Control": "no-store"})
 
 
 class StrictBody(BaseModel):

@@ -23,6 +23,8 @@ def main():
     keys = [{'pk': f'LIMIT#{period}#{scope}#{value}', 'sk': 'META'} for scope, value in
             (('TENANT', tenant), ('PROVIDER', provider), ('PROJECT', 'GLOBAL'))]
     keys.append({'pk': f'EXEC#{run}', 'sk': 'META'})
+    blocked_run, blocked_quote = str(uuid4()), str(uuid4())
+    keys += [{'pk': f'EXEC#{blocked_run}', 'sk': 'META'}, {'pk': f'QUOTE#{blocked_quote}', 'sk': 'META'}]
     registry = DynamoRegistry(table.name, period, resource=resource, client=session.client('dynamodb'), auth_table=auth.name)
     auth_created = False
     try:
@@ -33,6 +35,19 @@ def main():
         registry.create_execution(execution)
         auth.put_item(Item={**auth_key, 'deletion_lock_request': str(uuid4())}, ConditionExpression='attribute_not_exists(pk)')
         auth_created = True
+        for operation in (
+            lambda: registry.create_execution(Execution(blocked_run, tenant, Feature.GENERAL_GUIDE,
+                                                        'synthetic-model', None, 'SYNTHETIC', Decimal('0'))),
+            lambda: registry.create_quote(blocked_quote, {'tenant_id': tenant}),
+        ):
+            try:
+                operation()
+            except RegistryConflict:
+                pass
+            else:
+                raise AssertionError('locked tenant record was created')
+        if any(table.get_item(Key=key, ConsistentRead=True).get('Item') for key in keys[4:]):
+            raise AssertionError('locked creation left a record')
         registry.begin_request()
         execution = registry.execution(run)
         registry.budget(tenant, provider)
