@@ -18,6 +18,8 @@ class ProfileTarget:
 
 
 class ProfileDeletionInventory:
+    HEAD_DOMAIN = 'PROFILE_INVENTORY'
+
     def __init__(self, *, source_table, progress_store, cipher):
         self.source_table, self.progress_store, self.cipher = source_table, progress_store, cipher
 
@@ -87,23 +89,34 @@ class ProfileDeletionInventory:
         for ref in data['references']:
             if not isinstance(ref, list) or len(ref) != 2:
                 raise ValueError('invalid profile inventory reference')
-            _profile_listing(subject, {'profile_id': ref[0], 'profile_version': ref[1]})
+            self._validate_reference(subject, ref)
             if tuple(ref) in seen:
                 raise ValueError('duplicate profile inventory reference')
             seen.add(tuple(ref))
         return data
 
+    @staticmethod
+    def _validate_reference(subject, ref):
+        _profile_listing(subject, {'profile_id': ref[0], 'profile_version': ref[1]})
+
+    def _scan(self, *, subject, limit, checkpoint):
+        return scan_legacy_profiles(self.source_table, subject=subject, limit=limit, checkpoint=checkpoint)
+
+    @staticmethod
+    def _target(ref):
+        return ProfileTarget(*ref)
+
     def capture_page(self, *, subject, request_id, limit):
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('invalid profile inventory limit')
         scope = {'subject': subject, 'request_id': request_id}
-        head = self._head(self._load(subject, request_id, 'PROFILE_INVENTORY'))
+        head = self._head(self._load(subject, request_id, self.HEAD_DOMAIN))
         if head['complete']:
             return {'complete': True, 'pages': head['pages'], 'count': head['count']}
         number, domain = head['pages'] + 1, self._domain(head['pages'] + 1)
         saved = self._load(subject, request_id, domain)
         if saved is None:
-            found = scan_legacy_profiles(self.source_table, subject=subject, limit=min(limit, 20), checkpoint=head['cursor'])
+            found = self._scan(subject=subject, limit=min(limit, 20), checkpoint=head['cursor'])
             data = {'schema': 1, 'start': head['cursor'], 'next': found.checkpoint,
                     'references': [list(ref) for ref in found.references]}
             raw = self._pack(data)
@@ -116,14 +129,14 @@ class ProfileDeletionInventory:
             raise ValueError('invalid profile inventory page sequence')
         new_head = {'schema': 1, 'pages': number, 'count': head['count'] + len(data['references']),
                     'cursor': data['next'], 'complete': data['next'] is None}
-        self.progress_store.save_checkpoint(cipher=self.cipher, **scope, domain='PROFILE_INVENTORY',
+        self.progress_store.save_checkpoint(cipher=self.cipher, **scope, domain=self.HEAD_DOMAIN,
             expected_version=head['pages'], state='VERIFYING' if new_head['complete'] else 'IN_PROGRESS',
             checkpoint=self._pack(new_head))
         return {'complete': new_head['complete'], 'pages': number, 'count': new_head['count']}
 
     def targets(self, *, subject, request_id):
         """Verify every encrypted page before yielding protected references."""
-        head = self._head(self._load(subject, request_id, 'PROFILE_INVENTORY'))
+        head = self._head(self._load(subject, request_id, self.HEAD_DOMAIN))
         if not head['complete']:
             raise ValueError('profile inventory scan is not complete')
         cursor, count, seen_cursors, hashes = None, 0, set(), []
@@ -147,5 +160,5 @@ class ProfileDeletionInventory:
             entry = self._load(subject, request_id, self._domain(number))
             if not entry or hashlib.sha256(entry['checkpoint']).digest() != hashes[number - 1]:
                 raise ValueError('profile inventory page changed')
-            for profile_id, version in self._page(entry, subject)['references']:
-                yield ProfileTarget(profile_id, version)
+            for ref in self._page(entry, subject)['references']:
+                yield self._target(ref)
