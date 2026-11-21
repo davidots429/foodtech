@@ -13,12 +13,13 @@ internal static class OpcUaMock
         using var fixture = JsonDocument.Parse(File.ReadAllText(fixturePath));
         var root = fixture.RootElement;
         var instance = root.GetProperty("instanceId").GetString();
+        var profile = root.GetProperty("profileId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            root.GetProperty("profileId").GetString() != "mockprofile-203" ||
-            instance is not ("mockprofile-203-a-001" or "mockprofile-203-b-001" or "mockprofile-203-c-001"))
+            profile is not ("mockprofile-203" or "mockprofile-213" or "mockprofile-223") ||
+            instance is null || !new[] { $"{profile}-a-001", $"{profile}-b-001", $"{profile}-c-001" }.Contains(instance))
             throw new InvalidDataException("Only the synthetic UA Binary profile is supported.");
-        var b = instance == "mockprofile-203-b-001";
-        var c = instance == "mockprofile-203-c-001";
+        var b = instance == $"{profile}-b-001";
+        var c = instance == $"{profile}-c-001";
         string Field(string a, string snake, string pascal) => b ? snake : c ? pascal : a;
         var records = root.GetProperty("records").EnumerateArray().Select((record, index) => {
             if (record.GetProperty(Field("sourceId", "source_id", "SrcId")).GetString() != "synthetic-opcua" ||
@@ -29,6 +30,13 @@ internal static class OpcUaMock
             foreach (var name in new[] { Field("batchId", "batch_id", "BatchId"), Field("recordId", "record_id", "RecId") })
                 if (string.IsNullOrWhiteSpace(record.GetProperty(name).GetString()))
                     throw new InvalidDataException("Missing synthetic OPC UA value.");
+            if (profile is "mockprofile-213" or "mockprofile-223") {
+                var equipment = b ? record.GetProperty("ext_equipment_type").GetString() : c ?
+                    record.GetProperty("Extension").GetProperty("EquipmentType").GetString() :
+                    record.GetProperty("extensions").GetProperty("equipmentType").GetString();
+                if (equipment != (profile == "mockprofile-213" ? "STIR_FRYER" : "COMBI_OVEN"))
+                    throw new InvalidDataException("Equipment type does not match the synthetic profile.");
+            }
             if (b) {
                 var timestampMs = record.GetProperty("event_time_ms").GetInt64();
                 var temperature = record.GetProperty("temperature_f").GetDecimal();
@@ -79,7 +87,7 @@ internal static class OpcUaMock
             options.RejectSHA1Certificates = true;
             options.MinCertificateKeySize = 2048;
             options.MaxStringLength = 2_500_000;
-        }).AddNodeManager($"urn:foodtech:synthetic:opcua:203:{(b ? "b" : c ? "c" : "a")}:v1", nodes => {
+        }).AddNodeManager($"urn:foodtech:synthetic:opcua:{profile![12..]}:{(b ? "b" : c ? "c" : "a")}:v1", nodes => {
             var device = nodes.AddFolder("SyntheticDevice").Node;
             nodes.AddVariable<string>("SchemaVersion", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty(Field("schemaVersion", "schema_version", "SchVer")).GetString()!);
             nodes.AddVariable<string>("SourceId", device.NodeId).PollEvery(TimeSpan.FromMilliseconds(250), () => Current().GetProperty(Field("sourceId", "source_id", "SrcId")).GetString()!);

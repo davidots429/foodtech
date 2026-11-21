@@ -118,3 +118,5 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 실시간 수집기는 최대 4초의 HTTPS 대기 요청으로 변화가 발생하면 다음 일반 묶음 전에도 수신한다. 이는 합성 Mock의 단계·문·치명 알람·환기 이벤트에 대한 로컬 경로이며, 네트워크 지연이나 고객 화면의 5초 새로고침까지 즉시성을 보장하지 않는다. 저온·고온·습도 이탈과 열린 문 원표본 및 고등어 온도 복원 제한 경계도 일반 묶음보다 먼저 공개한다. Mock이 실패를 판정하지 않으며 수집 후 플랫폼이 기존 기준으로 판정한다. AWS 종단간 지연과 고객 화면의 표시 지연은 후속 검증 대상이다.
 
 제육볶음 `*-process-v2`와 `*-full-v2` 합성 fixture는 규모별로 명시한 `heatingSetpointCelsius`를 1초 표본에 전송한다. 이 값은 열원 목표 설정값이며 관찰된 `surfaceCelsius`나 `mixtureCelsius`와 다르다. 설정값이 없는 기존 v1 fixture에는 기본값을 보충하지 않는다. v2 fixture는 별도 ID를 사용하며 기존 v1 원본은 변경하지 않는다.
+
+`serve-opcua`는 기본 `mockprofile-203`뿐 아니라 볶음·교반 `mockprofile-213`과 콤비오븐 `mockprofile-223`의 vendor-a/b/c 합성 fixture를 제공한다. 각 계열은 별도 namespace와 읽기 전용 SignAndEncrypt 연결을 사용하며, 볶음 솥 온도와 콤비오븐 기후·습도·팬 확장은 원표본에 보존한다. 프로젝트 시험 계약이며 실제 제조사 사양이나 OPC UA 표준 이력 서비스를 주장하지 않는다.

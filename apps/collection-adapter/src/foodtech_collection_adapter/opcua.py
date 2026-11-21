@@ -22,7 +22,7 @@ from .ingestion_quarantine import IngestionQuarantine
 
 NAMESPACE = "urn:foodtech:synthetic:opcua:203:a:v1"
 SERVER_URI = "urn:localhost:foodtech:synthetic-ua"
-INSTANCES = ("mockprofile-203-a-001", "mockprofile-203-b-001", "mockprofile-203-c-001")
+INSTANCES = tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("203", "213", "223") for vendor in "abc")
 
 
 def validate_server_certificate(endpoint: str, certificate: str) -> None:
@@ -106,8 +106,8 @@ async def collect(endpoint: str, client_certificate: str, client_key: str, serve
                 changed.set()
 
     async with client:
-        vendor = instance.split("-")[2]
-        index = await client.get_namespace_index(f"urn:foodtech:synthetic:opcua:203:{vendor}:v1")
+        _, profile, vendor, _ = instance.split("-")
+        index = await client.get_namespace_index(f"urn:foodtech:synthetic:opcua:{profile}:{vendor}:v1")
         device = await client.nodes.objects.get_child([f"{index}:SyntheticDevice"])
         snapshot = await device.get_child([f"{index}:RecordSnapshot"])
         history = await device.get_child([f"{index}:AvailableSnapshots"])
@@ -150,7 +150,7 @@ async def collect(endpoint: str, client_certificate: str, client_key: str, serve
                     await asyncio.sleep(min(.25, max(0, deadline - asyncio.get_running_loop().time())))
                     continue
                 parsed, expected_batch = await asyncio.to_thread(validate_or_quarantine, values, device_id, seen,
-                    expected_batch, source_id="synthetic-opcua", profile_id="mockprofile-203", quarantine=quarantine)
+                    expected_batch, source_id="synthetic-opcua", profile_id=f"mockprofile-{profile}", quarantine=quarantine)
                 for number, raw, record, digest in parsed:
                     if number not in seen:
                         await asyncio.to_thread(ingestor.ingest, raw)
