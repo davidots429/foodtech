@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import boto3
 from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
+from foodtech_business_api.legacy_meal_scan import reconcile_legacy_meal_page
 
 
 def main():
@@ -57,7 +58,15 @@ def main():
         if any(table.get_item(Key=key, ConsistentRead=True).get('Item') for key in keys[2:]):
             raise AssertionError('locked meal update left records')
         auth.update_item(Key=auth_key, UpdateExpression='REMOVE deletion_lock_request')
-        store.ensure_meal_listed(subject, 'meal')
+        checkpoint, found = None, False
+        for _ in range(100):
+            page = reconcile_legacy_meal_page(table, store, subject=subject, limit=100, checkpoint=checkpoint)
+            found |= 'meal' in page.references
+            checkpoint = page.checkpoint
+            if checkpoint is None:
+                break
+        if not found:
+            raise AssertionError('synthetic legacy meal was not discovered within scan bound')
         store.ensure_meal_listed(subject, 'meal')
         blocked(lambda: store.ensure_meal_listed(subject, 'missing'))
         if store.list_meal_refs(subject, 1, None)['items'] != [{'meal_batch_id': 'meal'}]:
