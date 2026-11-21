@@ -41,3 +41,28 @@ class BackfillTests(unittest.TestCase):
         self.table.update_item.assert_not_called()
         with self.assertRaises(ValueError):
             backfill_pending_page(self.table, cursor='invalid')
+
+
+class BackfillPassTests(unittest.TestCase):
+    def test_changed_items_require_another_complete_pass(self):
+        from unittest.mock import patch
+        from foodtech_business_api.combi_refresh_backfill import backfill_pass
+        pages = [{'updated': 1, 'changed': 0, 'next_cursor': {'pk': 'a', 'sk': 'b'}},
+                 {'updated': 0, 'changed': 1, 'next_cursor': None}]
+        with patch('foodtech_business_api.combi_refresh_backfill.backfill_pending_page', side_effect=pages) as page:
+            self.assertEqual(backfill_pass(object(), page_size=2),
+                             {'updated': 1, 'changed': 1, 'pages': 2, 'status': 'RESCAN'})
+        self.assertEqual(page.call_args.kwargs['cursor'], {'pk': 'a', 'sk': 'b'})
+        with patch('foodtech_business_api.combi_refresh_backfill.backfill_pending_page',
+                   return_value={'updated': 0, 'changed': 0, 'next_cursor': None}):
+            self.assertEqual(backfill_pass(object())['status'], 'OBSERVED_CLEAN')
+
+    def test_repeated_cursor_and_incomplete_scan_cannot_report_clean(self):
+        from unittest.mock import patch
+        from foodtech_business_api.combi_refresh_backfill import backfill_pass
+        page = {'updated': 0, 'changed': 0, 'next_cursor': {'pk': 'a', 'sk': 'b'}}
+        with patch('foodtech_business_api.combi_refresh_backfill.backfill_pending_page', return_value=page):
+            with self.assertRaisesRegex(RuntimeError, 'did not advance'):
+                backfill_pass(object())
+            with self.assertRaisesRegex(RuntimeError, 'page limit'):
+                backfill_pass(object(), max_pages=1)
