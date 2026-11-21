@@ -69,9 +69,10 @@ def main():
             raise AssertionError('inactive deletion request accepted')
         registry.update_item(Key=reg_key, UpdateExpression='SET #s = :active',
                              ExpressionAttributeNames={'#s': 'status'}, ExpressionAttributeValues={':active': 'DELETING'})
-        for index in range(2):
-            assert worker.delete_one(subject=subject, request_id=request, index=index)['state'] == 'VERIFYING'
-        assert worker.delete_one(subject=subject, request_id=request, index=0)['state'] == 'VERIFYING'
+        assert worker.delete_batch(subject=subject, request_id=request, start=0, count=2) == {
+            'state': 'VERIFYING', 'count': 2}
+        assert worker.delete_batch(subject=subject, request_id=request, start=0, count=2) == {
+            'state': 'VERIFYING', 'count': 2}
         assert clean_one_meal_aggregate_group(**group_args) == {'state': 'IN_PROGRESS', 'removed': True}
         assert clean_one_meal_aggregate_group(**group_args) == {'state': 'VERIFYING', 'removed': False}
         residual = MealAggregateResidualScan(source_table=source, progress_store=store, cipher=cipher)

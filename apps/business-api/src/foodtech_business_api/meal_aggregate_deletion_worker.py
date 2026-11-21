@@ -5,6 +5,7 @@ backup verification are separate. This is not a deletion receipt.
 """
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
+from itertools import islice
 
 from .condition_profile_deletion import ProfileDeletionConflict
 
@@ -21,6 +22,22 @@ class MealAggregateDeletionWorker:
             subject=subject, request_id=request_id)) if number == index), None)
         if target is None:
             raise ValueError('meal aggregate target unavailable')
+        self._delete_target(subject=subject, request_id=request_id, target=target)
+        return {'index': index, 'state': 'VERIFYING'}
+
+    def delete_batch(self, *, subject, request_id, start, count):
+        """Verify the complete inventory once, then remove a bounded range."""
+        if type(start) is not int or not 0 <= start < 10**12 or \
+                type(count) is not int or not 1 <= count <= 20 or start + count >= 10**12:
+            raise ValueError('invalid meal aggregate target range')
+        selected = list(islice(self.inventory.targets(subject=subject, request_id=request_id), start, start + count))
+        if len(selected) != count:
+            raise ValueError('meal aggregate target range unavailable')
+        for target in selected:
+            self._delete_target(subject=subject, request_id=request_id, target=target)
+        return {'count': len(selected), 'state': 'VERIFYING'}
+
+    def _delete_target(self, *, subject, request_id, target):
         self.inventory._validate_reference(subject, [target.group_id, target.result_id])
         serializer = TypeSerializer()
 
@@ -47,4 +64,3 @@ class MealAggregateDeletionWorker:
                     reason.get('Code') == 'ConditionalCheckFailed' for reason in (exc.response.get('CancellationReasons') or [])):
                 raise ProfileDeletionConflict from exc
             raise
-        return {'index': index, 'state': 'VERIFYING'}

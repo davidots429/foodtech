@@ -58,6 +58,23 @@ class MealAggregateDeletionTests(unittest.TestCase):
         with self.assertRaises(ProfileDeletionConflict):
             self.worker.delete_one(**self.scope, index=0)
 
+    def test_batch_checks_complete_inventory_and_can_retry_after_partial_failure(self):
+        other = {**self.row, 'sk': 'RESULT#' + 'c' * 64, 'result_id': 'c' * 64}
+        self.source.scan.return_value = {'Items': [self.row, other], 'ScannedCount': 2}
+        self.inventory.capture_page(**self.scope, limit=20)
+        self.progress.client.transact_write_items.side_effect = [None, RuntimeError('temporary failure')]
+        with self.assertRaises(RuntimeError):
+            self.worker.delete_batch(**self.scope, start=0, count=2)
+        self.assertEqual(self.progress.client.transact_write_items.call_count, 2)
+        self.progress.client.transact_write_items.reset_mock(side_effect=True)
+        self.assertEqual(self.worker.delete_batch(**self.scope, start=0, count=2),
+                         {'count': 2, 'state': 'VERIFYING'})
+        self.assertEqual(self.progress.client.transact_write_items.call_count, 2)
+        self.progress.client.transact_write_items.reset_mock()
+        with self.assertRaises(ValueError):
+            self.worker.delete_batch(**self.scope, start=0, count=3)
+        self.progress.client.transact_write_items.assert_not_called()
+
     def test_group_index_remains_until_result_partition_is_empty(self):
         index = {'pk': f'SCOPE#USER#{self.subject}#MEAL_AGGREGATE_GROUPS',
                  'sk': f'GROUP#{self.group}', 'group_id': self.group}

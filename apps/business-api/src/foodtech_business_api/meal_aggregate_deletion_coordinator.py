@@ -49,10 +49,11 @@ class MealAggregateDeletionCoordinator:
                 state.update(phase='DELETE', total=found['count'])
         elif phase == 'DELETE':
             if state['index'] < state['total']:
-                result = self.worker.delete_one(subject=subject, request_id=request_id, index=state['index'])
-                if result.get('state') != 'VERIFYING':
+                count = min(limit, 20, state['total'] - state['index'])
+                result = self.worker.delete_batch(subject=subject, request_id=request_id, start=state['index'], count=count)
+                if result.get('state') != 'VERIFYING' or result.get('count') != count:
                     raise ValueError('invalid meal aggregate cleanup result')
-                state['index'] += 1
+                state['index'] += count
             if state['index'] == state['total']:
                 state['phase'] = 'GROUPS'
         elif phase in {'GROUPS', 'FINAL_GROUPS'}:
