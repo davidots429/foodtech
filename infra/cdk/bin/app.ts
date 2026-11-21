@@ -141,6 +141,212 @@ class MinimalDataFlowStack extends Stack {
       visibilityTimeout: Duration.seconds(30),
       deadLetterQueue: { queue: processingDlq, maxReceiveCount: 3 },
     });
+    const collectorRole = new iam.Role(this, "CollectionAdapterTaskRole", {
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
+        conditions: {
+          ArnLike: { "aws:SourceArn": `arn:${this.partition}:ecs:${this.region}:${this.account}:*` },
+          StringEquals: { "aws:SourceAccount": this.account },
+        },
+      }),
+      description: "ECS task access for read-only equipment collection and quarantine",
+    });
+    table.grant(collectorRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem");
+    collectorRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:DeleteItem"], resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["STREAM#*"] },
+                    Null: { "dynamodb:LeadingKeys": "false" } },
+    }));
+    ordered.grant(collectorRole, "sqs:SendMessage");
+    collectorRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["s3:PutObject"], resources: [ingestionDlq.arnForObjects("ingestion/*")],
+    }));
+    if (app.node.tryGetContext("provisionRestCollectionTask") === "true") {
+      const required = (name: string): string => {
+        const value = app.node.tryGetContext(name);
+        if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
+        return value.trim();
+      };
+      const repo = required("collectionImageRepository");
+      const tag = required("collectionImageTag");
+      const secretArn = required("collectionMockSecretArn");
+      const mockUrl = required("collectionMockBaseUrl");
+      if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
+          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
+        throw new Error("collection image requires a valid repository and version tag");
+      }
+      if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
+        throw new Error("collectionMockSecretArn must be a complete Secrets Manager ARN");
+      }
+      let parsed: URL;
+      try { parsed = new URL(mockUrl); } catch { throw new Error("collectionMockBaseUrl must be an HTTPS URL"); }
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash ||
+          (parsed.pathname !== "/" && parsed.pathname !== "")) {
+        throw new Error("collectionMockBaseUrl must be an HTTPS origin");
+      }
+      const repository = ecr.Repository.fromRepositoryName(this, "CollectionImage", repo);
+      const secret = secretsmanager.Secret.fromSecretCompleteArn(this, "CollectionMockSecret", secretArn);
+      const task = new ecs.FargateTaskDefinition(this, "RestCollectionTask", {
+        cpu: 256, memoryLimitMiB: 512, taskRole: collectorRole,
+        runtimePlatform: { operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+          cpuArchitecture: ecs.CpuArchitecture.X86_64 },
+      });
+      const logGroup = new logs.LogGroup(this, "RestCollectionLogs", {
+        logGroupName: `/foodtech/${stage}/rest-collection`, retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      task.addContainer("App", {
+        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        environment: { FOODTECH_MOCK_BASE_URL: parsed.origin, FOODTECH_DATA_TABLE: table.tableName,
+          FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl, FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
+        secrets: { FOODTECH_MOCK_CLIENT_ID: ecs.Secret.fromSecretsManager(secret, "client_id"),
+          FOODTECH_MOCK_CLIENT_SECRET: ecs.Secret.fromSecretsManager(secret, "client_secret"),
+          FOODTECH_MOCK_CA_PEM: ecs.Secret.fromSecretsManager(secret, "ca_pem") },
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "app", logGroup }),
+      });
+      secret.grantRead(task.executionRole!);
+      new CfnOutput(this, "RestCollectionTaskArn", { value: task.taskDefinitionArn });
+    }
+    if (app.node.tryGetContext("provisionMqttCollectionTask") === "true") {
+      const required = (name: string): string => {
+        const value = app.node.tryGetContext(name);
+        if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
+        return value.trim();
+      };
+      const repo = required("collectionImageRepository");
+      const tag = required("collectionImageTag");
+      const secretArn = required("collectionMqttSecretArn");
+      const host = required("collectionMqttHost");
+      const port = required("collectionMqttPort");
+      if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
+          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
+        throw new Error("collection image requires a valid repository and version tag");
+      }
+      if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
+        throw new Error("collectionMqttSecretArn must be a complete Secrets Manager ARN");
+      }
+      if (!/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(host) ||
+          !/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
+        throw new Error("MQTT host and port are invalid");
+      }
+      const repository = ecr.Repository.fromRepositoryName(this, "MqttCollectionImage", repo);
+      const secret = secretsmanager.Secret.fromSecretCompleteArn(this, "CollectionMqttSecret", secretArn);
+      const task = new ecs.FargateTaskDefinition(this, "MqttCollectionTask", {
+        cpu: 256, memoryLimitMiB: 512, taskRole: collectorRole,
+        runtimePlatform: { operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+          cpuArchitecture: ecs.CpuArchitecture.X86_64 },
+      });
+      const logGroup = new logs.LogGroup(this, "MqttCollectionLogs", {
+        logGroupName: `/foodtech/${stage}/mqtt-collection`, retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      task.addContainer("App", {
+        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        environment: { FOODTECH_COLLECTION_PROTOCOL: "mqtt", FOODTECH_MQTT_HOST: host, FOODTECH_MQTT_PORT: port,
+          FOODTECH_DATA_TABLE: table.tableName, FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl,
+          FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
+        secrets: { FOODTECH_MQTT_USER: ecs.Secret.fromSecretsManager(secret, "username"),
+          FOODTECH_MQTT_PASSWORD: ecs.Secret.fromSecretsManager(secret, "password"),
+          FOODTECH_MQTT_CLIENT_ID: ecs.Secret.fromSecretsManager(secret, "client_id"),
+          FOODTECH_MOCK_CA_PEM: ecs.Secret.fromSecretsManager(secret, "ca_pem") },
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "app", logGroup }),
+      });
+      secret.grantRead(task.executionRole!);
+      new CfnOutput(this, "MqttCollectionTaskArn", { value: task.taskDefinitionArn });
+    }
+    if (app.node.tryGetContext("provisionOpcUaJsonCollectionTask") === "true") {
+      const required = (name: string): string => {
+        const value = app.node.tryGetContext(name);
+        if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
+        return value.trim();
+      };
+      const repo = required("collectionImageRepository");
+      const tag = required("collectionImageTag");
+      const secretArn = required("collectionUaJsonSecretArn");
+      const mockUrl = required("collectionUaJsonBaseUrl");
+      if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
+          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
+        throw new Error("collection image requires a valid repository and version tag");
+      }
+      if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
+        throw new Error("collectionUaJsonSecretArn must be a complete Secrets Manager ARN");
+      }
+      let parsed: URL;
+      try { parsed = new URL(mockUrl); } catch { throw new Error("collectionUaJsonBaseUrl must be an HTTPS URL"); }
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash ||
+          (parsed.pathname !== "/" && parsed.pathname !== "")) {
+        throw new Error("collectionUaJsonBaseUrl must be an HTTPS origin");
+      }
+      const repository = ecr.Repository.fromRepositoryName(this, "OpcUaJsonCollectionImage", repo);
+      const secret = secretsmanager.Secret.fromSecretCompleteArn(this, "CollectionUaJsonSecret", secretArn);
+      const task = new ecs.FargateTaskDefinition(this, "OpcUaJsonCollectionTask", {
+        cpu: 256, memoryLimitMiB: 512, taskRole: collectorRole,
+        runtimePlatform: { operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+          cpuArchitecture: ecs.CpuArchitecture.X86_64 },
+      });
+      const logGroup = new logs.LogGroup(this, "OpcUaJsonCollectionLogs", {
+        logGroupName: `/foodtech/${stage}/opcua-json-collection`, retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      task.addContainer("App", {
+        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        environment: { FOODTECH_COLLECTION_PROTOCOL: "opcua-json", FOODTECH_UA_JSON_URL: parsed.origin,
+          FOODTECH_DATA_TABLE: table.tableName, FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl,
+          FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
+        secrets: { FOODTECH_MOCK_CLIENT_ID: ecs.Secret.fromSecretsManager(secret, "client_id"),
+          FOODTECH_MOCK_CLIENT_SECRET: ecs.Secret.fromSecretsManager(secret, "client_secret"),
+          FOODTECH_MOCK_CA_PEM: ecs.Secret.fromSecretsManager(secret, "ca_pem") },
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "app", logGroup }),
+      });
+      secret.grantRead(task.executionRole!);
+      new CfnOutput(this, "OpcUaJsonCollectionTaskArn", { value: task.taskDefinitionArn });
+    }
+    if (app.node.tryGetContext("provisionOpcUaBinaryCollectionTask") === "true") {
+      const required = (name: string): string => {
+        const value = app.node.tryGetContext(name);
+        if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
+        return value.trim();
+      };
+      const repo = required("collectionImageRepository");
+      const tag = required("collectionImageTag");
+      const secretArn = required("collectionUaBinarySecretArn");
+      const endpoint = required("collectionUaBinaryEndpoint");
+      if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
+          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
+        throw new Error("collection image requires a valid repository and version tag");
+      }
+      if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
+        throw new Error("collectionUaBinarySecretArn must be a complete Secrets Manager ARN");
+      }
+      let parsed: URL;
+      try { parsed = new URL(endpoint); } catch { throw new Error("invalid OPC UA endpoint"); }
+      if (parsed.protocol !== "opc.tcp:" || !parsed.hostname || !parsed.port ||
+          parsed.username || parsed.password || parsed.search || parsed.hash) {
+        throw new Error("OPC UA endpoint must be a valid opc.tcp address");
+      }
+      const repository = ecr.Repository.fromRepositoryName(this, "OpcUaBinaryCollectionImage", repo);
+      const secret = secretsmanager.Secret.fromSecretCompleteArn(this, "CollectionUaBinarySecret", secretArn);
+      const task = new ecs.FargateTaskDefinition(this, "OpcUaBinaryCollectionTask", {
+        cpu: 256, memoryLimitMiB: 512, taskRole: collectorRole,
+        runtimePlatform: { operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+          cpuArchitecture: ecs.CpuArchitecture.X86_64 },
+      });
+      const logGroup = new logs.LogGroup(this, "OpcUaBinaryCollectionLogs", {
+        logGroupName: `/foodtech/${stage}/opcua-binary-collection`, retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      task.addContainer("App", {
+        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        environment: { FOODTECH_COLLECTION_PROTOCOL: "opcua-binary", FOODTECH_OPCUA_ENDPOINT: endpoint,
+          FOODTECH_DATA_TABLE: table.tableName, FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl,
+          FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
+        secrets: { FOODTECH_OPCUA_CLIENT_CERT_PEM: ecs.Secret.fromSecretsManager(secret, "client_cert_pem"),
+          FOODTECH_OPCUA_CLIENT_KEY_PEM: ecs.Secret.fromSecretsManager(secret, "client_key_pem"),
+          FOODTECH_OPCUA_SERVER_CERT_DER_BASE64: ecs.Secret.fromSecretsManager(secret, "server_cert_der_base64") },
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "app", logGroup }),
+      });
+      secret.grantRead(task.executionRole!);
+      new CfnOutput(this, "OpcUaBinaryCollectionTaskArn", { value: task.taskDefinitionArn });
+    }
     const workerRole = new iam.Role(this, "StandardizationWorkerTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
         conditions: {
@@ -164,6 +370,7 @@ class MinimalDataFlowStack extends Stack {
     ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
     quarantine.grant(workerRole, "sqs:SendMessage");
     new CfnOutput(this, "IngestionDlqBucketName", { value: ingestionDlq.bucketName });
+    new CfnOutput(this, "CollectionAdapterTaskRoleArn", { value: collectorRole.roleArn });
     new CfnOutput(this, "DataTableName", { value: table.tableName });
     new CfnOutput(this, "OrderedQueueUrl", { value: ordered.queueUrl });
     new CfnOutput(this, "StandardizationDlqUrl", { value: quarantine.queueUrl });
@@ -494,6 +701,67 @@ class AiImagePublishingStack extends Stack {
   }
 }
 
+class CollectionImagePublishingStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const repository = new ecr.Repository(this, "CollectionImages", {
+      repositoryName: "foodtech/collection-adapter",
+      imageTagMutability: ecr.TagMutability.IMMUTABLE,
+      encryption: ecr.RepositoryEncryption.AES_256,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    repository.addLifecycleRule({ maxImageCount: 5, rulePriority: 1 });
+    const logKey = new kms.Key(this, "CollectionImageBuildLogKey", {
+      enableKeyRotation: true, removalPolicy: RemovalPolicy.RETAIN,
+      description: "Encrypt Foodtech collection image build logs",
+    });
+    logKey.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [new iam.ServicePrincipal(`logs.${this.region}.${this.urlSuffix}`)],
+      actions: ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:Describe*"],
+      resources: ["*"],
+      conditions: { ArnEquals: { "kms:EncryptionContext:aws:logs:arn":
+        `arn:${this.partition}:logs:${this.region}:${this.account}:log-group:/foodtech/${stage}/collection-image-builds` } },
+    }));
+    const logGroup = new logs.LogGroup(this, "CollectionImageBuildLogs", {
+      logGroupName: `/foodtech/${stage}/collection-image-builds`, encryptionKey: logKey,
+      retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const project = new codebuild.Project(this, "CollectionImageBuilder", {
+      projectName: `foodtech-collection-image-${stage}`,
+      description: "Explicit, commit-pinned collection image publishing",
+      environment: { buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        computeType: codebuild.ComputeType.MEDIUM, privileged: true },
+      timeout: Duration.minutes(30), logging: { cloudWatch: { logGroup } },
+      environmentVariables: { SOURCE_SHA: { value: "REQUIRED_AT_START_BUILD" },
+        COLLECTION_REPOSITORY: { value: repository.repositoryUri } },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: "0.2",
+        phases: {
+          pre_build: { commands: [
+            "echo \"$SOURCE_SHA\" | grep -Eq '^[0-9a-f]{40}$'",
+            "git clone --depth 1 --branch main https://github.com/davidots429/foodtech.git source",
+            "test \"$(git -C source rev-parse HEAD)\" = \"$SOURCE_SHA\"",
+            "aws ecr get-login-password --region \"$AWS_DEFAULT_REGION\" | docker login --username AWS --password-stdin \"${COLLECTION_REPOSITORY%%/*}\"",
+            "IMAGE_TAG=sha-$(echo \"$SOURCE_SHA\" | cut -c1-12)",
+          ] },
+          build: { commands: [
+            "docker build -f source/infra/containers/collection-adapter.Dockerfile -t \"$COLLECTION_REPOSITORY:$IMAGE_TAG\" source",
+            "docker push \"$COLLECTION_REPOSITORY:$IMAGE_TAG\"",
+          ] },
+        },
+      }),
+    });
+    repository.grantPullPush(project);
+    const logGrant = logKey.grant(project, "kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*",
+      "kms:GenerateDataKey*", "kms:Describe*");
+    for (const statement of logGrant.principalStatements) {
+      statement.addCondition("StringEquals", { "kms:ViaService": `logs.${this.region}.${this.urlSuffix}` });
+    }
+    new CfnOutput(this, "CollectionImageRepositoryName", { value: repository.repositoryName });
+    new CfnOutput(this, "CollectionImageBuildProjectName", { value: project.projectName });
+  }
+}
+
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
 if (app.node.tryGetContext("provisionAuthRefreshKey") === "true") {
@@ -507,6 +775,11 @@ if (app.node.tryGetContext("provisionIdentity") === "true") {
 if (app.node.tryGetContext("provisionDataFlow") === "true") {
   const dataFlow = new MinimalDataFlowStack(app, `FoodtechMinimalDataFlow-${stage}`, { env });
   Tags.of(dataFlow).add("Project", "foodtech");
+} else if (app.node.tryGetContext("provisionRestCollectionTask") === "true" ||
+           app.node.tryGetContext("provisionMqttCollectionTask") === "true" ||
+           app.node.tryGetContext("provisionOpcUaJsonCollectionTask") === "true" ||
+           app.node.tryGetContext("provisionOpcUaBinaryCollectionTask") === "true") {
+  throw new Error("collection tasks require provisionDataFlow=true");
 }
 if (app.node.tryGetContext("provisionCookingJobs") === "true") {
   const cookingJobs = new CookingJobsStack(app, `FoodtechCookingJobs-${stage}`, { env });
@@ -532,6 +805,10 @@ if (app.node.tryGetContext("provisionCredentialVault") === "true") {
 }
 if (app.node.tryGetContext("provisionAiImagePublishing") === "true") {
   const publishing = new AiImagePublishingStack(app, `FoodtechAiImagePublishing-${stage}`, { env });
+  Tags.of(publishing).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionCollectionImagePublishing") === "true") {
+  const publishing = new CollectionImagePublishingStack(app, `FoodtechCollectionImagePublishing-${stage}`, { env });
   Tags.of(publishing).add("Project", "foodtech");
 }
 app.synth();
