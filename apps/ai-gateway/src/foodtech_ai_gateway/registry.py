@@ -354,7 +354,7 @@ class DynamoRegistry:
             raise RegistryConflict("tenant authentication state unavailable")
         return {"ConditionCheck": {"TableName": self.auth_table,
                 "Key": self._av({"pk": f"USER#{tenant_id}"}),
-                "ConditionExpression": "attribute_exists(pk) AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+                "ConditionExpression": "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
                 "ExpressionAttributeValues": self._av({":false": False})}}
 
     def active_execution_keys(self, tenant_id: str, limit: int = 100, cursor: str | None = None) -> dict:

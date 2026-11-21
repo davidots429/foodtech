@@ -125,7 +125,7 @@ class CredentialRegistrar:
                         "vault_ref": f"vault:{credential_id}", "version": 1}
             self.client.transact_write_items(TransactItems=[
                 {"ConditionCheck": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{tenant_id}"}),
-                    "ConditionExpression": "attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+                    "ConditionExpression": "((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
                     "ExpressionAttributeNames": {"#epoch": "epoch"},
                     "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}},
                 {"Put": {"TableName": self.writer.table.name, "Item": self._item(vault_item),

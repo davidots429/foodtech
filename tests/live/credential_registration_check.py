@@ -51,20 +51,9 @@ def main() -> None:
     auth_created = False
     try:
         registry = DynamoRegistry(REGISTRY, "2026-11", resource=resource, auth_table=auth.name)
-        try:
-            registry.client.transact_write_items(TransactItems=[registry._active_tenant_guard(tenant_id)])
-            raise AssertionError("AI guard accepted missing account")
-        except registry.client.exceptions.TransactionCanceledException as error:
-            if not any(reason.get("Code") == "ConditionalCheckFailed"
-                       for reason in error.response.get("CancellationReasons", [])):
-                raise
-        try:
-            registrar.register(tenant_id, "openai", descriptor["key_version"],
-                               base64.b64encode(encrypted).decode(), 0)
-            raise AssertionError("missing account accepted")
-        except RegistrationError as error:
-            if error.code != "TENANT_UNAVAILABLE":
-                raise
+        registry.client.transact_write_items(TransactItems=[registry._active_tenant_guard(tenant_id)])
+        credential_id = registrar.register(tenant_id, "openai", descriptor["key_version"],
+                                           base64.b64encode(encrypted).decode(), 0)
         auth.put_item(Item={"pk": f"USER#{tenant_id}"}, ConditionExpression="attribute_not_exists(pk)")
         auth_created = True
         registry.client.transact_write_items(TransactItems=[registry._active_tenant_guard(tenant_id)])
@@ -87,8 +76,6 @@ def main() -> None:
                 raise
         auth.update_item(Key={"pk": f"USER#{tenant_id}"},
                          UpdateExpression="REMOVE suspended, deletion_lock_request")
-        credential_id = registrar.register(tenant_id, "openai", descriptor["key_version"],
-                                           base64.b64encode(encrypted).decode(), 0)
         record = DynamoRegistry(REGISTRY, "2026-11", resource=resource, auth_table="foodtech-auth-sessions-dev").credential(credential_id)
         assert record and record.tenant_id == tenant_id
         vault = DynamoCredentialVault(VAULT, "dev", {stack["CredentialStorageKeyArn"]},
@@ -99,7 +86,7 @@ def main() -> None:
         finally:
             buffer[:] = b"\x00" * len(buffer)
         print(json.dumps({"transfer_algorithm": descriptor["algorithm"],
-                          "missing_account_rejected": True, "locked_account_rejected": True, "ai_account_guard": True,
+                          "absent_principal_state_allowed": True, "locked_account_rejected": True, "ai_account_guard": True,
                           "atomic_registration": True, "gateway_decrypt": True,
                           "secret_in_response": False}))
     finally:
