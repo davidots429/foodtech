@@ -7,6 +7,7 @@ authorized service and IAM role before integration.
 import re
 from dataclasses import dataclass
 from typing import Callable
+from uuid import UUID
 
 import boto3
 from boto3.dynamodb.types import Binary, TypeDeserializer, TypeSerializer
@@ -32,17 +33,19 @@ class CapsuleInventory:
         self.client = client or boto3.client("dynamodb", region_name="ap-southeast-2")
         self.serializer, self.deserializer = TypeSerializer(), TypeDeserializer()
 
-    def _read_meta(self, locator: str) -> dict:
+    def _read_meta(self, locator: str, request_id: str) -> dict:
         item = self.client.get_item(TableName=self.table_name, ConsistentRead=True,
             Key={"pk": self.serializer.serialize(locator), "sk": self.serializer.serialize("META")},
-            ProjectionExpression="pk, sk, #revision, #state",
+            ProjectionExpression="pk, sk, #revision, #state, deletion_request_id",
             ExpressionAttributeNames={"#revision": "revision", "#state": "state"}).get("Item")
         if not item:
             raise CapsuleInventoryError("capsule metadata is unavailable")
         try:
-            value = {name: self.deserializer.deserialize(item[name]) for name in ("pk", "sk", "revision", "state")}
+            value = {name: self.deserializer.deserialize(item[name]) for name in
+                     ("pk", "sk", "revision", "state", "deletion_request_id")}
             revision = value["revision"]
             if value["pk"] != locator or value["sk"] != "META" or value["state"] != "DELETION_LOCKED" or \
+                    value["deletion_request_id"] != request_id or \
                     not revision.is_finite() or revision < 1 or revision != int(revision):
                 raise ValueError
             value["revision"] = int(revision)
@@ -50,7 +53,7 @@ class CapsuleInventory:
         except (KeyError, TypeError, ValueError, AttributeError, ArithmeticError):
             raise CapsuleInventoryError("invalid capsule metadata") from None
 
-    def stage(self, locator: str, stage_entry: Callable[[str, bytes], None]) -> InventoryResult:
+    def stage(self, locator: str, request_id: str, stage_entry: Callable[[str, bytes], None]) -> InventoryResult:
         """Stage each encrypted ENTRY; return success only after all pages and a stable revision.
 
         ``stage_entry`` may persist a provisional plan but must not delete data or
@@ -58,9 +61,13 @@ class CapsuleInventory:
         The service must independently prevent all Capsule writers while locked and
         enforce revision increments for every change; this method cannot prove it.
         """
-        if not isinstance(locator, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", locator) or not callable(stage_entry):
-            raise ValueError("invalid capsule inventory request")
-        before = self._read_meta(locator)
+        try:
+            if not isinstance(locator, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", locator) or \
+                    str(UUID(request_id)) != request_id or not callable(stage_entry):
+                raise ValueError
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("invalid capsule inventory request") from None
+        before = self._read_meta(locator, request_id)
         previous = ""
         count = 0
         page_count = 0
@@ -92,7 +99,7 @@ class CapsuleInventory:
                 count += 1
         if not page_count:
             raise CapsuleInventoryError("capsule query returned no pages")
-        after = self._read_meta(locator)
+        after = self._read_meta(locator, request_id)
         if before != after:
             raise CapsuleInventoryError("capsule changed during inventory")
         return InventoryResult(revision=before["revision"], entry_count=count)

@@ -12,7 +12,7 @@ import boto3
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
-from foodtech_business_api.capsule_inventory import CapsuleInventory
+from foodtech_business_api.capsule_inventory import CapsuleInventory, CapsuleInventoryError
 from foodtech_business_api.capsule_writer import CapsuleWriter
 from process_flow_dynamodb_check import ACCOUNT, DATA_TABLE, REGION, remove_partition
 
@@ -53,10 +53,17 @@ def main():
             "Item": {name: serializer.serialize(value) for name, value in marker.items()},
             "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}}])
         staged = []
-        result = inventory.stage(locator, lambda sk, payload: staged.append((sk, payload)))
+        result = inventory.stage(locator, request_id, lambda sk, payload: staged.append((sk, payload)))
         if result.revision != 3 or result.entry_count != 1 or len(staged) != 1 or \
                 staged[0][1] != b"synthetic-not-a-real-ciphertext":
             raise AssertionError("Locked inventory does not match the successful write")
+        try:
+            inventory.stage(locator, str(uuid.uuid4()), lambda *_: (_ for _ in ()).throw(
+                AssertionError("Wrong request staged an entry")))
+        except CapsuleInventoryError:
+            pass
+        else:
+            raise AssertionError("Wrong deletion request read the locked Capsule")
         try:
             writer.put_entry(locator=locator, purpose="BILLING", epoch="2026-12",
                              ciphertext=b"synthetic", expected_revision=3)
@@ -71,7 +78,7 @@ def main():
         remove_partition(table, locator)
         remove_partition(table, marker_pk)
     print(json.dumps({"competing_writes": "verified", "locked_inventory": "verified",
-                      "locked_write_rejected": "verified", "cleanup": "verified"}))
+                      "wrong_request_rejected": "verified", "locked_write_rejected": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
