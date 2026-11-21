@@ -118,3 +118,30 @@ async def revalidate_recipe_scope(request, expected, execution_reader, job_reade
     if current != expected:
         raise RecipeScopeDenied('recipe scope changed')
     return current
+
+
+async def verify_recipe_sources(request, expected, execution_reader, job_reader, source_guard):
+    """Combine scoped observations with a trusted source guard, without issuing access.
+
+    The guard must already use a separately restricted AWS identity. A successful
+    observation does not establish authorization, finality or prior-job coverage.
+    """
+    await revalidate_recipe_scope(request, expected, execution_reader, job_reader)
+    snapshot = await asyncio.to_thread(execution_reader, expected.execution_id)
+    execution = getattr(snapshot, 'execution', None)
+    if not execution or getattr(snapshot, 'state', None) != expected.execution_state or \
+            getattr(snapshot, 'version', None) != expected.execution_version or \
+            getattr(execution, 'tenant_id', None) != expected.owner or \
+            getattr(execution, 'execution_id', None) != expected.execution_id or \
+            (getattr(execution, 'job_id', None), getattr(execution, 'prior_job_id', None)) != \
+                tuple(pk.rsplit('#', 1)[-1] for pk in expected.job_partitions) or \
+            (getattr(execution, 'job_version', None), getattr(execution, 'prior_job_version', None)) != expected.job_versions or \
+            (getattr(execution, 'jeyuk_source_revision', None), getattr(execution, 'prior_source_revision', None)) != expected.source_revisions:
+        raise RecipeScopeDenied('recipe scope changed')
+    try:
+        valid = await asyncio.to_thread(source_guard.verify, execution)
+    except Exception:
+        raise RecipeScopeDenied('recipe source unavailable') from None
+    if valid is not True:
+        raise RecipeScopeDenied('recipe source unavailable')
+    await revalidate_recipe_scope(request, expected, execution_reader, job_reader)

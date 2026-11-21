@@ -12,7 +12,7 @@ from foodtech_business_api import auth
 from foodtech_business_api.auth_store import MemoryStore, Session
 
 from foodtech_business_api.recipe_scope import (RecipeScopeDenied, authenticated_recipe_scope,
-                                                resolve_recipe_scope, revalidate_recipe_scope)
+                                                resolve_recipe_scope, revalidate_recipe_scope, verify_recipe_sources)
 
 
 class RecipeScopeTests(unittest.TestCase):
@@ -161,6 +161,32 @@ class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RecipeScopeDenied):
                 await revalidate_recipe_scope(object(), original,
                     lambda _: SimpleNamespace(execution=self.execution, state='PENDING', version=2), self.jobs.get)
+
+    async def test_source_guard_requires_valid_result_and_rechecks_scope_afterward(self):
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session):
+            expected = await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
+            guard = SimpleNamespace(verify=lambda _: True)
+            self.assertIsNone(await verify_recipe_sources(object(), expected, self.snapshot_reader, self.jobs.get, guard))
+            for result in (False, None, 1):
+                with self.subTest(result=result), self.assertRaises(RecipeScopeDenied):
+                    await verify_recipe_sources(object(), expected, self.snapshot_reader, self.jobs.get,
+                                                SimpleNamespace(verify=lambda _, value=result: value))
+            def change_after_source(_):
+                self.execution.jeyuk_source_revision += 1
+                return True
+            with self.assertRaises(RecipeScopeDenied):
+                await verify_recipe_sources(object(), expected, self.snapshot_reader, self.jobs.get,
+                                            SimpleNamespace(verify=change_after_source))
+
+    async def test_source_guard_errors_fail_closed(self):
+        def broken(_):
+            raise RuntimeError('private implementation detail')
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session):
+            expected = await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
+            with self.assertRaises(RecipeScopeDenied) as error:
+                await verify_recipe_sources(object(), expected, self.snapshot_reader, self.jobs.get,
+                                            SimpleNamespace(verify=broken))
+            self.assertNotIn('private implementation detail', str(error.exception))
 
 
 if __name__ == '__main__':
