@@ -135,10 +135,10 @@ async def main() -> None:
     gateway_server: uvicorn.Server | None = None
     gateway_listener: socket.socket | None = None
     auth = dynamodb.Table("foodtech-auth-sessions-dev")
-    auth_key, auth_created = {"pk": f"USER#{tenant}"}, False
+    auth_key = {"pk": f"USER#{tenant}"}
+    if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
+        raise RuntimeError("synthetic principal already exists")
     try:
-        auth.put_item(Item=auth_key, ConditionExpression="attribute_not_exists(pk)")
-        auth_created = True
         def created(kind: str, identifier: str) -> None:
             keys.append(item_key(kind, identifier))
 
@@ -210,6 +210,7 @@ async def main() -> None:
                     success_id = success_body["execution_id"]
                     assert success_id == expected_ids[0]
                     assert success_body["state"] == "SUCCEEDED" and success_body["response_text"]
+                    assert not auth.get_item(Key=auth_key, ConsistentRead=True).get("Item")
                     assert registry.execution_state(success_id) == "SUCCEEDED"
                     assert registry.execution_result(success_id)["response_text"] == success_body["response_text"]
                     assert registry.budget(tenant, "ollama").calls_remaining == 1
@@ -252,8 +253,6 @@ async def main() -> None:
                 for key in reversed(keys):
                     table.delete_item(Key=key)
             finally:
-                if auth_created:
-                    auth.delete_item(Key=auth_key)
                 temp.cleanup()
 
 
