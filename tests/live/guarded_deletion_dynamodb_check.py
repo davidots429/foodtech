@@ -1,7 +1,7 @@
 """Validate guarded deletion transaction races using isolated synthetic dev items.
 
 Existing development tables stand in for four separate security domains. This
-does not verify production IAM, a deployed Vault, encryption or a deletion saga.
+does not verify production IAM, dedicated privacy resources or a deletion saga.
 """
 import json
 import os
@@ -17,6 +17,11 @@ from foodtech_business_api.guarded_deletion import GuardedDeletion, VaultSnapsho
 from foodtech_business_api.guarded_deletion_recovery import GuardedDeletionRecovery
 from foodtech_business_api.deletion_registry_cipher import DeletionRegistryCipher
 from foodtech_business_api.deletion_registry_recovery_cipher import DeletionRegistryRecoveryCipher
+from foodtech_capsule_crypto.contract import Entry
+from foodtech_capsule_crypto.user_entry import seal_entry
+from foodtech_capsule_crypto.user_key import UserKeyGenerator
+from foodtech_capsule_crypto.deletion_plan import prepare_from_inventory
+from capsule_user_key_kms_check import b64
 from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
 
 
@@ -62,12 +67,26 @@ def main():
         vault_created = True
         client.transact_write_items(TransactItems=[create_action])
         capsule_created = True
+        key_map = {('synthetic-v1', 'shard-0'): key_arn}
+        purposes, tenant_purposes = frozenset({'BILLING'}), frozenset({'credential'})
+        tenant = f'psn:v1:credential:2026-11:v1:{b64(1)}'
+        target = Entry('BILLING', '2026-11', b64(2))
+        user_key, entry = UserKeyGenerator(key_map, tenant_purposes, kms_client=session.client('kms')).generate(
+            tenant=tenant, pool_version='synthetic-v1', shard_id='shard-0',
+            use_key=lambda key, record: seal_entry(key=key, record=record, key_map=key_map, tenant=tenant,
+                entry=target, approved_purposes=purposes, approved_tenant_purposes=tenant_purposes))
+        writer.attach_user_key(locator=locator, expected_revision=1, user_key_id=user_key.key_id,
+            encrypted_dek=user_key.encrypted_dek, pool_version=user_key.pool_version,
+            shard_id=user_key.shard_id, key_arn=user_key.key_arn)
+        writer.put_entry(locator=locator, purpose=target.purpose, epoch=target.epoch,
+            ciphertext=entry.entry.ciphertext, expected_revision=2, user_key_id=user_key.key_id,
+            pool_version=user_key.pool_version, shard_id=user_key.shard_id, key_arn=user_key.key_arn)
         store = GuardedDeletion(auth_table=AUTH, registry_table=REGISTRY, vault_table=VAULT,
                                 capsule_table=CAPSULE, approved_purposes=frozenset({"BILLING"}), client=client)
         encrypted = {}
         for request_id in ids:
             encrypted[request_id] = encryptor.seal(request_id, bytearray(internal_id.encode()), bytearray(locator.encode()))
-        def call(request_id, vault_revision, capsule_revision=1):
+        def call(request_id, vault_revision, capsule_revision=3):
             store.lock_and_register(subject=subject, request_id=request_id,
                 snapshot=VaultSnapshot(subject, vault_id, vault_revision, locator, capsule_revision, 0),
                 encrypted_user_id=encrypted[request_id]["internal_user_id"],
@@ -133,10 +152,12 @@ def main():
         def inspect_locked(internal_buffer, locator_buffer):
             if bytes(internal_buffer) != internal_id.encode():
                 raise AssertionError('recovered internal ID differs')
-            inventory = CapsuleInventory(CAPSULE, frozenset({'BILLING'}), client=client)
-            result = inventory.stage(locator_buffer.decode('ascii'), winner, lambda *_: called.append('unexpected'))
-            if result.entry_count != 0:
-                raise AssertionError('new synthetic capsule is not empty')
+            inventory = CapsuleInventory(CAPSULE, purposes, client=client)
+            plan = prepare_from_inventory(inventory=inventory, locator=locator_buffer.decode('ascii'), request_id=winner,
+                tenant=tenant, key_map=key_map, approved_purposes=purposes,
+                approved_tenant_purposes=tenant_purposes, kms_client=session.client('kms'))
+            if plan.entries != (target,):
+                raise AssertionError('synthetic deletion target differs')
             called.append('checked')
         if recovery.use_locked(authenticated_subject=subject, request_id=winner, action=inspect_locked) != {'status': 'DELETING'} or called != ['checked']:
             raise AssertionError('locked inventory action failed')
@@ -163,7 +184,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_inventory_action": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
