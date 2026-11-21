@@ -240,6 +240,26 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
             del app.state.mtls_listener
             del app.state.gateway_service
 
+    async def test_external_tier_one_requires_transfer_consent_and_never_invokes_provider(self):
+        now = datetime.now(timezone.utc)
+        self.registry.create_model(Model('external-tier-one', 'openai', Tier.TIER_1, 'ACTIVE', False, True, now, now))
+        app.state.mtls_listener = True
+        provider = AsyncMock()
+        app.state.gateway_service = GatewayService(self.registry, provider=provider)
+        try:
+            with patch.dict('os.environ', {'FOODTECH_RECIPE_TIER1_MODEL_ID': 'external-tier-one'}):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://gateway') as client:
+                    response = await client.post('/internal/ai/recipe-requests', json={
+                        'tenant_id': 'customer-a', 'job_id': str(uuid4()), 'job_version': 1})
+            self.assertEqual(response.status_code, 201, response.text)
+            self.assertEqual(response.json()['reason'], 'EXTERNAL_TRANSFER_CONSENT_REQUIRED')
+            self.assertFalse(response.json()['execution_available'])
+            self.assertEqual(self.registry.execution_state(response.json()['execution_id']), 'PENDING')
+            provider.invoke.assert_not_called()
+        finally:
+            del app.state.mtls_listener
+            del app.state.gateway_service
+
     def test_unconfigured_marker_cannot_become_a_model_during_confirmation(self):
         parent = str(uuid4())
         self.registry.create_execution(Execution(parent, "customer-a", Feature.RECIPE_CORRECTION,
