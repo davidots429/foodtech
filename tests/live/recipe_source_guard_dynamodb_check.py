@@ -64,6 +64,12 @@ def main():
             created.append((sources, receipt_key))
         guard = DynamoRecipeSourceGuard(jobs.name, sources.name, resource=resource)
         if not guard.verify(execution): raise AssertionError('matching versions rejected')
+        job_key = {'pk': f'SCOPE#USER#{owner}#JOB#{current}', 'sk': 'META'}
+        jobs.update_item(Key=job_key, UpdateExpression='SET actual_lifted_at = :changed',
+                         ExpressionAttributeValues={':changed': (placed + timedelta(seconds=4)).isoformat()})
+        if guard.verify(execution): raise AssertionError('mismatched cooking timeline accepted')
+        jobs.update_item(Key=job_key, UpdateExpression='SET actual_lifted_at = :original',
+                         ExpressionAttributeValues={':original': (placed + timedelta(seconds=3)).isoformat()})
         raw_key = {'pk': f'JEYUK#{source_ids[0]}', 'sk': 'RAW#000001'}
         raw = sources.get_item(Key=raw_key, ConsistentRead=True)['Item']['raw']
         sources.update_item(Key=raw_key, UpdateExpression='SET #raw = :changed',
@@ -74,7 +80,7 @@ def main():
         sources.update_item(Key={'pk': f'JEYUK#{source_ids[1]}', 'sk': 'SOURCE#REVISION'},
                             UpdateExpression='ADD revision :one', ExpressionAttributeValues={':one': 1})
         if guard.verify(execution): raise AssertionError('changed previous source accepted')
-        print('synthetic source and job version recheck verified')
+        print('synthetic source, timeline and job version recheck verified')
     finally:
         for table, key in reversed(created): table.delete_item(Key=key)
         if any(table.get_item(Key=key, ConsistentRead=True).get('Item') for table, key in created):
