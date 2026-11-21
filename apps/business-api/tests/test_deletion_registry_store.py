@@ -25,7 +25,7 @@ class TransactionClient:
             "deletion_lock_request": update["ExpressionAttributeValues"][":request"]}
         self.items[(put["TableName"], item["pk"]["S"], item["sk"]["S"])] = item
 
-    def get_item(self, *, TableName, Key, ConsistentRead):
+    def get_item(self, *, TableName, Key, ConsistentRead, **kwargs):
         assert ConsistentRead is True
         item = self.items.get((TableName, Key["pk"]["S"], Key.get("sk", {}).get("S", "")))
         return {"Item": item} if item else {}
@@ -84,6 +84,41 @@ class DeletionRegistryStoreTests(unittest.TestCase):
             store = DeletionRegistryStore("registry", "auth", client=client)
             self.assertTrue(store.lock_and_register(**self.request))
             stubber.assert_no_pending_responses()
+
+    def test_recovery_after_lost_response_returns_only_nonsecret_request_metadata(self):
+        self.assertIsNone(self.store.locked_request(self.request["subject"]))
+        self.store.lock_and_register(**self.request)
+        recovered = self.store.locked_request(self.request["subject"])
+        self.assertEqual(recovered, {"request_id": self.request["request_id"], "status": "DELETING", "version": 1,
+                                     "requested_at": self.request["requested_at"], "policy_version": "v1"})
+        self.assertNotIn("encrypted", str(recovered))
+
+    def test_missing_tombstone_or_inconsistent_lock_is_not_treated_as_success(self):
+        self.store.lock_and_register(**self.request)
+        user_key = ("auth", f'USER#{self.request["subject"]}', "")
+        registry_key = ("registry", "REGISTRY", f'REQ#{self.request["request_id"]}')
+        saved = self.client.items.pop(registry_key)
+        with self.assertRaises(DeletionRegistryConflict):
+            self.store.locked_request(self.request["subject"])
+        self.client.items[registry_key] = saved
+        self.client.items[user_key]["suspended"] = {"BOOL": False}
+        with self.assertRaises(DeletionRegistryConflict):
+            self.store.locked_request(self.request["subject"])
+
+    def test_changed_lock_during_recovery_is_rejected(self):
+        self.store.lock_and_register(**self.request)
+        original = self.client.get_item
+        seen = []
+        def changed(**kwargs):
+            response = original(**kwargs)
+            if kwargs["TableName"] == "auth":
+                seen.append(1)
+                if len(seen) == 2:
+                    return {"Item": {**response["Item"], "epoch": {"N": "99"}}}
+            return response
+        self.client.get_item = changed
+        with self.assertRaisesRegex(DeletionRegistryConflict, "changed during lookup"):
+            self.store.locked_request(self.request["subject"])
 
 
 if __name__ == "__main__":

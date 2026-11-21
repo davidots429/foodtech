@@ -56,3 +56,7 @@ class DeletionRegistration:
         return self.store.lock_and_register(subject=authenticated_subject, request_id=prepared.request_id,
             encrypted_user_id=prepared.encrypted_user_id, encrypted_capsule_locator=prepared.encrypted_capsule_locator,
             requested_at=prepared.requested_at, policy_version=prepared.policy_version)
+
+    def recover(self, *, authenticated_subject: str) -> dict | None:
+        """Recover nonsecret status after a lost response; never start a new saga."""
+        return self.store.locked_request(authenticated_subject)

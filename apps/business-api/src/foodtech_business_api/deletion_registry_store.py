@@ -6,10 +6,11 @@ with the deletion-registry key and request-specific context before calling it.
 """
 import re
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import UUID
 
 import boto3
-from boto3.dynamodb.types import TypeSerializer
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 
@@ -24,6 +25,7 @@ class DeletionRegistryStore:
         self.registry_table, self.auth_table = registry_table, auth_table
         self.client = client or boto3.client("dynamodb", region_name="ap-southeast-2")
         self.serializer = TypeSerializer()
+        self.deserializer = TypeDeserializer()
 
     def _item(self, value: dict) -> dict:
         return {name: self.serializer.serialize(field) for name, field in value.items()}
@@ -79,3 +81,45 @@ class DeletionRegistryStore:
                         ("request_id", "requested_at", "encrypted_user_id", "encrypted_capsule_locator", "policy_version")):
                 return False
             raise DeletionRegistryConflict("deletion lock or request already exists") from None
+
+    def locked_request(self, subject: str) -> dict | None:
+        """Recover nonsecret request state after an uncertain registration result.
+
+        Caller authentication and a durable, authorized recovery workflow remain
+        required. This does not resume deletion or read encrypted locators.
+        """
+        try:
+            if str(UUID(subject)) != subject:
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("invalid deletion identity") from None
+        key = self._item({"pk": f"USER#{subject}"})
+        first = self.client.get_item(TableName=self.auth_table, Key=key, ConsistentRead=True).get("Item")
+        if not first or "deletion_lock_request" not in first:
+            return None
+        request = first.get("deletion_lock_request", {}).get("S")
+        try:
+            if first.get("suspended") != {"BOOL": True} or str(UUID(request)) != request:
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise DeletionRegistryConflict("invalid deletion lock") from None
+        record = self.client.get_item(TableName=self.registry_table,
+            Key=self._item({"pk": "REGISTRY", "sk": f"REQ#{request}"}), ConsistentRead=True,
+            ProjectionExpression="request_id, #status, #version, requested_at, policy_version",
+            ExpressionAttributeNames={"#status": "status", "#version": "version"}).get("Item")
+        second = self.client.get_item(TableName=self.auth_table, Key=key, ConsistentRead=True).get("Item")
+        if not second or second.get("deletion_lock_request") != first.get("deletion_lock_request") or \
+                second.get("suspended") != {"BOOL": True} or second.get("epoch") != first.get("epoch"):
+            raise DeletionRegistryConflict("deletion lock changed during lookup")
+        try:
+            public = {name: self.deserializer.deserialize(record[name]) for name in
+                      ("request_id", "status", "version", "requested_at", "policy_version")}
+            if public["request_id"] != request or public["status"] not in {
+                    "DELETING", "COMPLETED", "RECONCILING", "RECONCILE_FAILED"} or \
+                    not isinstance(public["version"], Decimal) or not public["version"].is_finite() or \
+                    public["version"] < 1 or public["version"] != int(public["version"]):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, AttributeError, ArithmeticError):
+            raise DeletionRegistryConflict("missing or invalid deletion tombstone") from None
+        public["version"] = int(public["version"])
+        return public
