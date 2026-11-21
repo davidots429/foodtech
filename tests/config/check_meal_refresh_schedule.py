@@ -9,8 +9,15 @@ def main(path: str) -> None:
     resources = template['Resources'].values()
     tasks = [r['Properties'] for r in resources if r['Type'] == 'AWS::ECS::TaskDefinition']
     rules = [r['Properties'] for r in template['Resources'].values() if r['Type'] == 'AWS::Events::Rule']
-    assert len(tasks) == 1 and len(rules) == 1
-    task, rule = tasks[0], rules[0]
+    assert len(tasks) == 1 and len(rules) == 2
+    task = tasks[0]
+    rule, = [r for r in rules if 'ScheduleExpression' in r]
+    stopped, = [r for r in rules if 'EventPattern' in r]
+    assert stopped['EventPattern']['detail']['group'] == ['foodtech-meal-refresh-dev']
+    assert stopped['EventPattern']['detail']['lastStatus'] == ['STOPPED']
+    metrics = [r['Properties'] for r in template['Resources'].values() if r['Type'] == 'AWS::Logs::MetricFilter']
+    assert len(metrics) == 1 and 'exitCode NOT EXISTS' in metrics[0]['FilterPattern']
+    assert len([r for r in template['Resources'].values() if r['Type'] == 'AWS::CloudWatch::Alarm']) == 1
     assert task['TaskRoleArn'] == {'Ref': 'TaskRoleArn'}
     assert task['ExecutionRoleArn'] == {'Ref': 'ExecutionRoleArn'}
     assert task['NetworkMode'] == 'awsvpc' and task['RequiresCompatibilities'] == ['FARGATE']
@@ -23,6 +30,7 @@ def main(path: str) -> None:
     assert target['DeadLetterConfig']['Arn'] == {'Ref': 'DeliveryDlqArn'}
     assert target['RetryPolicy']['MaximumRetryAttempts'] == 3
     assert target['EcsParameters']['LaunchType'] == 'FARGATE'
+    assert target['EcsParameters']['Group'] == 'foodtech-meal-refresh-dev'
     network = target['EcsParameters']['NetworkConfiguration']['AwsVpcConfiguration']
     assert network['AssignPublicIp'] == 'DISABLED'
     assert network['Subnets'] == {'Ref': 'SubnetIds'} and network['SecurityGroups'] == {'Ref': 'SecurityGroupIds'}

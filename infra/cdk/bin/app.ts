@@ -1,6 +1,7 @@
-import { App, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, StackProps, Tags, Token } from "aws-cdk-lib";
+import { App, ArnFormat, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, StackProps, Tags, Token } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as codebuild from "aws-cdk-lib/aws-codebuild";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -433,11 +434,37 @@ class MealRefreshScheduleStack extends Stack {
       targets: [{ id: "MealRefresh", arn: cluster.valueAsString, roleArn: invokeRole.valueAsString,
         deadLetterConfig: { arn: queue.valueAsString }, retryPolicy: { maximumEventAgeInSeconds: 3600, maximumRetryAttempts: 3 },
         ecsParameters: { launchType: "FARGATE", taskCount: 1, taskDefinitionArn: task.ref,
-          networkConfiguration: { awsVpcConfiguration: { assignPublicIp: "DISABLED",
+          group: `foodtech-meal-refresh-${stage}`, networkConfiguration: { awsVpcConfiguration: { assignPublicIp: "DISABLED",
             subnets: subnets.valueAsList, securityGroups: groups.valueAsList } } } }],
     });
+    // Delivery failures and container exit failures are separate signals.
+    const eventsLog = new logs.LogGroup(this, "StoppedEventsLog", {
+      logGroupName: `/aws/events/foodtech/${stage}/meal-refresh-stopped`,
+      retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const stoppedLogArn = this.formatArn({ service: "logs", resource: "log-group",
+      resourceName: eventsLog.logGroupName, arnFormat: ArnFormat.COLON_RESOURCE_NAME });
+    const logPolicy = new logs.CfnResourcePolicy(this, "StoppedEventsLogPolicy", {
+      policyName: `foodtech-meal-refresh-events-${stage}`,
+      policyDocument: this.toJsonString({ Version: "2012-10-17", Statement: [{ Effect: "Allow",
+        Principal: { Service: ["events.amazonaws.com", "delivery.logs.amazonaws.com"] },
+        Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: `${stoppedLogArn}:*` }] }),
+    });
+    const stoppedRule = new events.CfnRule(this, "StoppedTasks", { eventPattern: {
+      source: ["aws.ecs"], "detail-type": ["ECS Task State Change"],
+      detail: { clusterArn: [cluster.valueAsString], group: [`foodtech-meal-refresh-${stage}`], lastStatus: ["STOPPED"] },
+    }, targets: [{ id: "StoppedLog", arn: stoppedLogArn }] });
+    stoppedRule.addResourceDependency(logPolicy);
+    const failedMetric = new logs.MetricFilter(this, "FailedTaskMetric", { logGroup: eventsLog,
+      metricNamespace: "Foodtech/MealRefresh", metricName: `TaskFailed-${stage}`, metricValue: "1",
+      filterPattern: logs.FilterPattern.literal("{ ($.detail.containers[0].exitCode != 0) || ($.detail.containers[0].exitCode NOT EXISTS) }") });
+    const alarm = new cloudwatch.Alarm(this, "FailedTaskAlarm", { metric: failedMetric.metric({
+      statistic: "Sum", period: Duration.minutes(5) }), threshold: 1, evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: "Meal refresh ECS task stopped with nonzero or unavailable container exit code" });
     new CfnOutput(this, "TaskDefinitionArn", { value: task.ref });
     new CfnOutput(this, "DisabledScheduleArn", { value: rule.attrArn });
+    new CfnOutput(this, "FailedTaskAlarmName", { value: alarm.alarmName });
   }
 }
 
