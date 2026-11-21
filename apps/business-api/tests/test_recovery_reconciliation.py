@@ -62,6 +62,23 @@ class RecoveryReconciliationTests(unittest.TestCase):
         self.assertTrue(result.eligible)
         self.assertEqual(result.tombstone_count, 0)
 
+    def test_reconciliation_states_are_retained_and_unknown_status_is_rejected(self):
+        for state in ("DELETING", "COMPLETED", "RECONCILING", "RECONCILE_FAILED"):
+            with self.subTest(state=state):
+                result = assess_recovery(**{**self.inputs, "tombstones": (
+                    Tombstone("old-request", state), self.tombstones[1])})
+                self.assertTrue(result.eligible)
+        result = assess_recovery(**{**self.inputs, "tombstones": (
+            Tombstone("old-request", "UNRECOGNIZED"), self.tombstones[1])})
+        self.assertIn("INVALID_REGISTRY_SNAPSHOT", result.reasons)
+
+    def test_absent_result_cannot_hide_a_deleted_item(self):
+        contradictory = Reapplication("old-request", True, "NOT_FOUND", (
+            StoreResult("vault", "DELETED", True), StoreResult("prompt-versions", "NOT_FOUND", True)))
+        result = assess_recovery(**{**self.inputs, "results": (contradictory, self.results[1])})
+        self.assertIn("OUTCOME_INCONSISTENT", result.reasons)
+        self.assertFalse(result.eligible)
+
 
 if __name__ == "__main__":
     unittest.main()
