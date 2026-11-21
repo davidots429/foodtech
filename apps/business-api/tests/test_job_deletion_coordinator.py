@@ -29,9 +29,10 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_order_and_meta_only_is_not_whole_deletion(self):
         with patch('foodtech_business_api.job_deletion_coordinator.clean_one_job_listing',
-                   side_effect=[{'state':'IN_PROGRESS','removed':True},{'state':'VERIFYING','removed':False}]):
-            results=[self.coordinator.step(**self.scope)['phase'] for _ in range(13)]
-        self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','LISTINGS','RESIDUAL','RESIDUAL','BINDING_RESIDUAL','BINDING_RESIDUAL','META','VERIFYING','VERIFYING'])
+                   side_effect=[{'state':'IN_PROGRESS','removed':True},{'state':'VERIFYING','removed':False}]), \
+             patch('foodtech_business_api.job_deletion_coordinator.remove_job_history',return_value={'state':'VERIFYING'}):
+            results=[self.coordinator.step(**self.scope)['phase'] for _ in range(14)]
+        self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','LISTINGS','RESIDUAL','RESIDUAL','BINDING_RESIDUAL','BINDING_RESIDUAL','META','HISTORY','VERIFYING','VERIFYING'])
         self.assertEqual([c.kwargs['index'] for c in self.worker.delete_one.call_args_list],[0,0])
         self.bindings.remove_one.assert_called_once()
 

@@ -106,7 +106,7 @@ try:
  assert not src.get_item(Key=orphan_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#job'},ConsistentRead=True).get('Item')
  assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#orphan'},ConsistentRead=True).get('Item')
- assert src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'HISTORY#REVISION'},ConsistentRead=True).get('Item')
+ assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'HISTORY#REVISION'},ConsistentRead=True).get('Item')
  assert meta_worker.remove_one(subject=u,request_id=q,index=0)['state']=='VERIFYING'
  assert meta_worker.remove_one(subject=u,request_id=q,index=0)['state']=='VERIFYING'
  assert not src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')

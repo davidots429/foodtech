@@ -5,6 +5,7 @@ snapshots, history revision and other stores require separate handling.
 """
 import json
 from .job_listing_deletion import clean_one_job_listing
+from .job_history_deletion import remove_job_history
 
 
 class JobDeletionCoordinator:
@@ -29,11 +30,11 @@ class JobDeletionCoordinator:
         else:
             state,version=self.jobs._json(item['checkpoint']),item['version']
             if set(state) != {'schema','phase','index','total'} or type(state['schema']) is not int or \
-                    state['schema'] != 1 or state['phase'] not in {'JOBS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','RESIDUAL','BINDING_RESIDUAL','META','VERIFYING'} or \
+                    state['schema'] != 1 or state['phase'] not in {'JOBS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','RESIDUAL','BINDING_RESIDUAL','META','HISTORY','VERIFYING'} or \
                     type(state['index']) is not int or type(state['total']) is not int or \
                     not 0 <= state['index'] <= state['total'] < 10**12 or \
                     (state['phase'] in {'JOBS','BINDINGS'} and (state['index'] != 0 or state['total'] != 0)) or \
-                    (state['phase'] in {'LISTINGS','RESIDUAL','BINDING_RESIDUAL','VERIFYING'} and state['index'] != state['total']) or \
+                    (state['phase'] in {'LISTINGS','RESIDUAL','BINDING_RESIDUAL','HISTORY','VERIFYING'} and state['index'] != state['total']) or \
                     type(version) is not int or version < 1 or \
                     item['state'] != ('VERIFYING' if state['phase']=='VERIFYING' else 'IN_PROGRESS'):
                 raise ValueError('invalid job deletion checkpoint')
@@ -77,12 +78,17 @@ class JobDeletionCoordinator:
                 head=self.jobs._head(self.jobs._load(subject,request_id,self.jobs.HEAD_DOMAIN))
                 if not head['complete']:raise ValueError('job inventory is incomplete')
                 state.update(phase='META',index=0,total=head['count'])
-        else:
+        elif phase=='META':
             if state['index'] < state['total']:
                 result=self.metadata.remove_one(subject=subject,request_id=request_id,index=state['index'])
                 if result.get('state') != 'VERIFYING':raise ValueError('invalid job metadata cleanup result')
                 state['index']+=1
-            if state['index']==state['total']:state['phase']='VERIFYING'
+            if state['index']==state['total']:state['phase']='HISTORY'
+        else:
+            result=remove_job_history(source_table=self.jobs.source_table,progress_store=self.store,
+                                      cipher=self.cipher,subject=subject,request_id=request_id)
+            if result.get('state')!='VERIFYING':raise ValueError('invalid history cleanup result')
+            state['phase']='VERIFYING'
         raw=json.dumps(state,ensure_ascii=True,sort_keys=True,separators=(',',':')).encode('ascii')
         self.store.save_checkpoint(cipher=self.cipher,**scope,expected_version=version,
             state='VERIFYING' if state['phase']=='VERIFYING' else 'IN_PROGRESS',checkpoint=raw)
