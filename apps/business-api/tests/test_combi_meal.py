@@ -231,6 +231,23 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(refreshed.json()['result_id'], result['result_id'])
         self.assertEqual((await self.client.post(link + '/recalculate', headers=headers)).json()['result_id'],
                          refreshed.json()['result_id'])
+        marker_key = (pk, 'MEAL_AGGREGATE#DIRTY')
+        self.store.items[marker_key] = {'pk': pk, 'sk': marker_key[1], 'version': 2, 'state': 'PENDING'}
+        refresh_path = f"{path}/meals/{meta['meal_batch_id']}/refresh-pending"
+        processed = await self.client.post(refresh_path, headers=headers)
+        self.assertEqual(processed.status_code, 200, processed.text)
+        self.assertEqual(processed.json(), {'status': 'REFRESHED', 'refreshed_group_count': 3, 'meal_version': 2})
+        self.assertNotIn(marker_key, self.store.items)
+        self.assertEqual((await self.client.post(refresh_path, headers=headers)).json()['status'], 'NO_PENDING')
+        self.store.items[marker_key] = {'pk': pk, 'sk': marker_key[1], 'version': 2, 'state': 'PENDING'}
+        acknowledge = self.store.acknowledge_meal_aggregate_dirty
+        def change_before_ack(*args):
+            self.store.items[(pk, 'META')]['version'] = 3
+            self.store.items[marker_key]['version'] = 3
+            return acknowledge(*args)
+        with patch.object(self.store, 'acknowledge_meal_aggregate_dirty', side_effect=change_before_ack):
+            self.assertEqual((await self.client.post(refresh_path, headers=headers)).status_code, 409)
+        self.assertEqual(self.store.items[marker_key]['version'], 3)
         versions_path = f"{path}/groups/{result['group_id']}/results?limit=1"
         versions = await self.client.get(versions_path)
         self.assertEqual(versions.status_code, 200, versions.text)

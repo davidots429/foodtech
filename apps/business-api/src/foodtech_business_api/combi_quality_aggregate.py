@@ -170,6 +170,54 @@ async def list_meal_dependencies(meal_id: UUID, request: Request, limit: int = Q
     return {'items': groups, 'next_cursor': page['next_cursor']}
 
 
+@router.post('/meals/{meal_id}/refresh-pending')
+async def refresh_pending_meal_aggregates(meal_id: UUID, request: Request) -> dict:
+    """Refresh all linked groups; acknowledge only the exact observed meal version."""
+    session, store = await _context(request, write=True)
+    meal_pk = _pk(session.subject, str(meal_id))
+    meta = await _store_call(store, store.read_meta, meal_pk)
+    if not meta or meta.get('meal_batch_id') != str(meal_id):
+        raise HTTPException(404, '식사 배치를 찾을 수 없습니다.')
+    marker = await _store_call(store, store.read_meal_aggregate_dirty, meal_pk)
+    if marker is None:
+        return {'status': 'NO_PENDING', 'refreshed_group_count': 0}
+    version = marker.get('version')
+    if type(version) is not int or version < 1 or marker.get('state') != 'PENDING' or meta.get('version') != version:
+        raise HTTPException(409, '재집계 대기 상태가 변경되었습니다. 다시 시도해 주세요.')
+    cursor, seen, refreshed = None, set(), 0
+    while True:
+        page = await list_meal_dependencies(meal_id, request, limit=50, cursor=cursor)
+        for group in page['items']:
+            try:
+                selection = group['selection']
+                if selection['load_rule_version'] != RULE_VERSION:
+                    raise ValueError
+                body = MealAggregateRequest.model_validate({key: selection[key] for key in (
+                    'meal_ids', 'menu', 'equipment_size', 'recipe_version', 'load_band', 'period_start', 'period_end')})
+            except (KeyError, TypeError, ValueError, ValidationError):
+                raise HTTPException(409, '배치의 집계 조건을 확인할 수 없습니다.') from None
+            result = await create_meal_aggregate(request, body)
+            if result.get('group_id') != group['group_id']:
+                raise HTTPException(409, '배치의 집계 연결이 변경되었습니다.')
+            refreshed += 1
+            if refreshed > 1000:
+                raise HTTPException(409, '연결된 집계가 너무 많아 한 번에 처리할 수 없습니다.')
+        next_cursor = page['next_cursor']
+        if next_cursor is None:
+            break
+        if next_cursor in seen:
+            raise HTTPException(409, '집계 연결 목록이 올바르지 않습니다.')
+        seen.add(next_cursor)
+        cursor = next_cursor
+    try:
+        await _store_call(store, store.acknowledge_meal_aggregate_dirty, meal_pk, version, session.subject, session.epoch)
+    except Conflict as exc:
+        raise HTTPException(409, '재집계 중 배치 또는 계정 상태가 변경되었습니다. 다시 시도해 주세요.') from exc
+    except ValueError as exc:
+        raise HTTPException(503, '재집계 상태를 저장할 수 없습니다.') from exc
+    return {'status': 'REFRESHED', 'refreshed_group_count': refreshed, 'meal_version': version}
+
+
 @router.get('/{group_id}/{result_id}')
 async def get_meal_aggregate(group_id: str, result_id: str, request: Request) -> dict:
     if not _valid_hash(group_id) or not _valid_hash(result_id):

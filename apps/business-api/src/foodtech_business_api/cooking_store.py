@@ -46,6 +46,19 @@ def _meal_aggregate_dirty(expected_version, meta):
     return {'sk': 'MEAL_AGGREGATE#DIRTY', 'version': meta['version'], 'state': 'PENDING'}
 
 
+def _meal_dirty_scope(pk, version, subject, expected_epoch):
+    if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
+            type(version) is not int or version < 1 or type(expected_epoch) is not int or \
+            not 0 <= expected_epoch < 2**63 or not isinstance(pk, str):
+        raise ValueError('invalid meal refresh scope')
+    prefix = f'SCOPE#USER#{subject}#COMBI_MEAL#'
+    try:
+        if not pk.startswith(prefix) or str(UUID(pk[len(prefix):])) != pk[len(prefix):]:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('invalid meal refresh owner') from None
+
+
 def _job_list_item(pk: str, meta: dict) -> dict:
     owner = meta["owner_subject"]
     job_id = meta["job_id"]
@@ -152,6 +165,8 @@ class CookingStore(Protocol):
                             subject: str, expected_epoch: int) -> dict: ...
     def list_meal_aggregate_groups(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def list_meal_aggregate_dependencies(self, pk: str, limit: int, cursor: str | None) -> dict: ...
+    def read_meal_aggregate_dirty(self, pk: str) -> dict | None: ...
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int) -> None: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
@@ -310,6 +325,19 @@ class MemoryCookingStore:
                     if item_pk == pk and sk.startswith(prefix) and (cursor is None or sk > prefix + cursor)]
             page = rows[:limit]
             return {'items': page, 'next_cursor': page[-1]['group_id'] if len(rows) > limit else None}
+
+    def read_meal_aggregate_dirty(self, pk: str) -> dict | None:
+        with self.lock:
+            row = self.items.get((pk, 'MEAL_AGGREGATE#DIRTY'))
+            return row.copy() if row else None
+
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int) -> None:
+        _meal_dirty_scope(pk, version, subject, expected_epoch)
+        with self.lock:
+            meta, dirty = self.items.get((pk, 'META')), self.items.get((pk, 'MEAL_AGGREGATE#DIRTY'))
+            if not meta or meta.get('version') != version or not dirty or dirty.get('version') != version or dirty.get('state') != 'PENDING':
+                raise Conflict
+            del self.items[(pk, 'MEAL_AGGREGATE#DIRTY')]
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:
@@ -801,6 +829,36 @@ class DynamoCookingStore:
         has_more = len(rows) > limit or bool(page.get('LastEvaluatedKey'))
         return {'items': [_api_numbers(row) for row in shown],
                 'next_cursor': shown[-1]['group_id'] if shown and has_more else None}
+
+    def read_meal_aggregate_dirty(self, pk: str) -> dict | None:
+        row = self.table.get_item(Key={'pk': pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True).get('Item')
+        return _api_numbers(row)
+
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int) -> None:
+        _meal_dirty_scope(pk, version, subject, expected_epoch)
+        if not self.auth_table_name or self.auth_table_name == self.table.name:
+            raise ValueError('separate authentication table is required')
+        operations = [
+            {'ConditionCheck': {'TableName': self.auth_table_name, 'Key': self._item({'pk': f'USER#{subject}'}),
+                'ConditionExpression': 'attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR '
+                    '#epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) '
+                    'AND attribute_not_exists(deletion_lock_request)',
+                'ExpressionAttributeNames': {'#epoch': 'epoch'},
+                'ExpressionAttributeValues': self._item({':expected': expected_epoch, ':zero': 0, ':false': False})}},
+            {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'META'}),
+                'ConditionExpression': '#version = :version', 'ExpressionAttributeNames': {'#version': 'version'},
+                'ExpressionAttributeValues': self._item({':version': version})}},
+            {'Delete': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}),
+                'ConditionExpression': '#version = :version AND #state = :pending',
+                'ExpressionAttributeNames': {'#version': 'version', '#state': 'state'},
+                'ExpressionAttributeValues': self._item({':version': version, ':pending': 'PENDING'})}},
+        ]
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get('Code') == 'ConditionalCheckFailed' for reason in exc.response.get('CancellationReasons', [])):
+                raise Conflict from exc
+            raise
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:

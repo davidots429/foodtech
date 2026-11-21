@@ -43,6 +43,18 @@ class MealAggregateStoreTests(unittest.TestCase):
             store.save_meal_aggregate(pk, [(f'SCOPE#USER#other#COMBI_MEAL#{uuid4()}', 1)], record, subject, 0)
         store.client.transact_write_items.assert_not_called()
 
+    def test_acknowledge_checks_account_meta_and_exact_pending_version(self):
+        store = object.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name='cooking'); store.client = MagicMock(); store.serializer = TypeSerializer()
+        store.auth_table_name = 'auth'
+        subject = 'customer'; pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{uuid4()}'
+        store.acknowledge_meal_aggregate_dirty(pk, 3, subject, 7)
+        ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertIn('deletion_lock_request', ops[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':version'], {'N': '3'})
+        self.assertEqual(ops[2]['Delete']['ExpressionAttributeValues'][':version'], {'N': '3'})
+        self.assertEqual(ops[2]['Delete']['ExpressionAttributeValues'][':pending'], {'S': 'PENDING'})
+
 
 if __name__ == '__main__':
     unittest.main()

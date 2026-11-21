@@ -144,6 +144,12 @@ async def scenario(store, partitions, auth, auth_keys):
             refreshed.raise_for_status()
             assert refreshed.json()['group_id'] == group and refreshed.json()['result_id'] != result['result_id']
             assert (await client.get(link)).json()['result_id'] == result['result_id']
+            pending_path = f'/api/customer/combi-quality-aggregates/meals/{meal_id}/refresh-pending'
+            pending = await client.post(pending_path, headers=headers)
+            pending.raise_for_status()
+            assert pending.json() == {'status': 'REFRESHED', 'refreshed_group_count': 2, 'meal_version': 2}
+            assert not store.table.get_item(Key={'pk': meal_pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True).get('Item')
+            assert (await client.post(pending_path, headers=headers)).json()['status'] == 'NO_PENDING'
             list_path = f'/api/customer/combi-quality-aggregates/groups/{group}/results?limit=1'
             first_page = await client.get(list_path)
             first_page.raise_for_status()
@@ -154,6 +160,21 @@ async def scenario(store, partitions, auth, auth_keys):
             owner[0] = 'synthetic-other-' + uuid4().hex
             assert (await client.get(list_path)).json()['items'] == []
             owner[0] = subject
+            store.advance_meal(meal_pk, 2, {**records[0], 'version': 3}, records[3],
+                               {'sk': 'EVENT#000000000004', 'event': 'SYNTHETIC_CHANGE'})
+            acknowledge = store.acknowledge_meal_aggregate_dirty
+            def change_before_ack(*args):
+                store.advance_meal(meal_pk, 3, {**records[0], 'version': 4}, records[3],
+                                   {'sk': 'EVENT#000000000005', 'event': 'SYNTHETIC_CHANGE'})
+                return acknowledge(*args)
+            with patch.object(store, 'acknowledge_meal_aggregate_dirty', side_effect=change_before_ack):
+                assert (await client.post(pending_path, headers=headers)).status_code == 409
+            marker = store.table.get_item(Key={'pk': meal_pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True)['Item']
+            assert int(marker['version']) == 4 and marker['state'] == 'PENDING'
+            retry_pending = await client.post(pending_path, headers=headers)
+            retry_pending.raise_for_status()
+            assert retry_pending.json() == {'status': 'REFRESHED', 'refreshed_group_count': 2, 'meal_version': 4}
+            assert not store.table.get_item(Key={'pk': meal_pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True).get('Item')
             compared = await client.post('/api/customer/combi-quality-aggregates/compare', headers=headers,
                                          json=compare_body)
             assert compared.json()['baseline']['freshness']['status'] == 'CHANGED'

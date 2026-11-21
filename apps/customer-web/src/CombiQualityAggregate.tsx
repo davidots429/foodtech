@@ -63,6 +63,7 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
   const [groups, setGroups] = useState<GroupPage["items"]>([]);
   const [groupsLoaded, setGroupsLoaded] = useState(false);
   const [groupsCursor, setGroupsCursor] = useState<string | null>(null);
+  const [refreshMessage, setRefreshMessage] = useState("");
   const active = useRef(false);
 
   async function calculate() {
@@ -147,6 +148,19 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
     finally { active.current = false; setBusy(false); }
   }
 
+  async function refreshPending() {
+    if (active.current) return;
+    active.current = true; setBusy(true); setError(""); setRefreshMessage("");
+    try {
+      const response = await api<{ status: "NO_PENDING" | "REFRESHED"; refreshed_group_count: number }>(
+        `/api/customer/combi-quality-aggregates/meals/${encodeURIComponent(mealId)}/refresh-pending`, csrf, {});
+      setRefreshMessage(response.status === "NO_PENDING" ? "처리할 변경 사항이 없습니다." :
+        `연결된 집계 ${response.refreshed_group_count}개를 다시 계산했습니다.`);
+      setVersions([]); setVersionsGroup(""); setVersionsCursor(null); setFreshness(null); setComparison(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "대기 중인 집계를 처리하지 못했습니다."); }
+    finally { active.current = false; setBusy(false); }
+  }
+
   return <section className="binding-box"><h3>밥·고등어 품질 선택 표본 집계</h3>
     <p>같은 메뉴·장비·레시피·조리량 구간의 평가를 비교합니다. 합성 기준이며 선택한 표본만 집계합니다.</p>
     <p>장비 규모: {size === "MEDIUM_FIXED_RACK_10" ? "중형 고정 랙" : "대형 이동식 랙"}</p>
@@ -169,6 +183,8 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
     </div>
     <button type="button" className="secondary" disabled={busy || !groupId.trim() || !resultId.trim()} onClick={open}>저장된 집계 조회</button>
     <button type="button" className="secondary" disabled={busy} onClick={() => listGroups()}>이 배치의 집계 그룹 목록</button>
+    <button type="button" className="secondary" disabled={busy} onClick={refreshPending}>이 배치의 변경 사항 재집계</button>
+    {refreshMessage && <p role="status">{refreshMessage}</p>}
     {groupsLoaded && <div><p>집계 그룹 {groups.length}건</p><ul>{groups.map(group => <li key={group.group_id}>
       <button type="button" className="secondary" disabled={busy} onClick={() => { setGroupId(group.group_id); setResultId(""); setVersions([]); setVersionsGroup(""); setVersionsCursor(null); }}>그룹 선택</button>
       {" "}{group.selection.menu === "RICE" ? "밥" : "고등어"} · {group.selection.recipe_version} · {group.selection.load_band}
