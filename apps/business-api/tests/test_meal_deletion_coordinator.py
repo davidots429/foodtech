@@ -25,7 +25,8 @@ class MealCoordinatorTests(unittest.TestCase):
             observe_page=Mock(return_value={'scan_complete': True, 'residual_found': False}))
         self.meta = SimpleNamespace(inventory=self.meals, residual=self.residual,
                                     remove_batch=Mock(side_effect=lambda **kw: {'state': 'VERIFYING', 'count': kw['count']}))
-        self.sources = SimpleNamespace(inventory=self.meals, inspect=Mock(return_value={'state': 'NO_BOUND_SOURCE'}))
+        self.sources = SimpleNamespace(inventory=self.meals, inspect_batch=Mock(
+            side_effect=lambda **kw: {'state': 'NO_BOUND_SOURCE', 'count': kw['count']}))
         self.coordinator = MealDeletionCoordinator(meals=self.meals, worker=self.worker, residual=self.residual,
             metadata=self.meta, final_residual=self.final, sources=self.sources)
         self.scope = {'subject': self.subject, 'request_id': self.request}
@@ -46,7 +47,8 @@ class MealCoordinatorTests(unittest.TestCase):
         self.assertEqual(self.coordinator.step(**self.scope), {'phase': 'RESIDUAL', 'residual_found': True})
         self.meta.remove_batch.assert_not_called()
         self.residual.observe_page.return_value = {'scan_complete': True, 'residual_found': False}
-        self.sources.inspect.return_value = {'state': 'SOURCE_OWNERSHIP_REQUIRED'}
+        self.sources.inspect_batch.side_effect = None
+        self.sources.inspect_batch.return_value = {'state': 'SOURCE_OWNERSHIP_REQUIRED'}
         with patch('foodtech_business_api.meal_deletion_coordinator.clean_one_meal_listing',
                    return_value={'state': 'VERIFYING', 'removed': False}):
             for _ in range(4): self.coordinator.step(**self.scope)

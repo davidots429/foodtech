@@ -36,5 +36,17 @@ class SourceSnapshotTests(unittest.TestCase):
         self.save({**self.meta,'source_binding':'bad'})
         with self.assertRaises(ValueError):self.inspector.inspect(**self.scope)
 
+    def test_batch_stops_on_later_bound_source_without_exposing_it(self):
+        self.inventory.targets=lambda **kw:iter([SimpleNamespace(job_id='job'),SimpleNamespace(job_id='second')])
+        encoder=TypeSerializer()
+        def saved(job, binding):
+            meta={**self.meta,'pk':f'SCOPE#USER#{self.subject}#JOB#{job}','job_id':job,'source_binding':binding}
+            return {'state':'IN_PROGRESS','version':1,'checkpoint':json.dumps(
+                {'schema':1,'job_id':job,'version':1,'metadata':{k:encoder.serialize(v) for k,v in meta.items()}}).encode()}
+        self.store.load_checkpoint.side_effect=[saved('job',None),saved('second',{'batch_id':'private'})]
+        result=self.inspector.inspect_batch(subject=self.subject,request_id=self.request,start=0,count=2)
+        self.assertEqual(result,{'state':'SOURCE_OWNERSHIP_REQUIRED'})
+        self.assertNotIn('private',repr(result))
+
 
 if __name__=='__main__':unittest.main()

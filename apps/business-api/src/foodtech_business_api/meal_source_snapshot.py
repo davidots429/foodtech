@@ -1,4 +1,5 @@
 """Inspect protected meal metadata without asserting source ownership."""
+from itertools import islice
 from boto3.dynamodb.types import TypeDeserializer
 
 from .job_source_snapshot import JobSourceSnapshot
@@ -16,6 +17,24 @@ class MealSourceSnapshot:
             subject=subject, request_id=request_id)) if n == index), None)
         if target is None:
             raise ValueError('meal snapshot target unavailable')
+        return self._inspect_target(subject=subject, request_id=request_id, index=index, target=target)
+
+    def inspect_batch(self, *, subject, request_id, start, count):
+        if type(start) is not int or not 0 <= start < 10**12 or type(count) is not int or \
+                not 1 <= count <= 20 or start + count >= 10**12:
+            raise ValueError('invalid meal snapshot range')
+        targets = list(islice(self.inventory.targets(subject=subject, request_id=request_id), start, start + count))
+        if len(targets) != count:
+            raise ValueError('meal snapshot target range unavailable')
+        for index, target in enumerate(targets, start):
+            result = self._inspect_target(subject=subject, request_id=request_id, index=index, target=target)
+            if result == {'state': 'SOURCE_OWNERSHIP_REQUIRED'}:
+                return {'state': 'SOURCE_OWNERSHIP_REQUIRED'}
+            if result != {'state': 'NO_BOUND_SOURCE'}:
+                raise ValueError('invalid meal source inspection result')
+        return {'state': 'NO_BOUND_SOURCE', 'count': count}
+
+    def _inspect_target(self, *, subject, request_id, index, target):
         saved = self.store.load_checkpoint(cipher=self.cipher, subject=subject, request_id=request_id,
                                            domain=f'MEAL_META_{index:012d}')
         try:

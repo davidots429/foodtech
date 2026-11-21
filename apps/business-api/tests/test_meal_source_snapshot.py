@@ -42,6 +42,18 @@ class MealSourceSnapshotTests(unittest.TestCase):
         self.save({**self.meta, 'source': 'invalid'})
         with self.assertRaises(ValueError): self.inspector.inspect(**self.scope)
 
+    def test_batch_stops_on_later_bound_source_without_exposing_it(self):
+        self.inventory.targets = lambda **kw: iter([SimpleNamespace(meal_id='meal'), SimpleNamespace(meal_id='second')])
+        encoder = TypeSerializer()
+        def saved(meal, source):
+            meta = {**self.meta, 'pk': f'SCOPE#USER#{self.subject}#COMBI_MEAL#{meal}', 'meal_batch_id': meal, 'source': source}
+            return {'state': 'IN_PROGRESS', 'version': 1, 'checkpoint': json.dumps(
+                {'schema': 1, 'meal_id': meal, 'version': 1, 'metadata': {k: encoder.serialize(v) for k, v in meta.items()}}).encode()}
+        self.store.load_checkpoint.side_effect = [saved('meal', None), saved('second', {'device_id': 'private'})]
+        result = self.inspector.inspect_batch(subject=self.subject, request_id=self.request, start=0, count=2)
+        self.assertEqual(result, {'state': 'SOURCE_OWNERSHIP_REQUIRED'})
+        self.assertNotIn('private', repr(result))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -83,12 +83,13 @@ class MealDeletionCoordinator:
                 raise ValueError('invalid meal listing cleanup result')
         elif phase == 'SOURCES':
             if state['index'] < state['total']:
-                result = self.sources.inspect(subject=subject, request_id=request_id, index=state['index'])
+                count = min(limit, 20, state['total'] - state['index'])
+                result = self.sources.inspect_batch(subject=subject, request_id=request_id, start=state['index'], count=count)
                 if result.get('state') == 'SOURCE_OWNERSHIP_REQUIRED':
                     return {'phase': 'SOURCES', 'source_ownership_required': True}
-                if result.get('state') != 'NO_BOUND_SOURCE':
+                if result != {'state': 'NO_BOUND_SOURCE', 'count': count}:
                     raise ValueError('invalid meal source inspection result')
-                state['index'] += 1
+                state['index'] += count
             if state['index'] == state['total']:
                 state['phase'] = 'VERIFYING'
         raw = json.dumps(state, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('ascii')

@@ -30,7 +30,7 @@ class CoordinatorTests(unittest.TestCase):
             observe_page=Mock(side_effect=[{'residual_found':True,'scan_complete':False},{'residual_found':False,'scan_complete':True}]))
         self.final_bindings=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
             observe_page=Mock(return_value={'residual_found':False,'scan_complete':True}))
-        self.sources=SimpleNamespace(inventory=self.jobs,inspect=Mock(return_value={'state':'NO_BOUND_SOURCE'}))
+        self.sources=SimpleNamespace(inventory=self.jobs,inspect_batch=Mock(side_effect=lambda **kw: {'state':'NO_BOUND_SOURCE','count':kw['count']}))
         self.coordinator=JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual,binding_residual=self.binding_residual,metadata=self.metadata,final_jobs=self.final_jobs,final_bindings=self.final_bindings,sources=self.sources)
         self.scope={'subject':str(uuid4()),'request_id':str(uuid4())}
 
@@ -57,9 +57,10 @@ class CoordinatorTests(unittest.TestCase):
         key=(self.scope['subject'],self.scope['request_id'],'JOB_COORDINATOR')
         state={'schema':1,'phase':'SOURCES','index':0,'total':1}
         self.progress.items[key]={'version':1,'state':'IN_PROGRESS','checkpoint':json.dumps(state).encode()}
-        self.sources.inspect.return_value={'state':'SOURCE_OWNERSHIP_REQUIRED'}
+        self.sources.inspect_batch.side_effect=None
+        self.sources.inspect_batch.return_value={'state':'SOURCE_OWNERSHIP_REQUIRED'}
         self.assertEqual(self.coordinator.step(**self.scope),{'phase':'SOURCES','source_ownership_required':True})
-        self.sources.inspect.return_value={'state':'NO_BOUND_SOURCE'}
+        self.sources.inspect_batch.return_value={'state':'NO_BOUND_SOURCE','count':1}
         self.bindings._head.return_value={'complete':True,'count':1}
         self.bindings.targets.side_effect=lambda **kw:iter([object()])
         self.assertEqual(self.coordinator.step(**self.scope),{'phase':'SOURCES','source_ownership_required':True})
