@@ -34,7 +34,9 @@ def main():
         second = 'synthetic-lease-' + uuid.uuid4().hex
         if store.claim_refresh(session_id, second, now + 2, now + 32) is None:
             raise AssertionError('Second lease failed')
-        store.delete_session(session_id)
+        removed = store.take_session(session_id)
+        if removed is None or removed.refresh_ciphertext != b'rotated':
+            raise AssertionError('Logout did not atomically retrieve the latest token')
         if store.finish_refresh(session_id, second, 1, now + 3, 'stale', b'stale', now + 400):
             raise AssertionError('Logout was undone')
         if store.table.get_item(Key={'pk': 'SESSION#' + session_id}, ConsistentRead=True).get('Item'):

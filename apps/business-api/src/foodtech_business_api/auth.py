@@ -199,6 +199,19 @@ def _cognito_refresh(client_id: str, token: str) -> dict:
     return client.get_tokens_from_refresh_token(ClientId=client_id, RefreshToken=token)["AuthenticationResult"]
 
 
+def _cognito_revoke(client_id: str, token: str) -> None:
+    client = boto3.client("cognito-idp", region_name="ap-southeast-2")
+    client.revoke_token(ClientId=client_id, Token=token)
+
+
+async def _try_revoke(client_id: str, token: str) -> bool:
+    try:
+        await asyncio.to_thread(_cognito_revoke, client_id, token)
+        return True
+    except (BotoCoreError, ClientError, ValueError):
+        return False
+
+
 @router.get("/auth/{surface}/callback")
 async def callback(surface: str, request: Request, code: str = "", state: str = "") -> RedirectResponse:
     settings = Settings.from_env()
@@ -374,9 +387,13 @@ async def refresh_session(surface: str, request: Request) -> Response:
     if not claimed:
         raise HTTPException(409, "세션 갱신이 진행 중이거나 만료되었습니다.")
     plaintext = None
+    original_token = None
+    tokens = None
+    completed = False
     try:
         plaintext = await asyncio.to_thread(cipher.open, claimed.refresh_ciphertext, session_id, surface)
-        tokens = await asyncio.to_thread(_cognito_refresh, client_id, plaintext.decode("utf-8"))
+        original_token = plaintext.decode("utf-8")
+        tokens = await asyncio.to_thread(_cognito_refresh, client_id, original_token)
         identity = _claims(tokens["IdToken"], settings, client_id, "id")
         access = _claims(tokens["AccessToken"], settings, client_id, "access")
         if identity.get("sub") != session.subject or access.get("sub") != session.subject or \
@@ -403,6 +420,10 @@ async def refresh_session(surface: str, request: Request) -> Response:
     except (BotoCoreError, ClientError, KeyError, ValueError, UnicodeError) as exc:
         raise HTTPException(401, "세션을 갱신하지 못했습니다. 다시 로그인해 주세요.") from exc
     finally:
+        if tokens is not None and not completed:
+            orphan = tokens.get("RefreshToken") or original_token
+            if isinstance(orphan, str) and orphan:
+                await _try_revoke(client_id, orphan)
         if plaintext is not None:
             plaintext[:] = b"\x00" * len(plaintext)
     response = JSONResponse({"authenticated": True, "expires_in": max(0, expires - int(time.time()))})
@@ -490,11 +511,27 @@ async def totp_verify(request: Request, body: dict) -> dict:
 async def logout(surface: str, request: Request) -> Response:
     session = await _session(request, surface, allow_expired_access=True)
     _csrf(request, session)
-    await asyncio.to_thread(get_store().delete_session, request.cookies.get(SESSION_COOKIE, ""))
+    session_id = request.cookies.get(SESSION_COOKIE, "")
+    removed = await asyncio.to_thread(get_store().take_session, session_id)
     settings = Settings.from_env()
     client_id, _, web = settings.client(surface)
+    revoked = None
+    if removed and removed.refresh_ciphertext:
+        plaintext = None
+        try:
+            cipher = _refresh_cipher()
+            if cipher:
+                plaintext = await asyncio.to_thread(cipher.open, removed.refresh_ciphertext, session_id, surface)
+                revoked = await _try_revoke(client_id, plaintext.decode("utf-8"))
+            else:
+                revoked = False
+        except (ValueError, UnicodeError, HTTPException):
+            revoked = False
+        finally:
+            if plaintext is not None:
+                plaintext[:] = b"\x00" * len(plaintext)
     logout_url = f"{settings.domain}/logout?{urlencode({'client_id': client_id, 'logout_uri': web})}"
-    response = JSONResponse({"logoutUrl": logout_url})
+    response = JSONResponse({"logoutUrl": logout_url, "cognitoTokenRevoked": revoked})
     response.delete_cookie(SESSION_COOKIE, path="/api")
     return response
 

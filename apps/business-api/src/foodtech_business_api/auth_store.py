@@ -56,6 +56,7 @@ class AuthStore(Protocol):
     def save_session(self, session_id: str, session: Session) -> None: ...
     def read_session(self, session_id: str) -> Session | None: ...
     def delete_session(self, session_id: str) -> None: ...
+    def take_session(self, session_id: str) -> Session | None: ...
     def claim_refresh(self, session_id: str, lease: str, now: int, lease_until: int) -> Session | None: ...
     def finish_refresh(self, session_id: str, lease: str, expected_version: int, now: int,
                        access_token: str, ciphertext: bytes, expires: int) -> bool: ...
@@ -94,6 +95,10 @@ class MemoryStore:
     def delete_session(self, session_id: str) -> None:
         with self.lock:
             self.sessions.pop(session_id, None)
+
+    def take_session(self, session_id: str) -> Session | None:
+        with self.lock:
+            return self.sessions.pop(session_id, None)
 
     def claim_refresh(self, session_id: str, lease: str, now: int, lease_until: int) -> Session | None:
         _check_lease(lease, now, lease_until)
@@ -173,6 +178,10 @@ class DynamoAuthStore:
 
     def delete_session(self, session_id: str) -> None:
         self.table.delete_item(Key={"pk": f"SESSION#{session_id}"})
+
+    def take_session(self, session_id: str) -> Session | None:
+        item = self.table.delete_item(Key={"pk": f"SESSION#{session_id}"}, ReturnValues="ALL_OLD").get("Attributes")
+        return self._session(item) if item else None
 
     def claim_refresh(self, session_id: str, lease: str, now: int, lease_until: int) -> Session | None:
         _check_lease(lease, now, lease_until)

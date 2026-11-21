@@ -66,10 +66,12 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
             self.store.delete_session('session-id')
             return {'IdToken': 'id', 'AccessToken': 'access', 'RefreshToken': 'new-refresh'}
         claims = [{'sub': 'subject'}, {'sub': 'subject', 'exp': time.time() + 400}]
-        with patch.object(auth, '_cognito_refresh', side_effect=refresh), patch.object(auth, '_claims', side_effect=claims):
+        with patch.object(auth, '_cognito_refresh', side_effect=refresh), patch.object(auth, '_claims', side_effect=claims), \
+             patch.object(auth, '_cognito_revoke') as revoke:
             response = await asyncio.wait_for(self.client.post('/api/customer/session/refresh', headers={'X-CSRF-Token': 'csrf'}), 3)
         self.assertEqual(response.status_code, 409)
         self.assertNotIn('session-id', self.store.sessions)
+        revoke.assert_called_once_with('customer', 'new-refresh')
 
     async def test_expired_access_may_only_use_refresh_path(self):
         self.store.sessions['session-id'].access_expires = int(time.time()) - 1
@@ -80,3 +82,20 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
             result = await self.client.post('/api/customer/session/refresh', headers={'X-CSRF-Token': 'csrf'})
         self.assertEqual(result.status_code, 200)
         self.assertEqual((await self.client.get('/api/customer/me')).status_code, 200)
+
+    async def test_logout_deletes_first_and_revokes_latest_token(self):
+        def revoke(client_id, token):
+            self.assertNotIn('session-id', self.store.sessions)
+            self.assertEqual((client_id, token), ('customer', 'old-refresh'))
+        with patch.object(auth, '_cognito_revoke', side_effect=revoke):
+            response = await self.client.post('/api/customer/logout', headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['cognitoTokenRevoked'])
+        self.assertNotIn('old-refresh', response.text)
+
+    async def test_logout_still_deletes_if_revocation_fails(self):
+        with patch.object(auth, '_cognito_revoke', side_effect=ValueError('failure')):
+            response = await self.client.post('/api/customer/logout', headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()['cognitoTokenRevoked'])
+        self.assertNotIn('session-id', self.store.sessions)
