@@ -27,6 +27,7 @@ class CipherTests(unittest.TestCase):
     def test_bound_round_trip_and_cross_scope_rejection(self):
         sdk = SDK()
         cipher = DeletionCheckpointCipher('arn:aws:kms:ap-southeast-2:123456789012:key/abcd', 'dev',
+                                          source_table_arn='arn:aws:dynamodb:ap-southeast-2:123456789012:table/tier-dev',
                                           kms_client=object(), sdk=sdk, providers=Providers())
         scope = dict(subject=str(uuid4()), request_id=str(uuid4()), domain='COOKING', version=1, state='IN_PROGRESS')
         ciphertext = cipher.seal(**scope, checkpoint=b'opaque checkpoint')
@@ -35,6 +36,11 @@ class CipherTests(unittest.TestCase):
                         {'version': 2}, {'state': 'FAILED'}):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 cipher.open(**{**scope, **changed}, ciphertext=ciphertext)
+        other = DeletionCheckpointCipher('arn:aws:kms:ap-southeast-2:123456789012:key/abcd', 'dev',
+            source_table_arn='arn:aws:dynamodb:ap-southeast-2:123456789012:table/other-dev',
+            kms_client=object(), sdk=sdk, providers=Providers())
+        with self.assertRaises(ValueError):
+            other.open(**scope, ciphertext=ciphertext)
         with self.assertRaises(ValueError):
             cipher.seal(**scope, checkpoint=b'')
 

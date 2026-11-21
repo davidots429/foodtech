@@ -22,7 +22,8 @@ def main():
     progress_key = {'pk': f'REQ#{request_id}', 'sk': 'DOMAIN#COOKING'}
     store = DeletionProgressStore(auth_table=auth.name, registry_table=registry.name,
                                   progress_table=progress.name, client=session.client('dynamodb'))
-    cipher = DeletionCheckpointCipher(key_arn, 'dev', kms_client=session.client('kms'))
+    cipher = DeletionCheckpointCipher(key_arn, 'dev', source_table_arn=progress.table_arn,
+                                      kms_client=session.client('kms'))
     scope = dict(subject=subject, request_id=request_id, domain='COOKING')
     created_auth = created_registry = created_progress = False
     try:
