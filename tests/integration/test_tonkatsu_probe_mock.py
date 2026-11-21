@@ -53,7 +53,7 @@ class TonkatsuProbeMockTests(unittest.IsolatedAsyncioTestCase):
                     store.items[(pk, "META")] = {"job_id": job_id, "menu": "TONKATSU", "status": "COMPLETED",
                         "version": 7, "safety_version": 0, "safety_status": "NOT_MEASURED",
                         "planned_portions": 4, "equipment_profile": "synthetic-fryer"}
-                    async def session(_request, _surface): return SimpleNamespace(subject=subject, csrf="token")
+                    async def session(_request, _surface): return SimpleNamespace(subject=subject, csrf="token", epoch=0)
                     with patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false"}), \
                          patch.object(cooking, "_session", side_effect=session), \
                          patch.object(cooking, "get_cooking_store", return_value=store):

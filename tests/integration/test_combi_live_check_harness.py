@@ -17,5 +17,5 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
         partitions = []
         result = await module.run_scenario(store, 'synthetic-' + uuid4().hex, partitions)
         self.assertEqual(result['competing_appends'], [200, 409])
-        self.assertEqual(len(partitions), 3)
+        self.assertEqual(len(partitions), 4)
         self.assertTrue(all(any(pk == key[0] for key in store.items) for pk in partitions))
