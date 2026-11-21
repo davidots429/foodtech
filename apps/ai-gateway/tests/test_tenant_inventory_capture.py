@@ -99,6 +99,28 @@ class InventoryCaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'repeated AI inventory cursor'):
             next(self.capture.partitions(**self.scope))
 
+    def test_recurring_cursor_cycle_stops_during_capture(self):
+        a, b = {'pk': 'a', 'sk': 's'}, {'pk': 'b', 'sk': 's'}
+        pages = [InventoryPage((), cursor, 1) for cursor in (a, b, a, b)]
+        with patch('foodtech_ai_gateway.tenant_inventory_capture.reconcile_reserved_page', side_effect=pages):
+            for _ in range(3):
+                self.capture.capture_page(**self.scope, limit=1)
+            with self.assertRaisesRegex(ValueError, 'repeated AI inventory cursor'):
+                self.capture.capture_page(**self.scope, limit=1)
+        head = self.progress.items[(self.scope['subject'], self.scope['request_id'], 'AI_INVENTORY')]
+        self.assertEqual(head['version'], 3)
+
+    def test_legacy_incomplete_inventory_requires_restart(self):
+        cursor = {'pk': 'a', 'sk': 's'}
+        self.progress.items[(self.scope['subject'], self.scope['request_id'], 'AI_INVENTORY')] = {
+            'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': self.capture._pack(
+                {'schema': 1, 'pages': 1, 'count': 0, 'cursor': cursor, 'complete': False})}
+        self.progress.items[(self.scope['subject'], self.scope['request_id'], 'AI_INVENTORY_PAGE_000000000001')] = {
+            'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': self.capture._pack(
+                {'schema': 1, 'start': None, 'next': cursor, 'partitions': []})}
+        with self.assertRaisesRegex(ValueError, 'requires restart'):
+            self.capture.capture_page(**self.scope, limit=1)
+
     def test_rejects_other_source_and_nonadvancing_scan(self):
         self.cipher.source_table_arn = 'other'
         with self.assertRaises(ValueError):

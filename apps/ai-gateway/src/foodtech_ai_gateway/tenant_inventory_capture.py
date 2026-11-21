@@ -74,7 +74,8 @@ class TenantInventoryCapture:
         if not entry or entry.get('version') != 1 or entry.get('state') != 'IN_PROGRESS':
             raise ValueError('missing AI inventory page')
         value = self._json(entry['checkpoint'])
-        if set(value) != {'schema', 'start', 'next', 'partitions'} or value['schema'] != 1 or \
+        if set(value) not in ({'schema', 'start', 'next', 'partitions'},
+                              {'schema', 'start', 'next', 'partitions', 'cycle'}) or value['schema'] != 1 or \
                 not isinstance(value['partitions'], list) or len(value['partitions']) > 20 or \
                 any(not isinstance(x, str) or not x or len(x) > 2048 for x in value['partitions']) or \
                 len(set(value['partitions'])) != len(value['partitions']):
@@ -83,7 +84,31 @@ class TenantInventoryCapture:
         self._cursor(value['next'])
         if value['next'] is not None and value['next'] == value['start']:
             raise ValueError('nonadvancing AI inventory page')
+        if 'cycle' in value and value['cycle'] is not None:
+            cycle = value['cycle']
+            if not isinstance(cycle, dict) or set(cycle) != {'anchor', 'power', 'length'} or \
+                    type(cycle['power']) is not int or not 1 <= cycle['power'] < 2**41 or \
+                    type(cycle['length']) is not int or not 0 <= cycle['length'] < cycle['power']:
+                raise ValueError('invalid AI inventory cycle state')
+            self._cursor(cycle['anchor'])
+            if cycle['anchor'] is None:
+                raise ValueError('invalid AI inventory cycle state')
+        if 'cycle' in value and (value['next'] is None) != (value['cycle'] is None):
+            raise ValueError('invalid AI inventory cycle state')
         return value
+
+    @staticmethod
+    def _cycle(previous, next_cursor):
+        if next_cursor is None:
+            return None
+        if previous is None:
+            return {'anchor': next_cursor, 'power': 1, 'length': 0}
+        if previous['anchor'] == next_cursor:
+            raise ValueError('repeated AI inventory cursor')
+        length = previous['length'] + 1
+        if length == previous['power']:
+            return {'anchor': next_cursor, 'power': previous['power'] * 2, 'length': 0}
+        return {'anchor': previous['anchor'], 'power': previous['power'], 'length': length}
 
     def capture_page(self, *, subject, request_id, limit):
         if type(limit) is not int or not 1 <= limit <= 100:
@@ -94,6 +119,12 @@ class TenantInventoryCapture:
             return {'complete': True, 'pages': head['pages'], 'count': head['count']}
         number = head['pages'] + 1
         domain = self._domain(number)
+        previous_cycle = None
+        if head['pages']:
+            previous = self._page(self._load(subject, request_id, self._domain(head['pages'])))
+            if previous['next'] != head['cursor'] or 'cycle' not in previous or previous['cycle'] is None:
+                raise ValueError('inventory requires restart with cycle detection')
+            previous_cycle = previous['cycle']
         entry = self._load(subject, request_id, domain)
         if entry is None:
             found = reconcile_reserved_page(self.source_table, self.progress_store.client,
@@ -101,7 +132,7 @@ class TenantInventoryCapture:
                 deletion_registry_table=self.progress_store.registry_table,
                 tenant=subject, request_id=request_id, limit=min(limit, 20), checkpoint=head['cursor'])
             value = {'schema': 1, 'start': head['cursor'], 'next': found.checkpoint,
-                     'partitions': list(found.partitions)}
+                     'partitions': list(found.partitions), 'cycle': self._cycle(previous_cycle, found.checkpoint)}
             raw = self._pack(value)
             self._page({'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': raw})
             self.progress_store.save_checkpoint(cipher=self.cipher, **scope, domain=domain,
@@ -110,6 +141,8 @@ class TenantInventoryCapture:
             value = self._page(entry)
         if value['start'] != head['cursor']:
             raise ValueError('invalid AI inventory page sequence')
+        if 'cycle' not in value or value['cycle'] != self._cycle(previous_cycle, value['next']):
+            raise ValueError('invalid AI inventory cycle state')
         new_head = {'schema': 1, 'pages': number, 'count': head['count'] + len(value['partitions']),
                     'cursor': value['next'], 'complete': value['next'] is None}
         self.progress_store.save_checkpoint(cipher=self.cipher, **scope, domain='AI_INVENTORY',
