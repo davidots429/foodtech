@@ -75,11 +75,15 @@ def process_pending_page(store, auth_table, shard: int, cursor: dict | None = No
             raise ValueError('invalid pending page cursor')
         args['ExclusiveStartKey'] = cursor
     page = store.table.query(**args)
-    counts = {'processed': 0, 'failed': 0}
+    counts = {'processed': 0, 'partial': 0, 'failed': 0}
     for marker in page.get('Items', []):
         try:
-            process_pending_marker(store, auth_table, marker)
+            result = process_pending_marker(store, auth_table, marker)
+            if result.get('status') not in {'NO_PENDING', 'REFRESHED', 'PARTIAL'}:
+                raise ValueError('invalid refresh result')
             counts['processed'] += 1
+            if result['status'] == 'PARTIAL':
+                counts['partial'] += 1
         except Exception:
             # The marker remains pending; never log customer keys or exception values.
             counts['failed'] += 1
@@ -92,12 +96,13 @@ def sweep_pending(store, auth_table, *, page_size: int = 25, max_pages_per_shard
 
     if type(max_pages_per_shard) is not int or not 1 <= max_pages_per_shard <= 10000:
         raise ValueError('invalid sweep page limit')
-    totals = {'processed': 0, 'failed': 0, 'pages': 0}
+    totals = {'processed': 0, 'partial': 0, 'failed': 0, 'pages': 0}
     for shard in range(16):
         cursor, seen = None, set()
         for _ in range(max_pages_per_shard):
             page = process_pending_page(store, auth_table, shard, cursor, limit=page_size)
             totals['processed'] += page['processed']
+            totals['partial'] += page['partial']
             totals['failed'] += page['failed']
             totals['pages'] += 1
             cursor = page['next_cursor']

@@ -58,10 +58,18 @@ class CombiRefreshDiscoveryTests(unittest.TestCase):
         with patch('foodtech_business_api.combi_refresh_worker.process_pending_marker',
                    side_effect=[RuntimeError('private data'), {'status': 'REFRESHED'}]) as process:
             result = process_pending_page(store, object(), 3, limit=2)
-        self.assertEqual(result, {'processed': 1, 'failed': 1, 'next_cursor': cursor})
+        self.assertEqual(result, {'processed': 1, 'partial': 0, 'failed': 1, 'next_cursor': cursor})
         self.assertEqual(process.call_count, 2)
         self.assertEqual(store.table.query.call_args.kwargs['IndexName'], 'MealAggregatePending')
         self.assertEqual(store.table.query.call_args.kwargs['Limit'], 2)
+
+    def test_partial_and_unrecognized_status_are_not_reported_as_complete(self):
+        store = MagicMock()
+        store.table.query.return_value = {'Items': [{'pk': 'one'}, {'pk': 'two'}]}
+        with patch('foodtech_business_api.combi_refresh_worker.process_pending_marker',
+                   side_effect=[{'status': 'PARTIAL'}, {'status': 'unexpected'}]):
+            result = process_pending_page(store, object(), 0)
+        self.assertEqual(result, {'processed': 1, 'partial': 1, 'failed': 1, 'next_cursor': None})
 
     def test_invalid_bounds_do_not_query(self):
         store = MagicMock()
@@ -78,17 +86,17 @@ class CombiRefreshSweepTests(unittest.TestCase):
         def page(_store, _auth, shard, cursor, *, limit):
             calls.append((shard, cursor))
             if shard == 2 and cursor is None:
-                return {'processed': 1, 'failed': 1, 'next_cursor': {'pk': 'next'}}
-            return {'processed': 0, 'failed': 0, 'next_cursor': None}
+                return {'processed': 1, 'partial': 1, 'failed': 1, 'next_cursor': {'pk': 'next'}}
+            return {'processed': 0, 'partial': 0, 'failed': 0, 'next_cursor': None}
         with patch('foodtech_business_api.combi_refresh_worker.process_pending_page', side_effect=page):
             result = sweep_pending(object(), object())
-        self.assertEqual(result, {'processed': 1, 'failed': 1, 'pages': 17})
+        self.assertEqual(result, {'processed': 1, 'partial': 1, 'failed': 1, 'pages': 17})
         self.assertEqual([shard for shard, _ in calls], [0, 1, 2, 2, *range(3, 16)])
         self.assertEqual(calls[3][1], {'pk': 'next'})
 
     def test_repeated_cursor_and_page_limit_fail_closed(self):
         from foodtech_business_api.combi_refresh_worker import sweep_pending
-        page = {'processed': 0, 'failed': 0, 'next_cursor': {'pk': 'repeat'}}
+        page = {'processed': 0, 'partial': 0, 'failed': 0, 'next_cursor': {'pk': 'repeat'}}
         with patch('foodtech_business_api.combi_refresh_worker.process_pending_page', return_value=page):
             with self.assertRaisesRegex(RuntimeError, 'did not advance'):
                 sweep_pending(object(), object())
