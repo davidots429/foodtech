@@ -1,0 +1,18 @@
+{
+  "fixtureId": "jeyuk-small-process-v2",
+  "provenance": "SYNTHETIC",
+  "profile": "SMALL",
+  "actualLoadKg": "1.8",
+  "samples": [
+    {"seconds": 4, "heatingSetpointCelsius": "200", "surfaceCelsius": "200", "actualRpm": "20", "targetRpm": "30", "motorLoadPercent": "95"},
+    {"seconds": 1, "heatingSetpointCelsius": "200", "surfaceCelsius": "200", "actualRpm": "20", "targetRpm": "30", "motorLoadPercent": "95"},
+    {"seconds": 24, "heatingSetpointCelsius": "200", "surfaceCelsius": "200", "actualRpm": "20", "targetRpm": "30", "motorLoadPercent": "95"},
+    {"seconds": 1, "heatingSetpointCelsius": "200", "surfaceCelsius": "200", "actualRpm": "20", "targetRpm": "30", "motorLoadPercent": "95"}
+  ],
+  "checkpoints": [
+    {"second": 4, "status": "WARNING", "reasonCode": "HIGH_MOTOR_LOAD_WARNING"},
+    {"second": 5, "status": "WARNING", "reasonCode": "AGITATOR_JAM_WARNING"},
+    {"second": 29, "status": "WARNING", "reasonCode": "AGITATOR_JAM_WARNING"},
+    {"second": 30, "status": "FAILED", "reasonCode": "AGITATOR_FAILURE"}
+  ]
+}

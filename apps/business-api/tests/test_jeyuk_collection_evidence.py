@@ -47,9 +47,44 @@ class EvidenceReadTests(unittest.TestCase):
         with patch("foodtech_business_api.jeyuk_source_evidence.boto3.Session", Session):
             self.assertEqual(read_collection_completion("table", "evidence"),
                              {"status": "MATCHED_AT_READ", "raw_count": 3})
+            # Settings are derived only from a matching, tracked complete receipt.
+            for index, row in enumerate(rows):
+                value = json.loads(row["raw"]); value["heatingSetpointCelsius"] = 200
+                rows[index] = {**row, "raw": json.dumps(value)}
+            def refresh_receipt():
+                tracker = JeyukCompletionTracker(0)
+                for row in rows: tracker.record(row["raw"])
+                return tracker.finish(cursor=3, complete=True, explicit=True)
+            receipt = refresh_receipt(); table.revisions = [3, 3]
+            settings = read_collection_completion("table", "evidence", include_settings=True)["settings"]
+            self.assertEqual(settings["heating_setpoint_celsius"], {"status": "STABLE", "value": "200"})
+            self.assertEqual(settings["target_rpm"], {"status": "STABLE", "value": "30"})
+            value = json.loads(rows[1]["raw"]); value["heatingSetpointCelsius"] = 195
+            rows[1] = {**rows[1], "raw": json.dumps(value)}
+            receipt = refresh_receipt(); table.revisions = [3, 3]
+            self.assertEqual(read_collection_completion("table", "evidence", include_settings=True)
+                             ["settings"]["heating_setpoint_celsius"]["status"], "CHANGED")
+            value["targetRpm"] = 25
+            rows[1] = {**rows[1], "raw": json.dumps(value)}
+            receipt = refresh_receipt(); table.revisions = [3, 3]
+            self.assertEqual(read_collection_completion("table", "evidence", include_settings=True)
+                             ["settings"]["target_rpm"]["status"], "CHANGED")
+            del value["heatingSetpointCelsius"]; rows[1] = {**rows[1], "raw": json.dumps(value)}
+            receipt = refresh_receipt(); table.revisions = [3, 3]
+            self.assertEqual(read_collection_completion("table", "evidence", include_settings=True)
+                             ["settings"]["heating_setpoint_celsius"]["status"], "PARTIAL")
+            for index, row in enumerate(rows):
+                value = json.loads(row["raw"]); value.pop("heatingSetpointCelsius", None)
+                rows[index] = {**row, "raw": json.dumps(value)}
+            receipt = refresh_receipt(); table.revisions = [3, 3]
+            self.assertEqual(read_collection_completion("table", "evidence", include_settings=True)
+                             ["settings"]["heating_setpoint_celsius"]["status"], "NOT_RECORDED")
+            table.revisions = [3, 3]
             rows[1] = {**rows[1], "raw": rows[1]["raw"] + " "}
             table.revisions = [3, 3]
             self.assertEqual(read_collection_completion("table", "evidence")["status"], "NOT_MATCHED")
+            table.revisions = [3, 3]
+            self.assertNotIn("settings", read_collection_completion("table", "evidence", include_settings=True))
             table.revisions = [3, 4]
             self.assertEqual(read_collection_completion("table", "evidence")["status"], "CHANGED_DURING_READ")
             table.revisions = [None, None]

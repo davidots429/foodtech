@@ -4,6 +4,8 @@ import { api, jobPath } from "./cookingApi";
 type FeedTiming = { status: "RECORDED"; vegetable_start_offset_us: number; sauce_start_offset_us: number;
   start_separation_us: number; simultaneous: boolean } | { status: "NOT_RECORDED" | "INCONSISTENT" };
 
+type Setting = { status: "NOT_RECORDED" | "PARTIAL" | "CHANGED" | "STABLE"; value: string | null };
+
 type Evidence = {
   job_version: number; process_view: "AS_PROCESSED" | "LATEST_RESTATED"; process_stale: boolean;
   recorded: { menu: string | null; recipe_version: string | null; safety_status: string | null; process_status: string | null;
@@ -18,6 +20,8 @@ type Evidence = {
   completeness: "INSUFFICIENT" | "NOT_ASSESSED";
   completeness_reasons: string[];
   collection_snapshot_matches_receipt: boolean;
+  jeyuk_collection: { status: "NOT_CONFIGURED" | "NOT_RECORDED" | "REVISION_UNVERIFIED" | "CHANGED_DURING_READ" | "NOT_MATCHED" | "MATCHED_AT_READ";
+    raw_count: number | null; settings?: { heating_setpoint_celsius: Setting; target_rpm: Setting } } | null;
   source_revision_status: "NOT_TRACKED" | "NOT_CONFIGURED" | "INCONSISTENT" | "MATCHED_AT_READ" | "CHANGED";
   reheat_history_status: "NOT_RECORDED" | "RECORDED" | "INCONSISTENT";
   reheat_history: { segment_id: string; started_at: string; lifted_at: string; duration_seconds: string;
@@ -25,6 +29,11 @@ type Evidence = {
   selected_comparison: { comparison_id: string; baseline_job_id: string; baseline_recipe_version: string; baseline_score_percent: string;
     candidate_score_percent: string; baseline_jeyuk_feed_timing: FeedTiming | null; immediately_previous_verified: boolean } | null;
 };
+
+function settingLabel(setting: Setting, unit: string): string {
+  if (setting.status === "STABLE") return `${setting.value} ${unit}`;
+  return ({ NOT_RECORDED: "미기록", PARTIAL: "일부 기록", CHANGED: "조리 중 변경됨" })[setting.status] ?? "확인 필요";
+}
 
 function FeedTimingView({ timing, label }: { timing: FeedTiming | null; label: string }) {
   if (!timing) return null;
@@ -154,6 +163,14 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
         레시피 {value.selected_comparison.baseline_recipe_version} · 평가 {value.selected_comparison.baseline_score_percent}점</p>
         <p className="small">선택한 비교는 현재 작업보다 이전입니다. 비교 가능한 작업 중 가장 직전인지는 확인하지 않았습니다.</p></div>}
       <FeedTimingView label="현재 작업" timing={value.recorded.jeyuk_feed_timing} />
+      {value.jeyuk_collection && <div>
+        <p>합성 수집 원천: {({ NOT_CONFIGURED: "저장소 미연결", NOT_RECORDED: "수집 완료 기록 없음",
+          REVISION_UNVERIFIED: "원천 버전 미확인", CHANGED_DURING_READ: "조회 중 원천 변경",
+          NOT_MATCHED: "완료 기록과 불일치", MATCHED_AT_READ: "조회한 원천과 완료 기록 일치" })[value.jeyuk_collection.status]}</p>
+        {value.jeyuk_collection.settings && <p>기록된 열원 목표 온도: {settingLabel(value.jeyuk_collection.settings.heating_setpoint_celsius, "°C")}
+          {" "}· 목표 회전속도: {settingLabel(value.jeyuk_collection.settings.target_rpm, "rpm")}</p>}
+        <p className="small">수집된 설정 기록이며 적합성이나 AI 실행 승인을 뜻하지 않습니다.</p>
+      </div>}
       {value.selected_comparison && <FeedTimingView label="선택한 이전 작업"
         timing={value.selected_comparison.baseline_jeyuk_feed_timing} />}
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}

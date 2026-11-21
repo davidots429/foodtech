@@ -4,6 +4,7 @@ The result describes recorded facts, not evidence completeness or authorization
 to call a model. Free-text notes, ownership IDs and raw probe values stay out.
 """
 import os
+import asyncio
 from datetime import datetime
 from uuid import UUID
 
@@ -327,6 +328,20 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
                 first_revision = await read_source_revision(table, source_pk)
             except Exception as exc:
                 raise HTTPException(503, "원천 버전을 조회하지 못했습니다.") from exc
+    jeyuk_collection = None
+    binding = job.get("source_binding")
+    if job.get("menu") == "JEYUK" and job.get("provenance") == "SYNTHETIC" and isinstance(binding, dict) and \
+            binding.get("source_id") == "synthetic-rest" and \
+            binding.get("device_id") == "mockprofile-110-a-001" and binding.get("batch_id"):
+        if not table:
+            jeyuk_collection = {"status": "NOT_CONFIGURED", "raw_count": None}
+        else:
+            from .jeyuk_source_evidence import read_collection_completion
+            try:
+                jeyuk_collection = await asyncio.to_thread(read_collection_completion, table, binding["batch_id"],
+                                                            include_settings=True)
+            except Exception as exc:
+                raise HTTPException(503, "제육볶음 원천 설정을 조회하지 못했습니다.") from exc
     current_job, current_pointer = await _store_call(store, store.read, pk)
     last_process_pointer = await _store_call(store, store.process_pointer, pk)
     if comparison_check:
@@ -350,5 +365,6 @@ async def read_evidence(request, job_id: str, comparison_id: str | None = None) 
             (first_process_pointer and (not derived or derived.get("sk") != first_process_pointer.get("result_sk"))):
         raise HTTPException(409, "조리 근거가 변경되었습니다. 다시 조회해 주세요.")
     return {**_snapshot(job, pointer, assessment, derived), "source_revision_status": source_status,
+            "jeyuk_collection": jeyuk_collection,
             "selected_comparison": comparison_result, "reheat_history_status": reheat_status,
             "reheat_history": reheat_history}

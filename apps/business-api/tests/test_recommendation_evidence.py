@@ -66,6 +66,24 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "another-customer"
         self.assertEqual((await self.client.get(path)).status_code, 404)
 
+    async def test_jeyuk_settings_are_read_for_bound_owned_job_without_enabling_execution(self):
+        meta = self.store.items[(self.pk, "META")]
+        meta.update(menu="JEYUK", source_binding={"source_id": "synthetic-rest",
+                    "device_id": "mockprofile-110-a-001", "batch_id": "test-batch"})
+        recorded = {"status": "MATCHED_AT_READ", "raw_count": 30, "settings": {
+            "heating_setpoint_celsius": {"status": "STABLE", "value": "200"},
+            "target_rpm": {"status": "STABLE", "value": "30"}}}
+        path = f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence"
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
+                patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion",
+                      return_value=recorded) as read:
+            response = await self.client.get(path)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["jeyuk_collection"], recorded)
+        self.assertFalse(response.json()["recommendation_execution_available"])
+        self.assertIn("SOURCE_COMPLETENESS_NOT_ASSESSED", response.json()["completeness_reasons"])
+        read.assert_called_once_with("test-source", "test-batch", include_settings=True)
+
     async def test_jeyuk_temperature_evidence_excludes_unapproved_fields(self):
         meta = self.store.items[(self.pk, "META")]
         meta.update(menu="JEYUK", jeyuk_feed_safety_aligned=True, jeyuk_feed_mass_status="MATCHED",

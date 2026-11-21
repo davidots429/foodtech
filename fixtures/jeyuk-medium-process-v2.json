@@ -1,0 +1,58 @@
+{
+  "fixtureId": "jeyuk-medium-process-v2",
+  "provenance": "SYNTHETIC",
+  "profile": "MEDIUM",
+  "actualLoadKg": "12",
+  "samples": [
+    {
+      "seconds": 4,
+      "heatingSetpointCelsius": "180", "surfaceCelsius": "180",
+      "actualRpm": "13",
+      "targetRpm": "20",
+      "motorLoadPercent": "95"
+    },
+    {
+      "seconds": 1,
+      "heatingSetpointCelsius": "180", "surfaceCelsius": "180",
+      "actualRpm": "13",
+      "targetRpm": "20",
+      "motorLoadPercent": "95"
+    },
+    {
+      "seconds": 24,
+      "heatingSetpointCelsius": "180", "surfaceCelsius": "180",
+      "actualRpm": "13",
+      "targetRpm": "20",
+      "motorLoadPercent": "95"
+    },
+    {
+      "seconds": 1,
+      "heatingSetpointCelsius": "180", "surfaceCelsius": "180",
+      "actualRpm": "13",
+      "targetRpm": "20",
+      "motorLoadPercent": "95"
+    }
+  ],
+  "checkpoints": [
+    {
+      "second": 4,
+      "status": "WARNING",
+      "reasonCode": "HIGH_MOTOR_LOAD_WARNING"
+    },
+    {
+      "second": 5,
+      "status": "WARNING",
+      "reasonCode": "AGITATOR_JAM_WARNING"
+    },
+    {
+      "second": 29,
+      "status": "WARNING",
+      "reasonCode": "AGITATOR_JAM_WARNING"
+    },
+    {
+      "second": 30,
+      "status": "FAILED",
+      "reasonCode": "AGITATOR_FAILURE"
+    }
+  ]
+}
