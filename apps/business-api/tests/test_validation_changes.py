@@ -23,6 +23,8 @@ class ValidationChangesTests(unittest.TestCase):
 
     def test_explicit_safety_and_process_events(self):
         self.assertEqual(recorded_safety_change({"domain": "SAFETY_STATUS", "to_status": "FAILED"}), "SAFETY_ANOMALY")
+        self.assertEqual(recorded_safety_change({"domain": "SAFETY_STATUS", "from_status": "PASSED",
+                                                "to_status": "INCOMPLETE"}), "SAFETY_ANOMALY")
         self.assertEqual(recorded_safety_change({"domain": "JEYUK_FEED", "trigger": "FEED_REVISED"}), "INGREDIENT_RECORD_REVISED")
         self.assertEqual(recorded_safety_change({"domain": "PROCESS_ASSESSMENT", "to_status": "WARNING",
                                                 "reason_codes": ["AGITATOR_JAM_WARNING"]}), "PROCESS_ANOMALY")

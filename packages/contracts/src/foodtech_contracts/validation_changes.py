@@ -49,6 +49,8 @@ def recorded_safety_change(event: dict) -> str | None:
     domain, trigger = event.get("domain"), event.get("trigger")
     if domain == "SAFETY_STATUS" and event.get("to_status") in {"FAILED", "SUSPECTED", "UNDER_REVIEW"}:
         return "SAFETY_ANOMALY"
+    if domain == "SAFETY_STATUS" and event.get("from_status") == "PASSED" and event.get("to_status") == "INCOMPLETE":
+        return "SAFETY_ANOMALY"
     if domain == "SAFETY_STATUS" and event.get("kind") == "REVALIDATION":
         return "MANUAL_SAFETY_REVISED"
     if domain == "JEYUK_FEED" and trigger == "FEED_REVISED":
