@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TABLE = "foodtech-cooking-jobs-dev"
 
 
-async def scenario(store, partitions, *, reassess=False, realtime=False):
+async def scenario(store, partitions, *, reassess=False, realtime=False, resume=False):
     subject = "synthetic-combi-mock-" + uuid.uuid4().hex
     ids = [uuid.uuid4() for _ in range(4)]
     pk = f"SCOPE#USER#{subject}#COMBI_MEAL#{ids[0]}"
@@ -96,6 +96,28 @@ async def scenario(store, partitions, *, reassess=False, realtime=False):
                         raise RuntimeError("Mock health did not become available")
                     mock = RestMockClient(base, "test-client", "test-secret", str(cert), profile_id="mockprofile-120")
                     try:
+                        interrupted_count = None
+                        if resume:
+                            original_post = api.post
+                            async def interrupted_post(url, **kwargs):
+                                response = await original_post(url, **kwargs)
+                                if str(url).endswith("/source-live") and response.is_success:
+                                    raise RuntimeError("synthetic collector interruption after durable save")
+                                return response
+                            with patch.object(api, "post", side_effect=interrupted_post):
+                                try:
+                                    await import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"],
+                                                      "validation-csrf", publish_live=True)
+                                except RuntimeError as error:
+                                    if str(error) != "synthetic collector interruption after durable save":
+                                        raise
+                                else:
+                                    raise AssertionError("collector was not interrupted")
+                            saved = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}/source-live")
+                            saved.raise_for_status()
+                            interrupted_count = saved.json().get("count")
+                            if not isinstance(interrupted_count, int) or not 0 < interrupted_count < 15:
+                                raise AssertionError("durable partial collection was not found")
                         task = asyncio.create_task(import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"],
                                                                "validation-csrf", publish_live=not reassess))
                         observed_partial = False
@@ -172,11 +194,12 @@ async def scenario(store, partitions, *, reassess=False, realtime=False):
                         "prior_quality_restored": False, "final_hash_matches": True}
             return {"phase_counts": result["phase_counts"], "live_count": 15,
                     "realtime_partial_observed": observed_partial if realtime else None,
+                    "resumed_after_saved_count": interrupted_count,
                     "final_hash_matches": True, "safety_not_assumed": True}
 
 
-async def main(*, reassess=False, realtime=False):
-    if reassess and realtime:
+async def main(*, reassess=False, realtime=False, resume=False):
+    if (reassess and realtime) or (resume and not realtime):
         raise SystemExit("Choose realtime or legacy reassessment, not both")
     if os.getenv("AWS_PROFILE") != "foodtech" or os.getenv("FOODTECH_COOKING_TABLE") != TABLE:
         raise SystemExit("Use AWS_PROFILE=foodtech and the exact development cooking table")
@@ -189,7 +212,7 @@ async def main(*, reassess=False, realtime=False):
     store = DynamoCookingStore(TABLE)
     partitions = []
     try:
-        result = await scenario(store, partitions, reassess=reassess, realtime=realtime)
+        result = await scenario(store, partitions, reassess=reassess, realtime=realtime, resume=resume)
     finally:
         remove_and_verify(store.table, partitions)
     print(json.dumps({**result, "cleanup": "verified", "table": TABLE}))
@@ -199,5 +222,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--reassess", action="store_true")
     parser.add_argument("--realtime", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
-    asyncio.run(main(reassess=args.reassess, realtime=args.realtime))
+    asyncio.run(main(reassess=args.reassess, realtime=args.realtime, resume=args.resume))
