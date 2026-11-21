@@ -102,6 +102,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "COOKING_STARTED",
                     "actual_placed_at": placed_at.isoformat()})
+                history_before = cooking_store.history_revision(subject)
                 fixture_kind = "full" if full else "safety"
                 raws = csharp_samples(fixture_id, FIXTURE_DIR / f"jeyuk-{size}-{fixture_kind}-v1.json",
                                       placed_at.isoformat() if timeline else None) if safety else csharp_samples(fixture_id)
@@ -132,6 +133,8 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                         break
                 if len(processed) != len(raws):
                     raise AssertionError("not all Jeyuk samples reached the bound job")
+                if cooking_store.history_revision(subject) <= history_before:
+                    raise AssertionError("Worker did not advance customer history for changed process status")
                 final = (await client.get(path)).json()["job"]
                 if safety:
                     if ((processed[59]["auto_safety_status"], processed[59]["mixture_hold_seconds"]) !=
@@ -207,8 +210,11 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                       (final["status"], final["process_assessment_status"],
                        final["process_assessment"]["second"]) != ("FAILED", "FAILED", 30)):
                     raise AssertionError("Jeyuk warning or failure did not reach the bound job")
+                history_before_replay = cooking_store.history_revision(subject)
                 if worker.process(references[-1])["job_result"] != "REPLAYED":
                     raise AssertionError("replayed assessment changed the bound job")
+                if cooking_store.history_revision(subject) != history_before_replay:
+                    raise AssertionError("replayed assessment advanced customer history")
                 print(json.dumps({"processed": len(processed), "scenario": "SAFETY" if safety else "PROCESS", "size": size, "timeline": timeline, "full": full,
                                   "feed_safety": feed_safety, "job_status": final["status"],
                                   "auto_safety_status": final["auto_safety_status"],
