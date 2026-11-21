@@ -77,6 +77,38 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(feed["initial_temperature_c"], "4")
         self.assertNotIn("private reason", response.text)
 
+    async def test_jeyuk_feed_timing_is_precise_and_detects_inconsistent_records(self):
+        from copy import deepcopy
+        meta = self.store.items[(self.pk, "META")]
+        def feed(name, start, end, group=None):
+            return {"ingredient": name, "started_at": start, "completed_at": end,
+                    "addition_group_id": group, "provenance": "SYNTHETIC", "reason": "private"}
+        meta.update(menu="JEYUK", actual_placed_at="2026-01-01T00:00:05Z",
+                    actual_lifted_at="2026-01-01T00:02:00Z", jeyuk_addition_group_id="private-group",
+                    jeyuk_additions_simultaneous=True, jeyuk_feeds={
+                        "MEAT": feed("MEAT", "2026-01-01T00:00:00Z", "2026-01-01T00:00:05Z"),
+                        "VEGETABLE": feed("VEGETABLE", "2026-01-01T00:00:30.25Z", "2026-01-01T00:00:31Z", "private-group"),
+                        "SAUCE": feed("SAUCE", "2026-01-01T00:01:00.25Z", "2026-01-01T00:01:01Z", "private-group")})
+        path = f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence"
+        response = await self.client.get(path)
+        timing = response.json()["recorded"]["jeyuk_feed_timing"]
+        self.assertEqual(timing, {"status": "RECORDED", "basis": "MEAT_FEED_COMPLETED",
+            "vegetable_start_offset_us": 25250000, "sauce_start_offset_us": 55250000,
+            "start_separation_us": 30000000, "simultaneous": True})
+        self.assertNotIn("private-group", response.text)
+        self.assertNotIn("private", response.text)
+        original = deepcopy(meta)
+        for mutate in (lambda m: m["jeyuk_feeds"]["SAUCE"].update(addition_group_id="other"),
+                       lambda m: m["jeyuk_feeds"]["SAUCE"].update(started_at="2026-01-01T00:01:00.250001Z"),
+                       lambda m: m.update(actual_placed_at="2026-01-01T00:00:06Z"),
+                       lambda m: m["jeyuk_feeds"]["MEAT"].update(provenance="VERIFIED"),
+                       lambda m: m["jeyuk_feeds"]["VEGETABLE"].update(ingredient="SAUCE")):
+            meta.clear(); meta.update(deepcopy(original)); mutate(meta)
+            result = await self.client.get(path)
+            self.assertEqual(result.json()["recorded"]["jeyuk_feed_timing"]["status"], "INCONSISTENT")
+        meta.clear(); meta.update(deepcopy(original)); del meta["jeyuk_feeds"]["SAUCE"]
+        self.assertEqual((await self.client.get(path)).json()["recorded"]["jeyuk_feed_timing"]["status"], "NOT_RECORDED")
+
     async def test_reheat_history_links_rechecks_without_private_content(self):
         meta = self.store.items[(self.pk, "META")]
         for number in (1, 2):

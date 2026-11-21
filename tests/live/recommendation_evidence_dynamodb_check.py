@@ -61,13 +61,31 @@ async def main():
                 assert value["completeness"] == "INSUFFICIENT" and not value["recommendation_execution_available"]
                 assert "CORE_SERIES_MISSING_INVALID_OR_INCONSISTENT" in value["completeness_reasons"]
                 assert "never-export" not in response.text and subject not in response.text
+                group = "synthetic-group"
+                def feed(name, start, end, group_id=None):
+                    return {"ingredient": name, "started_at": f"2026-11-14T00:00:{start:02d}Z",
+                            "completed_at": f"2026-11-14T00:00:{end:02d}Z", "addition_group_id": group_id,
+                            "provenance": "SYNTHETIC"}
+                table.put_item(Item={**records[0], "menu": "JEYUK", "jeyuk_feed_safety_aligned": True,
+                    "actual_placed_at": "2026-11-14T00:00:05Z", "actual_lifted_at": "2026-11-14T00:02:00Z",
+                    "jeyuk_addition_group_id": group, "jeyuk_additions_simultaneous": True,
+                    "jeyuk_feeds": {"MEAT": feed("MEAT", 4, 5),
+                                    "VEGETABLE": feed("VEGETABLE", 15, 16, group),
+                                    "SAUCE": feed("SAUCE", 45, 46, group)}},
+                    ConditionExpression="attribute_exists(pk)")
+                jeyuk = await client.get(path)
+                jeyuk.raise_for_status()
+                timing = jeyuk.json()["recorded"]["jeyuk_feed_timing"]
+                assert timing["status"] == "RECORDED" and timing["vegetable_start_offset_us"] == 10_000_000
+                assert timing["sauce_start_offset_us"] == 40_000_000 and timing["simultaneous"] is True
+                assert group not in jeyuk.text
                 with patch.object(cooking, "_session", side_effect=foreign):
                     assert (await client.get(path)).status_code == 404
     finally:
         for key in reversed(created): table.delete_item(Key=key)
         if any(table.get_item(Key=key, ConsistentRead=True).get("Item") for key in created):
             raise RuntimeError("Test records remain")
-    print(json.dumps({"owned_read": "PASS", "foreign_read": "404", "cleanup_records": len(created)}))
+    print(json.dumps({"owned_read": "PASS", "jeyuk_feed_timing": "PASS", "foreign_read": "404", "cleanup_records": len(created)}))
 
 
 if __name__ == "__main__":
