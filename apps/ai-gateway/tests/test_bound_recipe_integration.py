@@ -127,18 +127,20 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
     def test_source_revision_change_immediately_before_settlement_is_rejected(self):
         original_finish = self.registry.finish
         def racing_finish(*args, **kwargs):
-            source = self.source.resource.tables['foodtech-data-flow-dev']
-            source.items[('JEYUK#batch-prior', 'SOURCE#REVISION')]['revision'] += 1
+            if kwargs['succeeded']:
+                source = self.source.resource.tables['foodtech-data-flow-dev']
+                source.items[('JEYUK#batch-prior', 'SOURCE#REVISION')]['revision'] += 1
             return original_finish(*args, **kwargs)
         self.registry.finish = racing_finish
         class Model:
             async def structured_chat(self, *_):
                 return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
         result = self.invoke(Model())
-        self.assertEqual((result.state, result.error_code), ('FAILED', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED'))
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'RECIPE_SETTLEMENT_CONFLICT'))
         self.assertIsNone(result.response_text)
-        self.assertIsNone(self.registry.execution_result('exec'))
-        self.assertEqual(self.registry.execution_state('exec'), 'RESERVED')
+        self.assertEqual(self.registry.execution_result('exec')['error_code'], 'RECIPE_SETTLEMENT_CONFLICT')
+        self.assertEqual(self.registry.execution_state('exec'), 'FAILED')
+        self.assertEqual(self.registry.budget('tenant-a', 'ollama').calls_remaining, 0)
 
 
 if __name__ == '__main__':

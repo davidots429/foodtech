@@ -237,14 +237,16 @@ def main():
         racing_execution, racing_guard = start_execution()
         original_finish = registry.finish
         def race_before_settlement(*args, **kwargs):
-            sources.update_item(Key={'pk': f'JEYUK#{source_ids[1]}', 'sk': 'SOURCE#REVISION'},
-                                UpdateExpression='ADD revision :one', ExpressionAttributeValues={':one': 1})
+            if kwargs['succeeded']:
+                sources.update_item(Key={'pk': f'JEYUK#{source_ids[1]}', 'sk': 'SOURCE#REVISION'},
+                                    UpdateExpression='ADD revision :one', ExpressionAttributeValues={':one': 1})
             return original_finish(*args, **kwargs)
         registry.finish = race_before_settlement
         outcome = invoke(GatewayService(registry, recipe_source_guard=racing_guard), racing_execution)
         if (outcome.state, outcome.error_code, outcome.response_text) != \
-                ('FAILED', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED', None) or \
-                registry.execution_result(racing_execution.execution_id) is not None:
+                ('FAILED', 'RECIPE_SETTLEMENT_CONFLICT', None) or \
+                registry.execution_result(racing_execution.execution_id)['error_code'] != 'RECIPE_SETTLEMENT_CONFLICT' or \
+                registry.execution_state(racing_execution.execution_id) != 'FAILED':
             raise AssertionError('source race allowed a gateway result')
         print('synthetic source, timeline and job version recheck verified')
     finally:

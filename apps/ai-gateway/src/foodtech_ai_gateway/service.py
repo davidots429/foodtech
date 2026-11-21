@@ -180,6 +180,12 @@ class GatewayService:
             if result["status"] == "NEEDS_REVIEW":
                 response = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
                 if not await finish_recipe(succeeded=True, response_text=response):
+                    # The candidate cannot be published after a settlement conflict.
+                    # A second conditional transaction may close the same execution
+                    # as failed; it never refunds the consumed model call.
+                    conflict_code = "RECIPE_SETTLEMENT_CONFLICT"
+                    if await finish_recipe(succeeded=False, error_code=conflict_code):
+                        return ExecutionOutcome(execution_id, "FAILED", error_code=conflict_code)
                     return ExecutionOutcome(execution_id, "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
                 return ExecutionOutcome(execution_id, "SUCCEEDED", response_text=response)
             code = result["error_code"]
