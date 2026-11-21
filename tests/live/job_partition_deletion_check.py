@@ -13,6 +13,7 @@ from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinato
 from foodtech_business_api.job_deletion_residual import JobResidualScan, JobFinalResidualScan
 from foodtech_business_api.job_binding_residual import JobBindingResidualScan, JobBindingFinalResidualScan
 from foodtech_business_api.job_meta_deletion import JobMetaDeletion
+from foodtech_business_api.job_source_snapshot import JobSourceSnapshot
 from boto3.dynamodb.conditions import Key
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_JOB_DELETION_LIVE') != '1':
@@ -120,6 +121,8 @@ try:
  assert not src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')
  snapshot=store.load_checkpoint(cipher=cipher,subject=u,request_id=q,domain='JOB_META_000000000000')
  assert b'source_binding' in snapshot['checkpoint']
+ inspector=JobSourceSnapshot(inventory=inventory)
+ assert inspector.inspect(subject=u,request_id=q,index=0)=={'state':'SOURCE_OWNERSHIP_REQUIRED'}
  assert src.get_item(Key={'pk':other,'sk':'EVENT#1'},ConsistentRead=True).get('Item')
  print('locked job record deletion, inactive request rejection and other partition isolation verified')
 finally:
