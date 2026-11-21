@@ -124,6 +124,28 @@ class CaptureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.capture.ensure_ready(**self.scope)
 
+    def test_page_save_response_loss_reuses_existing_page(self):
+        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['date#a'], 'next_cursor': None}
+        original = self.progress.save_checkpoint
+        failed = False
+        def lose_response(**kwargs):
+            nonlocal failed
+            result = original(**kwargs)
+            if kwargs['domain'].startswith('TIER_INDEX_PAGE_') and not failed:
+                failed = True
+                raise RuntimeError('response lost')
+            return result
+        self.progress.save_checkpoint = lose_response
+        with self.assertRaises(RuntimeError):
+            self.capture.capture_page(**self.scope, limit=1)
+        with self.assertRaises(ValueError):
+            self.capture.ensure_ready(**self.scope)
+        result = self.capture.capture_page(**self.scope, limit=1)
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['captured_count'], 1)
+        self.assertEqual(self.tier.deletion_index_candidates.call_count, 1)
+        self.capture.ensure_ready(**self.scope)
+
     def test_many_pages_have_bounded_independent_checkpoints(self):
         pages = 100
         def next_page(subject, request, limit, cursor):
