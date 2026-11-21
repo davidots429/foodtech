@@ -2,16 +2,23 @@ import time
 import unittest
 from types import SimpleNamespace
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from foodtech_business_api.recipe_scope import RecipeScopeDenied, resolve_recipe_scope
+from fastapi import HTTPException
+from starlette.requests import Request
+
+from foodtech_business_api import auth
+from foodtech_business_api.auth_store import MemoryStore, Session
+
+from foodtech_business_api.recipe_scope import RecipeScopeDenied, authenticated_recipe_scope, resolve_recipe_scope
 
 
 class RecipeScopeTests(unittest.TestCase):
     def setUp(self):
         self.subject = 'customer-1'
-        self.session = SimpleNamespace(surface='customer', subject=self.subject, expires=int(time.time()) + 300)
+        self.session = SimpleNamespace(surface='customer', subject=self.subject, expires=int(time.time()) + 300,
+                                       epoch=0, csrf='synthetic-csrf')
         self.execution_id, self.job_id, self.prior_id = (str(uuid4()) for _ in range(3))
         self.execution = SimpleNamespace(execution_id=self.execution_id, tenant_id=self.subject,
             feature='RECIPE_CORRECTION', job_id=self.job_id, prior_job_id=self.prior_id,
@@ -75,6 +82,50 @@ class RecipeScopeTests(unittest.TestCase):
         with patch('foodtech_business_api.recipe_scope.time.time', side_effect=[100, 200]):
             with self.assertRaises(RecipeScopeDenied):
                 self.resolve()
+
+
+class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        RecipeScopeTests.setUp(self)
+
+    async def test_session_is_rechecked_after_store_reads(self):
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
+                   side_effect=[self.session, self.session]) as check:
+            scope = await authenticated_recipe_scope(object(), self.execution_id, lambda _: self.execution, self.jobs.get)
+        self.assertEqual(scope.owner, self.subject)
+        self.assertEqual(check.await_count, 2)
+
+    async def test_changed_or_revoked_session_prevents_returning_scope(self):
+        changed = SimpleNamespace(**{**vars(self.session), 'epoch': 1})
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
+                   side_effect=[self.session, changed]):
+            with self.assertRaises(RecipeScopeDenied):
+                await authenticated_recipe_scope(object(), self.execution_id, lambda _: self.execution, self.jobs.get)
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
+                   side_effect=[self.session, PermissionError('revoked')]):
+            with self.assertRaises(PermissionError):
+                await authenticated_recipe_scope(object(), self.execution_id, lambda _: self.execution, self.jobs.get)
+
+    async def test_real_session_boundary_rejects_suspension_during_job_reads(self):
+        store = MemoryStore()
+        store.save_session('synthetic-session', Session('customer', self.subject, None, 'csrf',
+                                                       int(time.time()) + 300, 0))
+        request = Request({'type': 'http', 'method': 'GET', 'path': '/',
+                           'headers': [(b'cookie', f'{auth.SESSION_COOKIE}=synthetic-session'.encode())]})
+        calls = 0
+        def read(key):
+            nonlocal calls
+            calls += 1
+            if calls == 4:
+                store.suspend_user(self.subject)
+            return self.jobs.get(key)
+        with patch.object(auth, 'get_store', return_value=store), \
+             patch.object(auth.Settings, 'from_env', return_value=SimpleNamespace()), \
+             patch.object(auth, '_cognito_access', return_value=True):
+            with self.assertRaises(HTTPException) as error:
+                await authenticated_recipe_scope(request, self.execution_id, lambda _: self.execution, read)
+        self.assertEqual(error.exception.status_code, 401)
+        self.assertIsNone(store.read_session('synthetic-session'))
 
 
 if __name__ == '__main__':

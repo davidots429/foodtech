@@ -5,11 +5,14 @@ call. Callers must supply a freshly authenticated customer session and trusted,
 strongly consistent execution and job readers. A later broker must enforce the
 returned bounds in AWS, independently of the gateway and request body.
 """
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from uuid import UUID
+
+from .auth import _session
 
 
 class RecipeScopeDenied(Exception):
@@ -79,3 +82,17 @@ def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
     if snapshot() != first or expires <= time.time():
         raise RecipeScopeDenied('recipe scope changed')
     return first[0]
+
+
+async def authenticated_recipe_scope(request, execution_id, execution_reader, job_reader):
+    """Recheck the customer session around scope discovery; do not grant AWS access.
+
+    Readers must be trusted and strongly consistent. The caller must not expose
+    this helper as a credential issuer without an independent broker boundary.
+    """
+    before = await _session(request, 'customer')
+    scope = await asyncio.to_thread(resolve_recipe_scope, before, execution_id, execution_reader, job_reader)
+    after = await _session(request, 'customer')
+    if (before.subject, before.epoch, before.csrf) != (after.subject, after.epoch, after.csrf):
+        raise RecipeScopeDenied('customer session changed')
+    return scope
