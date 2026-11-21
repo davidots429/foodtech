@@ -13,6 +13,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -118,6 +119,25 @@ async def scenario(store, partitions, *, reassess=False, realtime=False, resume=
                             interrupted_count = saved.json().get("count")
                             if not isinstance(interrupted_count, int) or not 0 < interrupted_count < 15:
                                 raise AssertionError("durable partial collection was not found")
+                            original_poll = mock.poll
+                            def changed_prefix(*args, **kwargs):
+                                page = original_poll(*args, **kwargs)
+                                if page.records and args[0] == 0:
+                                    return replace(page, records=(page.records[0] + " ", *page.records[1:]))
+                                return page
+                            with patch.object(mock, "poll", side_effect=changed_prefix):
+                                try:
+                                    await import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"],
+                                                      "validation-csrf", publish_live=True)
+                                except ValueError as error:
+                                    if "differs from the saved live snapshot" not in str(error):
+                                        raise
+                                else:
+                                    raise AssertionError("changed previously saved source was accepted")
+                            unchanged = await api.get(f"/api/customer/combi-meals/{meal['meal_batch_id']}/source-live")
+                            unchanged.raise_for_status()
+                            if unchanged.json().get("count") != interrupted_count:
+                                raise AssertionError("rejected source changed the saved cursor")
                         task = asyncio.create_task(import_meal(mock, api, meal["meal_batch_id"], fixture["deviceId"],
                                                                "validation-csrf", publish_live=not reassess))
                         observed_partial = False
@@ -195,6 +215,7 @@ async def scenario(store, partitions, *, reassess=False, realtime=False, resume=
             return {"phase_counts": result["phase_counts"], "live_count": 15,
                     "realtime_partial_observed": observed_partial if realtime else None,
                     "resumed_after_saved_count": interrupted_count,
+                    "changed_prefix_rejected": True if resume else None,
                     "final_hash_matches": True, "safety_not_assumed": True}
 
 
