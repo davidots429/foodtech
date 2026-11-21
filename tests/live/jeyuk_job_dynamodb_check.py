@@ -18,6 +18,7 @@ from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.main import app
 from foodtech_collection_adapter.jeyuk_aws import DynamoJeyukIngestor
+from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 
 from jeyuk_dynamodb_check import csharp_samples
@@ -173,6 +174,22 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                     if evidence_response.status_code != 200:
                         raise AssertionError(f"source evidence read failed: {evidence_response.text}")
                     evidence = evidence_response.json()
+                    if evidence["checks"]["source_completion_record_matched"] or evidence["source_revision"] is not None:
+                        raise AssertionError("missing collection receipt must not authorize a source revision")
+                    tracker = JeyukCompletionTracker(0)
+                    for raw in raws:
+                        tracker.record(raw)
+                    receipt = tracker.finish(cursor=len(raws), complete=True, explicit=True)
+                    if not receipt:
+                        raise AssertionError("could not construct synthetic completion receipt")
+                    data_table.put_item(Item={"pk": stream_pk, "sk": "COLLECTION#RECEIPT#live-test", **receipt},
+                                        ConditionExpression="attribute_not_exists(pk)")
+                    evidence_response = await client.get(path + "/validation-evidence")
+                    evidence_response.raise_for_status()
+                    evidence = evidence_response.json()
+                    if not evidence["checks"]["source_completion_record_matched"] or \
+                            not evidence["checks"]["source_revision_stable"] or evidence["source_revision"] != len(raws):
+                        raise AssertionError("completed source revision was not confirmed")
                     for check in ("source_records_contiguous", "source_records_match_binding",
                                   "source_derived_results_match_raw", "source_safety_samples_valid"):
                         if not evidence["checks"][check]:
