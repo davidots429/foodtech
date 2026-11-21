@@ -70,6 +70,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
     try:
         with patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false",
                                      "FOODTECH_COOKING_TABLE": COOKING_TABLE,
+                                     "FOODTECH_AUTH_TABLE": "foodtech-auth-sessions-dev",
                                      "FOODTECH_DATA_TABLE": DATA_TABLE}), \
              patch.object(cooking, "_session", side_effect=fake_session), \
              patch.object(cooking, "get_cooking_store", return_value=cooking_store):
