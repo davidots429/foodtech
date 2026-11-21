@@ -99,3 +99,25 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()['cognitoTokenRevoked'])
         self.assertNotIn('session-id', self.store.sessions)
+
+    async def test_suspension_during_refresh_rejects_and_revokes_rotated_token(self):
+        def refresh(*_):
+            self.store.suspend_user('subject')
+            return {'IdToken': 'id', 'AccessToken': 'access', 'RefreshToken': 'new-refresh'}
+        claims = [{'sub': 'subject'}, {'sub': 'subject', 'exp': time.time() + 400}]
+        with patch.object(auth, '_cognito_refresh', side_effect=refresh), \
+             patch.object(auth, '_claims', side_effect=claims), patch.object(auth, '_cognito_revoke') as revoke:
+            response = await self.client.post('/api/customer/session/refresh', headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn('session-id', self.store.sessions)
+        revoke.assert_called_once_with('customer', 'new-refresh')
+
+    async def test_admin_group_removal_rejects_and_revokes_rotated_token(self):
+        self.store.sessions['session-id'].surface = 'admin'
+        tokens = {'IdToken': 'id', 'AccessToken': 'access', 'RefreshToken': 'new-refresh'}
+        claims = [{'sub': 'subject'}, {'sub': 'subject', 'exp': time.time() + 400, 'cognito:groups': []}]
+        with patch.object(auth, '_cognito_refresh', return_value=tokens), \
+             patch.object(auth, '_claims', side_effect=claims), patch.object(auth, '_cognito_revoke') as revoke:
+            response = await self.client.post('/api/admin/session/refresh', headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(response.status_code, 401)
+        revoke.assert_called_once_with('admin', 'new-refresh')
