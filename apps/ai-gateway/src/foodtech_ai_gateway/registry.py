@@ -170,6 +170,8 @@ class DynamoRegistry:
                 quote.get("job_id") != execution.job_id or quote.get("job_version") != execution.job_version or \
                 quote.get("comparison_id") != execution.comparison_id or \
                 quote.get("prior_job_id") != execution.prior_job_id or quote.get("prior_job_version") != execution.prior_job_version or \
+                quote.get("jeyuk_source_revision") != execution.jeyuk_source_revision or \
+                quote.get("prior_source_revision") != execution.prior_source_revision or \
                 not execution.parent_execution_id or execution.parent_execution_id == execution.execution_id or \
                 consent.model_id != execution.model_id or quote.get("model_id") != execution.model_id or \
                 execution.feature != Feature.RECIPE_CORRECTION or execution.downgrade_consent_id != consent.consent_id or \
@@ -243,12 +245,15 @@ class DynamoRegistry:
         item = self._get("EXEC", execution_id)
         if not item:
             return None
-        fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version"} else item[name]
+        fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"} else item[name]
                   for name in Execution.__dataclass_fields__}
         if fields["job_version"] is not None:
             fields["job_version"] = int(fields["job_version"])
         if fields["prior_job_version"] is not None:
             fields["prior_job_version"] = int(fields["prior_job_version"])
+        for name in ("jeyuk_source_revision", "prior_source_revision"):
+            if fields[name] is not None:
+                fields[name] = int(fields[name])
         fields["feature"] = Feature(fields["feature"])
         return Execution(**fields)
 
