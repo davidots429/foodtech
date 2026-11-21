@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import boto3
 import httpx
+from fastapi import HTTPException
 
 from foodtech_business_api import cooking
 from foodtech_business_api.assessment_aggregate import _hash
@@ -200,6 +201,34 @@ async def scenario(store, partitions, auth, auth_keys):
             except RefreshNotAuthorized:
                 pass
             assert store.table.get_item(Key={'pk': meal_pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True).get('Item')
+            auth.update_item(Key=auth_key, UpdateExpression='REMOVE deletion_lock_request')
+            save_aggregate = store.save_meal_aggregate
+            def lock_before_save(*args):
+                auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :lock',
+                                 ExpressionAttributeValues={':lock': 'synthetic-lock'})
+                return save_aggregate(*args)
+            # Account becomes locked after the worker's initial consistent read.
+            with patch.object(store, 'save_meal_aggregate', side_effect=lock_before_save):
+                try:
+                    await asyncio.to_thread(process_pending_marker, store, auth, marker)
+                    raise AssertionError('concurrent lock must reject aggregate write')
+                except HTTPException as exc:
+                    assert exc.status_code == 409
+            assert store.table.get_item(Key=marker_key, ConsistentRead=True).get('Item')
+            auth.update_item(Key=auth_key, UpdateExpression='REMOVE deletion_lock_request')
+            acknowledge_dirty = store.acknowledge_meal_aggregate_dirty
+            def lock_before_ack(*args):
+                auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :lock',
+                                 ExpressionAttributeValues={':lock': 'synthetic-lock'})
+                return acknowledge_dirty(*args)
+            # A lock after snapshot writes must also prevent acknowledging pending work.
+            with patch.object(store, 'acknowledge_meal_aggregate_dirty', side_effect=lock_before_ack):
+                try:
+                    await asyncio.to_thread(process_pending_marker, store, auth, marker)
+                    raise AssertionError('concurrent lock must reject marker acknowledgement')
+                except HTTPException as exc:
+                    assert exc.status_code == 409
+            assert store.table.get_item(Key=marker_key, ConsistentRead=True).get('Item')
             auth.update_item(Key=auth_key, UpdateExpression='REMOVE deletion_lock_request')
             retry_pending = await asyncio.to_thread(process_pending_marker, store, auth, marker)
             assert retry_pending == {'status': 'REFRESHED', 'refreshed_group_count': 2, 'meal_version': 4}
