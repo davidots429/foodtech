@@ -103,3 +103,5 @@ OPC UA Binary 수집 명령의 `--instance mockprofile-203-b-001` 또는 `mockpr
 제육볶음 원표본 최초 저장과 `SOURCE#REVISION` 증가는 DynamoDB 트랜잭션으로 함께 처리한다. 동일 원본 재전송은 버전을 올리지 않고 같은 초의 다른 내용은 거부한다. 원천 변경 검증은 모든 작성자가 이 계약을 사용하는 경우에만 유효하다. 수집 실행 역할에는 데이터 테이블의 `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:GetItem`과 큐 전송 권한이 필요하다.
 
 OPC UA Binary 수집기는 `--instance mockprofile-213-{a,b,c}-001`과 `mockprofile-223-{a,b,c}-001`도 지원한다. 각 장비 계열의 namespace·인스턴스·원천 Schema를 확인하고 저장 실패 시 합성 이력을 다시 읽는다. 볶음 온도는 `POT_TEMPERATURE`로, 콤비오븐 기후 설정·습도 출처·팬은 각 의미를 유지해 표준화한다. 실제 장비 호환성이나 AWS 실저장은 별도 검증이다.
+
+2026-11-21 개발 DynamoDB·SQS에서 C# OPC UA Binary Mock의 `mockprofile-213`·`mockprofile-223` 각 vendor-a/b/c를 구독하고 수집·순서 유지·표준화·격리 및 합성 시험 데이터 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/opcua_binary_equipment_aws_check.py`. 실제 제조사 호환성 검증은 프로젝트 범위가 아니다.
