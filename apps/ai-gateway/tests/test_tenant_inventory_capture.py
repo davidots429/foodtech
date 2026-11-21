@@ -89,6 +89,16 @@ class InventoryCaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'duplicate AI inventory partition'):
             next(self.capture.partitions(**self.scope))
 
+    def test_completed_chain_with_cursor_cycle_exposes_no_partitions(self):
+        a, b = {'pk': 'a', 'sk': 's'}, {'pk': 'b', 'sk': 's'}
+        pages = [InventoryPage(('EXEC#first',), a, 1), InventoryPage((), b, 1),
+                 InventoryPage((), a, 1), InventoryPage((), None, 1)]
+        with patch('foodtech_ai_gateway.tenant_inventory_capture.reconcile_reserved_page', side_effect=pages):
+            for _ in pages:
+                self.capture.capture_page(**self.scope, limit=1)
+        with self.assertRaisesRegex(ValueError, 'repeated AI inventory cursor'):
+            next(self.capture.partitions(**self.scope))
+
     def test_rejects_other_source_and_nonadvancing_scan(self):
         self.cipher.source_table_arn = 'other'
         with self.assertRaises(ValueError):
