@@ -11,6 +11,7 @@ from foodtech_business_api.meal_aggregate_deletion_inventory import MealAggregat
 from foodtech_business_api.meal_aggregate_deletion_residual import MealAggregateResidualScan
 from foodtech_business_api.meal_aggregate_deletion_worker import MealAggregateDeletionWorker
 from foodtech_business_api.meal_aggregate_group_deletion import clean_one_meal_aggregate_group
+from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 
 
 def main():
@@ -67,6 +68,32 @@ def main():
             pass
         else:
             raise AssertionError('inactive deletion request accepted')
+        registry.update_item(Key=reg_key, UpdateExpression='SET #s = :active',
+                             ExpressionAttributeNames={'#s': 'status'}, ExpressionAttributeValues={':active': 'DELETING'})
+        original_transact = store.client.transact_write_items
+        deletion_calls = []
+        def pause_after_first(*args, **kwargs):
+            result = original_transact(*args, **kwargs)
+            if any('Delete' in item and item['Delete']['TableName'] == source.name
+                   for item in kwargs.get('TransactItems', [])):
+                deletion_calls.append(1)
+                if len(deletion_calls) == 1:
+                    registry.update_item(Key=reg_key, UpdateExpression='SET #s = :paused',
+                        ExpressionAttributeNames={'#s': 'status'}, ExpressionAttributeValues={':paused': 'PAUSED'})
+            return result
+        store.client.transact_write_items = pause_after_first
+        try:
+            worker.delete_batch(subject=subject, request_id=request, start=0, count=2)
+        except ProfileDeletionConflict:
+            pass
+        else:
+            raise AssertionError('batch continued after deletion request paused')
+        finally:
+            store.client.transact_write_items = original_transact
+        remaining = [source.get_item(Key={'pk': group_pk, 'sk': f'RESULT#{identifier}'},
+                                     ConsistentRead=True).get('Item') for identifier in (first, second)]
+        if len(deletion_calls) != 1 or sum(item is not None for item in remaining) != 1:
+            raise AssertionError('inactive deletion request did not stop the batch')
         registry.update_item(Key=reg_key, UpdateExpression='SET #s = :active',
                              ExpressionAttributeNames={'#s': 'status'}, ExpressionAttributeValues={':active': 'DELETING'})
         assert worker.delete_batch(subject=subject, request_id=request, start=0, count=2) == {

@@ -55,6 +55,17 @@ class MealAggregateCoordinatorTests(unittest.TestCase):
             self.service.step(**self.scope, limit=2)
         self.assertEqual(json.loads(self.store.items[key]['checkpoint'])['index'], 2)
 
+    def test_interrupted_batch_keeps_checkpoint_for_retry(self):
+        self.service._writer_quiescence_proven = Mock(return_value=True)
+        key = (self.subject, self.request, 'MEAL_AGGREGATE_COORDINATOR')
+        self.store.items[key] = {'version': 1, 'state': 'IN_PROGRESS',
+            'checkpoint': json.dumps({'schema': 1, 'phase': 'DELETE', 'index': 0, 'total': 3}).encode()}
+        self.worker.delete_batch.side_effect = RuntimeError('lock changed')
+        with self.assertRaises(RuntimeError):
+            self.service.step(**self.scope, limit=3)
+        self.assertEqual(self.store.items[key]['version'], 1)
+        self.assertEqual(json.loads(self.store.items[key]['checkpoint'])['index'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

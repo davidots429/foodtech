@@ -75,6 +75,22 @@ class MealAggregateDeletionTests(unittest.TestCase):
             self.worker.delete_batch(**self.scope, start=0, count=3)
         self.progress.client.transact_write_items.assert_not_called()
 
+    def test_batch_stops_when_deletion_request_changes_midway(self):
+        rows = [{**self.row, 'sk': 'RESULT#' + f'{index:064x}', 'result_id': f'{index:064x}'}
+                for index in (1, 2, 3)]
+        self.source.scan.return_value = {'Items': rows, 'ScannedCount': 3}
+        self.inventory.capture_page(**self.scope, limit=20)
+        conflict = ClientError({'Error': {'Code': 'TransactionCanceledException'},
+            'CancellationReasons': [{'Code': 'None'}, {'Code': 'ConditionalCheckFailed'}]}, 'TransactWriteItems')
+        self.progress.client.transact_write_items.side_effect = [None, conflict]
+        with self.assertRaises(ProfileDeletionConflict):
+            self.worker.delete_batch(**self.scope, start=0, count=3)
+        self.assertEqual(self.progress.client.transact_write_items.call_count, 2)
+        for call in self.progress.client.transact_write_items.call_args_list:
+            checks = call.kwargs['TransactItems']
+            self.assertEqual(checks[0]['ConditionCheck']['ExpressionAttributeValues'][':request'], {'S': self.request})
+            self.assertEqual(checks[1]['ConditionCheck']['ExpressionAttributeValues'][':active'], {'S': 'DELETING'})
+
     def test_group_index_remains_until_result_partition_is_empty(self):
         index = {'pk': f'SCOPE#USER#{self.subject}#MEAL_AGGREGATE_GROUPS',
                  'sk': f'GROUP#{self.group}', 'group_id': self.group}
