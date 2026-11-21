@@ -22,6 +22,7 @@ class VaultSnapshot:
     vault_revision: int
     capsule_locator: str = field(repr=False)
     capsule_revision: int
+    auth_epoch: int
 
 
 class GuardedDeletion:
@@ -55,6 +56,8 @@ class GuardedDeletion:
                 raise ValueError
             if type(snapshot.vault_revision) is not int or not 1 <= snapshot.vault_revision < 2**63 - 1:
                 raise ValueError
+            if type(snapshot.auth_epoch) is not int or not 0 <= snapshot.auth_epoch < 2**63 - 1:
+                raise ValueError
             when = datetime.fromisoformat(requested_at.replace("Z", "+00:00"))
             if when.tzinfo is None or when.utcoffset() != timezone.utc.utcoffset(when):
                 raise ValueError
@@ -75,9 +78,12 @@ class GuardedDeletion:
         self.client.transact_write_items(ClientRequestToken=request_id, TransactItems=[
             {"Update": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{subject}"}),
                         "UpdateExpression": "SET suspended = :yes, deletion_lock_request = :request ADD #epoch :one",
-                        "ConditionExpression": "attribute_not_exists(deletion_lock_request)",
+                        "ConditionExpression": "attribute_not_exists(deletion_lock_request) AND vault_id = :vault "
+                                               "AND #epoch = :expected_epoch AND (attribute_not_exists(suspended) OR suspended = :no)",
                         "ExpressionAttributeNames": {"#epoch": "epoch"},
-                        "ExpressionAttributeValues": self._item({":yes": True, ":request": request_id, ":one": 1})}},
+                        "ExpressionAttributeValues": self._item({":yes": True, ":no": False, ":request": request_id, ":one": 1,
+                                                                   ":vault": snapshot.vault_id,
+                                                                   ":expected_epoch": snapshot.auth_epoch})}},
             {"Update": {"TableName": self.vault_table, "Key": self._item({"pk": snapshot.vault_id, "sk": "META"}),
                         "UpdateExpression": "SET #state = :locked, #revision = :next, deletion_request_id = :request",
                         "ConditionExpression": "#state = :active AND #revision = :expected AND capsule_locator = :locator "

@@ -28,7 +28,7 @@ class Store:
 class GuardedDeletionRegistrationTests(unittest.TestCase):
     def setUp(self):
         self.subject, self.request_id = str(uuid4()), str(uuid4())
-        self.snapshot = VaultSnapshot(self.subject, str(uuid4()), 4, "A" * 43, 8)
+        self.snapshot = VaultSnapshot(self.subject, str(uuid4()), 4, "A" * 43, 8, 0)
         self.internal_id = bytearray(b"private-internal-id")
         self.cipher, self.store = Cipher(), Store()
         self.resolved = []

@@ -22,7 +22,7 @@ class GuardedDeletionTests(unittest.TestCase):
                                      capsule_table="capsule", approved_purposes=frozenset({"BILLING"}),
                                      client=self.client)
         self.subject, self.request_id = str(uuid4()), str(uuid4())
-        self.snapshot = VaultSnapshot(self.subject, str(uuid4()), 4, "A" * 43, 8)
+        self.snapshot = VaultSnapshot(self.subject, str(uuid4()), 4, "A" * 43, 8, 0)
         self.arguments = {"subject": self.subject, "request_id": self.request_id, "snapshot": self.snapshot,
                           "encrypted_user_id": b"encrypted-id", "encrypted_capsule_locator": b"encrypted-locator",
                           "requested_at": "2026-11-21T00:00:00Z", "policy_version": "v1"}
