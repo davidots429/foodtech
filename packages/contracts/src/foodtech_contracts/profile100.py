@@ -235,6 +235,8 @@ def decode_record(raw: str | bytes) -> dict:
         record = json.loads(raw, parse_float=Decimal, object_pairs_hook=_unique_pairs)
     if not isinstance(record, dict):
         raise ValueError("record must be an object")
+    if any(key in record and not isinstance(record[key], str) for key in ("deviceId", "device_id", "DeviceId")):
+        raise ValueError("device identifier must be a string")
     if not is_xml and any(isinstance(record.get(key), str) and
                           record[key] in {"mockprofile-101-a-001", "mockprofile-101-b-001", "mockprofile-101-c-001",
                                           "mockprofile-301-a-001", "mockprofile-301-b-001", "mockprofile-301-c-001"}

@@ -32,6 +32,10 @@ class EquipmentBinaryTests(unittest.TestCase):
                     else: bad["Extension"]["EquipmentType"] = "OTHER"
                     with self.assertRaises((ValidationError, ValueError)):
                         decode_record(json.dumps(bad))
+                    invalid_identifier = copy.deepcopy(fixture["records"][0])
+                    invalid_identifier[{"a": "deviceId", "b": "device_id", "c": "DeviceId"}[vendor]] = []
+                    with self.assertRaises(ValueError):
+                        decode_record(json.dumps(invalid_identifier))
 
 
 if __name__ == "__main__": unittest.main()
