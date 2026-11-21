@@ -179,7 +179,11 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             "heating_setpoint_celsius": "200", "target_rpm": "30"})
         settings = {"heating_setpoint_celsius": {"status": "STABLE", "value": "200"},
                     "target_rpm": {"status": "STABLE", "value": "30"}}
-        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
+        receipt_ref = {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test",
+                       "record_count": 61, "ordered_raw_sha256": "a" * 64}
+        self.store.validation_sources[("foodtech-data-flow-dev", receipt_ref["pk"])] = {
+            "revision": 61, "receipt": receipt_ref.copy()}
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "foodtech-data-flow-dev"}), \
              patch.object(cooking, "_read_jeyuk_source_records",
                           return_value=([], [])) as source_read, \
              patch("foodtech_business_api.jeyuk_source_evidence.audit_source_records",
@@ -187,17 +191,24 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
              patch("foodtech_business_api.source_revision.read_source_revision", return_value=61) as revision, \
              patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion",
                    return_value={"status": "MATCHED_AT_READ", "source_revision": 61,
-                                 "receipt_reference": {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test"},
+                                 "receipt_reference": receipt_ref,
                                  "settings": settings}) as receipt:
             linked = (await self.client.get(path + "/validation-evidence")).json()
-            source_read.assert_called_once_with("test-source", "jeyuk-evidence-a", 61)
+            source_read.assert_called_once_with("foodtech-data-flow-dev", "jeyuk-evidence-a", 61)
+            saved = await self.client.post(path + "/validation-evidence-snapshots", headers=CSRF,
+                                           json={"expected_version": linked["job_version"]})
+            self.assertEqual(saved.status_code, 201, saved.text)
+            self.assertEqual(saved.json()["condition_profile_reference"], linked["condition_profile_reference"])
+            self.assertFalse(saved.json()["activation_allowed"])
+            self.assertEqual((await self.client.get(path + "/validation-evidence-snapshots")).json()[0]["snapshot_id"],
+                             saved.json()["snapshot_id"])
             receipt.return_value = {"status": "NOT_RECORDED"}
             missing_receipt = (await self.client.get(path + "/validation-evidence")).json()
             self.assertEqual(missing_receipt["status"], "INCOMPLETE")
             self.assertIn("source_completion_record_matched", missing_receipt["missing_checks"])
             self.assertIsNone(missing_receipt["source_revision"])
             receipt.return_value = {"status": "MATCHED_AT_READ", "source_revision": 61,
-                                    "receipt_reference": {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test"},
+                                    "receipt_reference": receipt_ref,
                                     "settings": settings}
             settings["target_rpm"]["value"] = "31"
             mismatched = (await self.client.get(path + "/validation-evidence")).json()
