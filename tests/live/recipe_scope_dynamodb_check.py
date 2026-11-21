@@ -86,8 +86,19 @@ def main():
         def scope_read():
             return authenticated_recipe_scope(request, execution_id, registry.execution_snapshot, jobs.read_meta)
         with patch.object(auth_module, 'get_store', return_value=auth), \
+             patch('foodtech_business_api.recipe_scope.get_store', return_value=auth), \
              patch.object(auth_module.Settings, 'from_env', return_value=SimpleNamespace()), \
              patch.object(auth_module, '_cognito_access', return_value=True):
+            try:
+                asyncio.run(scope_read())
+            except RecipeScopeDenied:
+                pass
+            else:
+                raise AssertionError('missing principal accepted')
+            principal_key = {'pk': f'USER#{subject}'}
+            auth.table.put_item(Item={**principal_key, 'epoch': 0, 'test_marker': 'synthetic'},
+                                ConditionExpression=Attr('pk').not_exists())
+            created.append((auth.table, principal_key, Attr('test_marker').eq('synthetic')))
             authenticated = asyncio.run(scope_read())
             assert authenticated.owner == subject
             assert asyncio.run(revalidate_recipe_scope(request, authenticated, registry.execution_snapshot,
@@ -108,7 +119,6 @@ def main():
                 calls += 1
                 if calls == 4:
                     auth.suspend_user(subject)
-                    created.append((auth.table, {'pk': f'USER#{subject}'}, Attr('suspended').eq(True)))
                 return jobs.read_meta(key)
             try:
                 asyncio.run(authenticated_recipe_scope(request, execution_id, registry.execution_snapshot, suspend_during_read))

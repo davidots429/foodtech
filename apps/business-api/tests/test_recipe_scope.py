@@ -109,6 +109,11 @@ class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         RecipeScopeTests.setUp(self)
+        self.scope_store = MemoryStore()
+        self.scope_store.principals[self.subject] = {'epoch': 0}
+        self.store_patch = patch('foodtech_business_api.recipe_scope.get_store', return_value=self.scope_store)
+        self.store_patch.start()
+        self.addCleanup(self.store_patch.stop)
 
     async def test_session_is_rechecked_after_store_reads(self):
         with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
@@ -130,6 +135,7 @@ class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_session_boundary_rejects_suspension_during_job_reads(self):
         store = MemoryStore()
+        store.principals[self.subject] = {'epoch': 0}
         store.save_session('synthetic-session', Session('customer', self.subject, None, 'csrf',
                                                        int(time.time()) + 300, 0))
         request = Request({'type': 'http', 'method': 'GET', 'path': '/',
@@ -142,12 +148,40 @@ class AuthenticatedRecipeScopeTests(unittest.IsolatedAsyncioTestCase):
                 store.suspend_user(self.subject)
             return self.jobs.get(key)
         with patch.object(auth, 'get_store', return_value=store), \
+             patch('foodtech_business_api.recipe_scope.get_store', return_value=store), \
              patch.object(auth.Settings, 'from_env', return_value=SimpleNamespace()), \
              patch.object(auth, '_cognito_access', return_value=True):
             with self.assertRaises(HTTPException) as error:
                 await authenticated_recipe_scope(request, self.execution_id, self.snapshot_reader, read)
         self.assertEqual(error.exception.status_code, 401)
         self.assertIsNone(store.read_session('synthetic-session'))
+
+    async def test_missing_or_deleted_principal_cannot_receive_scope(self):
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session):
+            del self.scope_store.principals[self.subject]
+            with self.assertRaises(RecipeScopeDenied):
+                await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
+            self.scope_store.principals[self.subject] = {'epoch': 0, 'deletion_lock_request': 'locked'}
+            with self.assertRaises(RecipeScopeDenied):
+                await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
+
+    async def test_principal_removed_during_reads_cannot_receive_scope(self):
+        calls = 0
+        def read(key):
+            nonlocal calls
+            calls += 1
+            if calls == 4:
+                del self.scope_store.principals[self.subject]
+            return self.jobs.get(key)
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session):
+            with self.assertRaises(RecipeScopeDenied):
+                await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, read)
+
+    async def test_invalid_session_epoch_is_rejected(self):
+        self.session.epoch = True
+        with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session):
+            with self.assertRaises(RecipeScopeDenied):
+                await authenticated_recipe_scope(object(), self.execution_id, self.snapshot_reader, self.jobs.get)
 
     async def test_revalidation_rejects_changed_record_and_source_revision(self):
         with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock, return_value=self.session):

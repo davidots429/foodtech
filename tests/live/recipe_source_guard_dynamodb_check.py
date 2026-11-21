@@ -13,7 +13,7 @@ from boto3.dynamodb.conditions import Attr
 
 from foodtech_ai_gateway.policy import Execution, ExecutionSnapshot, Feature
 from foodtech_ai_gateway.recipe_source_guard import DynamoRecipeSourceGuard
-from foodtech_business_api.auth_store import Session
+from foodtech_business_api.auth_store import MemoryStore, Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.recipe_scope import RecipeScopeDenied, resolve_recipe_scope, verify_recipe_sources
 from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
@@ -72,13 +72,16 @@ def main():
         guard = DynamoRecipeSourceGuard(jobs.name, sources.name, resource=resource)
         if not guard.verify(execution): raise AssertionError('matching versions rejected')
         synthetic_session = Session('customer', owner, None, 'synthetic-csrf', int(time.time()) + 600, 0)
+        synthetic_auth = MemoryStore()
+        synthetic_auth.principals[owner] = {'epoch': 0}
         job_store = DynamoCookingStore(jobs.name)
         def execution_read(_):
             return ExecutionSnapshot(execution, 'PENDING', 1)
         scoped = resolve_recipe_scope(synthetic_session, execution.execution_id, execution_read, job_store.read_meta)
         async def combined():
             with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
-                       return_value=synthetic_session):
+                       return_value=synthetic_session), \
+                 patch('foodtech_business_api.recipe_scope.get_store', return_value=synthetic_auth):
                 await verify_recipe_sources(object(), scoped, execution_read, job_store.read_meta, guard)
         asyncio.run(combined())
         job_key = {'pk': f'SCOPE#USER#{owner}#JOB#{current}', 'sk': 'META'}

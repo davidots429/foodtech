@@ -61,6 +61,7 @@ class AuthStore(Protocol):
     def finish_refresh(self, session_id: str, lease: str, expected_version: int, now: int,
                        access_token: str, ciphertext: bytes, expires: int) -> bool: ...
     def principal(self, subject: str) -> dict: ...
+    def principal_record(self, subject: str) -> dict | None: ...
     def block_admin(self, subject: str) -> None: ...
     def suspend_user(self, subject: str) -> None: ...
 
@@ -125,8 +126,13 @@ class MemoryStore:
             return True
 
     def principal(self, subject: str) -> dict:
+        record = self.principal_record(subject)
+        return record if record is not None else {"epoch": 0}
+
+    def principal_record(self, subject: str) -> dict | None:
         with self.lock:
-            return self.principals.get(subject, {"epoch": 0}).copy()
+            record = self.principals.get(subject)
+            return record.copy() if record is not None else None
 
     def block_admin(self, subject: str) -> None:
         with self.lock:
@@ -217,9 +223,11 @@ class DynamoAuthStore:
             raise
 
     def principal(self, subject: str) -> dict:
-        item = self.table.get_item(Key={"pk": f"USER#{subject}"},
-                                   ConsistentRead=True).get("Item")
-        return item or {"epoch": 0}
+        record = self.principal_record(subject)
+        return record if record is not None else {"epoch": 0}
+
+    def principal_record(self, subject: str) -> dict | None:
+        return self.table.get_item(Key={"pk": f"USER#{subject}"}, ConsistentRead=True).get("Item")
 
     def block_admin(self, subject: str) -> None:
         self.table.update_item(

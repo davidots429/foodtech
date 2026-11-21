@@ -13,6 +13,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from .auth import _session
+from .auth_store import get_store
 
 
 class RecipeScopeDenied(Exception):
@@ -99,11 +100,30 @@ async def authenticated_recipe_scope(request, execution_id, execution_reader, jo
     this helper as a credential issuer without an independent broker boundary.
     """
     before = await _session(request, 'customer')
+    await _require_principal_record(before)
     scope = await asyncio.to_thread(resolve_recipe_scope, before, execution_id, execution_reader, job_reader)
     after = await _session(request, 'customer')
+    await _require_principal_record(after)
     if (before.subject, before.epoch, before.csrf) != (after.subject, after.epoch, after.csrf):
         raise RecipeScopeDenied('customer session changed')
     return scope
+
+
+async def _require_principal_record(session):
+    """Do not treat an absent account as a fresh epoch-zero account here."""
+    principal = await asyncio.to_thread(get_store().principal_record, session.subject)
+    if not isinstance(principal, dict) or principal.get('suspended', False) is not False or \
+            'deletion_lock_request' in principal:
+        raise RecipeScopeDenied('customer account unavailable')
+    epoch = principal.get('epoch', 0)
+    session_epoch = getattr(session, 'epoch', None)
+    if isinstance(epoch, bool) or not isinstance(epoch, (int, Decimal)) or \
+            (isinstance(epoch, Decimal) and not epoch.is_finite()) or \
+            not 0 <= epoch < 2**63 or epoch != int(epoch) or \
+            isinstance(session_epoch, bool) or not isinstance(session_epoch, (int, Decimal)) or \
+            (isinstance(session_epoch, Decimal) and not session_epoch.is_finite()) or \
+            not 0 <= session_epoch < 2**63 or session_epoch != int(session_epoch) or epoch != session_epoch:
+        raise RecipeScopeDenied('customer account unavailable')
 
 
 async def revalidate_recipe_scope(request, expected, execution_reader, job_reader):
