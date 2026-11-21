@@ -1,4 +1,5 @@
 import importlib.util
+import base64
 import os
 from pathlib import Path
 import stat
@@ -73,6 +74,36 @@ class CollectionEntrypointTests(unittest.TestCase):
             entrypoint.main()
             self.assertEqual(execute.call_args.args[1], ['python', '-m', 'foodtech_collection_adapter.opcua_json', '--count', '3'])
             self.assertEqual(execute.call_args.args[2]['FOODTECH_MOCK_CA'], str(Path(directory) / 'ca.pem'))
+
+    def test_opcua_binary_requires_matching_key_and_private_files(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'synthetic-client')])
+        now = datetime.now(timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(minutes=1))
+            .not_valid_after(now + timedelta(days=1)).sign(key, hashes.SHA256()))
+        for candidate, valid in ((key, True), (other, False)):
+            env = {'FOODTECH_COLLECTION_PROTOCOL': 'opcua-binary',
+                   'FOODTECH_OPCUA_CLIENT_CERT_PEM': cert.public_bytes(serialization.Encoding.PEM).decode(),
+                   'FOODTECH_OPCUA_CLIENT_KEY_PEM': candidate.private_bytes(serialization.Encoding.PEM,
+                       serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode(),
+                   'FOODTECH_OPCUA_SERVER_CERT_DER_BASE64': base64.b64encode(cert.public_bytes(serialization.Encoding.DER)).decode()}
+            with self.subTest(valid=valid), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, env, clear=True), patch.object(entrypoint.sys, 'argv', ['entry']), \
+                    patch.object(entrypoint.tempfile, 'mkdtemp', return_value=directory), \
+                    patch.object(entrypoint.os, 'execvpe') as execute:
+                if not valid:
+                    with self.assertRaisesRegex(ValueError, 'invalid OPC UA certificate material'):
+                        entrypoint.main()
+                    execute.assert_not_called()
+                    continue
+                entrypoint.main()
+                self.assertEqual(execute.call_args.args[1], ['python', '-m', 'foodtech_collection_adapter.opcua'])
+                child = execute.call_args.args[2]
+                for variable in ('FOODTECH_OPCUA_CLIENT_CERT', 'FOODTECH_OPCUA_CLIENT_KEY', 'FOODTECH_OPCUA_SERVER_CERT'):
+                    self.assertEqual(stat.S_IMODE(Path(child[variable]).stat().st_mode), 0o600)
+                self.assertNotIn('FOODTECH_OPCUA_CLIENT_KEY_PEM', child)
 
     def test_real_ca_is_loadable_and_malformed_pem_is_rejected(self):
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

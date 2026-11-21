@@ -55,10 +55,12 @@
 
 수집 어댑터 Task 역할은 데이터 흐름 테이블의 조회·기록, `STREAM#` 파티션의 순서 복구 항목 삭제, Ordered FIFO 전송과 격리 버킷 `ingestion/` 객체 저장 권한을 갖도록 정의한다. CDK 합성과 합성 정책의 허용·거부 시뮬레이션만 확인했으며 아직 배포되지 않았다. 실제 ECS 실행 및 조직 정책 검증도 남았다.
 
-`infra/containers/collection-adapter.Dockerfile`은 잠금된 Python 의존성으로 비관리자 수집기 이미지를 만든다. 진입점은 주입된 CA PEM을 권한 `0600`인 임시 파일로 검증·저장한 뒤 `FOODTECH_COLLECTION_PROTOCOL`에 따라 REST·MQTT·OPC UA JSON 수집 명령을 실행한다. CI는 이미지를 빌드해 각 명령의 도움말 실행을 확인한다.
+`infra/containers/collection-adapter.Dockerfile`은 잠금된 Python 의존성으로 비관리자 수집기 이미지를 만든다. 진입점은 주입된 인증서 자료를 검증해 권한 `0600` 임시 파일로 저장한 뒤 `FOODTECH_COLLECTION_PROTOCOL`에 따라 REST·MQTT·OPC UA JSON·OPC UA Binary 수집 명령을 실행한다. CI는 이미지를 빌드해 각 명령의 도움말 실행을 확인한다.
 
 `provisionRestCollectionTask=true`를 `provisionDataFlow=true`와 함께 사용하면 위 역할을 사용하는 단발 Fargate Task Definition을 합성한다. `collectionImageRepository`, `collectionImageTag`, `collectionMockBaseUrl`(HTTPS origin), `collectionMockSecretArn`이 필요하다. Secrets Manager JSON 필드 `client_id`, `client_secret`, `ca_pem`은 Task 실행 역할을 통해 주입하며 일반 환경변수로 저장하지 않는다. 기본 수집은 한 번 실행 후 종료하며 실행 시 허용된 CLI 인수를 지정할 수 있다.
 
 `provisionMqttCollectionTask=true`는 같은 이미지와 역할을 사용하는 별도 단발 MQTT Task를 합성한다. 이미지 설정 외에 `collectionMqttHost`, `collectionMqttPort`, `collectionMqttSecretArn`이 필요하며 비밀 JSON 필드 `username`, `password`, `client_id`, `ca_pem`을 사용한다.
 
-`provisionOpcUaJsonCollectionTask=true`는 프로젝트 전용 HTTPS Browse/Read 수집 Task를 합성한다. 이미지 설정 외에 `collectionUaJsonBaseUrl`(HTTPS origin), `collectionUaJsonSecretArn`이 필요하며 비밀 JSON 필드 `client_id`, `client_secret`, `ca_pem`을 사용한다. 이미지 게시, 네트워크·Mock 배치, 실제 Task 실행 및 OPC UA Binary 실행 계약은 별도 작업이다.
+`provisionOpcUaJsonCollectionTask=true`는 프로젝트 전용 HTTPS Browse/Read 수집 Task를 합성한다. 이미지 설정 외에 `collectionUaJsonBaseUrl`(HTTPS origin), `collectionUaJsonSecretArn`이 필요하며 비밀 JSON 필드 `client_id`, `client_secret`, `ca_pem`을 사용한다.
+
+`provisionOpcUaBinaryCollectionTask=true`는 별도 OPC UA Binary Task를 합성한다. `collectionUaBinaryEndpoint`(`opc.tcp` 주소)와 `collectionUaBinarySecretArn`이 필요하며 비밀 JSON 필드 `client_cert_pem`, `client_key_pem`, `server_cert_der_base64`를 사용한다. 클라이언트 인증서와 개인키 일치 및 서버 인증서 DER 형식을 시작 시 검사하고, 기존 수집기가 서버 인증서의 유효기간·호스트·애플리케이션 URI를 확인한다. 이미지 게시, 네트워크·Mock 배치, 실제 Task 실행은 별도 작업이다.

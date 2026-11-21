@@ -300,6 +300,53 @@ class MinimalDataFlowStack extends Stack {
       secret.grantRead(task.executionRole!);
       new CfnOutput(this, "OpcUaJsonCollectionTaskArn", { value: task.taskDefinitionArn });
     }
+    if (app.node.tryGetContext("provisionOpcUaBinaryCollectionTask") === "true") {
+      const required = (name: string): string => {
+        const value = app.node.tryGetContext(name);
+        if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
+        return value.trim();
+      };
+      const repo = required("collectionImageRepository");
+      const tag = required("collectionImageTag");
+      const secretArn = required("collectionUaBinarySecretArn");
+      const endpoint = required("collectionUaBinaryEndpoint");
+      if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
+          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
+        throw new Error("collection image requires a valid repository and version tag");
+      }
+      if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
+        throw new Error("collectionUaBinarySecretArn must be a complete Secrets Manager ARN");
+      }
+      let parsed: URL;
+      try { parsed = new URL(endpoint); } catch { throw new Error("invalid OPC UA endpoint"); }
+      if (parsed.protocol !== "opc.tcp:" || !parsed.hostname || !parsed.port ||
+          parsed.username || parsed.password || parsed.search || parsed.hash) {
+        throw new Error("OPC UA endpoint must be a valid opc.tcp address");
+      }
+      const repository = ecr.Repository.fromRepositoryName(this, "OpcUaBinaryCollectionImage", repo);
+      const secret = secretsmanager.Secret.fromSecretCompleteArn(this, "CollectionUaBinarySecret", secretArn);
+      const task = new ecs.FargateTaskDefinition(this, "OpcUaBinaryCollectionTask", {
+        cpu: 256, memoryLimitMiB: 512, taskRole: collectorRole,
+        runtimePlatform: { operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+          cpuArchitecture: ecs.CpuArchitecture.X86_64 },
+      });
+      const logGroup = new logs.LogGroup(this, "OpcUaBinaryCollectionLogs", {
+        logGroupName: `/foodtech/${stage}/opcua-binary-collection`, retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+      task.addContainer("App", {
+        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        environment: { FOODTECH_COLLECTION_PROTOCOL: "opcua-binary", FOODTECH_OPCUA_ENDPOINT: endpoint,
+          FOODTECH_DATA_TABLE: table.tableName, FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl,
+          FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
+        secrets: { FOODTECH_OPCUA_CLIENT_CERT_PEM: ecs.Secret.fromSecretsManager(secret, "client_cert_pem"),
+          FOODTECH_OPCUA_CLIENT_KEY_PEM: ecs.Secret.fromSecretsManager(secret, "client_key_pem"),
+          FOODTECH_OPCUA_SERVER_CERT_DER_BASE64: ecs.Secret.fromSecretsManager(secret, "server_cert_der_base64") },
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "app", logGroup }),
+      });
+      secret.grantRead(task.executionRole!);
+      new CfnOutput(this, "OpcUaBinaryCollectionTaskArn", { value: task.taskDefinitionArn });
+    }
     const workerRole = new iam.Role(this, "StandardizationWorkerTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
         conditions: {
@@ -665,7 +712,8 @@ if (app.node.tryGetContext("provisionDataFlow") === "true") {
   Tags.of(dataFlow).add("Project", "foodtech");
 } else if (app.node.tryGetContext("provisionRestCollectionTask") === "true" ||
            app.node.tryGetContext("provisionMqttCollectionTask") === "true" ||
-           app.node.tryGetContext("provisionOpcUaJsonCollectionTask") === "true") {
+           app.node.tryGetContext("provisionOpcUaJsonCollectionTask") === "true" ||
+           app.node.tryGetContext("provisionOpcUaBinaryCollectionTask") === "true") {
   throw new Error("collection tasks require provisionDataFlow=true");
 }
 if (app.node.tryGetContext("provisionCookingJobs") === "true") {

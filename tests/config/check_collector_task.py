@@ -8,8 +8,8 @@ def main(path):
         resources = json.load(stream)['Resources']
     tasks = {name: item['Properties'] for name, item in resources.items()
              if item['Type'] == 'AWS::ECS::TaskDefinition'}
-    if len(tasks) != 3:
-        raise AssertionError('expected REST, MQTT and OPC UA JSON collection tasks')
+    if len(tasks) != 4:
+        raise AssertionError('expected REST, MQTT and both OPC UA collection tasks')
     for prefix, expected, protocol in (
         ('RestCollectionTask', {'FOODTECH_MOCK_CLIENT_ID': 'client_id', 'FOODTECH_MOCK_CLIENT_SECRET': 'client_secret',
                                 'FOODTECH_MOCK_CA_PEM': 'ca_pem'}, None),
@@ -17,12 +17,15 @@ def main(path):
                                 'FOODTECH_MQTT_CLIENT_ID': 'client_id', 'FOODTECH_MOCK_CA_PEM': 'ca_pem'}, 'mqtt'),
         ('OpcUaJsonCollectionTask', {'FOODTECH_MOCK_CLIENT_ID': 'client_id', 'FOODTECH_MOCK_CLIENT_SECRET': 'client_secret',
                                      'FOODTECH_MOCK_CA_PEM': 'ca_pem'}, 'opcua-json'),
+        ('OpcUaBinaryCollectionTask', {'FOODTECH_OPCUA_CLIENT_CERT_PEM': 'client_cert_pem',
+                                       'FOODTECH_OPCUA_CLIENT_KEY_PEM': 'client_key_pem',
+                                       'FOODTECH_OPCUA_SERVER_CERT_DER_BASE64': 'server_cert_der_base64'}, 'opcua-binary'),
     ):
         matches = [value for name, value in tasks.items() if name.startswith(prefix)]
         if len(matches) != 1:
             raise AssertionError('missing collection task ' + prefix)
         check_task(matches[0], expected, protocol)
-    print('REST, MQTT and OPC UA JSON task roles and secret references verified')
+    print('REST, MQTT and OPC UA task roles and secret references verified')
 
 
 def check_task(task, expected, protocol):
