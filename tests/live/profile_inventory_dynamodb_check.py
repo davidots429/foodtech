@@ -1,5 +1,6 @@
 """Opt-in isolated profile inventory transaction check; synthetic data only."""
 import os
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import boto3
@@ -26,6 +27,9 @@ def main():
     legacy = {'pk': f'{owner}#CONDITION_PROFILE#legacy', 'sk': 'VERSION#v1'}
     legacy_ref = {'pk': f'{owner}#CONDITION_PROFILES', 'sk': 'PROFILE#legacy#VERSION#v1'}
     keys += [legacy, legacy_ref]
+    concurrent = {'pk': f'{owner}#CONDITION_PROFILE#race', 'sk': 'VERSION#v1'}
+    concurrent_ref = {'pk': f'{owner}#CONDITION_PROFILES', 'sk': 'PROFILE#race#VERSION#v1'}
+    keys += [concurrent, concurrent_ref]
     try:
         for version in ('v1', 'v2'):
             store.create_condition_profile(subject, {'profile_id': 'p1', 'profile_version': version})
@@ -41,6 +45,15 @@ def main():
             raise AssertionError('inventory pages mismatch')
         if store.list_condition_profile_refs(subject + '-other', 1, None)['items']:
             raise AssertionError('cross-owner inventory leak')
+        def create_racing_profile(_):
+            try:
+                store.create_condition_profile(subject, {'profile_id': 'race', 'profile_version': 'v1'})
+                return 'created'
+            except Conflict:
+                return 'conflict'
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            if sorted(executor.map(create_racing_profile, range(2))) != ['conflict', 'created']:
+                raise AssertionError('concurrent writes did not select exactly one winner')
         table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
                        ConditionExpression='attribute_not_exists(pk)')
         checkpoint, found = None, False
@@ -64,7 +77,7 @@ def main():
     finally:
         for key in keys:
             table.delete_item(Key=key)
-    print('profile transaction, duplicate rejection, owner isolation, pagination, bounded scan, legacy reconciliation and cleanup verified')
+    print('profile transaction, duplicate and concurrent write rejection, owner isolation, pagination, bounded scan, legacy reconciliation and cleanup verified')
 
 
 if __name__ == '__main__':
