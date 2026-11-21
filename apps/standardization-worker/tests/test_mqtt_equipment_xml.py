@@ -26,6 +26,9 @@ class EquipmentXmlTests(unittest.TestCase):
                         source, humidity = {'a': ('extensions/humiditySource', 'extensions/humidityPercent'),
                             'b': ('ext_humidity_source', 'ext_humidity_percent'),
                             'c': ('Extension/HumiditySource', 'Extension/HumidityPct')}[vendor]
+                        root.find(humidity).text = 'NaN'
+                        with self.assertRaises(ValueError):
+                            decode_record(ET.tostring(root, encoding='unicode'))
                         root.find(source).text = 'NOT_SUPPORTED'; root.find(humidity).text = ''
                         result = assess('unsupported', ET.tostring(root, encoding='unicode'))
                         self.assertEqual(result.normalized['humidity_value_source'], 'NOT_SUPPORTED')
