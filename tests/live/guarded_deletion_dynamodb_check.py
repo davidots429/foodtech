@@ -13,6 +13,9 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 from foodtech_business_api.capsule_writer import CapsuleWriter
 from foodtech_business_api.guarded_deletion import GuardedDeletion, VaultSnapshot
+from foodtech_business_api.guarded_deletion_recovery import GuardedDeletionRecovery
+from foodtech_business_api.deletion_registry_cipher import DeletionRegistryCipher
+from foodtech_business_api.deletion_registry_recovery_cipher import DeletionRegistryRecoveryCipher
 from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
 
 
@@ -29,6 +32,10 @@ def main():
     if session.client("sts").get_caller_identity()["Account"] != ACCOUNT:
         raise SystemExit("Unexpected AWS account")
     client, dynamo = session.client("dynamodb"), session.resource("dynamodb")
+    outputs = session.client("cloudformation").describe_stacks(StackName="FoodtechCredentialVault-dev")["Stacks"][0]["Outputs"]
+    key_arn = next(item["OutputValue"] for item in outputs if item["OutputKey"] == "CredentialStorageKeyArn")
+    encryptor = DeletionRegistryCipher(key_arn, "dev", kms_client=session.client("kms"))
+    decryptor = DeletionRegistryRecoveryCipher(key_arn, "dev", kms_client=session.client("kms"))
     auth, vault, capsule, registry = (dynamo.Table(name) for name in (AUTH, VAULT, CAPSULE, REGISTRY))
     subject, vault_id, internal_id = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
     stale_id, stale_capsule_id, first_id, second_id = (str(uuid.uuid4()) for _ in range(4))
@@ -56,10 +63,14 @@ def main():
         capsule_created = True
         store = GuardedDeletion(auth_table=AUTH, registry_table=REGISTRY, vault_table=VAULT,
                                 capsule_table=CAPSULE, approved_purposes=frozenset({"BILLING"}), client=client)
+        encrypted = {}
+        for request_id in ids:
+            encrypted[request_id] = encryptor.seal(request_id, bytearray(internal_id.encode()), bytearray(locator.encode()))
         def call(request_id, vault_revision, capsule_revision=1):
             store.lock_and_register(subject=subject, request_id=request_id,
                 snapshot=VaultSnapshot(subject, vault_id, vault_revision, locator, capsule_revision, 0),
-                encrypted_user_id=b"synthetic-ciphertext-id", encrypted_capsule_locator=b"synthetic-ciphertext-locator",
+                encrypted_user_id=encrypted[request_id]["internal_user_id"],
+                encrypted_capsule_locator=encrypted[request_id]["capsule_locator"],
                 requested_at="2026-11-21T00:00:00Z", policy_version="synthetic-v1")
         try:
             call(stale_id, 1)
@@ -114,6 +125,9 @@ def main():
             pass
         else:
             raise AssertionError('recovery accepted a different request')
+        recovery = GuardedDeletionRecovery(store=store, recovery_cipher=decryptor, client=client)
+        if recovery.recover(authenticated_subject=subject, request_id=winner) != {"status": "DELETING"}:
+            raise AssertionError("encrypted guarded recovery failed")
         loser = second_id if winner == first_id else first_id
         if registry.get_item(Key={"pk": "REGISTRY", "sk": f"REQ#{loser}"}, ConsistentRead=True).get("Item"):
             raise AssertionError("Losing request created a tombstone")
@@ -137,7 +151,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
