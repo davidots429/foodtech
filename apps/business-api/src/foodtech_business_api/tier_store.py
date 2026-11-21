@@ -174,15 +174,8 @@ class DynamoTierStore:
             raise ValueError('invalid tier inventory checkpoint')
         return {'keys': keys, 'next_cursor': next_key['sk'] if next_key is not None else None}
 
-    def delete_inventory_key(self, subject: str, request_id: str, sk: str) -> None:
-        """Delete one known key only while the matching deletion lock is held.
-
-        The caller must authenticate and authorize the deletion request. A
-        successful delete is not proof of GSI, backup or whole-user removal.
-        """
-        _inventory_args(subject, 1, sk)
-        if sk is None:
-            raise ValueError('tier key required')
+    def _deletion_guard(self, subject: str, request_id: str) -> dict:
+        _inventory_args(subject, 1, None)
         try:
             if str(UUID(request_id)) != request_id:
                 raise ValueError
@@ -190,20 +183,43 @@ class DynamoTierStore:
             raise ValueError('invalid deletion request') from None
         if not self.auth_table_name:
             raise ValueError('authentication table required')
+        return {'ConditionCheck': {'TableName': self.auth_table_name,
+                                   'Key': self._item({'pk': f'USER#{subject}'}),
+                                   'ConditionExpression': 'deletion_lock_request = :request',
+                                   'ExpressionAttributeValues': self._item({':request': request_id})}}
+
+    def _locked_transaction(self, operations: list[dict]) -> None:
         try:
-            self.client.transact_write_items(TransactItems=[
-                {'ConditionCheck': {'TableName': self.auth_table_name,
-                                    'Key': self._item({'pk': f'USER#{subject}'}),
-                                    'ConditionExpression': 'deletion_lock_request = :request',
-                                    'ExpressionAttributeValues': self._item({':request': request_id})}},
-                {'Delete': {'TableName': self.table.name,
-                            'Key': self._item({'pk': f'TENANT#{subject}', 'sk': sk})}},
-            ])
+            self.client.transact_write_items(TransactItems=operations)
         except self.client.exceptions.TransactionCanceledException as exc:
             if any(reason.get('Code') == 'ConditionalCheckFailed'
                    for reason in exc.response.get('CancellationReasons', [])):
                 raise TierConflict from exc
             raise
+
+    def delete_inventory_key(self, subject: str, request_id: str, sk: str) -> None:
+        """Delete one known key under the request lock, without declaring completion."""
+        _inventory_args(subject, 1, sk)
+        if sk is None:
+            raise ValueError('tier key required')
+        self._locked_transaction([
+            self._deletion_guard(subject, request_id),
+            {'Delete': {'TableName': self.table.name,
+                        'Key': self._item({'pk': f'TENANT#{subject}', 'sk': sk})}},
+        ])
+
+    def delete_inventory_page(self, subject: str, request_id: str, limit: int) -> int:
+        """Delete up to limit keys; retry from the first page after any failure.
+
+        Caller authorization, GSI/backup removal and completion belong to the
+        deletion workflow. An empty page is only an observation at query time.
+        """
+        _inventory_args(subject, limit, None)
+        self._locked_transaction([self._deletion_guard(subject, request_id)])
+        keys = self.inventory_keys(subject, limit, None)['keys']
+        for sk in keys:
+            self.delete_inventory_key(subject, request_id, sk)
+        return len(keys)
 
     def decide(self, subject: str, application_id: str, reviewer: str,
                decision: str, reviewed_at: str, reviewer_epoch: int = 0) -> dict:

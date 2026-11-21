@@ -83,6 +83,20 @@ class TierGuardTests(unittest.TestCase):
             with self.subTest(subject=subject, key=key), self.assertRaises(ValueError):
                 self.store.delete_inventory_key(subject, request_id, key)
 
+    def test_page_retries_from_first_page_and_propagates_partial_failure(self):
+        request = str(uuid4())
+        self.store.inventory_keys = Mock(return_value={'keys': ['a', 'b'], 'next_cursor': 'b'})
+        self.store.delete_inventory_key = Mock(side_effect=[None, RuntimeError('failed')])
+        with self.assertRaises(RuntimeError):
+            self.store.delete_inventory_page('alice', request, 2)
+        self.store.inventory_keys.assert_called_once_with('alice', 2, None)
+        self.assertEqual(self.store.delete_inventory_key.call_count, 2)
+        self.store.delete_inventory_key = Mock()
+        self.store.inventory_keys.return_value = {'keys': ['b'], 'next_cursor': None}
+        self.assertEqual(self.store.delete_inventory_page('alice', request, 2), 1)
+        self.assertEqual(self.store.inventory_keys.call_args.args, ('alice', 2, None))
+        self.store.delete_inventory_key.assert_called_once_with('alice', request, 'b')
+
 
 if __name__ == '__main__':
     unittest.main()

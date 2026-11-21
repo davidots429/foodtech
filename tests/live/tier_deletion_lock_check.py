@@ -63,11 +63,18 @@ def main():
         blocked(lambda: store.delete_inventory_key(customer, str(uuid4()), inventory[0]))
         if not table.get_item(Key={'pk': keys[0]['pk'], 'sk': inventory[0]}, ConsistentRead=True).get('Item'):
             raise AssertionError('wrong request removed a record')
-        for sk in inventory:
-            store.delete_inventory_key(customer, request, sk)
+        if store.delete_inventory_page(customer, request, 1) != 1:
+            raise AssertionError('first bounded deletion did not remove one key')
+        if len(store.inventory_keys(customer, 10, None)['keys']) != 2:
+            raise AssertionError('bounded deletion removed an unexpected number of keys')
+        if store.delete_inventory_page(customer, request, 10) != 2:
+            raise AssertionError('resumed deletion did not remove remaining keys')
         store.delete_inventory_key(customer, request, inventory[0])
         if store.inventory_keys(customer, 10, None)['keys']:
             raise AssertionError('tier records remain after deletion')
+        if store.delete_inventory_page(customer, request, 10) != 0:
+            raise AssertionError('empty retry was not idempotent')
+        blocked(lambda: store.delete_inventory_page(customer, str(uuid4()), 10))
     finally:
         for key in keys:
             table.delete_item(Key=key)
