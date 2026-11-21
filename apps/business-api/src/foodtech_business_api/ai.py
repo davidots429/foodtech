@@ -63,6 +63,14 @@ class RecipeJobRequest(BaseModel):
     job_id: UUID
     job_version: int = Field(strict=True, ge=1)
     comparison_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    prior_job_id: UUID | None = None
+    prior_job_version: int | None = Field(default=None, strict=True, ge=1)
+
+    @model_validator(mode="after")
+    def validate_prior(self):
+        if (self.prior_job_id is None) != (self.prior_job_version is None) or self.prior_job_id == self.job_id:
+            raise ValueError("invalid prior job binding")
+        return self
 
 
 class RecipeConfirmRequest(RecipeJobRequest):
@@ -74,9 +82,13 @@ async def _recipe_job(request: Request, body: RecipeJobRequest):
     from .cooking import _read
     from .recommendation_evidence import read_evidence
     session, _, _, job, _ = await _read(request, str(body.job_id), write=True)
-    evidence = await read_evidence(request, str(body.job_id), comparison_id=body.comparison_id)
+    evidence = await read_evidence(request, str(body.job_id), comparison_id=body.comparison_id,
+                                   prior_job_id=str(body.prior_job_id) if body.prior_job_id else None)
     if job["version"] != body.job_version or evidence["job_version"] != body.job_version:
         raise HTTPException(409, "조리 기록이 변경되었습니다. 근거를 다시 조회해 주세요.")
+    if body.prior_job_id and (not evidence.get("selected_prior_job") or
+            evidence["selected_prior_job"].get("job_version") != body.prior_job_version):
+        raise HTTPException(409, "이전 작업이 변경되었습니다. 근거를 다시 조회해 주세요.")
     if evidence["recorded"].get("provenance") != "SYNTHETIC" or \
             evidence["recorded"].get("menu") not in {"TONKATSU", "JEYUK"}:
         raise HTTPException(409, "합성 조리 기록만 요청할 수 있습니다.")
@@ -91,6 +103,9 @@ def _recipe_binding(body: RecipeJobRequest) -> dict:
     result = {"job_id": str(body.job_id), "job_version": body.job_version}
     if body.comparison_id is not None:
         result["comparison_id"] = body.comparison_id
+    if body.prior_job_id is not None:
+        result["prior_job_id"] = str(body.prior_job_id)
+        result["prior_job_version"] = body.prior_job_version
     return result
 
 

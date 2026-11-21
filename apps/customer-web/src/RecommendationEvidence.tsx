@@ -148,7 +148,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
     if (!value || busy) return;
     setBusy(true); setError("");
     try { setRequested(await api<RecipeRequest>("/api/customer/ai/recipe-requests", csrf,
-      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null })); }
+      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null })); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "권고 요청을 기록하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -179,7 +179,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
     if (!value || !requested || busy) return;
     setBusy(true); setError("");
     try { setNotice(await api<LocalNotice>(`/api/customer/ai/recipe-requests/${requested.execution_id}/local-preview`, csrf,
-      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null })); }
+      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null })); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "전환 고지를 조회하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -187,7 +187,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
     if (!value || !notice || !acknowledged || busy) return;
     setBusy(true); setError("");
     try { await api(`/api/customer/ai/recipe-quotes/${notice.quote_id}/confirm`, csrf,
-      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, notice_version: notice.notice_version,
+      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null, notice_version: notice.notice_version,
         quality_warning_acknowledged: true }); setConfirmed(true); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "전환 동의를 기록하지 못했습니다."); }
     finally { setBusy(false); }

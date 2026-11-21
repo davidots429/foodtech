@@ -57,6 +57,8 @@ class Execution:
     job_id: str | None = None
     job_version: int | None = None
     comparison_id: str | None = None
+    prior_job_id: str | None = None
+    prior_job_version: int | None = None
 
 
 @dataclass(frozen=True)
