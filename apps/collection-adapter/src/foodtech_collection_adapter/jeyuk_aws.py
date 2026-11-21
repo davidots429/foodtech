@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import uuid
+from datetime import datetime, timezone
 
 import boto3
 from boto3.dynamodb.conditions import Attr
@@ -32,6 +34,13 @@ class DynamoJeyukIngestor:
             UpdateExpression="SET #cursor = :cursor",
             ExpressionAttributeNames={"#cursor": "cursor"},
             ExpressionAttributeValues={":cursor": cursor},
+        )
+
+    def save_completion_receipt(self, receipt: dict, cursor_key: str) -> None:
+        self.table.put_item(
+            Item={"pk": f"JEYUK#{receipt['fixture_id']}", "sk": f"COLLECTION#RECEIPT#{uuid.uuid4()}",
+                  **receipt, "cursor_key": cursor_key, "recorded_at": datetime.now(timezone.utc).isoformat()},
+            ConditionExpression=Attr("pk").not_exists(),
         )
 
     def ingest(self, raw: str) -> dict:

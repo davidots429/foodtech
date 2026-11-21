@@ -561,6 +561,29 @@ async def record_jeyuk_validation_context(job_id: str, request: Request,
     return meta
 
 
+@router.get("/{job_id}/collection-evidence")
+async def jeyuk_collection_evidence(job_id: str, request: Request) -> dict:
+    """Report an observed synthetic collection receipt, never authorize a model."""
+    _, store, pk, job, _ = await _read(request, job_id)
+    if job.get("menu") != "JEYUK":
+        raise HTTPException(422, "제육볶음 작업에만 수집 증거를 조회할 수 있습니다.")
+    binding = job.get("source_binding")
+    table = os.getenv("FOODTECH_DATA_TABLE", "")
+    if not isinstance(binding, dict) or not binding.get("batch_id"):
+        return {"status": "NOT_BOUND", "raw_count": None}
+    if not table:
+        raise HTTPException(503, "원천 수집 저장소가 설정되지 않았습니다.")
+    from .jeyuk_source_evidence import read_collection_completion
+    try:
+        result = await asyncio.to_thread(read_collection_completion, table, binding["batch_id"])
+    except Exception as exc:
+        raise HTTPException(503, "원천 수집 증거를 조회하지 못했습니다.") from exc
+    latest, _ = await _store_call(store, store.read, pk)
+    if not latest or latest.get("version") != job.get("version"):
+        raise HTTPException(409, "조리작업이 조회 중 변경되었습니다. 다시 확인해 주세요.")
+    return {**result, "job_id": job_id, "job_version": job["version"]}
+
+
 @router.get("/{job_id}/validation-evidence")
 async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
     _, store, pk, job, _ = await _read(request, job_id)
