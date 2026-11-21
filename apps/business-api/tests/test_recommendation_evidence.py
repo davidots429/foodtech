@@ -114,6 +114,16 @@ class RecommendationEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CURRENT_QUALITY_ASSESSMENT", value["unverified_categories"])
         self.assertIn("CURRENT_PROCESS_DERIVATION", value["unverified_categories"])
 
+    async def test_severe_observation_gap_blocks_recommendation_evidence(self):
+        derived = self.store.items[(self.pk, "RESTATEMENT#RESULT#test")]
+        derived["observation_coverage"].update(internal_gap_detected=True,
+            severe_observation_gap_detected=True)
+        response = await self.client.get(f"/api/customer/cooking-jobs/{self.job_id}/recommendation-evidence")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["observation_coverage"]["severe_observation_gap_detected"])
+        self.assertIn("SEVERE_OBSERVATION_GAP", response.json()["completeness_reasons"])
+        self.assertEqual(response.json()["completeness"], "INSUFFICIENT")
+
     async def test_observation_summary_is_allowlisted_and_omitted_when_stale(self):
         result = self.store.items[(self.pk, "RESTATEMENT#RESULT#test")]
         result["temperature_sample_summary"] = {"version": "v1", "basis": "POINT_SAMPLES_ONLY",

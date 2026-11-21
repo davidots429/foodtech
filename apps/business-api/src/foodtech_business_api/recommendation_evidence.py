@@ -33,7 +33,8 @@ def _snapshot(job: dict, pointer: dict | None, assessment: dict | None, derived:
     receipt_match = bool(isinstance(receipt, dict) and receipt.get("raw_snapshot_matches") is True and
                          isinstance(receipt.get("receipt_sk"), str) and not stale)
     coverage = ({key: raw_coverage.get(key) for key in ("version", "first_sample_at", "last_sample_at",
-                "sample_count", "before_first_us", "after_last_us", "internal_gap_detected")}
+                "sample_count", "before_first_us", "after_last_us", "internal_gap_detected",
+                "severe_observation_gap_detected")}
                 if isinstance(raw_coverage, dict) else None)
     quality = ({"version": assessment.get("version"), "scale_version": assessment.get("scale_version"),
                 "quality_passed": assessment.get("quality_passed"), "score_percent": assessment.get("score_percent"),

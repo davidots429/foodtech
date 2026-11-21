@@ -72,6 +72,27 @@ class ProcessRestatementTests(unittest.TestCase):
         self.assertEqual((coverage["before_first_us"], coverage["after_last_us"]), (0, 0))
         self.assertTrue(coverage["internal_gap_detected"])
 
+    def test_severe_observation_gap_requires_six_missing_five_second_slots(self):
+        first = self.sample("first", 1, 0)
+        severe = self.sample("last", 8, 35)
+        coverage = replay_process([first, severe], self.job())["observation_coverage"]
+        self.assertTrue(coverage["severe_observation_gap_detected"])
+        late = self.sample("late", 2, 5, late=True)
+        filled = replay_process([first, late, severe], self.job())["observation_coverage"]
+        self.assertIsNone(filled["severe_observation_gap_detected"])
+        short = self.sample("short", 7, 30)
+        self.assertIsNone(replay_process([first, short], self.job())["observation_coverage"]
+                          ["severe_observation_gap_detected"])
+        severe["normalized"]["event_time"] = "2026-11-14T00:00:34Z"
+        self.assertIsNone(replay_process([first, severe], self.job())["observation_coverage"]
+                          ["severe_observation_gap_detected"])
+        severe["normalized"]["event_time"] = "2026-11-14T00:00:35Z"
+        other = {**self.job(), "source_binding": {**self.binding, "device_id": "other"}}
+        for sample in (first, severe):
+            sample["normalized"]["device_id"] = "other"
+        self.assertIsNone(replay_process([first, severe], other)["observation_coverage"]
+                          ["severe_observation_gap_detected"])
+
     def test_temperature_summary_uses_only_observed_adjacent_samples(self):
         values = (159, 158, 170, 181, 182, 179, 183)
         samples = [self.sample(str(index), index + 1, index * 5, temp)

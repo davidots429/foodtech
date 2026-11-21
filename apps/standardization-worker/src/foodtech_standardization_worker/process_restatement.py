@@ -19,7 +19,7 @@ from foodtech_contracts.tonkatsu_preload_observation import VERSION as PRELOAD_V
 from .process_rules import RULE_VERSION, advance
 
 MAX_RESTATEMENT_SAMPLES = 1000
-COVERAGE_VERSION = "observed-cooking-span-v1"
+COVERAGE_VERSION = "observed-cooking-span-v2"
 
 
 def replay_process(assessments: list[dict], job: dict) -> dict:
@@ -44,6 +44,8 @@ def replay_process(assessments: list[dict], job: dict) -> dict:
     state = None
     last_sequence = None
     has_gap = False
+    severe_observation_gap = None
+    previous_instant = None
     included = []
     for item in ordered:
         normalized = item["normalized"]
@@ -57,6 +59,16 @@ def replay_process(assessments: list[dict], job: dict) -> dict:
         sequence = int(normalized["sequence_number"])
         if last_sequence is not None and sequence <= last_sequence:
             raise ValueError("restatement sequence is repeated or reversed")
+        # Only the approved synthetic REST fixture has a known 5-second cadence.
+        # A missing eligible observation need not mean a missing transport event;
+        # quarantined or otherwise ineligible samples also leave this evidence gap.
+        if (binding.get("source_id") == "synthetic-rest" and
+                binding.get("device_id") == "mockprofile-100-a-001" and
+                previous_instant is not None and last_sequence is not None):
+            steps = sequence - last_sequence
+            if steps >= 7 and (event_time - previous_instant).total_seconds() == steps * 5:
+                severe_observation_gap = True
+        previous_instant = event_time
         # Original gap findings reflect arrival order; derive gaps from sequence and event time.
         state = advance(state, normalized, ingestion_event_id=item["ingestion_event_id"],
                         quality_status=item["quality_status"],
@@ -79,7 +91,8 @@ def replay_process(assessments: list[dict], job: dict) -> dict:
                 "last_sample_at": last.isoformat(), "sample_count": len(included),
                 "before_first_us": micros(first - placed) if placed else None,
                 "after_last_us": micros(lifted - last) if lifted else None,
-                "internal_gap_detected": has_gap}
+                "internal_gap_detected": has_gap,
+                "severe_observation_gap_detected": severe_observation_gap}
     status = "FAILED" if state["status"] == "FAILED" else process_status(
         state["temperature_status"], job.get("process_thickness_status", "NOT_MEASURED"),
         job.get("process_time_status", "NOT_MEASURED"), data_gap=has_gap)

@@ -36,6 +36,7 @@ const completenessLabels: Record<string, string> = {
   JEYUK_FEED_SAFETY_UNVERIFIED: "투입 시각과 안전 표본의 일치가 확인되지 않았습니다.",
   JEYUK_INITIAL_TEMPERATURE_SUITABILITY_NOT_ASSESSED: "재료 초기 온도의 적합성은 아직 판정하지 않았습니다.",
   SOURCE_COMPLETENESS_NOT_ASSESSED: "전체 원천 데이터의 완전성은 아직 판정하지 않았습니다.",
+  SEVERE_OBSERVATION_GAP: "조리 중 사용 가능한 표본이 30초 이상 연속으로 없어 권고할 수 없습니다.",
   GAP_SEVERITY_NOT_ASSESSED: "감지된 결손의 심각도는 아직 판정하지 않았습니다.",
 };
 

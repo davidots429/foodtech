@@ -6,7 +6,7 @@ an authorization, a complete input assessment, or a safety decision.
 from decimal import Decimal, InvalidOperation
 from foodtech_contracts.tonkatsu_process import TIME_BANDS
 
-VERSION = "synthetic-recommendation-completeness-v2"
+VERSION = "synthetic-recommendation-completeness-v3"
 
 
 def _valid_core_series(job: dict) -> bool:
@@ -62,7 +62,9 @@ def preliminary(job: dict, *, initial_context: dict | None, coverage: dict | Non
         unknown = ["SOURCE_COMPLETENESS_NOT_ASSESSED", "JEYUK_INITIAL_TEMPERATURE_SUITABILITY_NOT_ASSESSED"]
         if partial_temperature:
             unknown.append("JEYUK_INITIAL_TEMPERATURE_PARTIAL")
-        if coverage and coverage.get("internal_gap_detected") is True:
+        if coverage and coverage.get("severe_observation_gap_detected") is True:
+            insufficient.append("SEVERE_OBSERVATION_GAP")
+        elif coverage and coverage.get("internal_gap_detected") is True:
             unknown.append("GAP_SEVERITY_NOT_ASSESSED")
         return {"status": "INSUFFICIENT" if insufficient else "NOT_ASSESSED",
                 "reasons": insufficient + unknown, "rule_version": VERSION}
@@ -83,7 +85,9 @@ def preliminary(job: dict, *, initial_context: dict | None, coverage: dict | Non
             not initial_context.get("temperature_observed_at"):
         insufficient.append("INITIAL_TEMPERATURE_MISSING")
     unknown = ["SOURCE_COMPLETENESS_NOT_ASSESSED"]
-    if coverage and coverage.get("internal_gap_detected") is True:
+    if coverage and coverage.get("severe_observation_gap_detected") is True:
+        insufficient.append("SEVERE_OBSERVATION_GAP")
+    elif coverage and coverage.get("internal_gap_detected") is True:
         unknown.append("GAP_SEVERITY_NOT_ASSESSED")
     return {"status": "INSUFFICIENT" if insufficient else "NOT_ASSESSED",
             "reasons": insufficient + unknown, "rule_version": VERSION}
