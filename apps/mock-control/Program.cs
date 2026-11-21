@@ -10,19 +10,21 @@ var options = ParseArgs(args);
 if (args.Length > 0 && args[0] == "serve-ua-json")
 {
     await UaJsonMock.Run(Required(options, "fixture"), Required(options, "cert"),
-                         int.Parse(Required(options, "port")));
+                         int.Parse(Required(options, "port")), options.TryGetValue("bind-address", out var uaBind)
+                             ? MockListenAddress.Parse(uaBind) : null);
     return;
 }
 if (args.Length > 0 && args[0] == "serve-opcua")
 {
     await OpcUaMock.Run(Required(options, "fixture"), Required(options, "pki"),
-                        int.Parse(Required(options, "port")));
+                        int.Parse(Required(options, "port")), options.GetValueOrDefault("endpoint-host"));
     return;
 }
 if (args.Length > 0 && args[0] == "serve-mqtt")
 {
     await MqttMock.Run(Required(options, "fixture"), Required(options, "cert"),
-                       int.Parse(Required(options, "port")), options.GetValueOrDefault("fault"));
+                       int.Parse(Required(options, "port")), options.GetValueOrDefault("fault"),
+                       MockListenAddress.Parse(options.GetValueOrDefault("bind-address")));
     return;
 }
 if (args.Length > 0 && args[0] == "simulate-jeyuk")
@@ -120,7 +122,11 @@ var port = int.Parse(Required(options, "port"));
 if (port is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
 
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
-builder.WebHost.ConfigureKestrel(server => server.ListenLocalhost(port, listen => listen.UseHttps(certPath, certPassword)));
+var bindAddress = options.TryGetValue("bind-address", out var bind) ? MockListenAddress.Parse(bind) : null;
+builder.WebHost.ConfigureKestrel(server => {
+    if (bindAddress is null) server.ListenLocalhost(port, listen => listen.UseHttps(certPath, certPassword));
+    else server.Listen(bindAddress, port, listen => listen.UseHttps(certPath, certPassword));
+});
 var app = builder.Build();
 var accessToken = "";
 var tokenExpires = DateTimeOffset.MinValue;
