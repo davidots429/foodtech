@@ -199,6 +199,7 @@ def main():
         tier_created = True
         tier = DynamoTierStore(vault.name)
         tier.auth_table_name = AUTH
+        tier.deletion_registry_table_name = REGISTRY
         tier_cipher = DeletionCheckpointCipher(key_arn,'dev',source_table_arn=vault.table_arn,kms_client=session.client('kms'))
         capture = TierIndexCapture(tier_store=tier,progress_store=plan_progress,cipher=tier_cipher)
         tier_worker = TierDeletionWorker(tier_store=tier,progress_store=plan_progress,cipher=tier_cipher,index_capture=capture)

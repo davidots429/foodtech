@@ -101,6 +101,7 @@ class DynamoTierStore:
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
         self.auth_table_name = os.getenv("FOODTECH_AUTH_TABLE", "")
+        self.deletion_registry_table_name = os.getenv("FOODTECH_DELETION_REGISTRY_TABLE", "")
         self.auth_table = session.resource("dynamodb").Table(self.auth_table_name) if self.auth_table_name else None
 
     def _item(self, item: dict) -> dict:
@@ -290,8 +291,17 @@ class DynamoTierStore:
             raise ValueError('authentication table required')
         return {'ConditionCheck': {'TableName': self.auth_table_name,
                                    'Key': self._item({'pk': f'USER#{subject}'}),
-                                   'ConditionExpression': 'deletion_lock_request = :request',
-                                   'ExpressionAttributeValues': self._item({':request': request_id})}}
+                                   'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes',
+                                   'ExpressionAttributeValues': self._item({':request': request_id, ':yes': True})}}
+
+    def _deletion_request_guard(self, request_id: str) -> dict:
+        name = getattr(self, 'deletion_registry_table_name', '')
+        if not isinstance(name, str) or not name or name in {self.auth_table_name, self.table.name}:
+            raise ValueError('separate deletion registry table required')
+        return {'ConditionCheck': {'TableName': name,
+            'Key': self._item({'pk': 'REGISTRY', 'sk': f'REQ#{request_id}'}),
+            'ConditionExpression': '#status = :active', 'ExpressionAttributeNames': {'#status': 'status'},
+            'ExpressionAttributeValues': self._item({':active': 'DELETING'})}}
 
     def _locked_transaction(self, operations: list[dict]) -> None:
         try:
@@ -309,6 +319,7 @@ class DynamoTierStore:
             raise ValueError('tier key required')
         self._locked_transaction([
             self._deletion_guard(subject, request_id),
+            self._deletion_request_guard(request_id),
             {'Delete': {'TableName': self.table.name,
                         'Key': self._item({'pk': f'TENANT#{subject}', 'sk': sk})}},
         ])
@@ -320,7 +331,7 @@ class DynamoTierStore:
         deletion workflow. An empty page is only an observation at query time.
         """
         _inventory_args(subject, limit, None)
-        self._locked_transaction([self._deletion_guard(subject, request_id)])
+        self._locked_transaction([self._deletion_guard(subject, request_id),self._deletion_request_guard(request_id)])
         keys = self.inventory_keys(subject, limit, None)['keys']
         for sk in keys:
             self.delete_inventory_key(subject, request_id, sk)

@@ -20,7 +20,7 @@ if progress.query(KeyConditionExpression=Key('pk').eq(f'REQ#{q}'),ConsistentRead
 try:
  for table,value in [(auth,{**ak,'suspended':True,'deletion_lock_request':q}),(reg,{**rk,'status':'DELETING'}),(source,item)]:
   table.put_item(Item=value,ConditionExpression='attribute_not_exists(pk)');created.append((table,{k:value[k] for k in ('pk','sk') if k in value}))
- tier=DynamoTierStore(source.name);tier.auth_table_name=auth.name
+ tier=DynamoTierStore(source.name);tier.auth_table_name=auth.name;tier.deletion_registry_table_name=reg.name
  store=DeletionProgressStore(auth_table=auth.name,registry_table=reg.name,progress_table=progress.name,client=s.client('dynamodb'))
  cipher=DeletionCheckpointCipher(key,'dev',source_table_arn=source.table_arn,kms_client=s.client('kms'))
  capture=TierIndexCapture(tier_store=tier,progress_store=store,cipher=cipher)

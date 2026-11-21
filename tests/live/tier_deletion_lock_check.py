@@ -14,6 +14,7 @@ def main():
         raise SystemExit('unexpected AWS account')
     dynamo = session.resource('dynamodb')
     table, auth = dynamo.Table('foodtech-cooking-jobs-dev'), dynamo.Table('foodtech-auth-sessions-dev')
+    deletion_registry = dynamo.Table('foodtech-ai-execution-registry-dev')
     customer, admin, app = ('synthetic-' + uuid4().hex for _ in range(3))
     second_app = 'synthetic-' + uuid4().hex
     auth_keys = [{'pk': f'USER#{value}'} for value in (customer, admin)]
@@ -21,9 +22,12 @@ def main():
             ('CURRENT', f'APPLICATION#{app}', f'REVIEW#{app}', f'APPLICATION#{second_app}', f'REVIEW#{second_app}')]
     store = DynamoTierStore(table.name)
     store.auth_table_name = auth.name
+    store.deletion_registry_table_name = deletion_registry.name
     item = {'subject': customer, 'application_id': app, 'submitted_at': '2026-11-21T00:00:00Z',
             'status': 'REQUESTED', 'tier': 'FREE', 'version': 1}
     created = []
+    deletion_key = None
+    deletion_created = False
     try:
         for key in auth_keys:
             auth.put_item(Item={**key, 'epoch': 0}, ConditionExpression='attribute_not_exists(pk)')
@@ -71,8 +75,11 @@ def main():
         if set(inventory) != {key['sk'] for key in keys} or store.inventory_keys(admin, 10, None)['keys']:
             raise AssertionError('tier history inventory incomplete or cross-owner')
         request = str(uuid4())
-        auth.update_item(Key=auth_keys[0], UpdateExpression='SET deletion_lock_request = :id',
-                         ExpressionAttributeValues={':id': request})
+        deletion_key={'pk':'REGISTRY','sk':f'REQ#{request}'}
+        deletion_registry.put_item(Item={**deletion_key,'status':'DELETING'},ConditionExpression='attribute_not_exists(pk)')
+        deletion_created = True
+        auth.update_item(Key=auth_keys[0], UpdateExpression='SET deletion_lock_request = :id, suspended = :yes',
+                         ExpressionAttributeValues={':id': request, ':yes': True})
         candidates, candidate_cursor = [], None
         while True:
             candidate_page = store.deletion_index_candidates(customer, request, 1, candidate_cursor)
@@ -86,6 +93,11 @@ def main():
         blocked(lambda: store.delete_inventory_key(customer, str(uuid4()), inventory[0]))
         if not table.get_item(Key={'pk': keys[0]['pk'], 'sk': inventory[0]}, ConsistentRead=True).get('Item'):
             raise AssertionError('wrong request removed a record')
+        deletion_registry.update_item(Key=deletion_key,UpdateExpression='SET #s=:s',ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'PAUSED'})
+        blocked(lambda: store.delete_inventory_page(customer, request, 1))
+        if len(store.inventory_keys(customer,10,None)['keys']) != len(keys):
+            raise AssertionError('inactive request removed tier records')
+        deletion_registry.update_item(Key=deletion_key,UpdateExpression='SET #s=:s',ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'DELETING'})
         if store.delete_inventory_page(customer, request, 1) != 1:
             raise AssertionError('first bounded deletion did not remove one key')
         if len(store.inventory_keys(customer, 10, None)['keys']) != len(keys) - 1:
@@ -111,6 +123,10 @@ def main():
     finally:
         for key in keys:
             table.delete_item(Key=key)
+        if deletion_created:
+            deletion_registry.delete_item(Key=deletion_key)
+            if deletion_registry.get_item(Key=deletion_key,ConsistentRead=True).get('Item'):
+                raise RuntimeError('synthetic deletion registry cleanup failed')
         for key in created:
             auth.delete_item(Key=key)
     print('tier submission and review deletion/epoch guards and cleanup verified')

@@ -38,17 +38,22 @@ def main():
         raise RuntimeError('expected development GSI is not active')
     resource = session.resource('dynamodb')
     table, auth = resource.Table(TABLE), resource.Table(AUTH)
+    deletion_registry = resource.Table('foodtech-cooking-jobs-dev')
     subject, request, application = str(uuid4()), str(uuid4()), str(uuid4())
     queue_sort = '2026-11-21T00:00:00Z#' + application
     auth_key = {'pk': 'USER#' + subject}
     item_key = {'pk': 'TENANT#' + subject, 'sk': 'CURRENT'}
-    created_auth = created_item = False
+    created_auth = created_item = created_deletion = False
+    deletion_key = {'pk':'REGISTRY','sk':f'REQ#{request}'}
     store = DynamoTierStore(TABLE)
     store.auth_table_name = AUTH
+    store.deletion_registry_table_name = deletion_registry.name
     try:
         auth.put_item(Item={**auth_key, 'suspended': True, 'deletion_lock_request': request},
                       ConditionExpression='attribute_not_exists(pk)')
         created_auth = True
+        deletion_registry.put_item(Item={**deletion_key,'status':'DELETING'},ConditionExpression='attribute_not_exists(pk)')
+        created_deletion = True
         table.put_item(Item={**item_key, 'subject': subject, 'queue_status': 'REQUESTED', 'queue_sort': queue_sort},
                        ConditionExpression='attribute_not_exists(pk) AND attribute_not_exists(sk)')
         created_item = True
@@ -63,6 +68,10 @@ def main():
             table.delete_item(Key=item_key)
             if table.get_item(Key=item_key, ConsistentRead=True).get('Item') is not None:
                 raise RuntimeError('synthetic tier record cleanup failed')
+        if created_deletion:
+            deletion_registry.delete_item(Key=deletion_key)
+            if deletion_registry.get_item(Key=deletion_key,ConsistentRead=True).get('Item'):
+                raise RuntimeError('synthetic deletion registry cleanup failed')
         if created_auth:
             auth.delete_item(Key=auth_key)
             if auth.get_item(Key=auth_key, ConsistentRead=True).get('Item') is not None:

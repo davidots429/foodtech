@@ -15,6 +15,7 @@ class TierGuardTests(unittest.TestCase):
         self.store.client.exceptions.TransactionCanceledException = type('Canceled', (Exception,), {})
         self.store.serializer = TypeSerializer()
         self.store.auth_table_name = 'auth'
+        self.store.deletion_registry_table_name = 'deletion-registry'
         self.item = {'application_id': 'app', 'submitted_at': '2026-01-01',
                      'status': 'REQUESTED', 'version': 1}
 
@@ -118,11 +119,20 @@ class TierGuardTests(unittest.TestCase):
         self.store.delete_inventory_key('alice', request, 'CURRENT')
         operations = self.store.client.transact_write_items.call_args.kwargs['TransactItems']
         self.assertEqual(operations[0]['ConditionCheck']['ExpressionAttributeValues'][':request'], {'S': request})
-        self.assertEqual(operations[1]['Delete']['Key'], {'pk': {'S': 'TENANT#alice'}, 'sk': {'S': 'CURRENT'}})
+        self.assertIn('suspended = :yes', operations[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(operations[1]['ConditionCheck']['ExpressionAttributeValues'][':active'], {'S':'DELETING'})
+        self.assertEqual(operations[2]['Delete']['Key'], {'pk': {'S': 'TENANT#alice'}, 'sk': {'S': 'CURRENT'}})
         for subject, request_id, key in [('alice', 'bad', 'CURRENT'), ('alice#bad', request, 'CURRENT'),
                                          ('alice', request, None), ('alice', request, '')]:
             with self.subTest(subject=subject, key=key), self.assertRaises(ValueError):
                 self.store.delete_inventory_key(subject, request_id, key)
+
+    def test_deletion_registry_must_be_separate_from_source_and_auth(self):
+        for name in ('', 'auth', 'tier'):
+            self.store.deletion_registry_table_name=name
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.store.delete_inventory_key('alice',str(uuid4()),'CURRENT')
+        self.store.client.transact_write_items.assert_not_called()
 
     def test_page_retries_from_first_page_and_propagates_partial_failure(self):
         request = str(uuid4())
