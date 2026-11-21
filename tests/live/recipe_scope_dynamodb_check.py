@@ -3,20 +3,26 @@
 This uses developer credentials and a synthetic session. It does not verify an
 authenticated customer, role isolation, session policy or model authorization.
 """
+import asyncio
 import os
 import time
 from dataclasses import replace
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 import boto3
 from boto3.dynamodb.conditions import Attr
+from fastapi import HTTPException
+from starlette.requests import Request
 
 from foodtech_ai_gateway.policy import Execution, Feature
 from foodtech_ai_gateway.registry import DynamoRegistry
+from foodtech_business_api import auth as auth_module
 from foodtech_business_api.auth_store import DynamoAuthStore, Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
-from foodtech_business_api.recipe_scope import RecipeScopeDenied, resolve_recipe_scope
+from foodtech_business_api.recipe_scope import RecipeScopeDenied, authenticated_recipe_scope, resolve_recipe_scope
 
 
 def main():
@@ -61,6 +67,31 @@ def main():
             pass
         else:
             raise AssertionError('other customer accepted')
+        request = Request({'type': 'http', 'method': 'GET', 'path': '/', 'headers': [
+            (b'cookie', f'{auth_module.SESSION_COOKIE}={session_id}'.encode())]})
+        def scope_read():
+            return authenticated_recipe_scope(request, execution_id, registry.execution, jobs.read_meta)
+        with patch.object(auth_module, 'get_store', return_value=auth), \
+             patch.object(auth_module.Settings, 'from_env', return_value=SimpleNamespace()), \
+             patch.object(auth_module, '_cognito_access', return_value=True):
+            assert asyncio.run(scope_read()).owner == subject
+            calls = 0
+            def suspend_during_read(key):
+                nonlocal calls
+                calls += 1
+                if calls == 4:
+                    auth.suspend_user(subject)
+                    created.append((auth.table, {'pk': f'USER#{subject}'}, Attr('suspended').eq(True)))
+                return jobs.read_meta(key)
+            try:
+                asyncio.run(authenticated_recipe_scope(request, execution_id, registry.execution, suspend_during_read))
+            except HTTPException as error:
+                if error.status_code != 401:
+                    raise
+            else:
+                raise AssertionError('suspended session accepted')
+            if auth.read_session(session_id) is not None:
+                raise AssertionError('revoked session remains')
         current_key = {'pk': f'SCOPE#USER#{subject}#JOB#{current}', 'sk': 'META'}
         jobs.table.update_item(Key=current_key, UpdateExpression='SET #v = :new',
             ExpressionAttributeNames={'#v': 'version'}, ExpressionAttributeValues={':new': 3})
@@ -72,10 +103,11 @@ def main():
             raise AssertionError('stale job accepted')
     finally:
         for table, key, condition in reversed(created):
-            table.delete_item(Key=key, ConditionExpression=condition)
+            if table.get_item(Key=key, ConsistentRead=True).get('Item'):
+                table.delete_item(Key=key, ConditionExpression=condition)
             if table.get_item(Key=key, ConsistentRead=True).get('Item'):
                 raise RuntimeError('synthetic record cleanup failed')
-    print('synthetic persisted execution and job scope verified; cleanup verified')
+    print('synthetic session revocation and persisted execution scope verified; cleanup verified')
 
 
 if __name__ == '__main__':
