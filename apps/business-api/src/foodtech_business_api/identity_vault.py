@@ -75,7 +75,7 @@ class IdentityVault:
         self.client.transact_write_items(ClientRequestToken=prepared.request_id, TransactItems=[
             {"Update": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{authenticated_subject}"}),
                         "UpdateExpression": "SET vault_id = :vault, #epoch = if_not_exists(#epoch, :zero)",
-                        "ConditionExpression": "attribute_not_exists(vault_id) AND attribute_not_exists(deletion_lock_request) "
+                        "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(vault_id) AND attribute_not_exists(deletion_lock_request) "
                                                "AND (attribute_not_exists(suspended) OR suspended = :no) "
                                                "AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected)",
                         "ExpressionAttributeNames": {"#epoch": "epoch"},

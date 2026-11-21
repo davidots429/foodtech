@@ -46,6 +46,17 @@ def main():
         raise SystemExit("Synthetic identifiers already exist")
     auth_created = False
     try:
+        try:
+            vault_service.commit(authenticated_subject=subject, prepared=prepared[0])
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+                raise
+        else:
+            raise AssertionError("Missing principal was allowed to create identity")
+        if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item") or \
+                vault.get_item(Key={"pk": prepared[0].vault_id, "sk": "META"}, ConsistentRead=True).get("Item") or \
+                capsule.get_item(Key={"pk": prepared[0].locator, "sk": "META"}, ConsistentRead=True).get("Item"):
+            raise AssertionError("Missing principal left identity records behind")
         auth.put_item(Item={**auth_key, "epoch": 0, "provenance": "SYNTHETIC"},
                       ConditionExpression=Attr("pk").not_exists())
         auth_created = True
@@ -121,7 +132,7 @@ def main():
             auth.delete_item(Key=auth_key, ConditionExpression=Attr("provenance").eq("SYNTHETIC"))
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
-    print(json.dumps({"atomic_provisioning": "verified", "stale_auth_rejected": "verified",
+    print(json.dumps({"missing_principal_rejected": "verified", "atomic_provisioning": "verified", "stale_auth_rejected": "verified",
                       "guarded_deletion_registration": "verified", "cleanup": "verified"}))
 
 

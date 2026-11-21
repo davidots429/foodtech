@@ -45,6 +45,7 @@ class IdentityVaultTests(unittest.TestCase):
         request = self.client.requests[0]
         self.assertEqual(request["ClientRequestToken"], self.request_id)
         auth, vault, capsule = request["TransactItems"]
+        self.assertIn("attribute_exists(pk)", auth["Update"]["ConditionExpression"])
         self.assertEqual(auth["Update"]["ExpressionAttributeValues"][":vault"], {"S": p.vault_id})
         self.assertNotIn(p.locator, str(auth))
         self.assertNotIn(p.internal_id, str(auth))
