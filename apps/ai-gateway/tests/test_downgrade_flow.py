@@ -119,9 +119,40 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
         parent = self.resource.table.items[(f"EXEC#{self.parent}", "META")]
         parent.pop("job_id")
         parent.pop("job_version")
+        parent.pop("comparison_id")
         execution = self.registry.execution(self.parent)
         self.assertIsNone(execution.job_id)
         self.assertIsNone(execution.job_version)
+        self.assertIsNone(execution.comparison_id)
+
+    async def test_comparison_binding_survives_notice_and_rejects_changes(self):
+        app.state.mtls_listener = True
+        app.state.gateway_service = GatewayService(self.registry)
+        job, comparison = str(uuid4()), "a" * 64
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway") as client:
+                binding = {"tenant_id": "customer-a", "job_id": job, "job_version": 7,
+                           "comparison_id": comparison}
+                created = await client.post("/internal/ai/recipe-requests", json=binding)
+                self.assertEqual(created.status_code, 201, created.text)
+                parent = created.json()["execution_id"]
+                self.assertEqual(self.registry.execution(parent).comparison_id, comparison)
+                preview_url = "/internal/ai/recipe-downgrades/preview"
+                self.assertEqual((await client.post(preview_url, json={**binding,
+                    "parent_execution_id": parent, "comparison_id": "b" * 64})).status_code, 409)
+                preview = await client.post(preview_url, json={**binding, "parent_execution_id": parent})
+                self.assertEqual(preview.status_code, 201, preview.text)
+                quote = preview.json()
+                self.assertEqual(quote["comparison_id"], comparison)
+                path = f"/internal/ai/recipe-downgrades/{quote['quote_id']}/confirm"
+                payload = {**binding, "notice_version": NOTICE_VERSION, "quality_warning_acknowledged": True}
+                self.assertEqual((await client.post(path, json={**payload, "comparison_id": None})).status_code, 409)
+                confirmed = await client.post(path, json=payload)
+                self.assertEqual(confirmed.status_code, 201, confirmed.text)
+                self.assertEqual(self.registry.execution(confirmed.json()["execution_id"]).comparison_id, comparison)
+        finally:
+            del app.state.mtls_listener
+            del app.state.gateway_service
 
     async def test_routes_require_mtls_and_explicit_boolean(self):
         app.state.mtls_listener = True

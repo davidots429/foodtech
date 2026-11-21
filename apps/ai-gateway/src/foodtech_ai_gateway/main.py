@@ -65,12 +65,14 @@ class DowngradePreview(StrictBody):
     parent_execution_id: UUID
     job_id: UUID | None = None
     job_version: int | None = Field(default=None, strict=True, ge=1)
+    comparison_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class RecipeRequest(StrictBody):
     tenant_id: str = Field(min_length=1, max_length=128)
     job_id: UUID
     job_version: int = Field(strict=True, ge=1)
+    comparison_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class DowngradeConfirm(StrictBody):
@@ -79,6 +81,7 @@ class DowngradeConfirm(StrictBody):
     quality_warning_acknowledged: StrictBool
     job_id: UUID | None = None
     job_version: int | None = Field(default=None, strict=True, ge=1)
+    comparison_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 def _external_enabled() -> None:
@@ -171,12 +174,12 @@ async def downgrade_preview(request: Request, body: DowngradePreview) -> dict:
     _internal(request)
     try:
         registry = _service(request).registry
-        expected = (str(body.job_id) if body.job_id else None, body.job_version)
+        expected = (str(body.job_id) if body.job_id else None, body.job_version, body.comparison_id)
         parent = registry.execution(str(body.parent_execution_id))
-        if not parent or parent.tenant_id != body.tenant_id or (parent.job_id, parent.job_version) != expected:
+        if not parent or parent.tenant_id != body.tenant_id or (parent.job_id, parent.job_version, parent.comparison_id) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         result = DowngradeFlow(registry).preview(body.tenant_id, str(body.parent_execution_id))
-        if (result["job_id"], result["job_version"]) != expected:
+        if (result["job_id"], result["job_version"], result["comparison_id"]) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         return result
     except DowngradeError as error:
@@ -199,9 +202,9 @@ async def recipe_request(request: Request, body: RecipeRequest) -> dict:
     execution_id = str(uuid4())
     service.registry.create_execution(Execution(execution_id, body.tenant_id, Feature.RECIPE_CORRECTION,
         UNCONFIGURED_TIER1, None, "SYNTHETIC", Decimal("0"),
-        job_id=str(body.job_id), job_version=body.job_version))
+        job_id=str(body.job_id), job_version=body.job_version, comparison_id=body.comparison_id))
     return {"execution_id": execution_id, "state": "BLOCKED", "reason": "TIER1_MODEL_NOT_CONFIGURED",
-            "job_id": str(body.job_id), "job_version": body.job_version}
+            "job_id": str(body.job_id), "job_version": body.job_version, "comparison_id": body.comparison_id}
 
 
 @app.post("/internal/ai/recipe-downgrades/{quote_id}/confirm", status_code=201)
@@ -210,9 +213,9 @@ async def downgrade_confirm(request: Request, quote_id: UUID, body: DowngradeCon
     try:
         registry = _service(request).registry
         quote = registry.quote(str(quote_id))
-        expected = (str(body.job_id) if body.job_id else None, body.job_version)
+        expected = (str(body.job_id) if body.job_id else None, body.job_version, body.comparison_id)
         if not quote or quote.get("tenant_id") != body.tenant_id or \
-                (quote.get("job_id"), quote.get("job_version")) != expected:
+                (quote.get("job_id"), quote.get("job_version"), quote.get("comparison_id")) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         execution_id = DowngradeFlow(registry).confirm(
             body.tenant_id, str(quote_id), body.notice_version, body.quality_warning_acknowledged)
