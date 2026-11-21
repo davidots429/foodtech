@@ -6,6 +6,7 @@ import { CombiLive } from "./CombiLive";
 import { RicePreparation, type RicePreparationRecord } from "./RicePreparation";
 
 type FanObservation = { status: string; target_level: number; deviation_seconds: number; missing_seconds: number };
+type ClimateObservation = { status: string; target_percent: string; deviation_seconds: number; missing_seconds: number };
 type ProbeSummary = { probe_id: string; product_id: string; rack_id: string; shelf: number; pan_id: string;
   status: string; full_interval_min_celsius: string | null; longest_75c_hold_seconds: number | null };
 type Meal = {
@@ -21,7 +22,7 @@ type Meal = {
     monitored_process_source?: { raw_sha256: string; phase: string };
     monitored_process_samples?: unknown[];
     monitored_process_assessment?: { status: string; humidity_value_source: string; reason_codes: string[];
-      door_assessment?: { status: string; door_open_seconds?: number }; fan_observation?: FanObservation } };
+      door_assessment?: { status: string; door_open_seconds?: number }; fan_observation?: FanObservation; climate_observation?: ClimateObservation } };
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
     humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null;
     samples?: unknown[]; source?: { raw_sha256: string; phase: string } };
@@ -34,7 +35,7 @@ type Meal = {
     monitored_process_source?: { raw_sha256: string; phase: string };
     monitored_process_samples?: unknown[];
     monitored_process_assessment?: { status: string; recovered_at_second: number | null;
-      door_open_seconds: number; reason_codes: string[]; fan_observation?: FanObservation };
+      door_open_seconds: number; reason_codes: string[]; fan_observation?: FanObservation; climate_observation?: ClimateObservation };
     products?: { product_id: string; rack_id: string; shelf: number; pan_id: string;
       position?: string | null; mass_kg: string; thickness_cm: string }[] };
   events?: { event: string; observed_at: string; selection_issues?: string[] }[];
@@ -230,7 +231,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     const samples = Array.from({ length: duration }, (_, index) => ({ second: index + 1,
-      chamber_celsius: "220", door: "CLOSED", fan_level: 3 }));
+      chamber_celsius: "220", door: "CLOSED", fan_level: 3, climate_setpoint_percent: "10" }));
     try {
       await api(path + "/mackerel-process", csrf, { expected_version: meal.meal.version, samples });
       setMeal(await api<Meal>(path));
@@ -244,7 +245,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     const samples = Array.from({ length: duration }, (_, index) => ({ second: index + 1,
-      chamber_celsius: "100", humidity_percent: humiditySupported ? "98" : null, door: "CLOSED", fan_level: 4 }));
+      chamber_celsius: "100", humidity_percent: humiditySupported ? "98" : null, door: "CLOSED", fan_level: 4, climate_setpoint_percent: "100" }));
     try {
       await api(path + "/rice-process", csrf, { expected_version: meal.meal.version,
         humidity_source: humiditySupported ? "MEASURED" : "NOT_SUPPORTED", samples });
@@ -252,14 +253,15 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "밥 공정 표본을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
   }
-  async function assessSource(phase: "rice" | "transition" | "mackerel", reassessLegacyFan = false, reassessManualTransition = false, reassessManualMackerel = false, reassessManualRice = false) {
+  async function assessSource(phase: "rice" | "transition" | "mackerel", reassessLegacyFan = false, reassessManualTransition = false, reassessManualMackerel = false, reassessManualRice = false, reassessLegacyClimate = false) {
     if (!meal || requestActive.current) return;
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
     try {
       await api(path + `/source-assessment/${phase}`, csrf, { expected_version: meal.meal.version,
         reassess_legacy_fan: reassessLegacyFan, reassess_manual_transition: reassessManualTransition,
-        reassess_manual_mackerel: reassessManualMackerel, reassess_manual_rice: reassessManualRice });
+        reassess_manual_mackerel: reassessManualMackerel, reassess_manual_rice: reassessManualRice,
+        reassess_legacy_climate: reassessLegacyClimate });
       setMeal(await api<Meal>(path));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "원표본 판정을 기록하지 못했습니다."); }
     finally { requestActive.current = false; setBusy(false); }
@@ -325,6 +327,13 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {meal.rice.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.rice.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
       {meal.rice.monitored_process_assessment?.fan_observation && <p>밥 팬 단계 관찰: {meal.rice.monitored_process_assessment.fan_observation.status}
         {" "}· 목표 4 · 다른 단계 {meal.rice.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.rice.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
+      {meal.rice.monitored_process_assessment?.climate_observation && <p>밥 기후 설정 관찰: {meal.rice.monitored_process_assessment.climate_observation.status}
+        {" "}· 목표 100% · 다른 설정 {meal.rice.monitored_process_assessment.climate_observation.deviation_seconds}초 · 미관찰 {meal.rice.monitored_process_assessment.climate_observation.missing_seconds}초</p>}
+      {meal.meal.source && meal.rice.monitored_process_assessment && "fan_observation" in meal.rice.monitored_process_assessment &&
+       !("climate_observation" in meal.rice.monitored_process_assessment) &&
+       meal.rice.monitored_process_source?.raw_sha256 === meal.meal.source.raw_sha256 &&
+       <div><p className="small">이전 밥 판정에 기후 설정 관찰이 없습니다. 원표본 재판정 후 안전을 다시 확인합니다.</p>
+         <button type="button" disabled={busy} onClick={() => assessSource("rice", false, false, false, false, true)}>밥 기후 설정 다시 판정</button></div>}
       {meal.meal.source && meal.rice.monitored_process_assessment && !("fan_observation" in meal.rice.monitored_process_assessment) &&
        meal.rice.monitored_process_source?.raw_sha256 === meal.meal.source.raw_sha256 &&
        <div><p className="small">이전 공정 판정에 팬 관찰이 없습니다. 보존된 원표본을 다시 확인한 뒤 안전 확인이 필요합니다.</p>
@@ -391,6 +400,13 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {meal.mackerel.monitored_process_assessment.reason_codes.length > 0 && <> · {meal.mackerel.monitored_process_assessment.reason_codes.join(", ")}</>}</p>}
       {meal.mackerel.monitored_process_assessment?.fan_observation && <p>고등어 팬 단계 관찰: {meal.mackerel.monitored_process_assessment.fan_observation.status}
         {" "}· 목표 3 · 다른 단계 {meal.mackerel.monitored_process_assessment.fan_observation.deviation_seconds}초 · 미관찰 {meal.mackerel.monitored_process_assessment.fan_observation.missing_seconds}초</p>}
+      {meal.mackerel.monitored_process_assessment?.climate_observation && <p>고등어 기후 설정 관찰: {meal.mackerel.monitored_process_assessment.climate_observation.status}
+        {" "}· 목표 10% · 다른 설정 {meal.mackerel.monitored_process_assessment.climate_observation.deviation_seconds}초 · 미관찰 {meal.mackerel.monitored_process_assessment.climate_observation.missing_seconds}초</p>}
+      {meal.meal.source && meal.mackerel.monitored_process_assessment &&
+       !("climate_observation" in meal.mackerel.monitored_process_assessment) &&
+       meal.mackerel.monitored_process_source?.raw_sha256 === meal.meal.source.raw_sha256 &&
+       <div><p className="small">이전 고등어 판정에 기후 설정 관찰이 없습니다.</p>
+         <button type="button" disabled={busy} onClick={() => assessSource("mackerel", false, false, false, false, true)}>고등어 기후 설정 다시 판정</button></div>}
       {meal.mackerel.safety_status !== "NOT_MEASURED" && <p>고등어 합성 안전 표본: {meal.mackerel.safety_status}
         {meal.mackerel.batch_representative_core_temperature && <> · 최저 {meal.mackerel.batch_representative_core_temperature}°C</>}</p>}
       {!!meal.mackerel.safety_probe_summaries?.length && <div><p>각 탐침의 60초 측정 결과 (표본 선정과 배치 안전 판정은 별도)</p>

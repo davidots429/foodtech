@@ -6,10 +6,25 @@ from foodtech_contracts.combi_mackerel_process import Sample, assess
 
 
 def records(count=180):
-    return [Sample(second, D("220"), "CLOSED", 3) for second in range(1, count + 1)]
+    return [Sample(second, D("220"), "CLOSED", 3, D("10")) for second in range(1, count + 1)]
 
 
 class MackerelMonitorTests(unittest.TestCase):
+    def test_climate_setting_is_separate_from_humidity_and_required_for_normal(self):
+        data = records()
+        for value, expected in ((None, "INCOMPLETE"), (D("9"), "DEVIATION_OBSERVED")):
+            changed = list(data); changed[10] = replace(changed[10], climate_setpoint_percent=value)
+            result = assess(changed, len(changed), "NORMAL")
+            self.assertEqual(result["status"], "INSUFFICIENT_DATA")
+            self.assertEqual(result["climate_observation"]["status"], expected)
+            if value is not None:
+                self.assertIn("CLIMATE_SETPOINT_DEVIATION", result["reason_codes"])
+        missing = [replace(item, climate_setpoint_percent=None) for item in data]
+        self.assertEqual(assess(missing, len(missing), "NORMAL")["climate_observation"]["status"], "NOT_MEASURED")
+        invalid = list(data); invalid[0] = replace(invalid[0], climate_setpoint_percent=D("101"))
+        with self.assertRaises(ValueError):
+            assess(invalid, len(invalid), "NORMAL")
+
     def test_fan_missing_or_deviation_leaves_process_incomplete(self):
         for fan in (None, 4):
             data = records(); data[10] = replace(data[10], fan_level=fan)

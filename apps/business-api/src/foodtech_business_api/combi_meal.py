@@ -127,6 +127,7 @@ class MackerelProcessSample(BaseModel):
     chamber_celsius: Decimal
     door: Literal["OPEN", "CLOSED"]
     fan_level: int | None = Field(default=None, strict=True, ge=0, le=10)
+    climate_setpoint_percent: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
 
 
 class MackerelProcessEvidence(BaseModel):
@@ -142,6 +143,7 @@ class RiceProcessSample(BaseModel):
     humidity_percent: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
     door: Literal["OPEN", "CLOSED"] | None = None
     fan_level: int | None = Field(default=None, strict=True, ge=0, le=10)
+    climate_setpoint_percent: Decimal | None = Field(default=None, ge=0, le=100, max_digits=5, decimal_places=2)
 
 
 class RiceProcessEvidence(BaseModel):
@@ -592,6 +594,23 @@ def _rice_fan_verified(step: dict) -> bool:
     return (assessment.get("fan_observation") or {}).get("status") == "MATCHED"
 
 
+def _rice_climate_verified(step: dict) -> bool:
+    assessment = step.get("monitored_process_assessment") or {}
+    return (assessment.get("climate_observation") or {}).get("status") == "MATCHED"
+
+
+def _display_climate_legacy(step: dict) -> dict:
+    assessment = step.get("monitored_process_assessment")
+    if not isinstance(assessment, dict) or "climate_observation" in assessment:
+        return step
+    status = assessment.get("status")
+    if status not in {"NORMAL", "WARNING"}:
+        return step
+    return {**step, "monitored_process_assessment": {**assessment, "recorded_status": status,
+            "status": "INSUFFICIENT_DATA", "reason_codes": sorted(set(assessment.get("reason_codes") or []) |
+                                                                    {"CLIMATE_SETTING_UNVERIFIED"})}}
+
+
 @router.get("/{meal_id}")
 async def get_meal(meal_id: UUID, request: Request) -> dict:
     session, store = await _context(request)
@@ -610,14 +629,16 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
     rice_source_invalid = bool(meta.get("source") and not _phase_source_matches(
         meta["source"], rice.get("monitored_process_source"), "RICE"))
     rice_fan_invalid = not _rice_fan_verified(rice)
-    if rice_source_invalid or rice_fan_invalid:
+    rice_climate_invalid = not _rice_climate_verified(rice)
+    if rice_source_invalid or rice_fan_invalid or rice_climate_invalid:
         rice = {**rice}
         if rice.get("safety_status") == "PASSED":
             rice["safety_status"] = "INCOMPLETE"
         if rice.get("quality_current") and rice["quality_current"].get("usable"):
             rice["quality_current"] = {**rice["quality_current"], "usable": False,
-                                       "blocked_reason": "RICE_SOURCE_UNVERIFIED" if rice_source_invalid
-                                                         else "FAN_EVIDENCE_UNVERIFIED"}
+                                       "blocked_reason": "RICE_SOURCE_UNVERIFIED" if rice_source_invalid else
+                                                         "FAN_EVIDENCE_UNVERIFIED" if rice_fan_invalid else
+                                                         "CLIMATE_EVIDENCE_UNVERIFIED"}
         result["rice"] = rice
     mackerel = result["mackerel"]
     bound = meta.get("source")
@@ -625,6 +646,8 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
             _phase_source_matches(bound, mackerel.get("monitored_process_source"), "MACKEREL"):
         result["mackerel"] = {**mackerel, "quality_current": {**mackerel["quality_current"], "usable": False,
                               "blocked_reason": "MACKEREL_SOURCE_UNVERIFIED"}}
+    result["rice"] = _display_climate_legacy(result["rice"])
+    result["mackerel"] = _display_climate_legacy(result["mackerel"])
     if events:
         result["events"] = events
     return result
@@ -1002,6 +1025,7 @@ class SourceAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_version: int = Field(ge=1)
     reassess_legacy_fan: bool = Field(default=False, strict=True)
+    reassess_legacy_climate: bool = Field(default=False, strict=True)
     reassess_manual_transition: bool = Field(default=False, strict=True)
     reassess_manual_mackerel: bool = Field(default=False, strict=True)
     reassess_manual_rice: bool = Field(default=False, strict=True)
@@ -1032,6 +1056,11 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
             "fan_observation" in prior_assessment or not prior_source or
             prior_source.get("raw_sha256") != source.get("raw_sha256") or prior_source.get("phase") != "RICE"):
         raise HTTPException(409, "팬 관찰이 없는 기존 밥 원천 판정만 같은 원표본으로 다시 계산할 수 있습니다.")
+    if body.reassess_legacy_climate and (phase not in {"rice", "mackerel"} or body.reassess_legacy_fan or
+            body.reassess_manual_transition or body.reassess_manual_rice or body.reassess_manual_mackerel or
+            not prior_assessment or "climate_observation" in prior_assessment or not prior_source or
+            not _phase_source_matches(source, prior_source, kind)):
+        raise HTTPException(409, "기후 설정 관찰이 없는 기존 원천 판정만 같은 원표본으로 다시 계산할 수 있습니다.")
     if body.reassess_manual_transition and (phase != "transition" or body.reassess_legacy_fan or
             not step or not step.get("samples") or step.get("source") or
             step.get("status") not in {"IN_PROGRESS", "DRY_HEAT_READY"} or
@@ -1050,7 +1079,7 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
         if not body.reassess_manual_transition and (not step or step.get("status") != "IN_PROGRESS" or
                 step.get("samples") or old["status"] != "MODE_TRANSITION"):
             raise HTTPException(409, "표본이 없는 진행 중인 전환에서만 원천 판정을 적용할 수 있습니다.")
-    elif not step or step.get("status") != "UNLOADED" or (prior_assessment and not (body.reassess_legacy_fan or body.reassess_manual_mackerel or body.reassess_manual_rice)):
+    elif not step or step.get("status") != "UNLOADED" or (prior_assessment and not (body.reassess_legacy_fan or body.reassess_legacy_climate or body.reassess_manual_mackerel or body.reassess_manual_rice)):
         raise HTTPException(409, "인양 후 아직 공정 판정이 없는 작업에만 적용할 수 있습니다.")
     jobs = {"RICE": old["rice_cooking_job_id"], "TRANSITION": old["mode_transition_id"],
             "MACKEREL": old["mackerel_cooking_job_id"]}
@@ -1084,11 +1113,12 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
             assessment = assess_rice_process([
                 RiceSample(item["phaseSecond"], Decimal(item["chamberCelsius"]),
                            Decimal(item["measuredHumidityPercent"]) if item["measuredHumidityPercent"] is not None else None,
-                           item["doorState"], item["fanLevel"])
+                           item["doorState"], item["fanLevel"], Decimal(item["climateSetpointPercent"]))
                 for item in selected], len(selected), step["time_status"], sources.pop())
         elif phase == "mackerel":
             assessment = assess_mackerel_process([
-                Sample(item["phaseSecond"], Decimal(item["chamberCelsius"]), item["doorState"], item["fanLevel"])
+                Sample(item["phaseSecond"], Decimal(item["chamberCelsius"]), item["doorState"], item["fanLevel"],
+                       Decimal(item["climateSetpointPercent"]))
                 for item in selected], len(selected), step["time_status"])
         else:
             if any(item["schemaVersion"] != "synthetic-combi-v2" for item in selected):
@@ -1139,7 +1169,7 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
                                           "blocked_reason": "MACKEREL_PROCESS_REASSESSED"}
         if phase == "rice":
             updated["rice_critical_alarm_observed"] = any(item.get("criticalAlarm") is True for item in selected)
-            if body.reassess_legacy_fan or body.reassess_manual_rice or step.get("safety_status") == "PASSED" or step.get("quality_current"):
+            if body.reassess_legacy_fan or body.reassess_legacy_climate or body.reassess_manual_rice or step.get("safety_status") == "PASSED" or step.get("quality_current"):
                 if step.get("safety_status") == "PASSED":
                     updated["safety_status"] = "INCOMPLETE"
                     updated["safety_version"] = int(step.get("safety_version", 0)) + 1
@@ -1153,7 +1183,8 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
                 datetime.fromisoformat(old["last_observed_at"].replace("Z", "+00:00")) > \
                 datetime.fromisoformat(observed_at.replace("Z", "+00:00")):
             meta["last_observed_at"] = old["last_observed_at"]
-    event_name = ("RICE_SOURCE_REASSESSED" if body.reassess_legacy_fan else
+    event_name = (f"{kind}_CLIMATE_SOURCE_REASSESSED" if body.reassess_legacy_climate else
+                  "RICE_SOURCE_REASSESSED" if body.reassess_legacy_fan else
                   "TRANSITION_SOURCE_REASSESSED" if body.reassess_manual_transition else
                   "MACKEREL_SOURCE_REASSESSED" if body.reassess_manual_mackerel else
                   "RICE_MANUAL_SOURCE_REASSESSED" if body.reassess_manual_rice else f"{kind}_SOURCE_ASSESSED")
@@ -1166,7 +1197,7 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
     if body.reassess_manual_mackerel or body.reassess_manual_rice:
         event["previous_assessment"] = prior_assessment
         event["previous_samples"] = step["monitored_process_samples"]
-    if body.reassess_legacy_fan:
+    if body.reassess_legacy_fan or body.reassess_legacy_climate:
         event["previous_assessment"] = prior_assessment
         event["previous_source"] = prior_source
     try:
@@ -1200,7 +1231,8 @@ async def confirm_rice_safety(meal_id: UUID, request: Request, body: RiceSafetyC
     source_checked = not old.get("source") or _phase_source_matches(
         old["source"], step.get("monitored_process_source"), "RICE")
     fan_checked = _rice_fan_verified(step)
-    safety = ("SUSPECTED" if suspected else "PASSED" if process_status in {"NORMAL", "WARNING"} and source_checked and fan_checked
+    climate_checked = _rice_climate_verified(step)
+    safety = ("SUSPECTED" if suspected else "PASSED" if process_status in {"NORMAL", "WARNING"} and source_checked and fan_checked and climate_checked
               else "INCOMPLETE")
     now = _now()
     version = int(old["version"]) + 1
@@ -1217,7 +1249,7 @@ async def confirm_rice_safety(meal_id: UUID, request: Request, body: RiceSafetyC
              "safety_version": safety_version, "observation": body.observation, "note": body.note.strip(),
              "process_status": process_status, "process_reason_codes": reasons,
              "critical_alarm_observed": step.get("rice_critical_alarm_observed"),
-             "source_checked": source_checked, "fan_checked": fan_checked}
+             "source_checked": source_checked, "fan_checked": fan_checked, "climate_checked": climate_checked}
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event)
     except Conflict as exc:
@@ -1245,8 +1277,8 @@ async def assess_combi_quality(meal_id: UUID, menu: Literal["rice", "mackerel"],
     if menu == "rice" and old.get("source") and not _phase_source_matches(
             old["source"], step.get("monitored_process_source"), "RICE"):
         raise HTTPException(409, "연결된 밥 원표본의 공정 판정을 먼저 확인해야 합니다.")
-    if menu == "rice" and not _rice_fan_verified(step):
-        raise HTTPException(409, "밥 공정의 팬 관찰을 먼저 확인해야 합니다.")
+    if menu == "rice" and (not _rice_fan_verified(step) or not _rice_climate_verified(step)):
+        raise HTTPException(409, "밥 공정의 팬과 기후 설정 관찰을 먼저 확인해야 합니다.")
     if menu == "mackerel" and old.get("source") and not _phase_source_matches(
             old["source"], step.get("monitored_process_source"), "MACKEREL"):
         raise HTTPException(409, "연결된 고등어 원표본의 공정 판정을 먼저 확인해야 합니다.")

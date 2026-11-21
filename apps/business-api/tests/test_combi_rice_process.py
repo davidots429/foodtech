@@ -6,10 +6,25 @@ from foodtech_contracts.combi_rice_process import Sample, assess
 
 
 def records(count=180, humidity=D("96")):
-    return [Sample(second, D("100"), humidity, "CLOSED", 4) for second in range(1, count + 1)]
+    return [Sample(second, D("100"), humidity, "CLOSED", 4, D("100")) for second in range(1, count + 1)]
 
 
 class RiceMonitorTests(unittest.TestCase):
+    def test_climate_setting_is_separate_from_humidity_and_required_for_normal(self):
+        data = records()
+        for value, expected in ((None, "INCOMPLETE"), (D("99"), "DEVIATION_OBSERVED")):
+            changed = list(data); changed[10] = replace(changed[10], climate_setpoint_percent=value)
+            result = assess(changed, len(changed), "NORMAL", "MEASURED")
+            self.assertEqual(result["status"], "INSUFFICIENT_DATA")
+            self.assertEqual(result["climate_observation"]["status"], expected)
+            if value is not None:
+                self.assertIn("CLIMATE_SETPOINT_DEVIATION", result["reason_codes"])
+        missing = [replace(item, climate_setpoint_percent=None) for item in data]
+        self.assertEqual(assess(missing, len(missing), "NORMAL", "MEASURED")["climate_observation"]["status"], "NOT_MEASURED")
+        invalid = list(data); invalid[0] = replace(invalid[0], climate_setpoint_percent=D("101"))
+        with self.assertRaises(ValueError):
+            assess(invalid, len(invalid), "NORMAL", "MEASURED")
+
     def test_fan_missing_or_deviating_does_not_claim_normal_process(self):
         for fan in (None, 3):
             data = records(); data[10] = replace(data[10], fan_level=fan)

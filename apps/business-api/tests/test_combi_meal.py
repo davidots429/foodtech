@@ -114,7 +114,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         fish.update(status="UNLOADED", program_cooking_duration=2, time_status="NORMAL")
         response = await self.client.post(path + "/mackerel-process", headers=headers,
             json={"expected_version": 1, "samples": [
-                {"second": i, "chamber_celsius": "220", "door": "CLOSED", "fan_level": 3} for i in (1, 2)]})
+                {"second": i, "chamber_celsius": "220", "door": "CLOSED", "fan_level": 3, "climate_setpoint_percent": "10"} for i in (1, 2)]})
         self.assertEqual(response.status_code, 409)
         self.assertNotIn("monitored_process_assessment", fish)
         self.assertEqual(stored["version"], 1)
@@ -156,7 +156,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
                     program_completed_at=(start + timedelta(seconds=2)).isoformat(), program_cooking_duration=2,
                     time_status="NORMAL", safety_status="PASSED", safety_version=1,
                     monitored_process_assessment={"status": "NORMAL", "reason_codes": [],
-                                                  "fan_observation": {"status": "MATCHED"}},
+                                                  "fan_observation": {"status": "MATCHED"}, "climate_observation": {"status": "MATCHED"}},
                     monitored_process_samples=[{"second": 1}], quality_current={"version": 1, "usable": True})
         visible = (await self.client.get(path)).json()["rice"]
         self.assertEqual(visible["safety_status"], "INCOMPLETE")
@@ -225,6 +225,38 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_source.status_code, 200, first_source.text)
         self.assertFalse(first_source.json()["step"]["quality_current"]["usable"])
         self.assertEqual(first_source.json()["step"]["quality_current"]["blocked_reason"], "MACKEREL_PROCESS_REASSESSED")
+        for phase, key, version in (("rice", f"JOB#RICE#{meta['rice_cooking_job_id']}", 6),
+                                    ("mackerel", f"JOB#MACKEREL#{meta['mackerel_cooking_job_id']}", 7)):
+            step = self.store.items[(pk, key)]
+            step["monitored_process_assessment"].pop("climate_observation")
+            legacy = await self.client.post(path + f"/source-assessment/{phase}", headers=headers,
+                json={"expected_version": version, "reassess_legacy_climate": True})
+            self.assertEqual(legacy.status_code, 200, legacy.text)
+            self.assertEqual(legacy.json()["event"]["event"], f"{phase.upper()}_CLIMATE_SOURCE_REASSESSED")
+            self.assertNotIn("climate_observation", legacy.json()["event"]["previous_assessment"])
+            self.assertEqual(legacy.json()["step"]["monitored_process_assessment"]["climate_observation"]["status"], "MATCHED")
+            self.assertFalse(legacy.json()["step"]["quality_current"]["usable"])
+
+    async def test_rice_safety_rejects_legacy_process_without_climate_observation(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        meta = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()["meal"]
+        path = "/api/customer/combi-meals/" + meta["meal_batch_id"]
+        pk = combi_meal._pk(self.subject, meta["meal_batch_id"])
+        rice = self.store.items[(pk, f"JOB#RICE#{meta['rice_cooking_job_id']}")]
+        rice.update(status="UNLOADED", safety_status="PASSED", quality_current={"version": 1, "usable": True},
+                    monitored_process_assessment={"status": "NORMAL", "reason_codes": [],
+                                                  "fan_observation": {"status": "MATCHED"}})
+        visible = (await self.client.get(path)).json()["rice"]
+        self.assertEqual(visible["safety_status"], "INCOMPLETE")
+        self.assertEqual(visible["quality_current"]["blocked_reason"], "CLIMATE_EVIDENCE_UNVERIFIED")
+        self.assertEqual(visible["monitored_process_assessment"]["status"], "INSUFFICIENT_DATA")
+        self.assertEqual(visible["monitored_process_assessment"]["recorded_status"], "NORMAL")
+        self.assertEqual(rice["monitored_process_assessment"]["status"], "NORMAL")
+        response = await self.client.post(path + "/rice-safety", headers=headers, json={
+            "expected_version": 1, "observation": "NO_ANOMALY", "note": "합성 안전 확인"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["step"]["safety_status"], "INCOMPLETE")
+        self.assertFalse(response.json()["event"]["climate_checked"])
 
     async def test_rice_safety_uses_process_and_explicit_anomaly_confirmation(self):
         headers = {"X-CSRF-Token": "csrf"}
@@ -238,7 +270,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         incomplete = await self.client.post(path + "/rice-safety", headers=headers, json=confirmation)
         self.assertEqual(incomplete.json()["step"]["safety_status"], "INCOMPLETE")
         rice = self.store.items[(pk, rice["sk"])]
-        rice["monitored_process_assessment"] = {"status": "NORMAL", "reason_codes": [], "fan_observation": {"status": "MATCHED"}}
+        rice["monitored_process_assessment"] = {"status": "NORMAL", "reason_codes": [], "fan_observation": {"status": "MATCHED"}, "climate_observation": {"status": "MATCHED"}}
         passed = await self.client.post(path + "/rice-safety", headers=headers,
                                         json={**confirmation, "expected_version": 2})
         self.assertEqual(passed.json()["step"]["safety_status"], "PASSED")
@@ -579,7 +611,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["meal"]["status"], "MODE_TRANSITION")
         self.assertEqual(snapshot["rice"]["process_status"], "NOT_MEASURED")
         self.assertEqual(len(snapshot["events"]), 4)
-        samples = [{"second": second, "chamber_celsius": "100", "humidity_percent": "98", "door": "CLOSED", "fan_level": 4}
+        samples = [{"second": second, "chamber_celsius": "100", "humidity_percent": "98", "door": "CLOSED", "fan_level": 4, "climate_setpoint_percent": "100"}
                    for second in range(1, 1801)]
         process = await self.client.post(path + "/rice-process", headers=headers,
             json={"expected_version": 5, "humidity_source": "MEASURED", "samples": samples})
@@ -667,7 +699,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.json()["step"]["safety_status"], "PASSED")
         self.assertEqual(result.json()["step"]["batch_representative_core_temperature"], "75")
         self.assertEqual(result.json()["step"]["process_status"], "NOT_MEASURED")
-        process_samples = [{"second": i, "chamber_celsius": "220", "door": "CLOSED", "fan_level": 3}
+        process_samples = [{"second": i, "chamber_celsius": "220", "door": "CLOSED", "fan_level": 3, "climate_setpoint_percent": "10"}
                            for i in range(1, 721)]
         bad_process = await self.client.post(path + "/mackerel-process", headers=headers,
                                              json={"expected_version": 11, "samples": process_samples[:-1]})

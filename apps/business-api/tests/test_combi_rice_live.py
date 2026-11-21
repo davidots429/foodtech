@@ -24,7 +24,7 @@ class RiceLiveTests(unittest.TestCase):
             before, current = run(rows[:-1]), run(rows)
             self.assertNotIn(reason, before['failure_codes'])
             self.assertIn(reason, current['failure_codes'])
-            offline = assess([Sample(i, Decimal(temp), Decimal('98'), 'CLOSED', 4) for i in range(1, count + 1)],
+            offline = assess([Sample(i, Decimal(temp), Decimal('98'), 'CLOSED', 4, Decimal('100')) for i in range(1, count + 1)],
                              count, 'NORMAL', 'MEASURED')
             self.assertIn(reason, offline['reason_codes'])
 
