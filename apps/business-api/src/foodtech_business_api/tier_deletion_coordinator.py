@@ -7,6 +7,11 @@ import json
 
 
 class TierDeletionCoordinator:
+    @staticmethod
+    def _writer_quiescence_proven():
+        # No deployed legacy-writer fencing evidence is connected yet.
+        return False
+
     def __init__(self, *, capture, worker):
         if worker.index_capture is not capture or worker.tier_store is not capture.tier_store or \
                 worker.progress_store is not capture.progress_store or worker.cipher is not capture.cipher:
@@ -32,6 +37,8 @@ class TierDeletionCoordinator:
                     type(version) is not int or version < 1 or \
                     item['state'] != ('VERIFYING' if state['phase']=='VERIFYING' else 'IN_PROGRESS'):
                 raise ValueError('invalid tier coordinator checkpoint')
+        if not self._writer_quiescence_proven():
+            return {'phase':'QUIESCENCE','writer_quiescence_required':True}
         if state['phase']=='VERIFYING':return {'phase':'VERIFYING'}
         if state['phase']=='CAPTURE':
             result=self.capture.capture_page(subject=subject,request_id=request_id,limit=limit)
@@ -71,6 +78,8 @@ class TierDeletionCoordinator:
                 state['phase']!='VERIFYING' or type(state['index']) is not int or type(state['total']) is not int or \
                 not 0 <= index < state['total'] < 10**12 or state['index']!=state['total']:
             raise ValueError('invalid tier verification checkpoint')
+        if not self._writer_quiescence_proven():
+            return {'phase':'QUIESCENCE','writer_quiescence_required':True}
         result=self.capture.observe_and_record(subject=subject,request_id=request_id,index=index)
         observation=result.get('observation')
         if observation not in {'PRESENT','NOT_OBSERVED','INCONCLUSIVE'}:

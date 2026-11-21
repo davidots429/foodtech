@@ -46,6 +46,8 @@ REGISTRY = "foodtech-ai-execution-registry-dev"
 def main():
     if os.getenv("AWS_PROFILE") != "foodtech" or os.getenv("FOODTECH_TIER_RECOVERY_LIVE") != "1":
         raise SystemExit("Use AWS_PROFILE=foodtech and FOODTECH_TIER_RECOVERY_LIVE=1")
+    if not TierDeletionCoordinator._writer_quiescence_proven():
+        raise SystemExit('Live cleanup requires verified legacy writer quiescence')
     session = boto3.Session(profile_name="foodtech", region_name=REGION)
     if session.client("sts").get_caller_identity()["Account"] != ACCOUNT:
         raise SystemExit("Unexpected AWS account")

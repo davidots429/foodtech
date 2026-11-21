@@ -20,6 +20,7 @@ class TierCoordinatorTests(unittest.TestCase):
         self.worker=SimpleNamespace(index_capture=self.capture,tier_store=self.tier,progress_store=self.progress,cipher=self.cipher,
             run_page=Mock(side_effect=[{'state':'IN_PROGRESS'},{'state':'VERIFYING'}]))
         self.service=TierDeletionCoordinator(capture=self.capture,worker=self.worker)
+        self.service._writer_quiescence_proven=Mock(return_value=True)
         self.scope={'subject':str(uuid4()),'request_id':str(uuid4())}
 
     def test_gsi_present_and_inconclusive_block_progress(self):
@@ -57,6 +58,20 @@ class TierCoordinatorTests(unittest.TestCase):
     def test_incorrect_store_rejected(self):
         recovery=SimpleNamespace(store=SimpleNamespace(auth_table='other',registry_table='registry'))
         with self.assertRaises(ValueError):TierDeletionRecovery(recovery=recovery,coordinator=self.service)
+
+    def test_no_writer_fence_blocks_existing_checkpoints_and_recheck(self):
+        import json
+        self.service._writer_quiescence_proven=Mock(return_value=False)
+        key=(self.scope['subject'],self.scope['request_id'],'TIER_COORDINATOR')
+        for phase,index,total in (('CAPTURE',0,0),('DELETE',0,1),('OBSERVE',0,1),('VERIFYING',1,1)):
+            self.progress.items[key]={'version':1,'state':'VERIFYING' if phase=='VERIFYING' else 'IN_PROGRESS',
+                'checkpoint':json.dumps({'schema':1,'phase':phase,'index':index,'total':total}).encode()}
+            self.assertEqual(self.service.step(**self.scope),{'phase':'QUIESCENCE','writer_quiescence_required':True})
+        self.assertEqual(self.service.recheck_index(**self.scope,index=0),
+                         {'phase':'QUIESCENCE','writer_quiescence_required':True})
+        self.capture.capture_page.assert_not_called()
+        self.worker.run_page.assert_not_called()
+        self.capture.observe_and_record.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

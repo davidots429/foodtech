@@ -10,6 +10,8 @@ from foodtech_business_api.tier_deletion_coordinator import TierDeletionCoordina
 from boto3.dynamodb.conditions import Key
 if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_TIER_COORDINATOR_LIVE') != '1':
  raise SystemExit('explicit development profile and FOODTECH_TIER_COORDINATOR_LIVE=1 required')
+if not TierDeletionCoordinator._writer_quiescence_proven():
+ raise SystemExit('Live cleanup requires verified legacy writer quiescence')
 s=boto3.Session(profile_name='foodtech',region_name='ap-southeast-2')
 if s.client('sts').get_caller_identity()['Account']!='573693340100':raise RuntimeError('unexpected account')
 db=s.resource('dynamodb');auth=db.Table('foodtech-auth-sessions-dev');reg=db.Table('foodtech-ai-execution-registry-dev');source=db.Table('foodtech-cooking-jobs-dev');progress=db.Table('foodtech-ai-credential-vault-dev')
