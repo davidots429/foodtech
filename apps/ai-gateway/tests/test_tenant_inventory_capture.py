@@ -110,7 +110,7 @@ class InventoryCaptureTests(unittest.TestCase):
         head = self.progress.items[(self.scope['subject'], self.scope['request_id'], 'AI_INVENTORY')]
         self.assertEqual(head['version'], 3)
 
-    def test_legacy_incomplete_inventory_requires_restart(self):
+    def test_legacy_incomplete_inventory_resumes_with_cycle_state(self):
         cursor = {'pk': 'a', 'sk': 's'}
         self.progress.items[(self.scope['subject'], self.scope['request_id'], 'AI_INVENTORY')] = {
             'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': self.capture._pack(
@@ -118,8 +118,20 @@ class InventoryCaptureTests(unittest.TestCase):
         self.progress.items[(self.scope['subject'], self.scope['request_id'], 'AI_INVENTORY_PAGE_000000000001')] = {
             'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': self.capture._pack(
                 {'schema': 1, 'start': None, 'next': cursor, 'partitions': []})}
-        with self.assertRaisesRegex(ValueError, 'requires restart'):
-            self.capture.capture_page(**self.scope, limit=1)
+        with patch('foodtech_ai_gateway.tenant_inventory_capture.reconcile_reserved_page',
+                   return_value=InventoryPage(('EXEC#next',), None, 1)):
+            self.assertTrue(self.capture.capture_page(**self.scope, limit=1)['complete'])
+        self.assertEqual([item.partition for item in self.capture.partitions(**self.scope)], ['EXEC#next'])
+
+    def test_legacy_saved_page_after_head_failure_can_resume(self):
+        cursor = {'pk': 'a', 'sk': 's'}
+        self.progress.items[(self.scope['subject'], self.scope['request_id'], 'AI_INVENTORY_PAGE_000000000001')] = {
+            'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': self.capture._pack(
+                {'schema': 1, 'start': None, 'next': cursor, 'partitions': []})}
+        self.assertFalse(self.capture.capture_page(**self.scope, limit=1)['complete'])
+        with patch('foodtech_ai_gateway.tenant_inventory_capture.reconcile_reserved_page',
+                   return_value=InventoryPage((), None, 1)):
+            self.assertTrue(self.capture.capture_page(**self.scope, limit=1)['complete'])
 
     def test_rejects_other_source_and_nonadvancing_scan(self):
         self.cipher.source_table_arn = 'other'

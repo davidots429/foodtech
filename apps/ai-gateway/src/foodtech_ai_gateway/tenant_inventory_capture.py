@@ -110,6 +110,25 @@ class TenantInventoryCapture:
             return {'anchor': next_cursor, 'power': previous['power'] * 2, 'length': 0}
         return {'anchor': previous['anchor'], 'power': previous['power'], 'length': length}
 
+    def _recover_cycle(self, subject, request_id, head):
+        cursor, count, cycle, seen = None, 0, None, set()
+        for number in range(1, head['pages'] + 1):
+            page = self._page(self._load(subject, request_id, self._domain(number)))
+            if page['start'] != cursor or page['next'] is None:
+                raise ValueError('invalid AI inventory page sequence')
+            cycle = self._cycle(cycle, page['next'])
+            if 'cycle' in page and page['cycle'] != cycle:
+                raise ValueError('invalid AI inventory cycle state')
+            cursor = page['next']
+            key = self._pack(cursor)
+            if key in seen:
+                raise ValueError('repeated AI inventory cursor')
+            seen.add(key)
+            count += len(page['partitions'])
+        if cursor != head['cursor'] or count != head['count']:
+            raise ValueError('invalid AI inventory head')
+        return cycle
+
     def capture_page(self, *, subject, request_id, limit):
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('invalid AI inventory limit')
@@ -122,9 +141,11 @@ class TenantInventoryCapture:
         previous_cycle = None
         if head['pages']:
             previous = self._page(self._load(subject, request_id, self._domain(head['pages'])))
-            if previous['next'] != head['cursor'] or 'cycle' not in previous or previous['cycle'] is None:
-                raise ValueError('inventory requires restart with cycle detection')
-            previous_cycle = previous['cycle']
+            if previous['next'] != head['cursor']:
+                raise ValueError('invalid AI inventory page sequence')
+            previous_cycle = previous['cycle'] if 'cycle' in previous else self._recover_cycle(subject, request_id, head)
+            if previous_cycle is None:
+                raise ValueError('invalid AI inventory cycle state')
         entry = self._load(subject, request_id, domain)
         if entry is None:
             found = reconcile_reserved_page(self.source_table, self.progress_store.client,
@@ -141,7 +162,8 @@ class TenantInventoryCapture:
             value = self._page(entry)
         if value['start'] != head['cursor']:
             raise ValueError('invalid AI inventory page sequence')
-        if 'cycle' not in value or value['cycle'] != self._cycle(previous_cycle, value['next']):
+        expected_cycle = self._cycle(previous_cycle, value['next'])
+        if 'cycle' in value and value['cycle'] != expected_cycle:
             raise ValueError('invalid AI inventory cycle state')
         new_head = {'schema': 1, 'pages': number, 'count': head['count'] + len(value['partitions']),
                     'cursor': value['next'], 'complete': value['next'] is None}
