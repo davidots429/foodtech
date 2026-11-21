@@ -16,6 +16,7 @@ type Freshness = { status: "CHANGED" | "UNCHANGED_AS_OBSERVED"; checked_at: stri
   changed: { meal_id: string; reason: "UNAVAILABLE" | "VERSION_CHANGED" }[] };
 type VersionPage = { items: { result_id: string; created_at: string; sample_count: number;
   excluded_count: number; mean_quality_score_percent: string | null }[]; next_cursor: string | null };
+type GroupPage = { items: { group_id: string; selection: Result["selection"] }[]; next_cursor: string | null };
 type Comparison = { baseline: { sample_count: number; freshness: Freshness; selection: Result["selection"] };
   candidate: { sample_count: number; freshness: Freshness; selection: Result["selection"] };
   deltas: { mean_quality_score_percent: string; quality_pass_rate_percent: string; quality_target_rate_percent: string };
@@ -59,6 +60,9 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
   const [versions, setVersions] = useState<VersionPage["items"]>([]);
   const [versionsGroup, setVersionsGroup] = useState("");
   const [versionsCursor, setVersionsCursor] = useState<string | null>(null);
+  const [groups, setGroups] = useState<GroupPage["items"]>([]);
+  const [groupsLoaded, setGroupsLoaded] = useState(false);
+  const [groupsCursor, setGroupsCursor] = useState<string | null>(null);
   const active = useRef(false);
 
   async function calculate() {
@@ -131,6 +135,18 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
     finally { active.current = false; setBusy(false); }
   }
 
+  async function listGroups(cursor?: string) {
+    if (active.current) return;
+    active.current = true; setBusy(true); setError("");
+    try {
+      const page = await api<GroupPage>('/api/customer/combi-quality-aggregates/groups?limit=20' +
+        (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
+      setGroups(previous => cursor ? [...previous, ...page.items] : page.items);
+      setGroupsCursor(page.next_cursor); setGroupsLoaded(true);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "집계 그룹을 불러오지 못했습니다."); }
+    finally { active.current = false; setBusy(false); }
+  }
+
   return <section className="binding-box"><h3>밥·고등어 품질 선택 표본 집계</h3>
     <p>같은 메뉴·장비·레시피·조리량 구간의 평가를 비교합니다. 합성 기준이며 선택한 표본만 집계합니다.</p>
     <p>장비 규모: {size === "MEDIUM_FIXED_RACK_10" ? "중형 고정 랙" : "대형 이동식 랙"}</p>
@@ -152,6 +168,11 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
       <label>결과 ID<input value={resultId} onChange={event => setResultId(event.target.value)} /></label>
     </div>
     <button type="button" className="secondary" disabled={busy || !groupId.trim() || !resultId.trim()} onClick={open}>저장된 집계 조회</button>
+    <button type="button" className="secondary" disabled={busy} onClick={() => listGroups()}>내 집계 그룹 목록</button>
+    {groupsLoaded && <div><p>집계 그룹 {groups.length}건</p><ul>{groups.map(group => <li key={group.group_id}>
+      <button type="button" className="secondary" disabled={busy} onClick={() => { setGroupId(group.group_id); setResultId(""); setVersions([]); setVersionsGroup(""); setVersionsCursor(null); }}>그룹 선택</button>
+      {" "}{group.selection.menu === "RICE" ? "밥" : "고등어"} · {group.selection.recipe_version} · {group.selection.load_band}
+    </li>)}</ul>{groupsCursor && <button type="button" className="secondary" disabled={busy} onClick={() => listGroups(groupsCursor)}>그룹 더 보기</button>}</div>}
     <button type="button" className="secondary" disabled={busy || !groupId.trim()} onClick={() => listVersions()}>이 그룹의 저장 결과 목록</button>
     {versionsGroup && <div><p>저장 결과 {versions.length}건</p><ul>{versions.map(version => <li key={version.result_id}>
       <button type="button" className="secondary" disabled={busy} onClick={() => setResultId(version.result_id)}>선택</button>

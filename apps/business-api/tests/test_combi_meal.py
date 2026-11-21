@@ -175,6 +175,9 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         result = response.json()
         self.assertEqual((result['sample_count'], result['mean_quality_score_percent']), (1, '80.00'))
         self.assertEqual(result['snapshot_status'], 'HISTORICAL')
+        groups = await self.client.get(path + '/groups?limit=1')
+        self.assertEqual(groups.status_code, 200, groups.text)
+        self.assertEqual(groups.json()['items'][0]['group_id'], result['group_id'])
         retry = await self.client.post(path, headers=headers, json=body)
         self.assertEqual(retry.json()['result_id'], result['result_id'])
         excluded = await self.client.post(path, headers=headers, json={**body, 'load_band': 'REFERENCE'})
@@ -187,6 +190,12 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         candidate = await self.client.post(path, headers=headers,
             json={**body, 'period_start': '2026-11-21T00:00:00Z'})
         self.assertEqual(candidate.status_code, 201, candidate.text)
+        group_page = (await self.client.get(path + '/groups?limit=1')).json()
+        self.assertEqual(len(group_page['items']), 1)
+        self.assertIsNotNone(group_page['next_cursor'])
+        self.assertEqual(len((await self.client.get(path + '/groups?limit=1&cursor=' +
+                                                    group_page['next_cursor'])).json()['items']), 1)
+        self.assertEqual((await self.client.get(path + '/groups?cursor=bad')).status_code, 400)
         comparison_body = {'baseline_group_id': result['group_id'], 'baseline_result_id': result['result_id'],
                            'candidate_group_id': candidate.json()['group_id'],
                            'candidate_result_id': candidate.json()['result_id']}
@@ -237,6 +246,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(link)).status_code, 404)
         self.assertEqual((await self.client.get(link + '/freshness')).status_code, 404)
         self.assertEqual((await self.client.get(versions_path)).json()['items'], [])
+        self.assertEqual((await self.client.get(path + '/groups')).json()['items'], [])
         self.assertEqual((await self.client.post(link + '/recalculate', headers=headers)).status_code, 404)
         self.assertEqual((await self.client.post(path + '/compare', headers=headers, json=comparison_body)).status_code, 404)
         self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 404)
