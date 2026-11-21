@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import boto3
 from boto3.dynamodb.conditions import Attr
+from botocore.exceptions import ClientError
 from starlette.requests import Request
 
 from foodtech_ai_gateway.policy import Execution, Feature
@@ -97,6 +98,8 @@ def main():
         bound = BoundRecipeSourceGuard(guard, execution, scoped.job_partitions, scoped.source_partitions)
         if not bound.verify(execution) or bound.verify(replace(execution, tenant_id='other-customer')):
             raise AssertionError('bound source guard rejected owner or accepted another execution')
+        checks = bound.settlement_checks()
+        session.client('dynamodb').transact_write_items(TransactItems=checks)
         request = Request({'type': 'http', 'method': 'GET', 'path': '/', 'headers': [
             (b'cookie', f'{auth_module.SESSION_COOKIE}={session_id}'.encode())]})
         async def combined():
@@ -110,6 +113,13 @@ def main():
         jobs.update_item(Key=job_key, UpdateExpression='SET #binding.#batch = :value',
             ExpressionAttributeNames={'#binding': 'source_binding', '#batch': 'batch_id'},
             ExpressionAttributeValues={':value': f'jeyuk-foreign-{suffix}'})
+        try:
+            session.client('dynamodb').transact_write_items(TransactItems=checks)
+        except ClientError as error:
+            if error.response.get('Error', {}).get('Code') != 'TransactionCanceledException':
+                raise
+        else:
+            raise AssertionError('changed binding passed settlement conditions')
         if guard.verify_scoped(execution, scoped.job_partitions, scoped.source_partitions):
             raise AssertionError('source outside scoped binding accepted')
         jobs.update_item(Key=job_key, UpdateExpression='SET #binding.#batch = :value',
@@ -137,6 +147,13 @@ def main():
         sources.update_item(Key={'pk': f'JEYUK#{source_ids[1]}', 'sk': 'SOURCE#REVISION'},
                             UpdateExpression='ADD revision :one', ExpressionAttributeValues={':one': 1})
         if guard.verify(execution): raise AssertionError('changed previous source accepted')
+        try:
+            session.client('dynamodb').transact_write_items(TransactItems=checks)
+        except ClientError as error:
+            if error.response.get('Error', {}).get('Code') != 'TransactionCanceledException':
+                raise
+        else:
+            raise AssertionError('changed source revision passed settlement conditions')
         print('synthetic source, timeline and job version recheck verified')
     finally:
         for table, key in reversed(created): table.delete_item(Key=key)

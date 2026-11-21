@@ -111,6 +111,24 @@ class RecipeSourceGuardTests(unittest.TestCase):
         self.assertFalse(bound.verify(replace(self.execution, prior_source_revision=30)))
         self.assertFalse(bound.verify(None))
 
+    def test_settlement_checks_bind_jobs_reverse_links_and_source_versions(self):
+        jobs = (f'SCOPE#USER#tenant-a#JOB#{self.current}', f'SCOPE#USER#tenant-a#JOB#{self.prior}')
+        sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')
+        bound = BoundRecipeSourceGuard(self.guard, self.execution, jobs, sources)
+        checks = bound.settlement_checks()
+        self.assertEqual(len(checks), 6)
+        first_job, first_reverse, first_revision = [item['ConditionCheck'] for item in checks[:3]]
+        self.assertEqual(first_job['Key']['pk'], {'S': jobs[0]})
+        self.assertEqual(first_job['ExpressionAttributeValues'][':batch'], {'S': 'batch-current'})
+        self.assertEqual(first_reverse['ExpressionAttributeValues'][':pk'], {'S': jobs[0]})
+        self.assertEqual(first_revision['ExpressionAttributeValues'][':revision'], {'N': '30'})
+        with self.assertRaises(ValueError):
+            self.guard.settlement_checks(self.execution, jobs, (sources[0], sources[0]))
+        with self.assertRaises(ValueError):
+            BoundRecipeSourceGuard(self.guard, replace(self.execution, job_id='bad'), jobs, sources).settlement_checks()
+        with self.assertRaises(ValueError):
+            self.guard.settlement_checks(replace(self.execution, feature=Feature.GENERAL_GUIDE), jobs, sources)
+
     def test_rejects_wrong_provenance_binding_and_shared_batch(self):
         key = (f'SCOPE#USER#tenant-a#JOB#{self.prior}', 'META')
         row = self.resource.tables['foodtech-cooking-jobs-dev'].items[key]

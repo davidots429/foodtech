@@ -12,11 +12,12 @@ from decimal import Decimal
 from uuid import UUID
 
 from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts.jeyuk_process import PROFILES
 from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
 from foodtech_contracts.jeyuk_receipt import matches_jeyuk_snapshot
 
-from .policy import Execution
+from .policy import Execution, Feature
 
 MAX_SOURCE_ROWS = max(profile.time_bands[-1] for profile in PROFILES.values())
 MAX_RECEIPTS = 100
@@ -39,6 +40,11 @@ class BoundRecipeSourceGuard:
         if not isinstance(execution, Execution) or execution != self.execution:
             return False
         return self.guard.verify_scoped(execution, self.job_partitions, self.source_partitions) is True
+
+    def settlement_checks(self):
+        if not isinstance(self.guard, DynamoRecipeSourceGuard):
+            raise ValueError('DynamoDB source guard is required')
+        return self.guard.settlement_checks(self.execution, self.job_partitions, self.source_partitions)
 
 
 def _positive_integer(value: object) -> int | None:
@@ -85,6 +91,16 @@ class DynamoRecipeSourceGuard:
 
         This code-level bound is not a replacement for AWS IAM isolation.
         """
+        if not self._valid_scope(execution, job_partitions, source_partitions):
+            return False
+        return self._verify(execution, source_partitions)
+
+    @staticmethod
+    def _valid_scope(execution, job_partitions, source_partitions):
+        if not isinstance(execution, Execution) or execution.feature != Feature.RECIPE_CORRECTION or \
+                not isinstance(execution.tenant_id, str) or \
+                not re.fullmatch(r'[A-Za-z0-9-]{1,128}', execution.tenant_id):
+            return False
         subject = execution.tenant_id
         expected_jobs = (f'SCOPE#USER#{subject}#JOB#{execution.job_id}',
                          f'SCOPE#USER#{subject}#JOB#{execution.prior_job_id}')
@@ -93,7 +109,52 @@ class DynamoRecipeSourceGuard:
                 any(not isinstance(value, str) or not re.fullmatch(r'JEYUK#[A-Za-z0-9_-]{1,128}', value)
                     for value in source_partitions) or source_partitions[0] == source_partitions[1]:
             return False
-        return self._verify(execution, source_partitions)
+        try:
+            if any(not isinstance(value, str) or str(UUID(value)) != value
+                   for value in (execution.job_id, execution.prior_job_id)) or execution.job_id == execution.prior_job_id:
+                return False
+        except (ValueError, TypeError, AttributeError):
+            return False
+        return all(_positive_integer(value) is not None for value in
+                   (execution.job_version, execution.prior_job_version,
+                    execution.jeyuk_source_revision, execution.prior_source_revision))
+
+    def settlement_checks(self, execution: Execution, job_partitions, source_partitions):
+        """Build version and binding checks for a later DynamoDB transaction.
+
+        The caller must verify raw records separately and ensure every writer
+        increments the checked revisions. No AWS permission is granted here.
+        """
+        if not self._valid_scope(execution, job_partitions, source_partitions):
+            raise ValueError('invalid recipe settlement scope')
+        serializer = TypeSerializer()
+        encode = lambda values: {key: serializer.serialize(value) for key, value in values.items()}
+        checks = []
+        for job_id, version, revision, job_pk, source_pk in zip(
+                (execution.job_id, execution.prior_job_id),
+                (execution.job_version, execution.prior_job_version),
+                (execution.jeyuk_source_revision, execution.prior_source_revision), job_partitions, source_partitions):
+            batch = source_pk.removeprefix('JEYUK#')
+            checks.append({'ConditionCheck': {'TableName': self.cooking.name,
+                'Key': encode({'pk': job_pk, 'sk': 'META'}),
+                'ConditionExpression': '#owner = :owner AND #job = :job AND #version = :version AND '
+                    '#menu = :menu AND #provenance = :synthetic AND #binding.#source = :source AND '
+                    '#binding.#device = :device AND #binding.#batch = :batch',
+                'ExpressionAttributeNames': {'#owner': 'owner_subject', '#job': 'job_id', '#version': 'version',
+                    '#menu': 'menu', '#provenance': 'provenance', '#binding': 'source_binding',
+                    '#source': 'source_id', '#device': 'device_id', '#batch': 'batch_id'},
+                'ExpressionAttributeValues': encode({':owner': execution.tenant_id, ':job': job_id, ':version': version,
+                    ':menu': 'JEYUK', ':synthetic': 'SYNTHETIC', ':source': 'synthetic-rest',
+                    ':device': 'mockprofile-110-a-001', ':batch': batch})}})
+            checks.append({'ConditionCheck': {'TableName': self.cooking.name,
+                'Key': encode({'pk': source_pk, 'sk': 'BINDING'}),
+                'ConditionExpression': 'job_pk = :pk AND job_id = :job',
+                'ExpressionAttributeValues': encode({':pk': job_pk, ':job': job_id})}})
+            checks.append({'ConditionCheck': {'TableName': self.data.name,
+                'Key': encode({'pk': source_pk, 'sk': 'SOURCE#REVISION'}),
+                'ConditionExpression': '#revision = :revision', 'ExpressionAttributeNames': {'#revision': 'revision'},
+                'ExpressionAttributeValues': encode({':revision': revision})}})
+        return checks
 
     def _verify(self, execution: Execution, source_partitions) -> bool:
         subject = execution.tenant_id
