@@ -17,6 +17,22 @@ class Conflict(Exception):
     pass
 
 
+def _profile_listing(subject: str, profile: dict) -> dict:
+    profile_id, version = profile["profile_id"], profile["profile_version"]
+    if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", value)
+           for value in (profile_id, version)):
+        raise ValueError("invalid profile reference")
+    return {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILES", "sk": f"PROFILE#{profile_id}#VERSION#{version}",
+            "profile_id": profile_id, "profile_version": version}
+
+
+def _profile_page_args(limit: int, cursor: str | None) -> None:
+    if type(limit) is not int or not 1 <= limit <= 100 or (cursor is not None and
+            (not isinstance(cursor, str) or not re.fullmatch(
+                r"PROFILE#[A-Za-z0-9][A-Za-z0-9._:-]{0,79}#VERSION#[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", cursor))):
+        raise ValueError("invalid profile inventory page")
+
+
 def _job_list_item(pk: str, meta: dict) -> dict:
     owner = meta["owner_subject"]
     job_id = meta["job_id"]
@@ -112,6 +128,7 @@ def _api_numbers(value):
 class CookingStore(Protocol):
     def create_condition_profile(self, subject: str, profile: dict) -> None: ...
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None: ...
+    def list_condition_profile_refs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def validation_evidence_snapshots(self, pk: str) -> list[dict]: ...
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
                                  source_table: str, revision: int, receipt: dict) -> None: ...
@@ -173,16 +190,29 @@ class MemoryCookingStore:
 
     def create_condition_profile(self, subject: str, profile: dict) -> None:
         key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}", f"VERSION#{profile['profile_version']}")
+        listing = _profile_listing(subject, profile)
+        list_key = (listing["pk"], listing["sk"])
         with self.lock:
-            if key in self.items:
+            if key in self.items or list_key in self.items:
                 raise Conflict
             self.items[key] = {"pk": key[0], "sk": key[1], **profile}
+            self.items[list_key] = listing
 
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None:
         key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", f"VERSION#{version}")
         with self.lock:
             value = self.items.get(key)
             return value.copy() if value else None
+
+    def list_condition_profile_refs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _profile_page_args(limit, cursor)
+        pk = f"SCOPE#USER#{subject}#CONDITION_PROFILES"
+        with self.lock:
+            rows = sorted((sk, item) for (row_pk, sk), item in self.items.items()
+                          if row_pk == pk and sk.startswith("PROFILE#") and (cursor is None or sk > cursor))
+            page = rows[:limit]
+            return {"items": [{"profile_id": item["profile_id"], "profile_version": item["profile_version"]}
+                              for _, item in page], "next_cursor": page[-1][0] if len(rows) > limit else None}
 
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
                                  source_table: str, revision: int, receipt: dict) -> None:
@@ -579,10 +609,30 @@ class DynamoCookingStore:
     def create_condition_profile(self, subject: str, profile: dict) -> None:
         item = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}",
                 "sk": f"VERSION#{profile['profile_version']}", **profile}
+        listing = _profile_listing(subject, profile)
         try:
-            self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
-        except self.client.exceptions.ConditionalCheckFailedException as exc:
-            raise Conflict from exc
+            self.client.transact_write_items(TransactItems=[
+                {"Put": {"TableName": self.table.name, "Item": self._item(item),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+                {"Put": {"TableName": self.table.name, "Item": self._item(listing),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
+            raise
+
+    def list_condition_profile_refs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _profile_page_args(limit, cursor)
+        pk = f"SCOPE#USER#{subject}#CONDITION_PROFILES"
+        args = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with("PROFILE#"),
+                "ConsistentRead": True, "Limit": limit}
+        if cursor is not None:
+            args["ExclusiveStartKey"] = {"pk": pk, "sk": cursor}
+        page = self.table.query(**args)
+        return {"items": [{"profile_id": item["profile_id"], "profile_version": item["profile_version"]}
+                          for item in page.get("Items", [])],
+                "next_cursor": page.get("LastEvaluatedKey", {}).get("sk")}
 
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None:
         key = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", "sk": f"VERSION#{version}"}
