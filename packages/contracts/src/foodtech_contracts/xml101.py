@@ -89,9 +89,9 @@ def parse_record(raw: str | bytes) -> dict:
         extensions["equipmentType"] = text("extensions/equipmentType")
     if profiles[instance] == "321":
         humidity = text("extensions/humidityPercent")
-        extensions.update(climateSetpointPercent=Decimal(text("extensions/climateSetpointPercent")),
+        extensions.update(climateSetpointPercent=_decimal_field(text("extensions/climateSetpointPercent")),
                           humiditySource=text("extensions/humiditySource"),
-                          humidityPercent=Decimal(humidity) if humidity else None,
+                          humidityPercent=_decimal_field(humidity) if humidity else None,
                           fanLevel=int(text("extensions/fanLevel")))
     return {"schemaVersion": text("schemaVersion"), "sourceId": text("sourceId"),
             "deviceId": text("deviceId"), "batchId": text("batchId"), "recordId": text("recordId"),
