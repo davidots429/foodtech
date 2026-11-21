@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
 from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
 from foodtech_contracts.combi_transition import TransitionSample, assess_transition
@@ -37,6 +37,18 @@ class CreateMeal(BaseModel):
     added_water_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
     pan_tare_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
     rack_tare_kg: Decimal = Field(ge=0, max_digits=7, decimal_places=2)
+    rice_recipe_version: str | None = Field(default=None, max_length=80)
+    mackerel_recipe_version: str | None = Field(default=None, max_length=80)
+
+    @field_validator('rice_recipe_version', 'mackerel_recipe_version')
+    @classmethod
+    def validate_recipe_version(cls, value):
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError('recipe version cannot be blank')
+        return value
 
 
 class RicePreparation(BaseModel):
@@ -575,6 +587,10 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
          "target_program_seconds": 720, "process_status": "NOT_MEASURED",
          "safety_status": "NOT_MEASURED", "quality_status": "PENDING"},
     ]
+    for name in ('rice_recipe_version', 'mackerel_recipe_version'):
+        value = getattr(body, name)
+        if value is not None:
+            records[0][name] = value
     try:
         await _store_call(store, store.create_meal, _pk(session.subject, meal_id), records)
     except Conflict as exc:

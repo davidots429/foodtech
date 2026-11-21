@@ -91,6 +91,21 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "customer-two"
         self.assertEqual((await self.client.get(path)).status_code, 404)
 
+    async def test_recipe_versions_are_explicit_and_legacy_remains_unset(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = await self.client.post('/api/customer/combi-meals', headers=headers,
+            json={**self.body, 'rice_recipe_version': ' rice-v1 ', 'mackerel_recipe_version': 'fish-v2'})
+        self.assertEqual(created.status_code, 201, created.text)
+        meal = created.json()['meal']
+        self.assertEqual((meal['rice_recipe_version'], meal['mackerel_recipe_version']), ('rice-v1', 'fish-v2'))
+        loaded = await self.client.get('/api/customer/combi-meals/' + meal['meal_batch_id'])
+        self.assertEqual(loaded.json()['meal']['rice_recipe_version'], 'rice-v1')
+        old = await self.client.post('/api/customer/combi-meals', headers=headers, json=self.body)
+        self.assertNotIn('rice_recipe_version', old.json()['meal'])
+        invalid = await self.client.post('/api/customer/combi-meals', headers=headers,
+            json={**self.body, 'rice_recipe_version': '   '})
+        self.assertEqual(invalid.status_code, 422)
+
     async def test_linked_source_blocks_unrelated_transition_and_mackerel_samples(self):
         headers = {"X-CSRF-Token": "csrf"}
         created = (await self.client.post("/api/customer/combi-meals", json=self.body, headers=headers)).json()
