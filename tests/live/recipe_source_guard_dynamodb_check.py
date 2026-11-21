@@ -2,6 +2,7 @@
 import os
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import boto3
@@ -28,12 +29,15 @@ def main():
         Decimal('0'), job_id=current, job_version=7, prior_job_id=prior, prior_job_version=3,
         jeyuk_source_revision=3, prior_source_revision=2)
     created = []
+    placed = datetime(2026, 1, 1, tzinfo=timezone.utc)
     try:
         for job, version, batch, revision in zip((current, prior), (7, 3), source_ids, (3, 2)):
             job_key = {'pk': f'SCOPE#USER#{owner}#JOB#{job}', 'sk': 'META'}
             source_key = {'pk': f'JEYUK#{batch}', 'sk': 'SOURCE#REVISION'}
             jobs.put_item(Item={**job_key, 'owner_subject': owner, 'job_id': job, 'version': version,
-                'menu': 'JEYUK', 'provenance': 'SYNTHETIC', 'source_binding': {'source_id': 'synthetic-rest',
+                'menu': 'JEYUK', 'provenance': 'SYNTHETIC', 'actual_placed_at': placed.isoformat(),
+                'actual_lifted_at': (placed + timedelta(seconds=revision)).isoformat(),
+                'actual_cooking_seconds': revision, 'source_binding': {'source_id': 'synthetic-rest',
                 'device_id': 'mockprofile-110-a-001', 'batch_id': batch}}, ConditionExpression=Attr('pk').not_exists())
             created.append((jobs, job_key))
             binding_key = {'pk': f'JEYUK#{batch}', 'sk': 'BINDING'}
@@ -46,7 +50,8 @@ def main():
             for second in range(1, revision + 1):
                 raw = json.dumps({'fixtureId': batch, 'provenance': 'SYNTHETIC', 'profileId': 'mockprofile-110',
                     'instanceId': 'mockprofile-110-a-001', 'profile': 'SMALL', 'actualLoadKg': 1.8,
-                    'second': second, 'sampleIntervalSeconds': 1, 'surfaceCelsius': 190,
+                    'second': second, 'observedAt': (placed + timedelta(seconds=second)).isoformat(),
+                    'sampleIntervalSeconds': 1, 'surfaceCelsius': 190,
                     'actualRpm': 30, 'targetRpm': 30, 'motorLoadPercent': 40})
                 tracker.record(raw)
                 raw_key = {'pk': source_key['pk'], 'sk': f'RAW#{second:06d}'}

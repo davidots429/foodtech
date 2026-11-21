@@ -2,6 +2,7 @@ import unittest
 import json
 from dataclasses import replace
 from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from foodtech_ai_gateway.policy import Execution, Feature
@@ -41,8 +42,11 @@ class RecipeSourceGuardTests(unittest.TestCase):
             'SYNTHETIC', Decimal('0'), job_id=self.current, job_version=7,
             prior_job_id=self.prior, prior_job_version=3, jeyuk_source_revision=30, prior_source_revision=29)
         for job, version, batch, revision in ((self.current, 7, 'batch-current', 30), (self.prior, 3, 'batch-prior', 29)):
+            started = datetime(2026, 1, 1, tzinfo=timezone.utc)
             self.resource.tables['foodtech-cooking-jobs-dev'].items[(f'SCOPE#USER#tenant-a#JOB#{job}', 'META')] = {
                 'owner_subject': 'tenant-a', 'job_id': job, 'version': Decimal(version), 'menu': 'JEYUK',
+                'actual_placed_at': started.isoformat(), 'actual_lifted_at': (started + timedelta(seconds=revision)).isoformat(),
+                'actual_cooking_seconds': Decimal(revision),
                 'provenance': 'SYNTHETIC', 'source_binding': {'source_id': 'synthetic-rest',
                 'device_id': 'mockprofile-110-a-001', 'batch_id': batch}}
             self.resource.tables['foodtech-cooking-jobs-dev'].items[(f'JEYUK#{batch}', 'BINDING')] = {
@@ -53,7 +57,8 @@ class RecipeSourceGuardTests(unittest.TestCase):
                 raw = json.dumps({'fixtureId': batch, 'provenance': 'SYNTHETIC', 'profileId': 'mockprofile-110',
                     'instanceId': 'mockprofile-110-a-001', 'profile': 'SMALL', 'actualLoadKg': 1.8,
                     'second': second, 'sampleIntervalSeconds': 1, 'surfaceCelsius': 190,
-                    'actualRpm': 30, 'targetRpm': 30, 'motorLoadPercent': 40})
+                    'actualRpm': 30, 'targetRpm': 30, 'motorLoadPercent': 40,
+                    'observedAt': (started + timedelta(seconds=second)).isoformat()})
                 tracker.record(raw)
                 sk = f'RAW#{second:06d}'
                 self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', sk)] = {
@@ -122,6 +127,30 @@ class RecipeSourceGuardTests(unittest.TestCase):
         table.items[key] = row
         extra_key = ('JEYUK#batch-current', 'RAW#000031')
         table.items[extra_key] = {**row, 'sk': extra_key[1]}
+        self.assertFalse(self.guard.verify(self.execution))
+
+    def test_rejects_incomplete_or_wrong_job_timeline(self):
+        key = (f'SCOPE#USER#tenant-a#JOB#{self.current}', 'META')
+        job = self.resource.tables['foodtech-cooking-jobs-dev'].items[key]
+        job['actual_cooking_seconds'] = Decimal(29)
+        self.assertFalse(self.guard.verify(self.execution))
+        job['actual_cooking_seconds'] = Decimal(30)
+        job['actual_lifted_at'] = '2026-01-01T00:00:31+00:00'
+        self.assertFalse(self.guard.verify(self.execution))
+        job['actual_lifted_at'] = '2026-01-01T00:00:30+00:00'
+        job['actual_placed_at'] = '2026-01-01T00:00:00'
+        self.assertFalse(self.guard.verify(self.execution))
+
+    def test_rejects_inconsistent_sample_clock_even_with_matching_receipt(self):
+        table = self.resource.tables['foodtech-data-flow-dev']
+        key = ('JEYUK#batch-prior', 'RAW#000002')
+        raw = json.loads(table.items[key]['raw'])
+        raw['observedAt'] = '2026-01-01T00:00:08+00:00'
+        table.items[key]['raw'] = json.dumps(raw)
+        tracker = JeyukCompletionTracker(0)
+        for second in range(1, 30):
+            tracker.record(table.items[('JEYUK#batch-prior', f'RAW#{second:06d}')]['raw'])
+        table.items[('JEYUK#batch-prior', 'COLLECTION#RECEIPT#1')] = tracker.finish(cursor=29, complete=True, explicit=True)
         self.assertFalse(self.guard.verify(self.execution))
 
     def test_rejects_unrelated_tables(self):

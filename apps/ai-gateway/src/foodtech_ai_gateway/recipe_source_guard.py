@@ -6,11 +6,13 @@ an AI request. Those checks must be performed independently.
 """
 import re
 from copy import deepcopy
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
 from boto3.dynamodb.conditions import Key
 from foodtech_contracts.jeyuk_process import PROFILES
+from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
 from foodtech_contracts.jeyuk_receipt import matches_jeyuk_snapshot
 
 from .policy import Execution
@@ -27,6 +29,20 @@ def _positive_integer(value: object) -> int | None:
     if value != int(value) or not 1 <= value <= 10**18:
         return None
     return int(value)
+
+
+def _matches_job_timeline(job: dict, raw: list[dict]) -> bool:
+    try:
+        placed = datetime.fromisoformat(job['actual_placed_at'].replace('Z', '+00:00'))
+        lifted = datetime.fromisoformat(job['actual_lifted_at'].replace('Z', '+00:00'))
+        duration = _positive_integer(job.get('actual_cooking_seconds'))
+        if placed.utcoffset() is None or lifted.utcoffset() is None or duration is None or \
+                len(raw) != duration or lifted - placed != timedelta(seconds=duration):
+            return False
+        return all(decode_jeyuk_mock_sample(row['raw']).observed_at == placed + timedelta(seconds=index)
+                   for index, row in enumerate(raw, 1))
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return False
 
 
 class DynamoRecipeSourceGuard:
@@ -87,7 +103,8 @@ class DynamoRecipeSourceGuard:
             raw = self._read_prefix(batch, 'RAW#', expected_revision)
             receipts = self._read_prefix(batch, 'COLLECTION#RECEIPT#', MAX_RECEIPTS)
             if raw is None or receipts is None or len(raw) != expected_revision or \
-                    not any(matches_jeyuk_snapshot(receipt, batch, raw) for receipt in receipts):
+                    not any(matches_jeyuk_snapshot(receipt, batch, raw) for receipt in receipts) or \
+                    not _matches_job_timeline(job, raw):
                 return None
             observed.append((batch, deepcopy(job), deepcopy(reverse), deepcopy(source), deepcopy(raw), deepcopy(receipts)))
         return tuple(observed) if observed[0][0] != observed[1][0] else None
