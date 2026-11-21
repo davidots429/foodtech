@@ -19,7 +19,7 @@ DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class MqttVendorTests(unittest.TestCase):
-    def test_vendor_b_and_c(self):
+    def test_equipment_vendors(self):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
             key, cert, pfx = (temp / name for name in ("key.pem", "cert.pem", "cert.pfx"))
@@ -29,9 +29,9 @@ class MqttVendorTests(unittest.TestCase):
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
                             "-password", "pass:test-password"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for vendor in ("b", "c"):
-                with self.subTest(vendor=vendor):
-                    instance = f"mockprofile-300-{vendor}-001"
+            for profile, vendor in (("300", "b"), ("300", "c"), *[(profile, vendor) for profile in ("310", "320") for vendor in "abc"]):
+                with self.subTest(profile=profile, vendor=vendor):
+                    instance = f"mockprofile-{profile}-{vendor}-001"
                     with socket.socket() as probe:
                         probe.bind(("127.0.0.1", 0))
                         port = probe.getsockname()[1]
@@ -52,7 +52,7 @@ class MqttVendorTests(unittest.TestCase):
                             def ingest(self, raw): self.records.append(raw)
                             def drain(self, stream): return []
                         ingestor = Ingestor()
-                        foreign = "mockprofile-300-c-001" if vendor == "b" else "mockprofile-300-b-001"
+                        foreign = f"mockprofile-{profile}-c-001" if vendor != "c" else f"mockprofile-{profile}-b-001"
                         with self.assertRaisesRegex(RuntimeError, "subscription rejected"):
                             collect("localhost", port, str(cert), "test-user", "test-secret",
                                     f"foodtech-collector-foreign-{vendor}", ingestor,
@@ -63,13 +63,16 @@ class MqttVendorTests(unittest.TestCase):
                         self.assertEqual([decode_record(raw)["sequenceNumber"] for raw in ingestor.records], [1, 2, 3])
                         assessments = [assess(str(i), raw) for i, raw in enumerate(ingestor.records)]
                         self.assertEqual([item.quality_status for item in assessments], ["VALID", "VALID", "QUARANTINED"])
-                        self.assertTrue(all(item.mapping_version == f"mockprofile-300-{vendor}-map-v1" for item in assessments))
+                        self.assertTrue(all(item.mapping_version == f"mockprofile-{profile}-{vendor}-map-v1" for item in assessments))
                         if vendor == "b":
                             self.assertEqual(assessments[0].normalized["OUTPUT_PERCENT"]["value"], "60")
-                        else:
-                            self.assertEqual(assessments[0].normalized["SPEED_LEVEL"]["value"], 6)
-                        self.assertNotIn("ROTATIONAL_SPEED_RPM", assessments[0].normalized)
-                        self.assertEqual(json.loads(ingestor.records[0])["source_id" if vendor == "b" else "SrcId"], "synthetic-mqtt")
+                        elif vendor == "c":
+                            self.assertEqual(assessments[0].normalized["SPEED_LEVEL"]["value"], 4 if profile == "320" else 6)
+                        if vendor != "a":
+                            self.assertNotIn("ROTATIONAL_SPEED_RPM", assessments[0].normalized)
+                        if profile == "310": self.assertIn("POT_TEMPERATURE", assessments[0].normalized)
+                        if profile == "320": self.assertIn("RELATIVE_HUMIDITY", assessments[0].normalized)
+                        self.assertEqual(json.loads(ingestor.records[0])[{"a": "sourceId", "b": "source_id", "c": "SrcId"}[vendor]], "synthetic-mqtt")
                     finally:
                         server.terminate()
                         server.wait(timeout=5)
