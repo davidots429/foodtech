@@ -249,6 +249,9 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         visible = (await self.client.get(path)).json()["rice"]
         self.assertEqual(visible["safety_status"], "INCOMPLETE")
         self.assertEqual(visible["quality_current"]["blocked_reason"], "CLIMATE_EVIDENCE_UNVERIFIED")
+        self.assertEqual(visible["monitored_process_assessment"]["status"], "INSUFFICIENT_DATA")
+        self.assertEqual(visible["monitored_process_assessment"]["recorded_status"], "NORMAL")
+        self.assertEqual(rice["monitored_process_assessment"]["status"], "NORMAL")
         response = await self.client.post(path + "/rice-safety", headers=headers, json={
             "expected_version": 1, "observation": "NO_ANOMALY", "note": "합성 안전 확인"})
         self.assertEqual(response.status_code, 200, response.text)

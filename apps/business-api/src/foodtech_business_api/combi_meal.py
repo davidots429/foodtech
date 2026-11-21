@@ -599,6 +599,18 @@ def _rice_climate_verified(step: dict) -> bool:
     return (assessment.get("climate_observation") or {}).get("status") == "MATCHED"
 
 
+def _display_climate_legacy(step: dict) -> dict:
+    assessment = step.get("monitored_process_assessment")
+    if not isinstance(assessment, dict) or "climate_observation" in assessment:
+        return step
+    status = assessment.get("status")
+    if status not in {"NORMAL", "WARNING"}:
+        return step
+    return {**step, "monitored_process_assessment": {**assessment, "recorded_status": status,
+            "status": "INSUFFICIENT_DATA", "reason_codes": sorted(set(assessment.get("reason_codes") or []) |
+                                                                    {"CLIMATE_SETTING_UNVERIFIED"})}}
+
+
 @router.get("/{meal_id}")
 async def get_meal(meal_id: UUID, request: Request) -> dict:
     session, store = await _context(request)
@@ -634,6 +646,8 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
             _phase_source_matches(bound, mackerel.get("monitored_process_source"), "MACKEREL"):
         result["mackerel"] = {**mackerel, "quality_current": {**mackerel["quality_current"], "usable": False,
                               "blocked_reason": "MACKEREL_SOURCE_UNVERIFIED"}}
+    result["rice"] = _display_climate_legacy(result["rice"])
+    result["mackerel"] = _display_climate_legacy(result["mackerel"])
     if events:
         result["events"] = events
     return result
