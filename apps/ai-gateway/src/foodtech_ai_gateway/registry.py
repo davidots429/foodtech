@@ -8,6 +8,8 @@ from dataclasses import asdict
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
+import json
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -26,6 +28,11 @@ def _key(kind: str, identifier: str) -> dict[str, str]:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
+
+
+def _transaction_token(table: str, operation: str, identifier: str, items: list[dict]) -> str:
+    digest = hashlib.sha256(json.dumps(items, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return str(uuid5(NAMESPACE_URL, f"{table}:{operation}:{identifier}:{digest}"))
 
 
 def _time(value: str | None) -> datetime | None:
@@ -155,7 +162,7 @@ class DynamoRegistry:
                                  ("CREDENTIAL", execution.credential_id)):
             items.append(self._condition(kind, identifier))
         try:
-            token = str(uuid5(NAMESPACE_URL, f"{self.table_name}:confirm:{quote['quote_id']}"))
+            token = _transaction_token(self.table_name, "confirm", quote["quote_id"], items)
             self.client.transact_write_items(TransactItems=items, ClientRequestToken=token)
         except self.client.exceptions.TransactionCanceledException as error:
             raise RegistryConflict("quote expired, changed or already used") from error
@@ -368,7 +375,10 @@ class DynamoRegistry:
                 items.append(self._condition(kind, identifier))
                 checked.add(key)
         try:
-            token = str(uuid5(NAMESPACE_URL, f"{self.table_name}:reserve:{execution.execution_id}"))
+            # A retry after a known conditional failure has fresh versions and
+            # therefore different transaction parameters. Preserve the token
+            # only for byte-identical parameters (e.g. an uncertain response).
+            token = _transaction_token(self.table_name, "reserve", execution.execution_id, items)
             self.client.transact_write_items(TransactItems=items, ClientRequestToken=token)
         except self.client.exceptions.TransactionCanceledException as error:
             raise RegistryConflict("execution or authorization record changed, or limit exhausted") from error
@@ -486,7 +496,7 @@ class DynamoRegistry:
                             "ExpressionAttributeNames": {"#v": "version"},
                             "ExpressionAttributeValues": self._av(values)}})
         try:
-            token = str(uuid5(NAMESPACE_URL, f"{self.table_name}:finish:{execution_id}"))
+            token = _transaction_token(self.table_name, "finish", execution_id, changes)
             self.client.transact_write_items(TransactItems=changes, ClientRequestToken=token)
         except self.client.exceptions.TransactionCanceledException as error:
             raise RegistryConflict("execution or limit changed during settlement") from error
