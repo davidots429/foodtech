@@ -78,7 +78,9 @@ dotnet run --project apps/mock-control/MockControl.csproj -- simulate-combi \
 
 `serve-mqtt --fixture fixtures/mockprofile-300-a-001.json --cert <pfx> --port <포트>`는 MQTTnet 5.2.0.1603 기반 MQTT 5 서버를 로컬 루프백의 TLS로만 연다. `FOODTECH_MQTT_USER`, `FOODTECH_MQTT_PASSWORD`, `FOODTECH_MOCK_CERT_PASSWORD`를 환경 변수로 제공한다. 인증된 `foodtech-collector-` 접두 클라이언트만 연결하고 `foodtech/synthetic/mockprofile-300-a-001/observations`를 QoS 1로 구독할 수 있다. 와일드카드·다른 Topic·외부 발행은 거부한다. 첫 구독 후 합성 fixture 세 건을 5초 간격으로 한 번 발행하며, 메시지 두 번째 연결 시 처음부터 다시 재생하지 않는다.
 
-REST `serve`, MQTT `serve-mqtt`, 프로젝트 전용 HTTPS `serve-ua-json`은 기본 루프백 바인딩을 유지한다. 별도 수집 Task에서 연결할 때만 `--bind-address <IPv4>`를 명시할 수 있으며 루프백·RFC 1918 사설 주소 또는 `0.0.0.0`만 허용한다. `0.0.0.0`은 모든 IPv4 인터페이스에 노출되므로 사설 네트워크와 보안 그룹에서 허용된 수집기만 접근하도록 설정해야 한다. TLS, 인증 및 읽기 전용 계약은 유지되며 인증서 SAN은 수집기가 사용하는 호스트와 일치해야 한다. OPC UA Binary는 이 옵션에 포함되지 않는다.
+REST `serve`, MQTT `serve-mqtt`, 프로젝트 전용 HTTPS `serve-ua-json`은 기본 루프백 바인딩을 유지한다. 별도 수집 Task에서 연결할 때만 `--bind-address <IPv4>`를 명시할 수 있으며 루프백·RFC 1918 사설 주소 또는 `0.0.0.0`만 허용한다. `0.0.0.0`은 모든 IPv4 인터페이스에 노출되므로 사설 네트워크와 보안 그룹에서 허용된 수집기만 접근하도록 설정해야 한다. TLS, 인증 및 읽기 전용 계약은 유지되며 인증서 SAN은 수집기가 사용하는 호스트와 일치해야 한다.
+
+OPC UA Binary `serve-opcua`는 기본 `localhost`를 유지하고 별도 Task에서 사용할 때 `--endpoint-host <IPv4>`로 루프백 또는 사설 IPv4를 명시한다. 와일드카드·공인 IPv4·호스트명은 허용하지 않는다. 서버 인증서에는 해당 주소가 포함되어야 하며 수집기는 고정 서버 인증서·애플리케이션 URI·호스트와 유효기간을 검사한다. 서버 주소를 바꿀 때 기존 PKI 인증서가 새 주소와 일치하는지 확인해야 한다.
 
 이는 `mockprofile-300`의 vendor-a JSON 단일 논리 인스턴스이며 실제 장비 호환성을 주장하지 않는다. 세션은 Mock 프로세스 메모리에서 유지되고 수집기의 세션 만료 초기값은 300초다. 프로세스 재시작 이후 복구·장기 단절·다중 인스턴스, 다른 vendor·XML·CSV, AWS에서의 실제 연결과 부하 검증은 아직 남아 있다.
 

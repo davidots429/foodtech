@@ -17,7 +17,7 @@ if (args.Length > 0 && args[0] == "serve-ua-json")
 if (args.Length > 0 && args[0] == "serve-opcua")
 {
     await OpcUaMock.Run(Required(options, "fixture"), Required(options, "pki"),
-                        int.Parse(Required(options, "port")));
+                        int.Parse(Required(options, "port")), options.GetValueOrDefault("endpoint-host"));
     return;
 }
 if (args.Length > 0 && args[0] == "serve-mqtt")

@@ -27,6 +27,16 @@ class MockBindTests(unittest.TestCase):
                     self.assertNotEqual(process.returncode, 0)
                     self.assertIn('--bind-address', process.stderr)
 
+    def test_opcua_binary_rejects_public_and_wildcard_endpoints(self):
+        fixture = ROOT / 'fixtures/mockprofile-203-a-001.json'
+        for address in ('8.8.8.8', '0.0.0.0', 'example.com', '::1'):
+            with self.subTest(address=address):
+                process = subprocess.run(['dotnet', str(DLL), 'serve-opcua', '--fixture', str(fixture),
+                    '--pki', '/unused', '--port', '18883', '--endpoint-host', address],
+                    text=True, capture_output=True, timeout=10)
+                self.assertNotEqual(process.returncode, 0)
+                self.assertTrue('--bind-address' in process.stderr or '--endpoint-host' in process.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

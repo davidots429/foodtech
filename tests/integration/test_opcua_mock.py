@@ -45,16 +45,17 @@ class OpcUaMockTests(unittest.IsolatedAsyncioTestCase):
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 port = probe.getsockname()[1]
-            endpoint = f"opc.tcp://localhost:{port}/foodtech"
+            endpoint_host = os.environ.get("FOODTECH_OPCUA_TEST_HOST", "127.0.0.1")
+            endpoint = f"opc.tcp://{endpoint_host}:{port}/foodtech"
             server = subprocess.Popen(["dotnet", str(DLL), "serve-opcua", "--fixture", str(FIXTURE),
-                                       "--pki", str(pki), "--port", str(port)], env=os.environ.copy(),
+                                       "--pki", str(pki), "--port", str(port), "--endpoint-host", endpoint_host], env=os.environ.copy(),
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
                 for _ in range(150):
                     if server.poll() is not None:
                         self.fail("OPC UA Mock exited during startup")
                     try:
-                        with socket.create_connection(("127.0.0.1", port), timeout=.1):
+                        with socket.create_connection((endpoint_host, port), timeout=.1):
                             break
                     except OSError:
                         await asyncio.sleep(.1)
@@ -141,7 +142,7 @@ class OpcUaMockTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.to_thread(server.wait, timeout=10)
                 await asyncio.sleep(2)
                 server = subprocess.Popen(["dotnet", str(DLL), "serve-opcua", "--fixture", str(FIXTURE),
-                                           "--pki", str(pki), "--port", str(port)], env=os.environ.copy(),
+                                           "--pki", str(pki), "--port", str(port), "--endpoint-host", endpoint_host], env=os.environ.copy(),
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.assertEqual(await task, 3)
                 self.assertEqual([record["sequenceNumber"] for record in ingestor.records], [1, 2, 3])
