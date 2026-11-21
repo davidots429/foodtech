@@ -17,17 +17,19 @@ def main():
     key = kms.describe_key(KeyId='alias/foodtech/ai-credential-dev-2026-11')['KeyMetadata']['Arn']
     cipher = ProfileCheckpointCipher(key, 'dev', kms_client=kms)
     job = str(uuid4())
+    subject = 'synthetic-owner-' + uuid4().hex
     checkpoint = {'pk': 'synthetic-other-owner-' + uuid4().hex, 'sk': 'META'}
-    ciphertext = cipher.seal(job, checkpoint)
-    if checkpoint['pk'].encode() in ciphertext or cipher.open(job, ciphertext) != checkpoint:
+    ciphertext = cipher.seal(job, subject, checkpoint)
+    if checkpoint['pk'].encode() in ciphertext or cipher.open(job, subject, ciphertext) != checkpoint:
         raise AssertionError('checkpoint encryption round trip failed')
     logger = logging.getLogger('aws_encryption_sdk')
     previous = logger.level
     logger.setLevel(logging.CRITICAL)
     try:
-        for identifier, value in ((str(uuid4()), ciphertext), (job, ciphertext[:-1] + bytes([ciphertext[-1] ^ 1]))):
+        for identifier, owner, value in ((str(uuid4()), subject, ciphertext), (job, 'other-owner', ciphertext),
+                                         (job, subject, ciphertext[:-1] + bytes([ciphertext[-1] ^ 1]))):
             try:
-                cipher.open(identifier, value)
+                cipher.open(identifier, owner, value)
             except ValueError:
                 continue
             raise AssertionError('wrong job or corrupted ciphertext was accepted')

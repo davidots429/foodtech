@@ -25,25 +25,27 @@ class CheckpointCipherTests(unittest.TestCase):
 
     def test_checkpoint_roundtrip_is_job_bound(self):
         checkpoint = {'pk': 'private-owner-key', 'sk': 'META'}
-        encrypted = self.cipher.seal(self.job, checkpoint)
+        encrypted = self.cipher.seal(self.job, 'owner-a', checkpoint)
         self.assertNotIn(b'private-owner-key', encrypted)
-        self.assertEqual(self.cipher.open(self.job, encrypted), checkpoint)
+        self.assertEqual(self.cipher.open(self.job, 'owner-a', encrypted), checkpoint)
         self.assertNotIn('private-owner-key', repr(self.sdk.context))
         with self.assertRaises(ValueError):
-            self.cipher.open('e4248c1f-3496-45eb-b828-2177c34eb854', encrypted)
+            self.cipher.open('e4248c1f-3496-45eb-b828-2177c34eb854', 'owner-a', encrypted)
+        with self.assertRaises(ValueError):
+            self.cipher.open(self.job, 'owner-b', encrypted)
 
     def test_rejects_invalid_checkpoint_and_unexpected_context(self):
         for checkpoint in ({'pk': 'x'}, {'pk': 'x', 'sk': ''}, {'pk': 'x' * 2049, 'sk': 'x'}):
             with self.subTest(checkpoint=tuple(checkpoint)), self.assertRaises(ValueError):
-                self.cipher.seal(self.job, checkpoint)
-        self.cipher.seal(self.job, {'pk': 'x', 'sk': 'y'})
+                self.cipher.seal(self.job, 'owner-a', checkpoint)
+        self.cipher.seal(self.job, 'owner-a', {'pk': 'x', 'sk': 'y'})
         original = self.sdk.decrypt
         def unexpected(**kwargs):
             raw, header = original(**kwargs)
             return raw, SimpleNamespace(algorithm=SUITE, encryption_context={**header.encryption_context, 'other': 'x'})
         self.sdk.decrypt = unexpected
         with self.assertRaises(ValueError):
-            self.cipher.open(self.job, b'ciphertext')
+            self.cipher.open(self.job, 'owner-a', b'ciphertext')
 
 
 if __name__ == '__main__':

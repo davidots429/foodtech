@@ -25,6 +25,11 @@ def _validate_checkpoint(checkpoint):
         raise ValueError('invalid checkpoint')
 
 
+def _validate_subject(subject):
+    if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject):
+        raise ValueError('invalid checkpoint scope')
+
+
 class ProfileCheckpointCipher:
     def __init__(self, key_arn: str, environment: str, *, kms_client=None, sdk=None, providers=None):
         if not isinstance(key_arn, str) or not re.fullmatch(
@@ -50,10 +55,12 @@ class ProfileCheckpointCipher:
         return self.providers.create_aws_kms_keyring(input=CreateAwsKmsKeyringInput(
             kms_key_id=self.key_arn, kms_client=self.kms))
 
-    def seal(self, job_id: str, checkpoint: dict) -> bytes:
+    def seal(self, job_id: str, subject: str, checkpoint: dict) -> bytes:
         context = self._context(job_id)
+        _validate_subject(subject)
         _validate_checkpoint(checkpoint)
-        raw = bytearray(json.dumps(checkpoint, ensure_ascii=True, separators=(',', ':'), sort_keys=True).encode('ascii'))
+        raw = bytearray(json.dumps({'subject': subject, 'checkpoint': checkpoint}, ensure_ascii=True,
+                                   separators=(',', ':'), sort_keys=True).encode('ascii'))
         try:
             ciphertext, header = self.sdk.encrypt(source=bytes(raw), keyring=self._keyring(),
                                                   encryption_context=context, algorithm=SUITE)
@@ -63,8 +70,9 @@ class ProfileCheckpointCipher:
         finally:
             raw[:] = b'\x00' * len(raw)
 
-    def open(self, job_id: str, ciphertext: bytes) -> dict:
+    def open(self, job_id: str, subject: str, ciphertext: bytes) -> dict:
         context = self._context(job_id)
+        _validate_subject(subject)
         if not isinstance(ciphertext, bytes) or not 1 <= len(ciphertext) <= 65536:
             raise ValueError('invalid checkpoint ciphertext')
         raw = bytearray()
@@ -77,8 +85,10 @@ class ProfileCheckpointCipher:
                 raise ValueError('invalid checkpoint context')
             raw.extend(plaintext)
             result = json.loads(raw)
-            _validate_checkpoint(result)
-            return result
+            if not isinstance(result, dict) or set(result) != {'subject', 'checkpoint'} or result['subject'] != subject:
+                raise ValueError('invalid checkpoint scope')
+            _validate_checkpoint(result['checkpoint'])
+            return result['checkpoint']
         except Exception:
             raise ValueError('unable to decrypt checkpoint') from None
         finally:
