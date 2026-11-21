@@ -7,7 +7,7 @@ from functools import lru_cache
 from typing import Protocol
 
 from boto3.dynamodb.conditions import Key
-from boto3.dynamodb.types import TypeSerializer
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 
 class Conflict(Exception):
@@ -619,8 +619,14 @@ class DynamoCookingStore:
         return _api_numbers(meta), _api_numbers(pointer)
 
     def read_meta(self, pk: str) -> dict | None:
-        item = self.table.get_item(Key={"pk": pk, "sk": "META"}, ConsistentRead=True).get("Item")
-        return _api_numbers(item)
+        # Discovery reads several jobs in parallel. Low-level clients can be
+        # shared between threads; boto3 resource objects cannot.
+        item = self.client.get_item(TableName=self.table.name,
+            Key={"pk": {"S": pk}, "sk": {"S": "META"}}, ConsistentRead=True).get("Item")
+        if not item:
+            return None
+        decoder = TypeDeserializer()
+        return _api_numbers({key: decoder.deserialize(value) for key, value in item.items()})
 
     def process_pointer(self, pk: str) -> dict | None:
         item = self.table.get_item(Key={"pk": pk, "sk": "PROCESS#LATEST_RESTATED"},
