@@ -618,14 +618,32 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                      "source_safety_samples_valid": False,
                      "source_validation_identity_matches": False,
                      "source_relative_duration_covers_cooking": False,
-                     "source_process_span_covers_cooking": False}
+                     "source_process_span_covers_cooking": False,
+                     "source_completion_record_matched": False,
+                     "source_revision_stable": False}
+    observed_source_revision = None
     source_table = os.getenv("FOODTECH_DATA_TABLE", "")
     if process_linked and context_matches_job and source_table and second <= max(
             profile.time_bands[-1] for profile in JEYUK_PROFILES.values()):
-        from .jeyuk_source_evidence import audit_source_records
+        from .jeyuk_source_evidence import audit_source_records, read_collection_completion
+        from .source_revision import read_source_revision
         try:
+            stream_pk = f"JEYUK#{binding['batch_id']}"
+            before = await read_source_revision(source_table, stream_pk)
             assessments, raws = await _read_jeyuk_source_records(source_table, binding["batch_id"], second)
-            source_checks = audit_source_records(job, assessments, raws)
+            audited = audit_source_records(job, assessments, raws)
+            completion = await asyncio.to_thread(read_collection_completion, source_table, binding["batch_id"])
+            after = await read_source_revision(source_table, stream_pk)
+            if before != after:
+                raise HTTPException(409, "원천 데이터가 조회 중 변경되었습니다. 다시 확인해 주세요.")
+            matched = (completion.get("status") == "MATCHED_AT_READ" and before is not None and
+                       completion.get("source_revision") == before and before == second)
+            source_checks = {**source_checks, **audited, "source_completion_record_matched": matched,
+                             "source_revision_stable": before is not None and before == after}
+            if matched:
+                observed_source_revision = before
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.exception("Jeyuk source evidence read failed")
             raise HTTPException(503, "원천 수집 증거를 조회하지 못했습니다. 잠시 후 다시 시도해 주세요.") from exc
@@ -662,6 +680,7 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                                "sk": process["source_assessment_sk"], "second": second}
                               if process_linked else None),
         "source_table_configured": bool(source_table),
+        "source_revision": observed_source_revision,
         "activation_allowed": False,
         "remaining_verification": ["SENSOR_AND_CALIBRATION_IDENTITY",
                                    "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",

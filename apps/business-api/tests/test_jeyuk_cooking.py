@@ -169,18 +169,32 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             "source_derived_results_match_raw",
             "source_process_conditions_normal", "source_safety_samples_valid",
             "source_validation_identity_matches",
+            "source_relative_duration_covers_cooking",
             "source_process_span_covers_cooking")}
         with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
              patch.object(cooking, "_read_jeyuk_source_records",
                           return_value=([], [])) as source_read, \
              patch("foodtech_business_api.jeyuk_source_evidence.audit_source_records",
-                   return_value=source_checks):
+                   return_value=source_checks), \
+             patch("foodtech_business_api.source_revision.read_source_revision", return_value=61) as revision, \
+             patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion",
+                   return_value={"status": "MATCHED_AT_READ", "source_revision": 61}) as receipt:
             linked = (await self.client.get(path + "/validation-evidence")).json()
             source_read.assert_called_once_with("test-source", "jeyuk-evidence-a", 61)
+            receipt.return_value = {"status": "NOT_RECORDED"}
+            missing_receipt = (await self.client.get(path + "/validation-evidence")).json()
+            self.assertEqual(missing_receipt["status"], "INCOMPLETE")
+            self.assertIn("source_completion_record_matched", missing_receipt["missing_checks"])
+            self.assertIsNone(missing_receipt["source_revision"])
+            receipt.return_value = {"status": "MATCHED_AT_READ", "source_revision": 61}
+            revision.side_effect = [61, 62]
+            changed = await self.client.get(path + "/validation-evidence")
+            self.assertEqual(changed.status_code, 409)
         self.assertEqual(linked["status"], "LINKED_UNVERIFIED")
         self.assertEqual(linked["process_reference"],
                          {"pk": "JEYUK#jeyuk-evidence-a", "sk": "ASSESSMENT#000061", "second": 61})
         self.assertEqual(linked["context_digest"], recorded.json()["validation_context_digest"])
+        self.assertEqual(linked["source_revision"], 61)
         self.assertFalse(linked["activation_allowed"])
         meta["process_assessment"]["source_assessment_pk"] = "JEYUK#other-batch"
         mismatch = (await self.client.get(path + "/validation-evidence")).json()
