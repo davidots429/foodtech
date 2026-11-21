@@ -123,6 +123,18 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('session-id', self.store.sessions)
         revoke.assert_called_once_with('customer', 'new-refresh')
 
+    async def test_deletion_lock_during_refresh_rejects_and_revokes_rotated_token(self):
+        def refresh(*_):
+            self.store.principals['subject'] = {'epoch': 0, 'deletion_lock_request': 'request-1'}
+            return {'IdToken': 'id', 'AccessToken': 'access', 'RefreshToken': 'new-refresh'}
+        claims = [{'sub': 'subject'}, {'sub': 'subject', 'exp': time.time() + 400}]
+        with patch.object(auth, '_cognito_refresh', side_effect=refresh), \
+             patch.object(auth, '_claims', side_effect=claims), patch.object(auth, '_cognito_revoke') as revoke:
+            response = await self.client.post('/api/customer/session/refresh', headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn('session-id', self.store.sessions)
+        revoke.assert_called_once_with('customer', 'new-refresh')
+
     async def test_admin_group_removal_rejects_and_revokes_rotated_token(self):
         self.store.sessions['session-id'].surface = 'admin'
         tokens = {'IdToken': 'id', 'AccessToken': 'access', 'RefreshToken': 'new-refresh'}
