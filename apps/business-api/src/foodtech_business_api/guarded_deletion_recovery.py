@@ -18,6 +18,17 @@ class GuardedDeletionRecovery:
         return {key: self.serializer.serialize(value) for key, value in values.items()}
 
     def recover(self, *, authenticated_subject: str, request_id: str) -> dict:
+        return self.use_locked(authenticated_subject=authenticated_subject, request_id=request_id,
+                               action=lambda _user, _locator: None)
+
+    def use_locked(self, *, authenticated_subject: str, request_id: str, action) -> dict:
+        """Run trusted internal work after verifying locked identity; return no secrets.
+
+        The action must recheck the lock atomically with every mutation. This
+        method does not authenticate the caller or keep the lock from changing.
+        """
+        if not callable(action):
+            raise ValueError('invalid guarded recovery action')
         try:
             if str(UUID(authenticated_subject)) != authenticated_subject or str(UUID(request_id)) != request_id:
                 raise ValueError
@@ -50,8 +61,12 @@ class GuardedDeletionRecovery:
         except (KeyError, TypeError, ValueError, AttributeError):
             raise ValueError('guarded deletion recovery unavailable') from None
         def confirm(internal_id, capsule_locator):
-            return self.store.recover_locked_request(subject=authenticated_subject, request_id=request_id,
+            status = self.store.recover_locked_request(subject=authenticated_subject, request_id=request_id,
                 vault_id=vault_id, internal_user_id=internal_id.decode('ascii'),
                 capsule_locator=capsule_locator.decode('ascii'))
+            if status != {'status': 'DELETING'}:
+                raise ValueError('guarded deletion lock unavailable')
+            action(internal_id, capsule_locator)
+            return {'status': 'DELETING'}
         return self.recovery_cipher.use(request_id=request_id, encrypted_user_id=user,
                                         encrypted_capsule_locator=locator, callback=confirm)

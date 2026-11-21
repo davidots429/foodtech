@@ -33,6 +33,17 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(args['capsule_locator'], 'A' * 43)
         self.assertEqual(len(self.client.transact_get_items.call_args.kwargs['TransactItems']), 2)
 
+    def test_action_runs_only_after_locked_confirmation_and_result_does_not_escape(self):
+        action = Mock(return_value={'private': self.internal})
+        result = self.service.use_locked(authenticated_subject=self.subject, request_id=self.request, action=action)
+        self.assertEqual(result, {'status': 'DELETING'})
+        action.assert_called_once()
+        self.store.recover_locked_request.side_effect = ValueError('lock changed')
+        action.reset_mock()
+        with self.assertRaises(ValueError):
+            self.service.use_locked(authenticated_subject=self.subject, request_id=self.request, action=action)
+        action.assert_not_called()
+
     def test_wrong_lock_or_missing_ciphertext_never_decrypts(self):
         rows = self.client.transact_get_items.return_value['Responses']
         rows[0]['Item']['deletion_lock_request'] = {'S': str(uuid4())}

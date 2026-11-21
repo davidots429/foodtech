@@ -12,6 +12,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 from foodtech_business_api.capsule_writer import CapsuleWriter
+from foodtech_business_api.capsule_inventory import CapsuleInventory
 from foodtech_business_api.guarded_deletion import GuardedDeletion, VaultSnapshot
 from foodtech_business_api.guarded_deletion_recovery import GuardedDeletionRecovery
 from foodtech_business_api.deletion_registry_cipher import DeletionRegistryCipher
@@ -128,6 +129,17 @@ def main():
         recovery = GuardedDeletionRecovery(store=store, recovery_cipher=decryptor, client=client)
         if recovery.recover(authenticated_subject=subject, request_id=winner) != {"status": "DELETING"}:
             raise AssertionError("encrypted guarded recovery failed")
+        called = []
+        def inspect_locked(internal_buffer, locator_buffer):
+            if bytes(internal_buffer) != internal_id.encode():
+                raise AssertionError('recovered internal ID differs')
+            inventory = CapsuleInventory(CAPSULE, frozenset({'BILLING'}), client=client)
+            result = inventory.stage(locator_buffer.decode('ascii'), winner, lambda *_: called.append('unexpected'))
+            if result.entry_count != 0:
+                raise AssertionError('new synthetic capsule is not empty')
+            called.append('checked')
+        if recovery.use_locked(authenticated_subject=subject, request_id=winner, action=inspect_locked) != {'status': 'DELETING'} or called != ['checked']:
+            raise AssertionError('locked inventory action failed')
         loser = second_id if winner == first_id else first_id
         if registry.get_item(Key={"pk": "REGISTRY", "sk": f"REQ#{loser}"}, ConsistentRead=True).get("Item"):
             raise AssertionError("Losing request created a tombstone")
@@ -151,7 +163,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_inventory_action": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
