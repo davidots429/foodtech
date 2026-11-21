@@ -112,6 +112,7 @@ def _api_url(value: str) -> str:
 
 async def _keep_session_alive(api: httpx.AsyncClient, csrf: str, expires_in: int) -> None:
     """Refresh the server-owned session while a long synthetic import runs."""
+    conflicts = 0
     while True:
         if type(expires_in) is not int or expires_in <= 0:
             raise ValueError("invalid session expiry")
@@ -119,9 +120,13 @@ async def _keep_session_alive(api: httpx.AsyncClient, csrf: str, expires_in: int
         response = await api.post("/api/customer/session/refresh", headers={"X-CSRF-Token": csrf})
         if response.status_code == 409:
             # Another client is refreshing the same server session.
+            conflicts += 1
+            if conflicts >= 6:
+                raise RuntimeError("session refresh repeatedly conflicted; sign in again")
             expires_in = 310
             continue
         response.raise_for_status()
+        conflicts = 0
         expires_in = response.json().get("expires_in")
 
 

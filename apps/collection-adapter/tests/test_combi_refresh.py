@@ -26,3 +26,12 @@ class KeepaliveTests(unittest.IsolatedAsyncioTestCase):
         with patch('foodtech_collection_adapter.combi_import.asyncio.sleep', new_callable=AsyncMock):
             with self.assertRaises(httpx.HTTPStatusError):
                 await _keep_session_alive(api, 'csrf', 400)
+
+    async def test_repeated_conflict_stops_import(self):
+        request = httpx.Request('POST', 'https://example.test/api/customer/session/refresh')
+        api = AsyncMock()
+        api.post.return_value = httpx.Response(409, request=request)
+        with patch('foodtech_collection_adapter.combi_import.asyncio.sleep', new_callable=AsyncMock):
+            with self.assertRaisesRegex(RuntimeError, 'repeatedly conflicted'):
+                await _keep_session_alive(api, 'csrf', 400)
+        self.assertEqual(api.post.await_count, 6)
