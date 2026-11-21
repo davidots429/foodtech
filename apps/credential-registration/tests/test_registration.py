@@ -99,5 +99,42 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(metadata["vault_ref"]["S"], f"vault:{credential_id}")
 
 
+class PseudonymValidationTests(unittest.TestCase):
+    class Kms:
+        def __init__(self, mac=b"x" * 32):
+            self.calls = []
+            self.mac = mac
+
+        def generate_mac(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"Mac": self.mac}
+
+    def test_legacy_bytes_and_valid_identifier_are_preserved(self):
+        kms = self.Kms()
+        pseudonym = TenantPseudonymizer("arn:aws:kms:example", "v1", kms_client=kms).create("subject-1", "2026-11")
+        fields = ("v1", "credential", "2026-11", "v1", "subject-1")
+        expected = b"".join(len(x.encode()).to_bytes(4, "big") + x.encode() for x in fields)
+        self.assertEqual(kms.calls[0]["Message"], expected)
+        self.assertEqual(pseudonym, "psn:v1:credential:2026-11:v1:" + base64.urlsafe_b64encode(b"x" * 32).decode().rstrip("="))
+
+    def test_invalid_scope_fails_before_kms(self):
+        kms = self.Kms()
+        generator = TenantPseudonymizer("arn:aws:kms:example", "v1", kms_client=kms)
+        for subject, epoch in (("x", "0000-01"), ("x", "2026-13"), ("x", "2026-aa"),
+                               ("x", "2026-00"), ("", "2026-11"), ("\ud800", "2026-11"),
+                               (None, "2026-11"), ("x", None)):
+            with self.subTest(epoch=epoch), self.assertRaises(RegistrationError):
+                generator.create(subject, epoch)
+        self.assertEqual(kms.calls, [])
+
+    def test_key_version_and_mac_must_match_identifier_contract(self):
+        for version in ("", "v:1", "v/1", "x" * 65):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                TenantPseudonymizer("arn:aws:kms:example", version, kms_client=self.Kms())
+        for mac in (b"", b"x" * 31, b"x" * 33, "not-bytes"):
+            with self.subTest(mac=mac), self.assertRaises(RegistrationError):
+                TenantPseudonymizer("arn:aws:kms:example", "v1", kms_client=self.Kms(mac)).create("x", "2026-11")
+
+
 if __name__ == "__main__":
     unittest.main()
