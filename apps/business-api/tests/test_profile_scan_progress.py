@@ -19,7 +19,7 @@ class Cipher:
 
 
 class Table:
-    def __init__(self): self.item, self.fail_update = None, False
+    def __init__(self): self.item, self.fail_update, self.fail_after_update = None, False, False
     def put_item(self, *, Item, **kwargs):
         if self.item: raise RuntimeError('duplicate')
         self.item = Item.copy()
@@ -29,6 +29,7 @@ class Table:
         if self.fail_update or self.item['version'] != values[':expected'] or self.item['phase'] != values[':old']:
             raise RuntimeError('conflict')
         self.item.update(phase=values[':next'], version=values[':next_version'], ciphertext=values[':ciphertext'])
+        if self.fail_after_update: raise RuntimeError('response lost')
 
 
 class ProgressTests(unittest.TestCase):
@@ -49,6 +50,10 @@ class ProgressTests(unittest.TestCase):
             self.table.item['version'] = Decimal(2)
             second = self.store.run_page(job_id=self.job, subject='owner-a', source_table=object(), profile_store=object(), limit=10)
             self.assertEqual((second.phase, second.version), ('SCAN_COMPLETE', 3))
+            self.assertEqual(self.store.read_progress(self.job, 'owner-a'), second)
+            self.assertNotIn('other-owner', repr(self.store.read_progress(self.job, 'owner-a')))
+            with self.assertRaises(ValueError):
+                self.store.read_progress(self.job, 'owner-b')
             self.assertEqual(scan.call_args.kwargs['checkpoint'], key)
             with self.assertRaises(ValueError):
                 self.store.run_page(job_id=self.job, subject='owner-a', source_table=object(), profile_store=object(), limit=10)
@@ -64,6 +69,18 @@ class ProgressTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.store.run_page(job_id=self.job, subject='owner-a', source_table=object(), profile_store=object(), limit=10)
         self.assertEqual((self.table.item['phase'], self.table.item['version']), ('INITIAL', 1))
+        self.assertEqual(self.store.read_progress(self.job, 'owner-a').phase, 'INITIAL')
+
+    def test_response_loss_can_be_resolved_without_exposing_checkpoint(self):
+        self.table.fail_after_update = True
+        with patch('foodtech_business_api.profile_scan_progress.reconcile_legacy_page',
+                   return_value=LegacyProfilePage((), None, 0)):
+            with self.assertRaisesRegex(RuntimeError, 'response lost'):
+                self.store.run_page(job_id=self.job, subject='owner-a', source_table=object(), profile_store=object(), limit=10)
+        result = self.store.read_progress(self.job, 'owner-a')
+        self.assertEqual((result.phase, result.version), ('SCAN_COMPLETE', 2))
+        with self.assertRaises(ValueError):
+            self.store.read_progress(self.job, 'owner-b')
 
 
 if __name__ == '__main__':

@@ -41,11 +41,11 @@ class ProfileScanProgressStore:
         self.table.put_item(Item={**key, 'phase': 'INITIAL', 'version': 1, 'ciphertext': encrypted},
                             ConditionExpression='attribute_not_exists(pk)')
 
-    def run_page(self, *, job_id: str, subject: str, source_table, profile_store, limit: int) -> Progress:
+    def _read(self, job_id: str, subject: str) -> tuple[Progress, dict | None]:
         key = _job(job_id)
         item = self.table.get_item(Key=key, ConsistentRead=True).get('Item')
         if not isinstance(item, dict) or item.get('pk') != key['pk'] or item.get('sk') != key['sk'] or \
-                item.get('phase') not in {'INITIAL', 'CONTINUE'}:
+                item.get('phase') not in {'INITIAL', 'CONTINUE', 'SCAN_COMPLETE'}:
             raise ValueError('scan job is unavailable')
         version = item.get('version')
         if isinstance(version, bool) or not isinstance(version, (int, Decimal)) or \
@@ -62,6 +62,21 @@ class ProfileScanProgressStore:
             if checkpoint != _INITIAL:
                 raise ValueError('invalid initial checkpoint')
             checkpoint = None
+        elif item['phase'] == 'SCAN_COMPLETE':
+            if checkpoint != _FINISHED:
+                raise ValueError('invalid final checkpoint')
+            checkpoint = None
+        return Progress(item['phase'], version), checkpoint
+
+    def read_progress(self, job_id: str, subject: str) -> Progress:
+        """Resolve an uncertain write without returning the sensitive checkpoint."""
+        return self._read(job_id, subject)[0]
+
+    def run_page(self, *, job_id: str, subject: str, source_table, profile_store, limit: int) -> Progress:
+        key = _job(job_id)
+        progress, checkpoint = self._read(job_id, subject)
+        if progress.phase == 'SCAN_COMPLETE':
+            raise ValueError('scan job is complete')
         page = reconcile_legacy_page(source_table, profile_store, subject=subject, limit=limit, checkpoint=checkpoint)
         next_phase = 'CONTINUE' if page.checkpoint is not None else 'SCAN_COMPLETE'
         next_checkpoint = page.checkpoint if page.checkpoint is not None else _FINISHED
@@ -69,6 +84,6 @@ class ProfileScanProgressStore:
         self.table.update_item(Key=key, UpdateExpression='SET #phase = :next, #version = :next_version, ciphertext = :ciphertext',
             ConditionExpression='#phase = :old AND #version = :expected',
             ExpressionAttributeNames={'#phase': 'phase', '#version': 'version'},
-            ExpressionAttributeValues={':old': item['phase'], ':expected': version, ':next': next_phase,
-                                       ':next_version': version + 1, ':ciphertext': ciphertext})
-        return Progress(next_phase, version + 1)
+            ExpressionAttributeValues={':old': progress.phase, ':expected': progress.version, ':next': next_phase,
+                                       ':next_version': progress.version + 1, ':ciphertext': ciphertext})
+        return Progress(next_phase, progress.version + 1)

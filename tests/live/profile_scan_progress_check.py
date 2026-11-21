@@ -37,6 +37,8 @@ def main():
         item = table.get_item(Key=key, ConsistentRead=True)['Item']
         if result.version != 2 or item['version'] != 2 or result.phase not in ('CONTINUE', 'SCAN_COMPLETE'):
             raise AssertionError('scan checkpoint did not advance')
+        if progress.read_progress(job, subject) != result:
+            raise AssertionError('persisted progress could not be recovered')
         if subject.encode() in bytes(item['ciphertext']):
             raise AssertionError('plaintext scope in encrypted checkpoint')
     finally:
