@@ -52,6 +52,8 @@ def main():
     event = {'sk': 'EVENT#SYNTHETIC#1', 'trigger': 'SAFETY'}
     commit_keys = [{'pk': job_pk, 'sk': assessment['sk']}, {'pk': job_pk, 'sk': 'ASSESSMENT#CURRENT'},
                    {'pk': job_pk, 'sk': event['sk']}]
+    stream_pk = 'SYNTHETIC_STREAM#' + uuid4().hex
+    stream_key = {'pk': stream_pk, 'sk': 'BINDING'}
     auth_created = False
     try:
         for version in ('v1', 'v2'):
@@ -110,6 +112,15 @@ def main():
         auth_table.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request',
                                ExpressionAttributeValues={':request': str(uuid4())})
         try:
+            store.bind_stream(job_pk, 1, {**job_meta, 'version': 2}, stream_pk, 1)
+        except Conflict:
+            pass
+        else:
+            raise AssertionError('source binding accepted after deletion lock')
+        if table.get_item(Key=stream_key, ConsistentRead=True).get('Item') or \
+                table.get_item(Key=job_keys[0], ConsistentRead=True)['Item']['version'] != 1:
+            raise AssertionError('blocked binding changed job or created a stream reference')
+        try:
             store.commit(job_pk, 1, {**job_meta, 'version': 2}, assessment, pointer, event, 1)
         except Conflict:
             pass
@@ -134,6 +145,9 @@ def main():
         store.commit(job_pk, 1, {**job_meta, 'version': 2}, assessment, pointer, event, 1)
         if any(table.get_item(Key=k, ConsistentRead=True).get('Item') is None for k in commit_keys):
             raise AssertionError('valid job mutation did not save its assessment')
+        store.bind_stream(job_pk, 2, {**job_meta, 'version': 3}, stream_pk, 1)
+        if table.get_item(Key=stream_key, ConsistentRead=True).get('Item') is None:
+            raise AssertionError('valid source binding was not saved')
         table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
                        ConditionExpression='attribute_not_exists(pk)')
         checkpoint, found = None, False
@@ -163,6 +177,7 @@ def main():
             table.delete_item(Key=key)
         for key in commit_keys:
             table.delete_item(Key=key)
+        table.delete_item(Key=stream_key)
         if auth_created:
             auth_table.delete_item(Key=auth_key)
     print('profile and job write guards, concurrent profile creation, owner isolation, bounded scan and cleanup verified')

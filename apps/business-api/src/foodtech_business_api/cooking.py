@@ -519,7 +519,7 @@ async def record_tonkatsu_initial_context(job_id: str, request: Request, body: T
 
 @router.post("/{job_id}/source-binding")
 async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dict:
-    _, store, pk, old, _ = await _read(request, job_id, write=True)
+    session, store, pk, old, _ = await _read(request, job_id, write=True)
     if int(old["version"]) != body.expected_version:
         raise _conflict()
     if old["status"] not in {"PENDING", "READY"} or old.get("source_binding"):
@@ -536,7 +536,7 @@ async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dic
                                        "batch_id": body.batch_id},
             "version": old["version"] + 1, "updated_at": _now()}
     try:
-        await _store_call(store, store.bind_stream, pk, int(old["version"]), meta, stream_pk)
+        await _store_call(store, store.bind_stream, pk, int(old["version"]), meta, stream_pk, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "이 수집 배치는 이미 연결되었거나 작업이 변경되었습니다.") from exc
     return meta

@@ -154,7 +154,7 @@ class CookingStore(Protocol):
     def list_jobs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def history_revision(self, subject: str) -> int | None: ...
     def ensure_listed(self, pk: str, meta: dict) -> None: ...
-    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None: ...
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str, expected_epoch: int = 0) -> None: ...
     def create_recook(self, parent_pk: str, expected_parent_version: int,
                       new_pk: str, meta: dict, expected_epoch: int = 0) -> None: ...
     def commit(self, pk: str, expected_version: int, meta: dict,
@@ -404,7 +404,7 @@ class MemoryCookingStore:
                 self._advance_history(pk)
                 self.items[key] = listing
 
-    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str, expected_epoch: int = 0) -> None:
         with self.lock:
             current = self.items.get((pk, "META"))
             if not current or current["version"] != expected_version or (stream_pk, "BINDING") in self.items:
@@ -1004,8 +1004,12 @@ class DynamoCookingStore:
                 raise Conflict from exc
             raise
 
-    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str, expected_epoch: int = 0) -> None:
+        owner = _history_pk(pk).removeprefix('SCOPE#USER#').removesuffix('#JOBS')
+        if not owner or ('owner_subject' in meta and meta['owner_subject'] != owner):
+            raise ValueError('job owner mismatch')
         operations = [
+            self._owner_guard(owner, expected_epoch),
             {"Put": {"TableName": self.table.name,
                      "Item": self._item({"pk": pk, "sk": "META", **meta}),
                      "ConditionExpression": "#version = :expected",
