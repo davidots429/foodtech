@@ -1,7 +1,9 @@
 import unittest
 from uuid import uuid4
 
+import boto3
 from botocore.exceptions import ClientError
+from botocore.stub import ANY, Stubber
 from foodtech_business_api.deletion_registry_store import DeletionRegistryConflict, DeletionRegistryStore
 
 
@@ -73,6 +75,15 @@ class DeletionRegistryStoreTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.store.lock_and_register(**{**self.request, **change})
         self.assertEqual(self.client.requests, [])
+
+    def test_real_botocore_client_accepts_transaction_wire_shape(self):
+        client = boto3.client("dynamodb", region_name="ap-southeast-2", aws_access_key_id="synthetic",
+                              aws_secret_access_key="synthetic")
+        with Stubber(client) as stubber:
+            stubber.add_response("transact_write_items", {}, {"TransactItems": ANY})
+            store = DeletionRegistryStore("registry", "auth", client=client)
+            self.assertTrue(store.lock_and_register(**self.request))
+            stubber.assert_no_pending_responses()
 
 
 if __name__ == "__main__":
