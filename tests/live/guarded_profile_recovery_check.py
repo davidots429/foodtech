@@ -44,7 +44,8 @@ from foodtech_business_api.meal_deletion_residual import MealFinalResidualScan, 
 from foodtech_business_api.meal_deletion_worker import MealDeletionWorker
 from foodtech_business_api.meal_meta_deletion import MealMetaDeletion
 from foodtech_business_api.meal_source_snapshot import MealSourceSnapshot
-from foodtech_business_api.deletion_progress import DeletionProgressStore
+from foodtech_business_api.cooking_deletion_recovery import CookingDeletionRecovery
+from foodtech_business_api.deletion_progress import DeletionProgressConflict, DeletionProgressStore
 from foodtech_business_api.deletion_checkpoint_cipher import DeletionCheckpointCipher
 from foodtech_capsule_crypto.tenant_scope import TenantScope, TenantScopeResolver
 from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
@@ -300,6 +301,17 @@ def main():
         if not plan_progress.load_checkpoint(cipher=profile_cipher, subject=subject, request_id=winner,
                                              domain='MEAL_META_000000000000'):
             raise AssertionError('meal recovery did not preserve encrypted META snapshot')
+        cooking = CookingDeletionRecovery(profile=profile_recovery, job=job_recovery, meal=meal_recovery,
+                                          progress_store=plan_progress, cipher=profile_cipher)
+        for expected in ('JOB', 'MEAL', 'VERIFYING'):
+            if cooking.step(authenticated_subject=subject, request_id=winner, limit=100) != {'phase': expected}:
+                raise AssertionError('cooking recovery did not respect domain order')
+        try:
+            cooking.step(authenticated_subject=str(uuid.uuid4()), request_id=winner)
+        except (ValueError, DeletionProgressConflict):
+            pass
+        else:
+            raise AssertionError('other subject recovered cooking deletion')
         worker = CapsulePlanWorker(recovery=recovery, inventory=CapsuleInventory(CAPSULE, purposes, client=client),
             source_table=capsule, progress_store=plan_progress, progress_cipher=plan_cipher,
             tenant_resolver=resolver, key_map=key_map, approved_purposes=purposes,
@@ -330,7 +342,7 @@ def main():
                     query['ExclusiveStartKey'] = cursor
                 pages = progress_table.query(**query)
                 for item in pages['Items']:
-                    if item['sk'].startswith(('DOMAIN#PROFILE_', 'DOMAIN#JOB_', 'DOMAIN#MEAL_')):
+                    if item['sk'].startswith(('DOMAIN#PROFILE_', 'DOMAIN#JOB_', 'DOMAIN#MEAL_', 'DOMAIN#COOKING_')):
                         profile_progress_key = {'pk': item['pk'], 'sk': item['sk']}
                         progress_table.delete_item(Key=profile_progress_key)
                         if progress_table.get_item(Key=profile_progress_key, ConsistentRead=True).get('Item'):
@@ -365,7 +377,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "profile_recovery": "verified", "job_recovery": "verified", "meal_recovery": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "profile_recovery": "verified", "job_recovery": "verified", "meal_recovery": "verified", "cooking_recovery": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
