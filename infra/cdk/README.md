@@ -54,3 +54,5 @@
 수집 격리 버킷은 `FoodtechMinimalDataFlow-dev`에 S3 관리형 암호화·공개 차단·TLS 강제·RETAIN으로 정의하고 `IngestionDlqBucketName`으로 출력한다. 이 정의는 아직 배포되지 않았다.
 
 수집 어댑터 Task 역할은 데이터 흐름 테이블의 조회·기록, `STREAM#` 파티션의 순서 복구 항목 삭제, Ordered FIFO 전송과 격리 버킷 `ingestion/` 객체 저장 권한을 갖도록 정의한다. CDK 합성과 합성 정책의 허용·거부 시뮬레이션만 확인했으며 아직 배포되지 않았다. 역할은 Task Definition에 연결되지 않았고 실제 ECS 실행 및 조직 정책 검증도 남았다.
+
+`infra/containers/collection-adapter.Dockerfile`은 잠금된 Python 의존성으로 비관리자 REST 수집기 이미지를 만든다. 기본 진입점은 `python -m foodtech_collection_adapter`이며 CI는 이미지를 빌드해 도움말 실행을 확인한다. MQTT·OPC UA의 컨테이너 실행 계약과 Mock 인증정보·CA의 안전한 주입, Task Definition 연결은 별도로 필요하다.
