@@ -23,7 +23,7 @@ class TransactionClient:
         item = put["Item"]
         self.items[(update["TableName"], subject, "")] = {
             "pk": {"S": subject}, "suspended": {"BOOL": True},
-            "deletion_lock_request": update["ExpressionAttributeValues"][":request"]}
+            "deletion_lock_request": update["ExpressionAttributeValues"][":request"], "epoch": {"N": "1"}}
         self.items[(put["TableName"], item["pk"]["S"], item["sk"]["S"])] = item
 
     def get_item(self, *, TableName, Key, ConsistentRead, **kwargs):
@@ -108,6 +108,10 @@ class DeletionRegistryStoreTests(unittest.TestCase):
             self.store.locked_request(self.request["subject"])
         self.client.items[registry_key] = saved
         self.client.items[user_key]["suspended"] = {"BOOL": False}
+        with self.assertRaises(DeletionRegistryConflict):
+            self.store.locked_request(self.request["subject"])
+        self.client.items[user_key]["suspended"] = {"BOOL": True}
+        del self.client.items[user_key]["epoch"]
         with self.assertRaises(DeletionRegistryConflict):
             self.store.locked_request(self.request["subject"])
 

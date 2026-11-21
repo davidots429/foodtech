@@ -99,9 +99,11 @@ class DeletionRegistryStore:
             return None
         request = first.get("deletion_lock_request", {}).get("S")
         try:
-            if first.get("suspended") != {"BOOL": True} or str(UUID(request)) != request:
+            epoch = self.deserializer.deserialize(first["epoch"])
+            if first.get("suspended") != {"BOOL": True} or str(UUID(request)) != request or \
+                    not isinstance(epoch, Decimal) or not epoch.is_finite() or epoch < 1 or epoch != int(epoch):
                 raise ValueError
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, KeyError, ArithmeticError):
             raise DeletionRegistryConflict("invalid deletion lock") from None
         record = self.client.get_item(TableName=self.registry_table,
             Key=self._item({"pk": "REGISTRY", "sk": f"REQ#{request}"}), ConsistentRead=True,
