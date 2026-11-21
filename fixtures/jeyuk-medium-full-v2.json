@@ -1,0 +1,83 @@
+{
+  "fixtureId": "jeyuk-medium-full-v2",
+  "provenance": "SYNTHETIC",
+  "profile": "MEDIUM",
+  "actualLoadKg": "12",
+  "validationIdentity": {
+    "ingredientSpecId": "synthetic-pork-v1",
+    "ingredientLotId": "synthetic-lot-v1",
+    "supplierId": "synthetic-supplier",
+    "sensorId": "synthetic-probe",
+    "sensorCalibrationRecordId": "synthetic-cal-v1",
+    "processConditionProfileId": "jeyuk-medium-safety",
+    "processConditionVersion": "v1"
+  },
+  "samples": [
+    {
+      "seconds": 1,
+      "heatingSetpointCelsius": "180", "surfaceCelsius": "180",
+      "actualRpm": "20",
+      "targetRpm": "20",
+      "motorLoadPercent": "50",
+      "mixtureCelsius": "70",
+      "calibrationStatus": "OK",
+      "safetySensorPosition": "LOWEST_MIXTURE_POINT",
+      "lastIngredientAdditionCompleted": true
+    },
+    {
+      "seconds": 59,
+      "heatingSetpointCelsius": "180", "surfaceCelsius": "180",
+      "actualRpm": "20",
+      "targetRpm": "20",
+      "motorLoadPercent": "50",
+      "mixtureCelsius": "75",
+      "calibrationStatus": "OK",
+      "safetySensorPosition": "LOWEST_MIXTURE_POINT",
+      "lastIngredientAdditionCompleted": false
+    },
+    {
+      "seconds": 1,
+      "heatingSetpointCelsius": "180", "surfaceCelsius": "180",
+      "actualRpm": "20",
+      "targetRpm": "20",
+      "motorLoadPercent": "50",
+      "mixtureCelsius": "75",
+      "calibrationStatus": "OK",
+      "safetySensorPosition": "LOWEST_MIXTURE_POINT",
+      "lastIngredientAdditionCompleted": false
+    },
+    {
+      "seconds": 839,
+      "heatingSetpointCelsius": "180", "surfaceCelsius": "180",
+      "actualRpm": "20",
+      "targetRpm": "20",
+      "motorLoadPercent": "50",
+      "mixtureCelsius": "75",
+      "calibrationStatus": "OK",
+      "safetySensorPosition": "LOWEST_MIXTURE_POINT",
+      "lastIngredientAdditionCompleted": false
+    }
+  ],
+  "checkpoints": [
+    {
+      "second": 1,
+      "autoSafetyStatus": "PENDING",
+      "holdSeconds": 0
+    },
+    {
+      "second": 60,
+      "autoSafetyStatus": "PENDING",
+      "holdSeconds": 59
+    },
+    {
+      "second": 61,
+      "autoSafetyStatus": "PASSED",
+      "holdSeconds": 60
+    },
+    {
+      "second": 900,
+      "autoSafetyStatus": "PASSED",
+      "holdSeconds": 899
+    }
+  ]
+}

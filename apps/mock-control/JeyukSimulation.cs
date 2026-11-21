@@ -134,6 +134,8 @@ internal static class JeyukSimulation
             var seconds = segment.GetProperty("seconds").GetInt32();
             if (seconds <= 0 || seconds > MaximumSamples - samples.Count)
                 throw new InvalidDataException("Invalid or excessive sample duration.");
+            decimal? heatingSetpoint = segment.TryGetProperty("heatingSetpointCelsius", out _)
+                ? NonnegativeDecimal(segment, "heatingSetpointCelsius") : null;
             var surface = Decimal(segment, "surfaceCelsius");
             var actualRpm = NonnegativeDecimal(segment, "actualRpm");
             var targetRpm = NonnegativeDecimal(segment, "targetRpm");
@@ -170,7 +172,7 @@ internal static class JeyukSimulation
                 samples.Add(new JeyukSample(
                     fixtureId, "SYNTHETIC", "mockprofile-110", "mockprofile-110-a-001",
                     profile, actualLoadKg, samples.Count + 1, 1,
-                    surface, actualRpm, targetRpm, motorLoad, mixture, calibration,
+                    surface, actualRpm, targetRpm, motorLoad, heatingSetpoint, mixture, calibration,
                     sensorPosition, lastIngredientCompleted, identity,
                     logicalStart?.AddSeconds(samples.Count + 1).ToString("O", CultureInfo.InvariantCulture)));
         }
@@ -211,6 +213,6 @@ internal static class JeyukSimulation
         string FixtureId, string Provenance, string ProfileId, string InstanceId,
         string Profile, decimal ActualLoadKg, int Second, int SampleIntervalSeconds,
         decimal SurfaceCelsius, decimal ActualRpm, decimal TargetRpm, decimal MotorLoadPercent,
-        decimal? MixtureCelsius, string? CalibrationStatus, string? SafetySensorPosition,
+        decimal? HeatingSetpointCelsius, decimal? MixtureCelsius, string? CalibrationStatus, string? SafetySensorPosition,
         bool? LastIngredientAdditionCompleted, Dictionary<string, string>? ValidationIdentity, string? ObservedAt);
 }

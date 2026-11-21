@@ -23,6 +23,7 @@ class JeyukMockSample:
     last_ingredient_addition_completed: bool | None
     validation_identity: dict[str, str] | None
     observed_at: datetime | None
+    heating_setpoint_celsius: Decimal | None
 
 
 def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
@@ -55,7 +56,7 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
                      "lastIngredientAdditionCompleted"}
     identity_fields = {"ingredientSpecId", "ingredientLotId", "supplierId", "sensorId",
                        "sensorCalibrationRecordId", "processConditionProfileId", "processConditionVersion"}
-    if not isinstance(record, dict) or (set(record) - {"observedAt"}) not in (
+    if not isinstance(record, dict) or (set(record) - {"observedAt", "heatingSetpointCelsius"}) not in (
             required, required | safety_fields, required | safety_fields | {"validationIdentity"}):
         raise ValueError("unexpected Jeyuk Mock sample fields")
     observed = record.get("observedAt")
@@ -103,4 +104,5 @@ def decode_jeyuk_mock_sample(raw: str | bytes) -> JeyukMockSample:
         record["safetySensorPosition"] if has_safety else None,
         record["lastIngredientAdditionCompleted"] if has_safety else None,
         identity, observed,
+        _decimal(record, "heatingSetpointCelsius") if "heatingSetpointCelsius" in record else None,
     )

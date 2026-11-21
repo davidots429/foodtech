@@ -116,3 +116,5 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 `serve-mqtt`는 `fixtures/mockprofile-301-{a,b,c}-001.json` 합성 XML도 지원한다. 인스턴스별 Topic에 XML을 전송하며 `--fault invalid-xml`로 오류를 재현할 수 있다. 실제 제조사 사양은 아니다.
 
 실시간 수집기는 최대 4초의 HTTPS 대기 요청으로 변화가 발생하면 다음 일반 묶음 전에도 수신한다. 이는 합성 Mock의 단계·문·치명 알람·환기 이벤트에 대한 로컬 경로이며, 네트워크 지연이나 고객 화면의 5초 새로고침까지 즉시성을 보장하지 않는다. 저온·고온·습도 이탈과 열린 문 원표본 및 고등어 온도 복원 제한 경계도 일반 묶음보다 먼저 공개한다. Mock이 실패를 판정하지 않으며 수집 후 플랫폼이 기존 기준으로 판정한다. AWS 종단간 지연과 고객 화면의 표시 지연은 후속 검증 대상이다.
+
+제육볶음 `*-process-v2`와 `*-full-v2` 합성 fixture는 규모별로 명시한 `heatingSetpointCelsius`를 1초 표본에 전송한다. 이 값은 열원 목표 설정값이며 관찰된 `surfaceCelsius`나 `mixtureCelsius`와 다르다. 설정값이 없는 기존 v1 fixture에는 기본값을 보충하지 않는다. v2 fixture는 별도 ID를 사용하며 기존 v1 원본은 변경하지 않는다.

@@ -220,7 +220,7 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
     return result
 
 
-def read_collection_completion(table_name: str, batch_id: str) -> dict:
+def read_collection_completion(table_name: str, batch_id: str, *, include_settings: bool = False) -> dict:
     """Compare one terminal collector receipt with the full raw snapshot at read time."""
     from foodtech_contracts.jeyuk_receipt import MAX_SAMPLES, matches_jeyuk_snapshot
 
@@ -262,4 +262,18 @@ def read_collection_completion(table_name: str, batch_id: str) -> dict:
     if before is None or before != len(raws):
         return {"status": "REVISION_UNVERIFIED", "raw_count": len(raws)}
     matched = any(matches_jeyuk_snapshot(receipt, batch_id, raws) for receipt in receipts)
-    return {"status": "MATCHED_AT_READ" if matched else "NOT_MATCHED", "raw_count": len(raws)}
+    result = {"status": "MATCHED_AT_READ" if matched else "NOT_MATCHED", "raw_count": len(raws)}
+    if matched and include_settings:
+        samples = [decode_jeyuk_mock_sample(row["raw"]) for row in raws]
+        def summarize(values):
+            recorded = [value for value in values if value is not None]
+            if not recorded:
+                return {"status": "NOT_RECORDED", "value": None}
+            if len(recorded) != len(values):
+                return {"status": "PARTIAL", "value": None}
+            if len(set(recorded)) != 1:
+                return {"status": "CHANGED", "value": None}
+            return {"status": "STABLE", "value": str(recorded[0])}
+        result["settings"] = {"heating_setpoint_celsius": summarize([item.heating_setpoint_celsius for item in samples]),
+                              "target_rpm": summarize([item.target_rpm for item in samples])}
+    return result

@@ -34,7 +34,7 @@ from process_flow_dynamodb_check import (ACCOUNT, DATA_TABLE, ORDERED_QUEUE, QUA
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "fixtures/jeyuk-small-process-v1.json"
+FIXTURE = ROOT / "fixtures/jeyuk-small-process-v2.json"
 MOCK_DLL = ROOT / "apps/mock-control/bin/Release/net10.0/MockControl.dll"
 
 
@@ -147,6 +147,10 @@ def main(*, mock_wire: bool = False) -> int:
                 raise AssertionError("Collected raw samples do not match the terminal receipt")
             if read_collection_completion(DATA_TABLE, fixture_id) != {"status": "MATCHED_AT_READ", "raw_count": expected_count}:
                 raise AssertionError("Business API could not verify the stored receipt")
+            settings = read_collection_completion(DATA_TABLE, fixture_id, include_settings=True).get("settings", {})
+            if settings.get("heating_setpoint_celsius") != {"status": "STABLE", "value": "200"} or \
+                    settings.get("target_rpm") != {"status": "STABLE", "value": "30"}:
+                raise AssertionError("Business API did not verify the synthetic source settings")
             original = raws[0]["raw"]
             ingestor.ingest(original)
             current = table.get_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"}, ConsistentRead=True)["Item"]
