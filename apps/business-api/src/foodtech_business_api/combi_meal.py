@@ -23,6 +23,7 @@ from foodtech_contracts.combi_probe import summarize as summarize_probe
 
 from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
+from .combi_quality_sample import current_quality
 
 router = APIRouter(prefix="/api/customer/combi-meals", tags=["combi-meals"])
 
@@ -667,6 +668,34 @@ async def get_meal(meal_id: UUID, request: Request) -> dict:
     if events:
         result["events"] = events
     return result
+
+
+@router.get('/{meal_id}/quality/{menu}/sample-evidence')
+async def meal_quality_sample_evidence(meal_id: UUID, menu: Literal['rice', 'mackerel'], request: Request) -> dict:
+    """Return a customer-scoped quality snapshot without inventing comparison dimensions."""
+    first = await get_meal(meal_id, request)
+    second = await get_meal(meal_id, request)
+    if first != second:
+        raise HTTPException(409, '조회 중 식사 배치가 변경되었습니다. 다시 조회해 주세요.')
+    try:
+        sample = current_quality(second, menu.upper())
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(409, '현재 품질평가 이력을 확인할 수 없습니다.') from exc
+    if sample['status'] == 'EXCLUDED':
+        return {'status': 'EXCLUDED', 'reason': sample['reason']}
+    assessment = sample['assessment']
+    recipe = second['meal'].get(f'{menu}_recipe_version')
+    missing = ['LOAD_BAND']
+    if not isinstance(recipe, str) or not recipe.strip():
+        recipe = None
+        missing.insert(0, 'RECIPE_VERSION')
+    return {'status': 'DIMENSIONS_INCOMPLETE', 'missing_dimensions': missing,
+            'menu': menu.upper(), 'recipe_version': recipe,
+            'meal_version': sample['meal_version'], 'quality_version': sample['quality_version'],
+            'safety_version': sample['safety_version'], 'scores': assessment['scores'],
+            'score_percent': assessment.get('score_percent'), 'completed_at': assessment.get('completed_at'),
+            'actual_mass_kg': assessment.get('actual_mass_kg'),
+            'actual_portions': assessment.get('actual_portions'), 'load_ratio': assessment.get('load_ratio')}
 
 
 @router.post("/{meal_id}/rice-preparation", status_code=201)

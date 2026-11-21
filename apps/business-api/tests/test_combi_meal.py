@@ -2,7 +2,7 @@ import os
 import unittest
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -105,6 +105,42 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         invalid = await self.client.post('/api/customer/combi-meals', headers=headers,
             json={**self.body, 'rice_recipe_version': '   '})
         self.assertEqual(invalid.status_code, 422)
+
+    async def test_quality_sample_evidence_requires_current_customer_and_dimensions(self):
+        headers = {"X-CSRF-Token": "csrf"}
+        created = await self.client.post('/api/customer/combi-meals', headers=headers,
+            json={**self.body, 'mackerel_recipe_version': 'fish-v1'})
+        meal = created.json()['meal']
+        path = f"/api/customer/combi-meals/{meal['meal_batch_id']}/quality/mackerel/sample-evidence"
+        pk = combi_meal._pk(self.subject, meal['meal_batch_id'])
+        step_key = f"JOB#MACKEREL#{meal['mackerel_cooking_job_id']}"
+        step = self.store.items[(pk, step_key)]
+        pointer = {'version': 1, 'safety_version': 1, 'event_sk': 'EVENT#000000000002',
+                   'quality_status': 'QUALITY_PASSED', 'score_percent': '80.00', 'quality_target': True, 'usable': True}
+        step.update(status='UNLOADED', safety_status='PASSED', safety_version=1,
+                    quality_version=1, quality_current=pointer)
+        assessment = {'version': 1, 'safety_version': 1, 'menu': 'MACKEREL', 'status': 'COMPLETED',
+                      'scale_version': 'mackerel-common-v1', 'scores': {name: 4 for name in cooking.SCORE_ITEMS},
+                      'quality_status': 'QUALITY_PASSED', 'score_percent': '80.00', 'quality_target': True,
+                      'quality_note': 'private detail', 'actual_mass_kg': '1.2', 'actual_portions': 8}
+        self.store.items[(pk, pointer['event_sk'])] = {'pk': pk, 'sk': pointer['event_sk'],
+            'event': 'MACKEREL_QUALITY_ASSESSED', 'assessment': assessment}
+        response = await self.client.get(path)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['missing_dimensions'], ['LOAD_BAND'])
+        self.assertEqual(response.json()['recipe_version'], 'fish-v1')
+        self.assertNotIn('private detail', response.text)
+        step['quality_current']['usable'] = False
+        self.assertEqual((await self.client.get(path)).json()['reason'], 'CURRENT_ASSESSMENT_BLOCKED')
+        self.subject = 'another-customer'
+        self.assertEqual((await self.client.get(path)).status_code, 404)
+
+    async def test_quality_sample_evidence_rejects_changed_snapshot(self):
+        from uuid import uuid4
+        with patch.object(combi_meal, 'get_meal', new=AsyncMock(side_effect=[
+                {'meal': {'version': 1}}, {'meal': {'version': 2}}])):
+            result = await self.client.get(f'/api/customer/combi-meals/{uuid4()}/quality/rice/sample-evidence')
+        self.assertEqual(result.status_code, 409)
 
     async def test_linked_source_blocks_unrelated_transition_and_mackerel_samples(self):
         headers = {"X-CSRF-Token": "csrf"}
