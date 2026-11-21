@@ -385,6 +385,12 @@ class CookingJobsStack extends Stack {
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
       removalPolicy: RemovalPolicy.RETAIN,
     });
+    table.addGlobalSecondaryIndex({
+      indexName: "MealAggregatePending",
+      partitionKey: { name: "aggregate_refresh_shard", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
+    });
     new CfnOutput(this, "CookingJobsTableName", { value: table.tableName });
   }
 }

@@ -27,6 +27,7 @@ class CombiLiveStoreTests(unittest.TestCase):
         ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
         self.assertEqual(ops[2]['Put']['Item']['sk'], {'S': 'MEAL_AGGREGATE#DIRTY'})
         self.assertEqual(ops[2]['Put']['Item']['version'], {'N': '2'})
+        self.assertRegex(ops[2]['Put']['Item']['aggregate_refresh_shard']['S'], r'^PENDING#0[0-9a-f]$')
         self.assertEqual(ops[3]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N':'10'})
         store.attach_meal_source('meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], None)
         ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
@@ -62,7 +63,10 @@ class CombiLiveStoreTests(unittest.TestCase):
                            {'sk': 'JOB', 'status': 'DONE'}, {'sk': 'EVENT#2'})
         marker = store.items[('meal', 'MEAL_AGGREGATE#DIRTY')]
         self.assertEqual((marker['state'], marker['version']), ('PENDING', 2))
+        shard = marker['aggregate_refresh_shard']
+        self.assertRegex(shard, r'^PENDING#0[0-9a-f]$')
         with self.assertRaises(Conflict):
             store.advance_meal('meal', 1, {'sk': 'META', 'version': 2},
                                {'sk': 'JOB', 'status': 'DONE'}, {'sk': 'EVENT#3'})
         self.assertEqual(store.items[('meal', 'MEAL_AGGREGATE#DIRTY')]['version'], 2)
+        self.assertEqual(store.items[('meal', 'MEAL_AGGREGATE#DIRTY')]['aggregate_refresh_shard'], shard)

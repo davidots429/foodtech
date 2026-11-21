@@ -3,7 +3,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
-from foodtech_business_api.combi_refresh_worker import process_pending_marker, RefreshNotAuthorized
+from foodtech_business_api.combi_refresh_worker import process_pending_marker, process_pending_page, RefreshNotAuthorized
 
 
 class CombiRefreshWorkerTests(unittest.TestCase):
@@ -47,3 +47,25 @@ class CombiRefreshWorkerTests(unittest.TestCase):
                    new_callable=AsyncMock, side_effect=RuntimeError('retry')):
             with self.assertRaisesRegex(RuntimeError, 'retry'):
                 process_pending_marker(self.store, self.auth, self.marker)
+
+
+class CombiRefreshDiscoveryTests(unittest.TestCase):
+    def test_page_processes_all_entries_and_reports_failure_without_skipping_cursor(self):
+        store = MagicMock()
+        rows = [{'pk': 'one', 'sk': 'MEAL_AGGREGATE#DIRTY'}, {'pk': 'two', 'sk': 'MEAL_AGGREGATE#DIRTY'}]
+        cursor = {'pk': 'two', 'sk': 'MEAL_AGGREGATE#DIRTY', 'aggregate_refresh_shard': 'PENDING#03'}
+        store.table.query.return_value = {'Items': rows, 'LastEvaluatedKey': cursor}
+        with patch('foodtech_business_api.combi_refresh_worker.process_pending_marker',
+                   side_effect=[RuntimeError('private data'), {'status': 'REFRESHED'}]) as process:
+            result = process_pending_page(store, object(), 3, limit=2)
+        self.assertEqual(result, {'processed': 1, 'failed': 1, 'next_cursor': cursor})
+        self.assertEqual(process.call_count, 2)
+        self.assertEqual(store.table.query.call_args.kwargs['IndexName'], 'MealAggregatePending')
+        self.assertEqual(store.table.query.call_args.kwargs['Limit'], 2)
+
+    def test_invalid_bounds_do_not_query(self):
+        store = MagicMock()
+        for shard, limit in [(-1, 1), (16, 1), (True, 1), (0, 0), (0, 101)]:
+            with self.subTest(shard=shard, limit=limit), self.assertRaises(ValueError):
+                process_pending_page(store, object(), shard, limit=limit)
+        store.table.query.assert_not_called()

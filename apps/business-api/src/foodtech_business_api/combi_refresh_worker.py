@@ -54,3 +54,33 @@ def process_pending_marker(store, auth_table, marker: dict) -> dict:
     response = auth_table.get_item(Key={'pk': f'USER#{subject}'}, ConsistentRead=True)
     epoch = _authorized_epoch(response.get('Item'))
     return asyncio.run(refresh_pending_for_subject(store, subject, epoch, meal_id))
+
+
+def process_pending_page(store, auth_table, shard: int, cursor: dict | None = None, *, limit: int = 25) -> dict:
+    """Process a bounded index page; the scheduler must visit all shards repeatedly.
+
+    GSI reads are eventually consistent: cursors are per sweep, not durable
+    completion checkpoints. Failed records remain in the base table for a later
+    sweep. A stale index hit is harmless because the worker rereads the marker.
+    """
+    from boto3.dynamodb.conditions import Key
+
+    if type(shard) is not int or not 0 <= shard < 16 or type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError('invalid pending page bounds')
+    args = {'IndexName': 'MealAggregatePending',
+            'KeyConditionExpression': Key('aggregate_refresh_shard').eq(f'PENDING#{shard:02x}'),
+            'Limit': limit}
+    if cursor is not None:
+        if not isinstance(cursor, dict):
+            raise ValueError('invalid pending page cursor')
+        args['ExclusiveStartKey'] = cursor
+    page = store.table.query(**args)
+    counts = {'processed': 0, 'failed': 0}
+    for marker in page.get('Items', []):
+        try:
+            process_pending_marker(store, auth_table, marker)
+            counts['processed'] += 1
+        except Exception:
+            # The marker remains pending; never log customer keys or exception values.
+            counts['failed'] += 1
+    return {**counts, 'next_cursor': page.get('LastEvaluatedKey')}

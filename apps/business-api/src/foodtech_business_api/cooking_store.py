@@ -1,6 +1,7 @@
 """Atomic cooking job revisions and append-only assessments."""
 
 import os
+import hashlib
 import random
 import re
 import threading
@@ -39,11 +40,15 @@ def _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch):
         raise ValueError('invalid meal aggregate owner or version') from None
 
 
-def _meal_aggregate_dirty(expected_version, meta):
+def _meal_aggregate_dirty(pk, expected_version, meta):
     if type(expected_version) is not int or expected_version < 1 or not isinstance(meta, dict) or \
             type(meta.get('version')) is not int or meta['version'] != expected_version + 1:
         raise ValueError('invalid meal revision for aggregate refresh')
-    return {'sk': 'MEAL_AGGREGATE#DIRTY', 'version': meta['version'], 'state': 'PENDING'}
+    if not isinstance(pk, str) or not pk:
+        raise ValueError('invalid meal partition')
+    shard = hashlib.sha256(pk.encode('utf-8')).digest()[0] % 16
+    return {'sk': 'MEAL_AGGREGATE#DIRTY', 'version': meta['version'], 'state': 'PENDING',
+            'aggregate_refresh_shard': f'PENDING#{shard:02x}'}
 
 
 def _meal_dirty_scope(pk, version, subject, expected_epoch):
@@ -341,7 +346,7 @@ class MemoryCookingStore:
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:
-        dirty = _meal_aggregate_dirty(expected_version, meta)
+        dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         with self.lock:
             current = self.items.get((pk, "META"))
             if (not current or current["version"] != expected_version or
@@ -353,7 +358,7 @@ class MemoryCookingStore:
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
                            event: dict, chunks: list[dict], live_count: int | None = None) -> None:
-        dirty = _meal_aggregate_dirty(expected_version, meta)
+        dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         source_pk = pk + "#SOURCE"
         with self.lock:
             current = self.items.get((pk, "META"))
@@ -862,7 +867,7 @@ class DynamoCookingStore:
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:
-        dirty = _meal_aggregate_dirty(expected_version, meta)
+        dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         operations = [
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected",
@@ -884,7 +889,7 @@ class DynamoCookingStore:
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
                            event: dict, chunks: list[dict], live_count: int | None = None) -> None:
-        dirty = _meal_aggregate_dirty(expected_version, meta)
+        dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         operations = [
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected", "ExpressionAttributeNames": {"#v": "version"},
