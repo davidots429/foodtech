@@ -8,6 +8,7 @@ import time
 from decimal import Decimal
 from functools import lru_cache
 from typing import Protocol
+from uuid import UUID
 
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
@@ -15,6 +16,27 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 class Conflict(Exception):
     pass
+
+
+def _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch):
+    if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
+            type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63 or \
+            not isinstance(record, dict) or not isinstance(record.get('group_id'), str) or \
+            not re.fullmatch(r'[a-f0-9]{64}', record['group_id']) or \
+            pk != f"SCOPE#USER#{subject}#MEAL_AGGREGATE#{record['group_id']}" or \
+            not isinstance(snapshots, list) or not 1 <= len(snapshots) <= 20:
+        raise ValueError('invalid meal aggregate scope')
+    prefix = f'SCOPE#USER#{subject}#COMBI_MEAL#'
+    seen = set()
+    try:
+        for meal_pk, version in snapshots:
+            if not isinstance(meal_pk, str) or not meal_pk.startswith(prefix) or meal_pk in seen or \
+                    str(UUID(meal_pk[len(prefix):])) != meal_pk[len(prefix):] or \
+                    type(version) is not int or version < 1:
+                raise ValueError
+            seen.add(meal_pk)
+    except (TypeError, ValueError, AttributeError):
+        raise ValueError('invalid meal aggregate owner or version') from None
 
 
 def _job_list_item(pk: str, meta: dict) -> dict:
@@ -119,7 +141,8 @@ class CookingStore(Protocol):
     def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict: ...
     def create_meal(self, pk: str, records: list[dict]) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
-    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict) -> dict: ...
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict,
+                            subject: str, expected_epoch: int) -> dict: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
@@ -239,7 +262,9 @@ class MemoryCookingStore:
         with self.lock:
             return [item.copy() for (item_pk, _), item in sorted(self.items.items()) if item_pk == pk]
 
-    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict) -> dict:
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict,
+                            subject: str, expected_epoch: int) -> dict:
+        _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch)
         with self.lock:
             for meal_pk, version in snapshots:
                 meta = self.items.get((meal_pk, 'META'))
@@ -591,6 +616,7 @@ class DynamoCookingStore:
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
+        self.auth_table_name = os.getenv('FOODTECH_AUTH_TABLE', '')
 
     def create_condition_profile(self, subject: str, profile: dict) -> None:
         item = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}",
@@ -662,8 +688,19 @@ class DynamoCookingStore:
             if not start:
                 return _api_numbers(rows)
 
-    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict) -> dict:
-        operations = [
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict,
+                            subject: str, expected_epoch: int) -> dict:
+        _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch)
+        if not self.auth_table_name or self.auth_table_name == self.table.name:
+            raise ValueError('separate authentication table is required')
+        operations = [{'ConditionCheck': {'TableName': self.auth_table_name,
+            'Key': self._item({'pk': f'USER#{subject}'}),
+            'ConditionExpression': 'attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR '
+                '#epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) '
+                'AND attribute_not_exists(deletion_lock_request)',
+            'ExpressionAttributeNames': {'#epoch': 'epoch'},
+            'ExpressionAttributeValues': self._item({':expected': expected_epoch, ':zero': 0, ':false': False})}}]
+        operations += [
             {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': meal_pk, 'sk': 'META'}),
                 'ConditionExpression': '#version = :version', 'ExpressionAttributeNames': {'#version': 'version'},
                 'ExpressionAttributeValues': self._item({':version': version})}}

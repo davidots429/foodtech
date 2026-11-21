@@ -118,9 +118,11 @@ async def create_meal_aggregate(request: Request, body: MealAggregateRequest) ->
               'representativeness_status': 'NOT_EVALUATED', 'provenance': 'SYNTHETIC'}
     pk = f'SCOPE#USER#{session.subject}#MEAL_AGGREGATE#{group_id}'
     try:
-        return await _store_call(store, store.save_meal_aggregate, pk, snapshots, record)
+        return await _store_call(store, store.save_meal_aggregate, pk, snapshots, record, session.subject, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, '집계 중 식사 배치가 변경되었습니다. 다시 계산해 주세요.') from exc
+    except ValueError as exc:
+        raise HTTPException(503, '집계 저장을 사용할 수 없습니다.') from exc
 
 
 @router.get('/{group_id}/{result_id}')

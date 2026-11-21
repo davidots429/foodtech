@@ -19,7 +19,7 @@ from process_flow_dynamodb_check import ACCOUNT, REGION, remove_partition
 TABLE = 'foodtech-cooking-jobs-dev'
 
 
-async def scenario(store, partitions):
+async def scenario(store, partitions, auth, auth_keys):
     subject = 'synthetic-meal-aggregate-' + uuid4().hex
     meal_id, rice_id, transition_id, fish_id = (str(uuid4()) for _ in range(4))
     meal_pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}'
@@ -57,6 +57,9 @@ async def scenario(store, partitions):
     for record in records:
         store.table.put_item(Item=record, ConditionExpression='attribute_not_exists(pk)')
     owner = [subject]
+    auth_key = {'pk': f'USER#{subject}'}
+    auth.put_item(Item={**auth_key, 'epoch': 0, 'suspended': False}, ConditionExpression='attribute_not_exists(pk)')
+    auth_keys.append(auth_key)
 
     async def session(_request, surface):
         assert surface == 'customer'
@@ -76,6 +79,16 @@ async def scenario(store, partitions):
             retry = await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)
             retry.raise_for_status()
             assert retry.json()['result_id'] == result['result_id']
+            auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request',
+                             ExpressionAttributeValues={':request': str(uuid4())})
+            blocked = await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)
+            assert blocked.status_code == 409, blocked.text
+            auth.update_item(Key=auth_key, UpdateExpression='SET #epoch = :epoch REMOVE deletion_lock_request',
+                             ExpressionAttributeNames={'#epoch': 'epoch'}, ExpressionAttributeValues={':epoch': 1})
+            stale = await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)
+            assert stale.status_code == 409, stale.text
+            auth.update_item(Key=auth_key, UpdateExpression='SET #epoch = :epoch',
+                             ExpressionAttributeNames={'#epoch': 'epoch'}, ExpressionAttributeValues={':epoch': 0})
             link = f"/api/customer/combi-quality-aggregates/{group}/{result['result_id']}"
             assert (await client.get(link)).status_code == 200
             assert (await client.get(link + '/freshness')).json()['status'] == 'UNCHANGED_AS_OBSERVED'
@@ -121,12 +134,17 @@ def main():
     session = boto3.Session(profile_name='foodtech', region_name=REGION)
     if session.client('sts').get_caller_identity()['Account'] != ACCOUNT:
         raise SystemExit('unexpected account')
-    store, partitions = DynamoCookingStore(TABLE), []
+    store, partitions, auth_keys = DynamoCookingStore(TABLE), [], []
+    store.auth_table_name = 'foodtech-auth-sessions-dev'
+    auth = session.resource('dynamodb').Table(store.auth_table_name)
     try:
-        asyncio.run(scenario(store, partitions))
+        asyncio.run(scenario(store, partitions, auth, auth_keys))
     finally:
         for pk in reversed(partitions):
             remove_partition(store.table, pk)
+        for auth_key in auth_keys:
+            auth.delete_item(Key=auth_key)
+            assert not auth.get_item(Key=auth_key, ConsistentRead=True).get('Item')
         print('synthetic partition cleanup verified')
 
 
