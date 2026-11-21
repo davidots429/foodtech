@@ -14,7 +14,7 @@ class CoordinatorTests(unittest.TestCase):
         self.jobs=JobDeletionInventory(source_table=self.source,progress_store=self.progress,cipher=self.cipher)
         self.jobs.capture_page=Mock(return_value={'complete':True,'count':1})
         self.jobs._head=Mock(return_value={'complete':True,'count':1})
-        self.worker=SimpleNamespace(inventory=self.jobs,delete_one=Mock(side_effect=[
+        self.worker=SimpleNamespace(inventory=self.jobs,delete_records=Mock(side_effect=[
             {'state':'IN_PROGRESS','removed':True},{'state':'META_ONLY','removed':False}]))
         self.bindings=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
             capture_page=Mock(return_value={'complete':True,'count':1}),remove_one=Mock(return_value={'state':'VERIFYING'}),
@@ -40,7 +40,7 @@ class CoordinatorTests(unittest.TestCase):
              patch('foodtech_business_api.job_deletion_coordinator.remove_job_history',return_value={'state':'VERIFYING'}):
             results=[self.coordinator.step(**self.scope)['phase'] for _ in range(19)]
         self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','LISTINGS','RESIDUAL','RESIDUAL','BINDING_RESIDUAL','BINDING_RESIDUAL','META','HISTORY','FINAL_JOBS','FINAL_JOBS','FINAL_BINDINGS','FINAL_HISTORY','SOURCES','VERIFYING','VERIFYING'])
-        self.assertEqual([c.kwargs['index'] for c in self.worker.delete_one.call_args_list],[0,0])
+        self.assertEqual([c.kwargs['index'] for c in self.worker.delete_records.call_args_list],[0,0])
         self.bindings.remove_one.assert_called_once()
 
     def test_failed_progress_write_repeats_same_binding_safely(self):

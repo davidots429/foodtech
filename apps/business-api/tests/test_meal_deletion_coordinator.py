@@ -16,7 +16,7 @@ class MealCoordinatorTests(unittest.TestCase):
         self.meals = SimpleNamespace(source_table=self.source, progress_store=self.store, cipher=self.cipher,
             _json=json.loads, _load=self.load, capture_page=Mock(return_value={'complete': True, 'count': 1}))
         self.worker = SimpleNamespace(inventory=self.meals,
-            delete_one=Mock(return_value={'state': 'META_ONLY', 'removed': False}))
+            delete_records=Mock(return_value={'state': 'META_ONLY', 'removed': False}))
         self.residual = SimpleNamespace(DOMAIN='MEAL_RESIDUAL', source_table=self.source,
             progress_store=self.store, cipher=self.cipher,
             observe_page=Mock(return_value={'scan_complete': True, 'residual_found': False}))

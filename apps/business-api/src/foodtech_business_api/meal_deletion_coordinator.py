@@ -48,7 +48,7 @@ class MealDeletionCoordinator:
                 state.update(phase='RECORDS', total=result['count'])
         elif phase == 'RECORDS':
             if state['index'] < state['total']:
-                result = self.worker.delete_one(subject=subject, request_id=request_id, index=state['index'])
+                result = self.worker.delete_records(subject=subject, request_id=request_id, index=state['index'], limit=min(limit, 20))
                 if (result.get('state'), result.get('removed')) == ('META_ONLY', False):
                     state['index'] += 1
                 elif (result.get('state'), result.get('removed')) != ('IN_PROGRESS', True):

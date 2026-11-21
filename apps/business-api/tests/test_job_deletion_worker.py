@@ -29,6 +29,15 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(self.worker.remove_binding(**self.scope,index=0),{'index':0,'state':'VERIFYING'})
         self.assertEqual(delete.call_args.kwargs['job_id'],'captured')
 
+    def test_bounded_records_verify_inventory_once_and_stop_at_meta(self):
+        with patch('foodtech_business_api.job_deletion_worker.delete_one_job_record', side_effect=[
+                {'state':'IN_PROGRESS','removed':True}, {'state':'META_ONLY','removed':False}]) as delete:
+            result = self.worker.delete_records(**self.scope, index=0, limit=3)
+        self.assertEqual(result, {'index':0,'state':'META_ONLY','removed':False})
+        self.assertEqual(delete.call_count, 2)
+        self.assertEqual(self.inventory.targets.call_count, 1)
+        with self.assertRaises(ValueError): self.worker.delete_records(**self.scope, index=0, limit=21)
+
     def test_missing_target_and_mismatched_dependencies_fail(self):
         self.inventory.targets=Mock(return_value=iter([]))
         with patch('foodtech_business_api.job_deletion_worker.delete_one_job_record') as delete:

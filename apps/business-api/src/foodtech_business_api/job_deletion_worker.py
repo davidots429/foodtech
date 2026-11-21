@@ -30,6 +30,19 @@ class JobDeletionWorker:
             cipher=self.cipher, subject=subject, request_id=request_id, job_id=target.job_id)
         return {'index': index, 'state': result['state'], 'removed': result['removed']}
 
+    def delete_records(self, *, subject, request_id, index, limit):
+        if type(limit) is not int or not 1 <= limit <= 20:
+            raise ValueError('invalid job cleanup limit')
+        target = self._target(subject=subject, request_id=request_id, index=index)
+        for _ in range(limit):
+            result = delete_one_job_record(source_table=self.source_table, progress_store=self.progress_store,
+                cipher=self.cipher, subject=subject, request_id=request_id, job_id=target.job_id)
+            if (result.get('state'), result.get('removed')) == ('META_ONLY', False):
+                return {'index': index, 'state': 'META_ONLY', 'removed': False}
+            if (result.get('state'), result.get('removed')) != ('IN_PROGRESS', True):
+                raise ValueError('invalid job record cleanup result')
+        return {'index': index, 'state': 'IN_PROGRESS', 'removed': True}
+
     def remove_binding(self, *, subject, request_id, index):
         target=self._target(subject=subject,request_id=request_id,index=index)
         result=delete_job_binding(source_table=self.source_table,progress_store=self.progress_store,

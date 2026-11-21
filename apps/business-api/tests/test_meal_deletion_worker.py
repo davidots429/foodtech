@@ -32,6 +32,15 @@ class MealWorkerTests(unittest.TestCase):
             MealDeletionWorker(inventory=self.inventory, source_table=object(),
                                progress_store=self.progress, cipher=self.cipher)
 
+    def test_bounded_records_reuse_verified_target_and_stop_at_limit(self):
+        with patch('foodtech_business_api.meal_deletion_worker.delete_one_meal_record',
+                   return_value={'state': 'IN_PROGRESS', 'removed': True}) as delete:
+            result = self.worker.delete_records(**self.scope, index=0, limit=2)
+        self.assertEqual(result, {'index': 0, 'state': 'IN_PROGRESS', 'removed': True})
+        self.assertEqual(delete.call_count, 2)
+        self.assertEqual(self.inventory.targets.call_count, 1)
+        with self.assertRaises(ValueError): self.worker.delete_records(**self.scope, index=0, limit=0)
+
 
 if __name__ == '__main__':
     unittest.main()
