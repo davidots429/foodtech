@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from foodtech_ai_gateway.policy import Execution, Feature
-from foodtech_ai_gateway.recipe_source_guard import DynamoRecipeSourceGuard
+from foodtech_ai_gateway.recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
 
 
@@ -97,6 +97,19 @@ class RecipeSourceGuardTests(unittest.TestCase):
         data.get_paginator = reject_query
         self.assertFalse(self.guard.verify_scoped(self.execution, jobs, sources))
         self.assertNotIn('JEYUK#foreign-batch', accessed)
+
+    def test_bound_adapter_refuses_different_execution_before_reading(self):
+        jobs = (f'SCOPE#USER#tenant-a#JOB#{self.current}', f'SCOPE#USER#tenant-a#JOB#{self.prior}')
+        sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')
+        bound = BoundRecipeSourceGuard(self.guard, self.execution, jobs, sources)
+        self.assertNotIn('tenant-a', repr(bound))
+        self.assertTrue(bound.verify(self.execution))
+        def forbidden(*args, **kwargs):
+            raise AssertionError('unexpected read')
+        self.resource.tables['foodtech-cooking-jobs-dev'].get_item = forbidden
+        self.assertFalse(bound.verify(replace(self.execution, tenant_id='tenant-b')))
+        self.assertFalse(bound.verify(replace(self.execution, prior_source_revision=30)))
+        self.assertFalse(bound.verify(None))
 
     def test_rejects_wrong_provenance_binding_and_shared_batch(self):
         key = (f'SCOPE#USER#tenant-a#JOB#{self.prior}', 'META')

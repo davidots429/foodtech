@@ -5,6 +5,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,7 +15,7 @@ from boto3.dynamodb.conditions import Attr
 from starlette.requests import Request
 
 from foodtech_ai_gateway.policy import Execution, Feature
-from foodtech_ai_gateway.recipe_source_guard import DynamoRecipeSourceGuard
+from foodtech_ai_gateway.recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from foodtech_ai_gateway.registry import DynamoRegistry
 from foodtech_business_api import auth as auth_module
 from foodtech_business_api.auth_store import DynamoAuthStore, Session
@@ -93,6 +94,9 @@ def main():
         execution_read = registry.execution_snapshot
         scoped = resolve_recipe_scope(auth_store.read_session(session_id), execution.execution_id,
                                       execution_read, job_store.read_meta)
+        bound = BoundRecipeSourceGuard(guard, execution, scoped.job_partitions, scoped.source_partitions)
+        if not bound.verify(execution) or bound.verify(replace(execution, tenant_id='other-customer')):
+            raise AssertionError('bound source guard rejected owner or accepted another execution')
         request = Request({'type': 'http', 'method': 'GET', 'path': '/', 'headers': [
             (b'cookie', f'{auth_module.SESSION_COOKIE}={session_id}'.encode())]})
         async def combined():
@@ -121,6 +125,7 @@ def main():
         sources.update_item(Key=raw_key, UpdateExpression='SET #raw = :changed',
                             ExpressionAttributeNames={'#raw': 'raw'}, ExpressionAttributeValues={':changed': raw + ' '})
         if guard.verify(execution): raise AssertionError('changed raw with unchanged revision accepted')
+        if bound.verify(execution): raise AssertionError('bound source guard accepted changed raw data')
         try:
             asyncio.run(combined())
         except RecipeScopeDenied:

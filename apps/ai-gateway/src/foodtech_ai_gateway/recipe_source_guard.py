@@ -6,6 +6,7 @@ an AI request. Those checks must be performed independently.
 """
 import re
 from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
@@ -19,6 +20,25 @@ from .policy import Execution
 
 MAX_SOURCE_ROWS = max(profile.time_bands[-1] for profile in PROFILES.values())
 MAX_RECEIPTS = 100
+
+
+@dataclass(frozen=True)
+class BoundRecipeSourceGuard:
+    """Adapt a pre-authorized execution scope to the Gateway guard interface.
+
+    A trusted caller must supply the execution and scope after authenticating
+    and authorizing them. This adapter does not authenticate the caller, obtain
+    credentials, or enforce AWS-level isolation.
+    """
+    guard: object = field(repr=False)
+    execution: Execution = field(repr=False)
+    job_partitions: tuple[str, str] = field(repr=False)
+    source_partitions: tuple[str, str] = field(repr=False)
+
+    def verify(self, execution: Execution) -> bool:
+        if not isinstance(execution, Execution) or execution != self.execution:
+            return False
+        return self.guard.verify_scoped(execution, self.job_partitions, self.source_partitions) is True
 
 
 def _positive_integer(value: object) -> int | None:

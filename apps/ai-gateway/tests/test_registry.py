@@ -13,6 +13,7 @@ from foodtech_ai_gateway.policy import Caller, Consent, Credential, Execution, F
 from foodtech_ai_gateway.registry import DynamoRegistry, RegistryConflict, _transaction_token
 from foodtech_ai_gateway.service import GatewayService
 from foodtech_ai_gateway.ollama import OllamaResult
+from foodtech_ai_gateway.recipe_source_guard import BoundRecipeSourceGuard
 from foodtech_contracts.recommendation_guard import Evidence
 from foodtech_contracts.recommendation_output import JeyukBaseline, TonkatsuBaseline
 
@@ -270,6 +271,15 @@ class RegistryTests(unittest.TestCase):
         self.service.recipe_source_guard = SimpleNamespace(verify=lambda _execution: False)
         stale = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
         self.assertEqual((stale.state, stale.error_code, model.calls), ("DENIED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 0))
+        other_execution = Execution("other", "tenant-a", Feature.RECIPE_CORRECTION,
+                                    "synthetic-tier1", None, "SYNTHETIC", Decimal("0"))
+        def unexpected(*_args):
+            raise AssertionError('different execution must not access source')
+        self.service.recipe_source_guard = BoundRecipeSourceGuard(SimpleNamespace(verify_scoped=unexpected),
+                                                                  other_execution, ('a', 'b'), ('c', 'd'))
+        wrong_scope = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
+        self.assertEqual((wrong_scope.state, wrong_scope.error_code, model.calls),
+                         ("DENIED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 0))
         self.service.recipe_source_guard = Guard()
         changed = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
         self.assertEqual((changed.state, changed.error_code, model.calls), ("FAILED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 1))
