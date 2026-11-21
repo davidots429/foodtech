@@ -55,6 +55,16 @@ def _history_pk(job_pk: str) -> str:
     return prefix + "#JOBS"
 
 
+
+def _meal_subject(pk: str) -> str:
+    prefix, separator, meal_id = pk.rpartition("#COMBI_MEAL#")
+    if not separator or not prefix.startswith("SCOPE#USER#") or not meal_id:
+        raise ValueError("invalid scoped meal key")
+    subject = prefix.removeprefix("SCOPE#USER#")
+    if not subject:
+        raise ValueError("invalid meal owner")
+    return subject
+
 def _history_number(item: dict | None) -> int | None:
     if item is None:
         return None
@@ -135,17 +145,17 @@ class CookingStore(Protocol):
                                  source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None: ...
     def customer_restatement(self, pk: str, request_id: str) -> dict | None: ...
     def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict: ...
-    def create_meal(self, pk: str, records: list[dict]) -> None: ...
+    def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
-                     step: dict, event: dict) -> None: ...
+                     step: dict, event: dict, expected_epoch: int = 0) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict], live_count: int | None = None) -> None: ...
+                           event: dict, chunks: list[dict], live_count: int | None = None, expected_epoch: int = 0) -> None: ...
     def read_meal_source_chunk(self, pk: str, index: int) -> dict | None: ...
     def read_meal_live(self, pk: str) -> dict | None: ...
     def read_meal_live_chunk(self, pk: str, start: int) -> dict | None: ...
     def read_meal_live_chunks(self, pk: str) -> list[dict]: ...
-    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None: ...
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict, expected_epoch: int = 0) -> None: ...
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
     def read_meta(self, pk: str) -> dict | None: ...
     def process_pointer(self, pk: str) -> dict | None: ...
@@ -271,7 +281,7 @@ class MemoryCookingStore:
             self.items[key] = {"pk": pk, **request}
             return self.items[key].copy()
 
-    def create_meal(self, pk: str, records: list[dict]) -> None:
+    def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None:
         with self.lock:
             if any((pk, row["sk"]) in self.items for row in records):
                 raise Conflict
@@ -283,7 +293,7 @@ class MemoryCookingStore:
             return [item.copy() for (item_pk, _), item in sorted(self.items.items()) if item_pk == pk]
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
-                     step: dict, event: dict) -> None:
+                     step: dict, event: dict, expected_epoch: int = 0) -> None:
         with self.lock:
             current = self.items.get((pk, "META"))
             if (not current or current["version"] != expected_version or
@@ -293,7 +303,7 @@ class MemoryCookingStore:
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict], live_count: int | None = None) -> None:
+                           event: dict, chunks: list[dict], live_count: int | None = None, expected_epoch: int = 0) -> None:
         source_pk = pk + "#SOURCE"
         with self.lock:
             current = self.items.get((pk, "META"))
@@ -327,7 +337,7 @@ class MemoryCookingStore:
             return [row.copy() for (item_pk, sk), row in sorted(self.items.items())
                     if item_pk == pk + "#LIVE" and sk.startswith("CHUNK#")]
 
-    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None:
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict, expected_epoch: int = 0) -> None:
         with self.lock:
             meal = self.items.get((pk, "META"))
             current = self.items.get((pk + "#LIVE", "META"))
@@ -736,8 +746,8 @@ class DynamoCookingStore:
             raise
         return {"pk": pk, **request}
 
-    def create_meal(self, pk: str, records: list[dict]) -> None:
-        operations = [{"Put": {"TableName": self.table.name,
+    def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None:
+        operations = [self._owner_guard(_meal_subject(pk), expected_epoch)] + [{"Put": {"TableName": self.table.name,
                                 "Item": self._item({"pk": pk, **row}),
                                 "ConditionExpression": "attribute_not_exists(pk)"}}
                       for row in records]
@@ -763,8 +773,9 @@ class DynamoCookingStore:
                 return _api_numbers(rows)
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
-                     step: dict, event: dict) -> None:
+                     step: dict, event: dict, expected_epoch: int = 0) -> None:
         operations = [
+            self._owner_guard(_meal_subject(pk), expected_epoch),
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected",
                      "ExpressionAttributeNames": {"#v": "version"},
@@ -783,8 +794,9 @@ class DynamoCookingStore:
             raise
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict], live_count: int | None = None) -> None:
+                           event: dict, chunks: list[dict], live_count: int | None = None, expected_epoch: int = 0) -> None:
         operations = [
+            self._owner_guard(_meal_subject(pk), expected_epoch),
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected", "ExpressionAttributeNames": {"#v": "version"},
                      "ExpressionAttributeValues": {":expected": {"N": str(expected_version)}}}},
@@ -836,7 +848,7 @@ class DynamoCookingStore:
             if not start_key:
                 return _api_numbers(items)
 
-    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None:
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict, expected_epoch: int = 0) -> None:
         condition = "attribute_not_exists(pk)" if expected == 0 else "#count = :expected"
         live_put = {"TableName": self.table.name, "Item": self._item({"pk": pk + "#LIVE", **state}),
                     "ConditionExpression": condition}
@@ -844,6 +856,7 @@ class DynamoCookingStore:
             live_put["ExpressionAttributeNames"] = {"#count": "count"}
             live_put["ExpressionAttributeValues"] = {":expected": {"N": str(expected)}}
         operations = [
+            self._owner_guard(_meal_subject(pk), expected_epoch),
             {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
                                 "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(#source)",
                                 "ExpressionAttributeNames": {"#source": "source"}}},
