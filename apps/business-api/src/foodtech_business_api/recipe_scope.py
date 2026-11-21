@@ -164,7 +164,8 @@ async def verify_recipe_sources(request, expected, execution_reader, job_reader,
             (getattr(execution, 'jeyuk_source_revision', None), getattr(execution, 'prior_source_revision', None)) != expected.source_revisions:
         raise RecipeScopeDenied('recipe scope changed')
     try:
-        valid = await asyncio.to_thread(source_guard.verify, execution)
+        valid = await asyncio.to_thread(source_guard.verify_scoped, execution,
+                                        expected.job_partitions, expected.source_partitions)
     except Exception:
         raise RecipeScopeDenied('recipe source unavailable') from None
     if valid is not True:

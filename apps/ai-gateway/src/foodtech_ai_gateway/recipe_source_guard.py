@@ -58,6 +58,24 @@ class DynamoRecipeSourceGuard:
 
     def verify(self, execution: Execution) -> bool:
         """Return false for unknown, mismatched, or no-longer-current references."""
+        return self._verify(execution, None)
+
+    def verify_scoped(self, execution: Execution, job_partitions, source_partitions) -> bool:
+        """Reject changed bindings before accessing a different source partition.
+
+        This code-level bound is not a replacement for AWS IAM isolation.
+        """
+        subject = execution.tenant_id
+        expected_jobs = (f'SCOPE#USER#{subject}#JOB#{execution.job_id}',
+                         f'SCOPE#USER#{subject}#JOB#{execution.prior_job_id}')
+        if not isinstance(job_partitions, tuple) or job_partitions != expected_jobs or \
+                not isinstance(source_partitions, tuple) or len(source_partitions) != 2 or \
+                any(not isinstance(value, str) or not re.fullmatch(r'JEYUK#[A-Za-z0-9_-]{1,128}', value)
+                    for value in source_partitions) or source_partitions[0] == source_partitions[1]:
+            return False
+        return self._verify(execution, source_partitions)
+
+    def _verify(self, execution: Execution, source_partitions) -> bool:
         subject = execution.tenant_id
         if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,128}', subject):
             return False
@@ -66,12 +84,12 @@ class DynamoRecipeSourceGuard:
         if not all(job and _positive_integer(version) and _positive_integer(revision)
                    for job, version, revision in bindings) or bindings[0][0] == bindings[1][0]:
             return False
-        first = self._read_snapshot(subject, bindings)
-        return first is not None and first == self._read_snapshot(subject, bindings)
+        first = self._read_snapshot(subject, bindings, source_partitions)
+        return first is not None and first == self._read_snapshot(subject, bindings, source_partitions)
 
-    def _read_snapshot(self, subject, bindings):
+    def _read_snapshot(self, subject, bindings, source_partitions=None):
         observed = []
-        for job_id, expected_version, expected_revision in bindings:
+        for index, (job_id, expected_version, expected_revision) in enumerate(bindings):
             try:
                 if not isinstance(job_id, str) or str(UUID(job_id)) != job_id:
                     return None
@@ -89,6 +107,8 @@ class DynamoRecipeSourceGuard:
                 return None
             batch = binding.get('batch_id')
             if not isinstance(batch, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', batch):
+                return None
+            if source_partitions is not None and f'JEYUK#{batch}' != source_partitions[index]:
                 return None
             reverse = self.cooking.get_item(Key={'pk': f'JEYUK#{batch}', 'sk': 'BINDING'},
                                             ConsistentRead=True).get('Item')

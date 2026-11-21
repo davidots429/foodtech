@@ -103,6 +103,14 @@ def main():
                 await verify_recipe_sources(request, scoped, execution_read, job_store.read_meta, guard)
         asyncio.run(combined())
         job_key = {'pk': f'SCOPE#USER#{owner}#JOB#{current}', 'sk': 'META'}
+        jobs.update_item(Key=job_key, UpdateExpression='SET #binding.#batch = :value',
+            ExpressionAttributeNames={'#binding': 'source_binding', '#batch': 'batch_id'},
+            ExpressionAttributeValues={':value': f'jeyuk-foreign-{suffix}'})
+        if guard.verify_scoped(execution, scoped.job_partitions, scoped.source_partitions):
+            raise AssertionError('source outside scoped binding accepted')
+        jobs.update_item(Key=job_key, UpdateExpression='SET #binding.#batch = :value',
+            ExpressionAttributeNames={'#binding': 'source_binding', '#batch': 'batch_id'},
+            ExpressionAttributeValues={':value': source_ids[0]})
         jobs.update_item(Key=job_key, UpdateExpression='SET actual_lifted_at = :changed',
                          ExpressionAttributeValues={':changed': (placed + timedelta(seconds=4)).isoformat()})
         if guard.verify(execution): raise AssertionError('mismatched cooking timeline accepted')

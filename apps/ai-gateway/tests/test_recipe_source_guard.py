@@ -75,6 +75,29 @@ class RecipeSourceGuardTests(unittest.TestCase):
         self.resource.tables['foodtech-data-flow-dev'].items[('JEYUK#batch-current', 'SOURCE#REVISION')]['revision'] = Decimal(31)
         self.assertFalse(self.guard.verify(self.execution))
 
+    def test_scoped_guard_rejects_changed_binding_before_foreign_source_read(self):
+        jobs = (f'SCOPE#USER#tenant-a#JOB#{self.current}', f'SCOPE#USER#tenant-a#JOB#{self.prior}')
+        sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')
+        self.assertTrue(self.guard.verify_scoped(self.execution, jobs, sources))
+        self.assertFalse(self.guard.verify_scoped(self.execution, (jobs[1], jobs[0]), sources))
+        cooking = self.resource.tables['foodtech-cooking-jobs-dev']
+        data = self.resource.tables['foodtech-data-flow-dev']
+        cooking.items[(jobs[0], 'META')]['source_binding']['batch_id'] = 'foreign-batch'
+        accessed = []
+        original_cooking, original_data = cooking.get_item, data.get_item
+        def read_cooking(*, Key, ConsistentRead):
+            accessed.append(Key['pk'])
+            return original_cooking(Key=Key, ConsistentRead=ConsistentRead)
+        def read_data(*, Key, ConsistentRead):
+            accessed.append(Key['pk'])
+            return original_data(Key=Key, ConsistentRead=ConsistentRead)
+        cooking.get_item, data.get_item = read_cooking, read_data
+        def reject_query(_):
+            raise AssertionError('unexpected source query')
+        data.get_paginator = reject_query
+        self.assertFalse(self.guard.verify_scoped(self.execution, jobs, sources))
+        self.assertNotIn('JEYUK#foreign-batch', accessed)
+
     def test_rejects_wrong_provenance_binding_and_shared_batch(self):
         key = (f'SCOPE#USER#tenant-a#JOB#{self.prior}', 'META')
         row = self.resource.tables['foodtech-cooking-jobs-dev'].items[key]
