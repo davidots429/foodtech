@@ -215,6 +215,7 @@ async def main() -> None:
             config = {
                 "AWS_DEFAULT_REGION": REGION,
                 "FOODTECH_AI_REGISTRY_TABLE": TABLE,
+                "FOODTECH_AUTH_TABLE": "foodtech-auth-sessions-dev",
                 "FOODTECH_OLLAMA_URL": ollama_url,
                 "FOODTECH_GATEWAY_URL": f"https://127.0.0.1:{port}",
                 "FOODTECH_GATEWAY_CA": ca,
