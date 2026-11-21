@@ -288,6 +288,7 @@ class CredentialVaultStack extends Stack {
       this, "AuthSessionsForCredentialRegistration", `foodtech-auth-sessions-${stage}`,
     );
     authForRegistration.grant(registration, "dynamodb:ConditionCheckItem");
+    authForRegistration.grant(gateway, "dynamodb:ConditionCheckItem");
     table.grant(gateway, "dynamodb:GetItem");
     const registry = dynamodb.Table.fromTableName(
       this, "ExecutionRegistryForGateway", `foodtech-ai-execution-registry-${stage}`,
@@ -400,6 +401,7 @@ class AiServiceTasksStack extends Stack {
         FOODTECH_GATEWAY_BIND_HOST: "0.0.0.0",
         FOODTECH_STAGE: stage,
         FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
+        FOODTECH_AUTH_TABLE: `foodtech-auth-sessions-${stage}`,
         FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
         FOODTECH_CREDENTIAL_KMS_KEY_ARNS: vault.storageKey.keyArn,
         FOODTECH_EXTERNAL_EXECUTION_ENABLED: "false",

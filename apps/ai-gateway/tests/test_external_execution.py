@@ -47,7 +47,7 @@ class ExternalExecutionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         resource = MemoryResource()
         registry = DynamoRegistry("test-ai", "2026-11", resource=resource,
-                                  client=AtomicClient(resource.table))
+                                  client=AtomicClient(resource.table), auth_table="auth-test")
         now = datetime.now(timezone.utc)
         registry.create_model(Model("gpt-4o-mini", "openai", Tier.TIER_3, "ACTIVE",
                                     False, True, now, now))

@@ -34,7 +34,7 @@ class ExecutionFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         resource = MemoryResource()
         client = AtomicClient(resource.table)
-        registry = DynamoRegistry("test-ai", "2026-11", resource=resource, client=client,
+        registry = DynamoRegistry("test-ai", "2026-11", resource=resource, client=client, auth_table="auth-test",
                                   local_models={"llama3.1:8b"})
         now = datetime.now(timezone.utc)
         registry.create_model(Model("llama3.1:8b", "ollama", Tier.TIER_3, "ACTIVE",

@@ -89,6 +89,11 @@ class AtomicClient:
                 continue
             spec = action.get("Update") or action["ConditionCheck"]
             key = self._decode(spec["Key"])
+            if spec.get("TableName") == "auth-test":
+                state = getattr(self, "auth_states", {}).get(key["pk"], {})
+                if state.get("suspended") or "deletion_lock_request" in state:
+                    raise TransactionCanceledException()
+                continue
             if spec.get("ConditionExpression") == "attribute_not_exists(pk)":
                 if (key["pk"], key["sk"]) in self.table.items:
                     raise TransactionCanceledException()
@@ -160,7 +165,7 @@ class RegistryTests(unittest.TestCase):
         self.resource = MemoryResource()
         self.client = AtomicClient(self.resource.table)
         self.registry = DynamoRegistry("registry-test", "2026-11", resource=self.resource,
-                                       client=self.client, local_models={"local-model"})
+                                       client=self.client, auth_table="auth-test", local_models={"local-model"})
         self.registry.create_model(Model("local-model", "ollama", Tier.TIER_3, "ACTIVE", True,
                                          True, NOW, NOW))
         self.registry.create_execution(Execution("run-1", "tenant-a", Feature.GENERAL_GUIDE,
@@ -455,7 +460,22 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(self.registry.execution_state("run-2"), "RESERVED")
         checked = [item["ConditionCheck"] for item in self.client.calls[-1]
                    if "ConditionCheck" in item]
-        self.assertEqual(len(checked), 3)
+        self.assertEqual(len(checked), 4)
+
+    def test_reservation_rejects_lock_acquired_during_authorization(self):
+        self.client.before_commit = lambda: setattr(self.client, 'auth_states', {
+            'USER#tenant-a': {'deletion_lock_request': 'synthetic'}})
+        decision = self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1')
+        self.assertFalse(decision.allowed)
+        self.assertEqual(self.registry.execution_state('run-1'), 'PENDING')
+        self.assertEqual(self.registry.budget('tenant-a', 'ollama').calls_remaining, 1)
+
+    def test_local_retry_rejects_deletion_lock(self):
+        self.recipe_execution()
+        self.client.auth_states = {'USER#tenant-a': {'suspended': True}}
+        decision = self.service.prepare_local_recipe_retry(Caller('business-api', 'tenant-a'), 'recipe-1', 2)
+        self.assertFalse(decision.allowed)
+        self.assertNotIn(('EXEC#recipe-1', 'CALL#2'), self.resource.table.items)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ The table contains metadata only. Credential secret material belongs to the
 separate encrypted credential vault and is never accepted here.
 """
 
+import os
 from dataclasses import asdict
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -45,11 +46,12 @@ class RegistryConflict(Exception):
 
 class DynamoRegistry:
     def __init__(self, table_name: str, period: str, *, resource: Any = None,
-                 client: Any = None, local_models: set[str] | None = None):
+                 client: Any = None, local_models: set[str] | None = None, auth_table: str | None = None):
         if not table_name or len(period) != 7 or period[4] != "-" or not period[:4].isdigit() or \
                 not period[5:].isdigit() or not 1 <= int(period[5:]) <= 12:
             raise ValueError("table name and YYYY-MM budget period are required")
         self.table_name = table_name
+        self.auth_table = auth_table or os.getenv("FOODTECH_AUTH_TABLE", "")
         self.period = period
         self.resource = resource or boto3.resource("dynamodb")
         self.table = self.resource.Table(table_name)
@@ -333,6 +335,14 @@ class DynamoRegistry:
                 "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
                 "ExpressionAttributeValues": self._av({":v": version})}}
 
+    def _active_tenant_guard(self, tenant_id: str) -> dict:
+        if not self.auth_table or not isinstance(tenant_id, str) or not tenant_id or len(tenant_id) > 128:
+            raise RegistryConflict("tenant authentication state unavailable")
+        return {"ConditionCheck": {"TableName": self.auth_table,
+                "Key": self._av({"pk": f"USER#{tenant_id}"}),
+                "ConditionExpression": "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+                "ExpressionAttributeValues": self._av({":false": False})}}
+
     def reserve(self, execution: Execution, provider: str) -> None:
         """Claim one execution and all three limits in one DynamoDB transaction."""
         cost = execution.estimated_cost_usd
@@ -340,7 +350,7 @@ class DynamoRegistry:
         version = self._read_versions.get(key["pk"])
         if version is None:
             raise RegistryConflict("execution was not read consistently")
-        items = [{"Update": {"TableName": self.table_name, "Key": self._av(key),
+        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(key),
                   "UpdateExpression": "SET #s = :reserved, #v = #v + :one, reserved_provider = :provider",
                   "ConditionExpression": "#s = :pending AND #v = :v AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
@@ -407,6 +417,7 @@ class DynamoRegistry:
             values[":previous"] = 1
         expires = int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
         items = [
+            self._active_tenant_guard(execution.tenant_id),
             {"Update": {"TableName": self.table_name, "Key": self._av(execution_key),
                 "UpdateExpression": "SET #v = #v + :one, retry_count = :retry",
                 "ConditionExpression": "#v = :v AND #s = :reserved AND tenant_id = :tenant AND "
