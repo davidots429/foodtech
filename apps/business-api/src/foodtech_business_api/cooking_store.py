@@ -74,6 +74,14 @@ def _evidence_snapshot_inputs(pk: str, expected_version: int, snapshot: dict,
             receipt.get("record_count") != revision or not isinstance(receipt.get("ordered_raw_sha256"), str) or \
             not re.fullmatch(r"[0-9a-f]{64}", receipt["ordered_raw_sha256"]):
         raise ValueError("invalid evidence receipt reference")
+    profile = snapshot.get("condition_profile_reference")
+    if not isinstance(profile, dict) or any(not isinstance(profile.get(key), str) or
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", profile[key])
+            for key in ("profile_id", "profile_version")) or \
+            profile.get("equipment_profile") not in {"jeyuk-small", "jeyuk-medium", "jeyuk-large"} or \
+            any(not isinstance(profile.get(key), str) or not profile[key] for key in
+                ("heating_setpoint_celsius", "target_rpm")):
+        raise ValueError("invalid evidence condition profile reference")
 
 
 def _only_result_already_exists(exc: Exception, operation_count: int) -> bool:
@@ -182,8 +190,13 @@ class MemoryCookingStore:
         with self.lock:
             job = self.items.get((pk, "META"))
             source = self.validation_sources.get((source_table, receipt["pk"]))
+            profile = snapshot["condition_profile_reference"]
+            owner = _history_pk(pk).removesuffix("#JOBS").removeprefix("SCOPE#USER#")
+            stored = self.condition_profile(owner, profile["profile_id"], profile["profile_version"])
             if not job or job.get("version") != expected_version or not source or \
                     source.get("revision") != revision or source.get("receipt") != receipt or \
+                    not stored or stored.get("provenance") != "SYNTHETIC" or stored.get("status") != "DECLARED_UNVERIFIED" or \
+                    any(stored.get(key) != value for key, value in profile.items()) or \
                     (pk, snapshot["sk"]) in self.items:
                 raise Conflict
             self.items[(pk, snapshot["sk"])] = {"pk": pk, **snapshot}
@@ -789,6 +802,8 @@ class DynamoCookingStore:
                                  source_table: str, revision: int, receipt: dict) -> None:
         _evidence_snapshot_inputs(pk, expected_version, snapshot, source_table, revision, receipt)
         stream_pk = receipt["pk"]
+        profile = snapshot["condition_profile_reference"]
+        owner_prefix = _history_pk(pk).removesuffix("#JOBS")
         operations = [
             {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
                                 "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
@@ -803,6 +818,15 @@ class DynamoCookingStore:
                                 "ExpressionAttributeValues": self._item({":rv": "synthetic-jeyuk-collection-v1",
                                     ":p": "SYNTHETIC", ":profile": "mockprofile-110", ":fixture": stream_pk[6:],
                                     ":zero": 0, ":count": revision, ":hash": receipt["ordered_raw_sha256"]})}},
+            {"ConditionCheck": {"TableName": self.table.name,
+                                "Key": self._item({"pk": f"{owner_prefix}#CONDITION_PROFILE#{profile['profile_id']}",
+                                                   "sk": f"VERSION#{profile['profile_version']}"}),
+                                "ConditionExpression": "profile_id = :id AND profile_version = :ver AND equipment_profile = :equipment AND heating_setpoint_celsius = :heat AND target_rpm = :rpm AND provenance = :p AND #status = :status",
+                                "ExpressionAttributeNames": {"#status": "status"},
+                                "ExpressionAttributeValues": self._item({":id": profile["profile_id"],
+                                    ":ver": profile["profile_version"], ":equipment": profile["equipment_profile"],
+                                    ":heat": profile["heating_setpoint_celsius"], ":rpm": profile["target_rpm"],
+                                    ":p": "SYNTHETIC", ":status": "DECLARED_UNVERIFIED"})}},
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **snapshot}),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
         ]

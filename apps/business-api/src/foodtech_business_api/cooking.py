@@ -669,6 +669,7 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                      "source_condition_profile_matches": False}
     observed_source_revision = None
     observed_receipt_reference = None
+    observed_profile_reference = None
     source_table = os.getenv("FOODTECH_DATA_TABLE", "")
     if process_linked and context_matches_job and source_table and second <= max(
             profile.time_bands[-1] for profile in JEYUK_PROFILES.values()):
@@ -695,13 +696,17 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
             heat, rpm = settings.get("heating_setpoint_celsius") or {}, settings.get("target_rpm") or {}
             profile_matches = False
             if matched and isinstance(profile, dict) and profile.get("provenance") == "SYNTHETIC" and \
-                    profile.get("status") == "DECLARED_UNVERIFIED" and profile.get("equipment_profile") == job["equipment_profile"] and \
+                    profile.get("status") == "DECLARED_UNVERIFIED" and profile.get("profile_id") == profile_id and \
+                    profile.get("profile_version") == profile_version and profile.get("equipment_profile") == job["equipment_profile"] and \
                     heat.get("status") == "STABLE" and rpm.get("status") == "STABLE":
                 try:
                     profile_matches = (Decimal(str(heat["value"])) == Decimal(str(profile["heating_setpoint_celsius"])) and
                                        Decimal(str(rpm["value"])) == Decimal(str(profile["target_rpm"])))
                 except (KeyError, ValueError, ArithmeticError):
                     profile_matches = False
+            if profile_matches:
+                observed_profile_reference = {key: profile[key] for key in
+                    ("profile_id", "profile_version", "equipment_profile", "heating_setpoint_celsius", "target_rpm")}
             source_checks = {**source_checks, **audited, "source_completion_record_matched": matched,
                              "source_revision_stable": before is not None and before == after,
                              "source_condition_profile_matches": profile_matches}
@@ -748,6 +753,7 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
         "source_table_configured": bool(source_table),
         "source_revision": observed_source_revision,
         "source_receipt_reference": observed_receipt_reference,
+        "condition_profile_reference": observed_profile_reference,
         "activation_allowed": False,
         "remaining_verification": ["SENSOR_AND_CALIBRATION_IDENTITY",
                                    "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",
@@ -774,6 +780,7 @@ async def capture_validation_evidence(job_id: str, request: Request, body: Evide
                 "context_digest": evidence["context_digest"], "context_version": evidence["context_version"],
                 "safety_version": evidence["safety_version"], "discharge_check_version": evidence["discharge_check_version"],
                 "source_revision": evidence["source_revision"], "source_receipt_reference": receipt,
+                "condition_profile_reference": evidence["condition_profile_reference"],
                 "checks": evidence["checks"], "recorded_at": _now(), "recorded_by": session.subject}
     try:
         await _store_call(store, store.save_validation_evidence, pk, body.expected_version, snapshot,

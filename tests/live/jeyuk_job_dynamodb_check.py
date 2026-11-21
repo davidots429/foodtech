@@ -55,6 +55,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
     cooking_store = DynamoCookingStore(COOKING_TABLE)
     job_pk = None
     listing_key = None
+    profile_pk = f"SCOPE#USER#{subject}#CONDITION_PROFILE#live-{run_id}"
 
     async def fake_session(_request, surface):
         assert surface == "customer"
@@ -194,13 +195,33 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                             not evidence["checks"]["source_revision_stable"] or evidence["source_revision"] != len(raws):
                         raise AssertionError("completed source revision was not confirmed")
                     receipt_ref = evidence["source_receipt_reference"]
+                    profile = {"profile_id": f"live-{run_id}", "profile_version": "v1",
+                               "equipment_profile": f"jeyuk-{size}", "heating_setpoint_celsius": "200",
+                               "target_rpm": "30"}
+                    cooking_store.create_condition_profile(subject, {**profile, "provenance": "SYNTHETIC",
+                                                                      "status": "DECLARED_UNVERIFIED"})
                     snapshot = {"sk": f"VALIDATION#EVIDENCE#{uuid.uuid4()}", "status": "LINKED_UNVERIFIED",
                                 "job_version": final["version"], "source_revision": len(raws),
-                                "source_receipt_reference": receipt_ref}
+                                "source_receipt_reference": receipt_ref, "condition_profile_reference": profile}
                     await asyncio.to_thread(cooking_store.save_validation_evidence, job_pk, final["version"], snapshot,
                                             DATA_TABLE, len(raws), receipt_ref)
                     if not cooking_table.get_item(Key={"pk": job_pk, "sk": snapshot["sk"]}, ConsistentRead=True).get("Item"):
                         raise AssertionError("evidence snapshot was not persisted")
+                    profile_key = {"pk": profile_pk, "sk": "VERSION#v1"}
+                    cooking_table.update_item(Key=profile_key, UpdateExpression="SET target_rpm = :changed",
+                                              ExpressionAttributeValues={":changed": "31"})
+                    try:
+                        stale = {**snapshot, "sk": f"VALIDATION#EVIDENCE#{uuid.uuid4()}"}
+                        try:
+                            await asyncio.to_thread(cooking_store.save_validation_evidence, job_pk, final["version"], stale,
+                                                    DATA_TABLE, len(raws), receipt_ref)
+                        except Conflict:
+                            pass
+                        else:
+                            raise AssertionError("changed condition profile was accepted")
+                    finally:
+                        cooking_table.update_item(Key=profile_key, UpdateExpression="SET target_rpm = :original",
+                                                  ExpressionAttributeValues={":original": profile["target_rpm"]})
                     receipt_key = {"pk": stream_pk, "sk": "COLLECTION#RECEIPT#live-test"}
                     data_table.update_item(Key=receipt_key, UpdateExpression="SET ordered_raw_sha256 = :bad",
                                            ExpressionAttributeValues={":bad": "0" * 64})
@@ -252,6 +273,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
         try:
             remove_partition(data_table, stream_pk)
             remove_partition(cooking_table, stream_pk)
+            remove_partition(cooking_table, profile_pk)
             if job_pk:
                 remove_partition(cooking_table, job_pk)
             if listing_key:

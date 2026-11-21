@@ -28,7 +28,10 @@ class ValidationSnapshotTests(unittest.IsolatedAsyncioTestCase):
                         "record_count": 2, "ordered_raw_sha256": "a" * 64}
         self.store.validation_sources[("foodtech-data-flow-dev", self.receipt["pk"])] = {
             "revision": 2, "receipt": self.receipt.copy()}
-        self.evidence = {"status": "LINKED_UNVERIFIED", "job_version": 3, "context_digest": "digest",
+        self.profile = {"profile_id": "p1", "profile_version": "v1", "equipment_profile": "jeyuk-small",
+                        "heating_setpoint_celsius": "200", "target_rpm": "30"}
+        self.store.create_condition_profile(self.subject, {**self.profile, "provenance": "SYNTHETIC", "status": "DECLARED_UNVERIFIED"})
+        self.evidence = {"condition_profile_reference": self.profile.copy(), "status": "LINKED_UNVERIFIED", "job_version": 3, "context_digest": "digest",
             "context_version": 1, "safety_version": 2, "discharge_check_version": 1,
             "source_revision": 2, "source_receipt_reference": self.receipt.copy(), "checks": {"test": True}}
         async def session(_request, surface):
@@ -71,6 +74,19 @@ class ValidationSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post(self.path, headers={"X-CSRF-Token": "csrf"}, json={"expected_version": 3})).status_code, 409)
         self.assertFalse(any(sk.startswith("VALIDATION#EVIDENCE#") for _pk, sk in self.store.items))
 
+    async def test_changed_or_deleted_profile_fails_closed(self):
+        key = ("SCOPE#USER#owner#CONDITION_PROFILE#p1", "VERSION#v1")
+        original = self.store.items[key].copy()
+        for change in ("changed", "deleted"):
+            if change == "changed":
+                self.store.items[key]["target_rpm"] = "31"
+            else:
+                del self.store.items[key]
+            response = await self.client.post(self.path, headers={"X-CSRF-Token": "csrf"}, json={"expected_version": 3})
+            self.assertEqual(response.status_code, 409)
+            self.store.items[key] = original.copy()
+        self.assertFalse(any(sk.startswith("VALIDATION#EVIDENCE#") for _pk, sk in self.store.items))
+
     async def test_incomplete_observation_cannot_be_saved(self):
         self.evidence["status"] = "INCOMPLETE"
         response = await self.client.post(self.path, headers={"X-CSRF-Token": "csrf"}, json={"expected_version": 3})
@@ -87,14 +103,16 @@ class DynamoSnapshotShapeTests(unittest.TestCase):
         receipt = {"pk": "JEYUK#batch", "sk": "COLLECTION#RECEIPT#test",
                    "record_count": 2, "ordered_raw_sha256": "a" * 64}
         snapshot = {"sk": f"VALIDATION#EVIDENCE#{uuid4()}", "status": "LINKED_UNVERIFIED",
-                    "job_version": 3, "source_revision": 2, "source_receipt_reference": receipt}
+                    "job_version": 3, "source_revision": 2, "source_receipt_reference": receipt,
+                    "condition_profile_reference": {"profile_id": "p1", "profile_version": "v1", "equipment_profile": "jeyuk-small", "heating_setpoint_celsius": "200", "target_rpm": "30"}}
         store.save_validation_evidence("SCOPE#USER#owner#JOB#job", 3, snapshot,
                                        "foodtech-data-flow-dev", 2, receipt)
         operations = calls[0]["TransactItems"]
         shape = get_session().get_service_model("dynamodb").operation_model("TransactWriteItems").input_shape
         validate_parameters(calls[0], shape)
-        self.assertEqual(len(operations), 4)
-        self.assertEqual([list(item)[0] for item in operations], ["ConditionCheck"] * 3 + ["Put"])
+        self.assertEqual(len(operations), 5)
+        self.assertEqual([list(item)[0] for item in operations], ["ConditionCheck"] * 4 + ["Put"])
+        self.assertEqual(operations[3]["ConditionCheck"]["Key"]["pk"], {"S": "SCOPE#USER#owner#CONDITION_PROFILE#p1"})
         self.assertEqual(operations[2]["ConditionCheck"]["ExpressionAttributeValues"][":hash"], {"S": "a" * 64})
 
 
