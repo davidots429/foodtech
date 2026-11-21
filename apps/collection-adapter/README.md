@@ -109,3 +109,5 @@ MQTT JSON 수집기는 `mockprofile-310-{a,b,c}-001` 볶음·교반과 `mockprof
 MQTT CSV 수집기는 `mockprofile-312-{a,b,c}-001` 볶음·교반과 `mockprofile-322-{a,b,c}-001` 콤비오븐을 지원한다. 장비별 고정 열과 값 유형을 검사하고 습도 미지원은 빈 CSV 셀에서 `null`로 표현한다. 공식 CSV 수식 위험 문자 차단을 유지하며 격리 저장이 성공한 후에만 MQTT 수신 확인을 보낸다. AWS 실저장은 별도 검증이다.
 
 MQTT XML의 `mockprofile-311-{a,b,c}-001`과 `mockprofile-321-{a,b,c}-001`은 계열별 XSD와 원천 스키마를 적용한다. 솥 온도와 콤비오븐 기후·습도 출처·팬을 구분하고 습도 미지원은 null로 보존한다. DTD·외부 엔터티를 차단하고 격리 저장이 성공한 뒤에만 MQTT 수신을 확인한다. AWS 실저장은 별도 검증이다.
+
+REST XML 수집기는 `--profile mockprofile-111` 또는 `mockprofile-121`과 일치하는 vendor-a/b/c 인스턴스를 지원한다. 별도 커서, XSD와 원천 스키마를 적용하며 DTD·외부 엔터티를 차단한다. 솥 온도와 콤비오븐 기후·습도·팬 의미를 유지하고 습도 미지원은 null로 보존한다. AWS 실저장은 별도 검증이다.

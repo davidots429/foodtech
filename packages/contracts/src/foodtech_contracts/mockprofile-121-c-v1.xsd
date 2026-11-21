@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="record"><xs:complexType><xs:sequence>
+    <xs:element name="SchVer" type="xs:string" fixed="1.0"/><xs:element name="SrcId" type="xs:string" fixed="synthetic-rest-xml"/>
+    <xs:element name="DeviceId" type="xs:string" fixed="mockprofile-121-c-001"/>
+    <xs:element name="BatchId" type="xs:string"/><xs:element name="RecId" type="xs:string"/>
+    <xs:element name="SeqNo" type="xs:positiveInteger"/><xs:element name="Timestamp" type="xs:dateTime"/>
+    <xs:element name="Status" type="xs:string"/><xs:element name="Readings"><xs:complexType><xs:sequence>
+      <xs:element name="TempC" type="xs:decimal"/><xs:element name="SpeedLvl" type="xs:nonNegativeInteger"/>
+      <xs:element name="ElapsedMin" type="xs:decimal"/>
+    </xs:sequence></xs:complexType></xs:element>
+    <xs:element name="Alarm" type="xs:string"/><xs:element name="Err" type="xs:string"/>
+    <xs:element name="Extension"><xs:complexType><xs:sequence>
+      <xs:any minOccurs="0" maxOccurs="unbounded" processContents="skip"/>
+    </xs:sequence></xs:complexType></xs:element>
+    <xs:any namespace="##any" minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
+  </xs:sequence></xs:complexType></xs:element>
+</xs:schema>
