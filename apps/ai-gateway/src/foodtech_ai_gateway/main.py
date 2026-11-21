@@ -15,7 +15,6 @@ from .provider import LiteLLMProvider
 from .vault import DynamoCredentialVault
 from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 from .downgrade_flow import DowngradeFlow, DowngradeError
-from .recipe_source_guard import DynamoRecipeSourceGuard
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -129,16 +128,9 @@ def _service(request: Request) -> GatewayService:
                 if value.strip()}
     vault = (DynamoCredentialVault(vault_table, os.getenv("FOODTECH_STAGE", "dev"), key_arns)
              if vault_table and key_arns else None)
-    source_guard = None
-    if os.getenv("FOODTECH_AI_RECIPE_SOURCE_GUARD") == "true":
-        try:
-            source_guard = DynamoRecipeSourceGuard(os.getenv("FOODTECH_AI_COOKING_TABLE", ""),
-                                                   os.getenv("FOODTECH_AI_SOURCE_TABLE", ""))
-        except ValueError:
-            # Other AI features remain available; Jeyuk execution fails closed.
-            pass
-    return GatewayService(registry, vault=vault, provider=LiteLLMProvider() if vault else None,
-                          recipe_source_guard=source_guard)
+    # Customer-scoped source credentials are not yet issued to this service.
+    # Do not fall back to the Gateway's long-lived role for recipe source reads.
+    return GatewayService(registry, vault=vault, provider=LiteLLMProvider() if vault else None)
 
 
 def _trial_limits() -> tuple[Decimal, int] | None:

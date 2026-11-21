@@ -70,3 +70,5 @@ class RecipeSourceGuardTests(unittest.TestCase):
             DynamoRecipeSourceGuard('foodtech-credential-vault-dev', 'foodtech-data-flow-dev', resource=self.resource)
         with self.assertRaises(ValueError):
             DynamoRecipeSourceGuard('foodtech-cooking-jobs-dev', 'foodtech-identity-vault-dev', resource=self.resource)
+        with self.assertRaises(ValueError):
+            DynamoRecipeSourceGuard('foodtech-cooking-jobs-dev', 'foodtech-data-flow-dev', resource=None)

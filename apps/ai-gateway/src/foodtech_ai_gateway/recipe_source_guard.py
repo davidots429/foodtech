@@ -8,8 +8,6 @@ import re
 from decimal import Decimal
 from uuid import UUID
 
-import boto3
-
 from .policy import Execution
 
 
@@ -24,12 +22,13 @@ def _positive_integer(value: object) -> int | None:
 
 
 class DynamoRecipeSourceGuard:
-    def __init__(self, cooking_table: str, data_table: str, *, resource=None):
+    def __init__(self, cooking_table: str, data_table: str, *, resource):
         if not isinstance(cooking_table, str) or not isinstance(data_table, str) or \
                 not re.fullmatch(r'foodtech-cooking-jobs-[a-z0-9-]{1,32}', cooking_table) or \
                 not re.fullmatch(r'foodtech-data-flow-[a-z0-9-]{1,32}', data_table):
             raise ValueError('separate cooking and source tables are required')
-        resource = resource or boto3.Session(region_name='ap-southeast-2').resource('dynamodb')
+        if resource is None:
+            raise ValueError('an explicitly scoped DynamoDB resource is required')
         self.cooking = resource.Table(cooking_table)
         self.data = resource.Table(data_table)
 
