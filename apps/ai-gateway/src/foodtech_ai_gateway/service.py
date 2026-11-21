@@ -1,6 +1,7 @@
 """Execution-ID-only gateway entry point for the authenticated internal caller."""
 
 from dataclasses import dataclass
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
@@ -31,11 +32,12 @@ class ExecutionOutcome:
 
 class GatewayService:
     def __init__(self, registry: DynamoRegistry, *, vault: DynamoCredentialVault | None = None,
-                 provider: LiteLLMProvider | None = None):
+                 provider: LiteLLMProvider | None = None, recipe_source_guard=None):
         self.registry = registry
         self.policy = GatewayPolicy(registry)
         self.vault = vault
         self.provider = provider
+        self.recipe_source_guard = recipe_source_guard
 
     def prepare(self, caller: Caller, execution_id: str, *, local_recipe: bool = False,
                 disallow_recipe: bool = False) -> Decision:
@@ -101,11 +103,23 @@ class GatewayService:
         if execution.feature != Feature.RECIPE_CORRECTION or not model or not model.local or \
                 model.provider != "ollama" or execution.estimated_cost_usd != 0:
             return ExecutionOutcome(execution_id, "DENIED", error_code="LOCAL_RECIPE_REQUIRED")
+        if isinstance(baseline, JeyukBaseline) and self.recipe_source_guard is None:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_GUARD_UNAVAILABLE")
         attempts = 0
         reserved = False
 
+        async def source_current():
+            if not isinstance(baseline, JeyukBaseline):
+                return True
+            try:
+                return await asyncio.to_thread(self.recipe_source_guard.verify, execution) is True
+            except Exception:
+                return False
+
         async def invoke(messages, schema):
             nonlocal attempts, reserved
+            if not await source_current():
+                raise _RecommendationDenied("RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE")
             attempts += 1
             decision = (self.prepare(caller, execution_id, local_recipe=True) if attempts == 1 else
                         self.prepare_local_recipe_retry(caller, execution_id, attempts))
@@ -129,6 +143,12 @@ class GatewayService:
         except Exception:
             code = "RECOMMENDATION_EXECUTION_FAILED"
         else:
+            if not await source_current():
+                code = "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE"
+                if reserved:
+                    self.registry.finish(execution_id, succeeded=False, actual_cost_usd=Decimal("0"), error_code=code)
+                    return ExecutionOutcome(execution_id, "FAILED", error_code=code)
+                return ExecutionOutcome(execution_id, "DENIED", error_code=code)
             if result["status"] == "NEEDS_REVIEW":
                 response = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
                 self.registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal("0"),
