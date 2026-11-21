@@ -25,7 +25,10 @@ entries=[(auth,{**ak,'suspended':True,'deletion_lock_request':q}),(reg,{**rk,'st
        'source_binding':{'source_id':'synthetic-rest','device_id':'mockprofile-110-a-001','batch_id':'jeyuk-'+u}}),
  (src,{'pk':'JEYUK#jeyuk-'+u,'sk':'BINDING','job_pk':pk,'job_id':'job'}),
  (src,{'pk':'JEYUK#jeyuk-orphan-'+u,'sk':'BINDING','job_pk':f'SCOPE#USER#{u}#JOB#orphan','job_id':'orphan'}),(src,{'pk':pk,'sk':'EVENT#1'}),
- (src,{'pk':pk,'sk':'ASSESSMENT#1'}),(src,{'pk':other,'sk':'EVENT#1'})]
+ (src,{'pk':pk,'sk':'ASSESSMENT#1'}),(src,{'pk':other,'sk':'EVENT#1'}),
+ (src,{'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#job','job_id':'job','created_at':'2026-01-01'}),
+ (src,{'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#orphan','job_id':'orphan','created_at':'2026-01-01'}),
+ (src,{'pk':f'SCOPE#USER#{u}#JOBS','sk':'HISTORY#REVISION','revision':2})]
 created=[]
 if progress.query(KeyConditionExpression=Key('pk').eq(f'REQ#{q}'),ConsistentRead=True)['Items']:
  raise RuntimeError('synthetic request already exists')
@@ -83,6 +86,9 @@ try:
  else:raise AssertionError('bounded job cleanup incomplete')
  assert not src.get_item(Key=binding_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key=orphan_key,ConsistentRead=True).get('Item')
+ assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#job'},ConsistentRead=True).get('Item')
+ assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#orphan'},ConsistentRead=True).get('Item')
+ assert src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'HISTORY#REVISION'},ConsistentRead=True).get('Item')
  assert worker.delete_one(subject=u,request_id=q,index=0)=={'index':0,'state':'META_ONLY','removed':False}
  assert src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')
  assert src.get_item(Key={'pk':other,'sk':'EVENT#1'},ConsistentRead=True).get('Item')

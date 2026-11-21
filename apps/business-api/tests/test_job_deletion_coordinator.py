@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
 from foodtech_business_api.job_deletion_inventory import JobDeletionInventory
@@ -21,8 +21,10 @@ class CoordinatorTests(unittest.TestCase):
         self.scope={'subject':str(uuid4()),'request_id':str(uuid4())}
 
     def test_order_and_meta_only_is_not_whole_deletion(self):
-        results=[self.coordinator.step(**self.scope)['phase'] for _ in range(6)]
-        self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','VERIFYING','VERIFYING'])
+        with patch('foodtech_business_api.job_deletion_coordinator.clean_one_job_listing',
+                   side_effect=[{'state':'IN_PROGRESS','removed':True},{'state':'VERIFYING','removed':False}]):
+            results=[self.coordinator.step(**self.scope)['phase'] for _ in range(8)]
+        self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','LISTINGS','VERIFYING','VERIFYING'])
         self.assertEqual([c.kwargs['index'] for c in self.worker.delete_one.call_args_list],[0,0])
         self.bindings.remove_one.assert_called_once()
 
@@ -32,7 +34,7 @@ class CoordinatorTests(unittest.TestCase):
         save=self.progress.save_checkpoint;self.progress.save_checkpoint=Mock(side_effect=RuntimeError('lost'))
         with self.assertRaises(RuntimeError):self.coordinator.step(**self.scope)
         self.progress.save_checkpoint=save
-        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'VERIFYING'})
+        self.assertEqual(self.coordinator.step(**self.scope),{'phase':'LISTINGS'})
         self.assertEqual(self.bindings.remove_one.call_count,2)
 
     def test_dependency_mismatch_fails(self):
