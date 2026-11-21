@@ -15,6 +15,7 @@ class CombiLiveStoreTests(unittest.TestCase):
         store.append_meal_live('SCOPE#USER#owner#COMBI_MEAL#meal', 5, {'sk':'META', 'count':10}, {'sk':'CHUNK#000005', 'records':['x']})
         ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
         self.assertEqual(len(ops), 4)
+        self.assertIn('attribute_exists(pk)', ops[0]['ConditionCheck']['ConditionExpression'])
         self.assertIn('deletion_lock_request', ops[0]['ConditionCheck']['ConditionExpression'])
         self.assertIn('attribute_not_exists(#source)', ops[1]['ConditionCheck']['ConditionExpression'])
         self.assertEqual(ops[2]['Put']['ConditionExpression'], '#count = :expected')
@@ -26,10 +27,14 @@ class CombiLiveStoreTests(unittest.TestCase):
         store.table = SimpleNamespace(name='table'); store.client = Mock(); store.serializer = TypeSerializer(); store.auth_table_name = 'auth'
         store.attach_meal_source('SCOPE#USER#owner#COMBI_MEAL#meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], 10)
         ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(ops[3]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N':'10'})
+        self.assertIn('attribute_exists(pk)', ops[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[3]['Put']['Item']['sk'], {'S': 'MEAL_AGGREGATE#DIRTY'})
+        self.assertEqual(ops[3]['Put']['Item']['version'], {'N': '2'})
+        self.assertRegex(ops[3]['Put']['Item']['aggregate_refresh_shard']['S'], r'^PENDING#0[0-9a-f]$')
+        self.assertEqual(ops[4]['ConditionCheck']['ExpressionAttributeValues'][':expected'], {'N':'10'})
         store.attach_meal_source('SCOPE#USER#owner#COMBI_MEAL#meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], None)
         ops = store.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(ops[3]['ConditionCheck']['ConditionExpression'], 'attribute_not_exists(pk)')
+        self.assertEqual(ops[4]['ConditionCheck']['ConditionExpression'], 'attribute_not_exists(pk)')
 
     def test_creation_and_step_use_owner_epoch_guard(self):
         store = DynamoCookingStore.__new__(DynamoCookingStore)
@@ -42,6 +47,8 @@ class CombiLiveStoreTests(unittest.TestCase):
         store.advance_meal(pk, 1, {'sk': 'META', 'version': 2}, {'sk': 'STEP#rice'}, {'sk': 'EVENT#1'}, 4)
         guard = store.client.transact_write_items.call_args.kwargs['TransactItems'][0]['ConditionCheck']
         self.assertIn('deletion_lock_request', guard['ConditionExpression'])
+        self.assertIn('attribute_exists(pk)', guard['ConditionExpression'])
+        self.assertEqual(store.client.transact_write_items.call_args.kwargs['TransactItems'][4]['Put']['Item']['sk'], {'S': 'MEAL_AGGREGATE#DIRTY'})
         with self.assertRaises(ValueError):
             store.create_meal('invalid', [{'sk': 'META'}], 4)
 
@@ -66,6 +73,20 @@ class CombiLiveStoreTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             store.attach_meal_source('SCOPE#USER#owner#COMBI_MEAL#meal', 1, {'sk':'META','version':2}, {'sk':'EVENT#2'}, [], None)
         self.assertIsNone(store.read('SCOPE#USER#owner#COMBI_MEAL#meal')[0].get('source'))
+
+    def test_successful_revision_records_pending_version_and_conflict_keeps_it(self):
+        store = MemoryCookingStore()
+        pk = 'SCOPE#USER#owner#COMBI_MEAL#meal'
+        store.create_meal(pk, [{'sk': 'META', 'version': 1, 'meal_batch_id': 'meal'}, {'sk': 'JOB', 'status': 'PENDING'}])
+        store.advance_meal(pk, 1, {'sk': 'META', 'version': 2}, {'sk': 'JOB', 'status': 'DONE'}, {'sk': 'EVENT#2'})
+        marker = store.items[(pk, 'MEAL_AGGREGATE#DIRTY')]
+        self.assertEqual((marker['state'], marker['version']), ('PENDING', 2))
+        shard = marker['aggregate_refresh_shard']
+        self.assertRegex(shard, r'^PENDING#0[0-9a-f]$')
+        with self.assertRaises(Conflict):
+            store.advance_meal(pk, 1, {'sk': 'META', 'version': 2}, {'sk': 'JOB', 'status': 'DONE'}, {'sk': 'EVENT#3'})
+        self.assertEqual(store.items[(pk, 'MEAL_AGGREGATE#DIRTY')]['version'], 2)
+        self.assertEqual(store.items[(pk, 'MEAL_AGGREGATE#DIRTY')]['aggregate_refresh_shard'], shard)
 
     def test_meal_inventory_is_owner_scoped_paginated_and_atomic(self):
         store = MemoryCookingStore()
