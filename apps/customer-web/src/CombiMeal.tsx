@@ -4,6 +4,7 @@ import { CombiQuality } from "./CombiQuality";
 import { CombiWindows } from "./CombiWindows";
 import { CombiLive } from "./CombiLive";
 import { RicePreparation, type RicePreparationRecord } from "./RicePreparation";
+import { CombiQualityAggregate } from "./CombiQualityAggregate";
 
 type FanObservation = { status: string; target_level: number; deviation_seconds: number; missing_seconds: number };
 type ClimateObservation = { status: string; target_percent: string; deviation_seconds: number; missing_seconds: number };
@@ -11,6 +12,7 @@ type ProbeSummary = { probe_id: string; product_id: string; rack_id: string; she
   status: string; full_interval_min_celsius: string | null; longest_75c_hold_seconds: number | null };
 type Meal = {
   meal: { meal_batch_id: string; status: string; equipment_size: string; version: number;
+    rice_recipe_version?: string; mackerel_recipe_version?: string;
     source?: { device_id: string; record_count: number; raw_sha256: string; first_observed_at?: string;
       phase_counts: { RICE: number; TRANSITION: number; MACKEREL: number } } };
   rice: { job_id: string; status: string; safety_status: string; quality_current?: { version: number;
@@ -66,6 +68,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
   const [water, setWater] = useState("20");
   const [panTare, setPanTare] = useState("10");
   const [rackTare, setRackTare] = useState("0");
+  const [riceRecipe, setRiceRecipe] = useState("");
+  const [mackerelRecipe, setMackerelRecipe] = useState("");
   const [meal, setMeal] = useState<Meal | null>(null);
   const [lookup, setLookup] = useState("");
   const [error, setError] = useState("");
@@ -92,6 +96,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         equipment_size: size, rack_count: Number(racks), pan_count: Number(pans),
         dry_rice_kg: dry, drained_rice_kg: drained, added_water_kg: water,
         pan_tare_kg: panTare, rack_tare_kg: rackTare,
+        ...(riceRecipe.trim() ? { rice_recipe_version: riceRecipe.trim() } : {}),
+        ...(mackerelRecipe.trim() ? { mackerel_recipe_version: mackerelRecipe.trim() } : {}),
       });
       setMeal(result); setLookup(result.meal.meal_batch_id); setSourceFile(null); setSelectedProducts(null); setSelectionNote(""); setSampleLayout("THREE_SHELVES");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "배치를 생성하지 못했습니다."); }
@@ -290,6 +296,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         setDry(large ? "40" : "20"); setDrained(large ? "48" : "24"); setWater(large ? "40" : "20");
         setPanTare(large ? "20" : "10"); setRackTare(large ? "30" : "0");
       }}><option value="MEDIUM_FIXED_RACK_10">중형 고정 랙</option><option value="LARGE_ROLL_IN_RACK_20">대형 이동식 랙</option></select></label>
+      <label>밥 레시피 버전 (선택)<input maxLength={80} value={riceRecipe} onChange={event => setRiceRecipe(event.target.value)} /></label>
+      <label>고등어 레시피 버전 (선택)<input maxLength={80} value={mackerelRecipe} onChange={event => setMackerelRecipe(event.target.value)} /></label>
       {[["랙 수", racks, setRacks], ["팬 수", pans, setPans], ["건조 쌀 kg", dry, setDry],
         ["배수 후 쌀 kg", drained, setDrained], ["추가 물 kg", water, setWater],
         ["팬 총중량 kg", panTare, setPanTare], ["이동식 랙 총중량 kg", rackTare, setRackTare]].map(([label, value, setter]) =>
@@ -301,6 +309,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       <button type="button" className="secondary" onClick={open} disabled={busy || !lookup.trim()}>배치 불러오기</button></div>
     {error && <p role="alert" className="error">{error}</p>}
     {meal && <div className="card" aria-live="polite"><p>식사 배치 <code>{meal.meal.meal_batch_id}</code> · {mealLabels[meal.meal.status] ?? meal.meal.status}</p>
+      <p>레시피 버전: 밥 {meal.meal.rice_recipe_version ?? "미기록"} · 고등어 {meal.meal.mackerel_recipe_version ?? "미기록"}</p>
       <p>밥: 유효 수분비 {meal.rice.effective_water_ratio} · {meal.rice.water_ratio_status === "NORMAL" ? "권장 범위" : "권장 범위 밖"} · 목표 추가 물 {meal.rice.target_added_water_kg ?? "계산 불가"} kg</p>
       <p>내용물·팬 {meal.rice.payload_kg} kg · 랙 포함 {meal.rice.gross_kg} kg</p>
       <p>밥 작업 <code>{meal.rice.job_id}</code> → 모드 전환 <code>{meal.transition.transition_id}</code> → 고등어 작업 <code>{meal.mackerel.job_id}</code></p>
@@ -437,6 +446,8 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>
       <p>시간 판정은 전체 공정·안전 판정과 별도입니다. 화면의 전환 자료는 합성 표본입니다.</p>
       {meal.events && <ul>{meal.events.map((event, index) => <li key={index}>{event.event} · {new Date(event.observed_at).toLocaleString()}</li>)}</ul>}
+      <CombiQualityAggregate key={meal.meal.meal_batch_id} csrf={csrf} mealId={meal.meal.meal_batch_id}
+        mealVersion={meal.meal.version} size={meal.meal.equipment_size} riceRecipe={meal.meal.rice_recipe_version} mackerelRecipe={meal.meal.mackerel_recipe_version} />
     </div>}
   </section>;
 }

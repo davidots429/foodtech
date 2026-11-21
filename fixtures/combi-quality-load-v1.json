@@ -1,0 +1,12 @@
+{
+  "provenance": "SYNTHETIC",
+  "rule_version": "combi-quality-load-v1",
+  "description": "Project comparison fixtures; not manufacturer specifications or food safety limits.",
+  "cases": [
+    {"menu": "RICE", "equipment_size": "MEDIUM_FIXED_RACK_10", "reference_mass_kg": "44", "partial_mass_kg": "22", "reference_pans": 10, "partial_pans": 5},
+    {"menu": "RICE", "equipment_size": "LARGE_ROLL_IN_RACK_20", "reference_mass_kg": "88", "partial_mass_kg": "44", "reference_pans": 20, "partial_pans": 10},
+    {"menu": "MACKEREL", "equipment_size": "MEDIUM_FIXED_RACK_10", "reference_mass_kg": "15", "partial_mass_kg": "7.5", "reference_pans": 10, "partial_pans": 5},
+    {"menu": "MACKEREL", "equipment_size": "LARGE_ROLL_IN_RACK_20", "reference_mass_kg": "30", "partial_mass_kg": "15", "reference_pans": 20, "partial_pans": 10}
+  ],
+  "boundary": "0 < mass/reference <= 0.5: PARTIAL; 0.5 < mass/reference <= 1: REFERENCE; above 1: OVER_RECOMMENDED"
+}
