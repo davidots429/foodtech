@@ -31,10 +31,40 @@ class WorkerTests(unittest.TestCase):
             self.worker.run_page(**self.scope)
         self.progress.save_checkpoint.assert_not_called()
         self.tier.delete_inventory_page.reset_mock(side_effect=True)
-        self.progress.load_checkpoint.return_value = {'version': 1, 'checkpoint': b'other'}
+        self.progress.load_checkpoint.return_value = {'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': b'other'}
         with self.assertRaises(ValueError):
             self.worker.run_page(**self.scope)
         self.tier.delete_inventory_page.assert_not_called()
+
+    def test_invalid_page_or_progress_never_calls_delete(self):
+        for limit in (0, 101, True):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                self.worker.run_page(**{**self.scope, 'limit': limit})
+        self.progress.load_checkpoint.assert_not_called()
+        for previous in ({'version': True, 'state': 'IN_PROGRESS', 'checkpoint': b'tier-first-page-v1'},
+                         {'version': 1, 'state': 'COMPLETED', 'checkpoint': b'tier-first-page-v1'}):
+            self.progress.load_checkpoint.return_value = previous
+            with self.subTest(previous=previous), self.assertRaises(ValueError):
+                self.worker.run_page(**self.scope)
+        self.tier.delete_inventory_page.assert_not_called()
+
+    def test_retry_after_progress_save_failure_starts_from_remaining_keys(self):
+        remaining = ['a', 'b', 'c']
+        self.progress.load_checkpoint.return_value = None
+        self.progress.save_checkpoint.side_effect = [RuntimeError('write failed'), 1, 2]
+        def delete_page(subject, request_id, limit):
+            removed = min(len(remaining), limit)
+            del remaining[:removed]
+            return removed
+        self.tier.delete_inventory_page.side_effect = delete_page
+        with self.assertRaises(RuntimeError):
+            self.worker.run_page(**self.scope)
+        self.assertEqual(remaining, ['c'])
+        self.assertEqual(self.worker.run_page(**self.scope)['deleted_count'], 1)
+        self.progress.load_checkpoint.return_value = {'version': 1, 'state': 'IN_PROGRESS',
+                                                       'checkpoint': b'tier-first-page-v1'}
+        self.assertEqual(self.worker.run_page(**self.scope)['state'], 'VERIFYING')
+        self.assertEqual(remaining, [])
 
     def test_progress_write_conflict_does_not_report_success(self):
         self.progress.load_checkpoint.return_value = None

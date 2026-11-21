@@ -13,12 +13,16 @@ class TierDeletionWorker:
         self.cipher = cipher
 
     def run_page(self, *, subject: str, request_id: str, limit: int) -> dict:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('invalid tier deletion page limit')
         scope = {'subject': subject, 'request_id': request_id, 'domain': 'TIER'}
         previous = self.progress_store.load_checkpoint(cipher=self.cipher, **scope)
         if previous is None:
             version = 0
         else:
-            if previous['checkpoint'] != b'tier-first-page-v1':
+            if not isinstance(previous, dict) or previous.get('checkpoint') != b'tier-first-page-v1' or \
+                    type(previous.get('version')) is not int or not 1 <= previous['version'] < 2**63 - 1 or \
+                    previous.get('state') not in {'IN_PROGRESS', 'VERIFYING', 'FAILED'}:
                 raise ValueError('invalid tier deletion progress')
             version = previous['version']
         # Always restart at the first remaining key. Every deletion rechecks
