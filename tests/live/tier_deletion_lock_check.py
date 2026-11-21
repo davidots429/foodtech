@@ -15,8 +15,10 @@ def main():
     dynamo = session.resource('dynamodb')
     table, auth = dynamo.Table('foodtech-cooking-jobs-dev'), dynamo.Table('foodtech-auth-sessions-dev')
     customer, admin, app = ('synthetic-' + uuid4().hex for _ in range(3))
+    second_app = 'synthetic-' + uuid4().hex
     auth_keys = [{'pk': f'USER#{value}'} for value in (customer, admin)]
-    keys = [{'pk': f'TENANT#{customer}', 'sk': sk} for sk in ('CURRENT', f'APPLICATION#{app}', f'REVIEW#{app}')]
+    keys = [{'pk': f'TENANT#{customer}', 'sk': sk} for sk in
+            ('CURRENT', f'APPLICATION#{app}', f'REVIEW#{app}', f'APPLICATION#{second_app}', f'REVIEW#{second_app}')]
     store = DynamoTierStore(table.name)
     store.auth_table_name = auth.name
     item = {'subject': customer, 'application_id': app, 'submitted_at': '2026-11-21T00:00:00Z',
@@ -52,6 +54,13 @@ def main():
         store.decide(customer, app, admin, 'REJECTED', 'now', 0)
         if store.current(customer)['status'] != 'REJECTED':
             raise AssertionError('valid review not saved')
+        second_item = {**item, 'application_id': second_app}
+        store.submit(customer, second_item, 0)
+        auth.update_item(Key=auth_keys[0], UpdateExpression='SET admin_blocked = :yes',
+                         ExpressionAttributeValues={':yes': True})
+        blocked(lambda: store.decide(customer, second_app, customer, 'REJECTED', 'now', 0))
+        auth.update_item(Key=auth_keys[0], UpdateExpression='REMOVE admin_blocked')
+        store.decide(customer, second_app, customer, 'REJECTED', 'now', 0)
         cursor, inventory = None, []
         while True:
             page = store.inventory_keys(customer, 1, cursor)
@@ -69,9 +78,9 @@ def main():
             raise AssertionError('wrong request removed a record')
         if store.delete_inventory_page(customer, request, 1) != 1:
             raise AssertionError('first bounded deletion did not remove one key')
-        if len(store.inventory_keys(customer, 10, None)['keys']) != 2:
+        if len(store.inventory_keys(customer, 10, None)['keys']) != len(keys) - 1:
             raise AssertionError('bounded deletion removed an unexpected number of keys')
-        if store.delete_inventory_page(customer, request, 10) != 2:
+        if store.delete_inventory_page(customer, request, 10) != len(keys) - 1:
             raise AssertionError('resumed deletion did not remove remaining keys')
         store.delete_inventory_key(customer, request, inventory[0])
         if store.inventory_keys(customer, 10, None)['keys']:
