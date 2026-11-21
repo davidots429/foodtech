@@ -27,6 +27,9 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAuthIdentity-dev --strict -c provisionIdentity=true -c customerCallback=http://127.0.0.1:8000/api/auth/customer/callback -c adminCallback=http://127.0.0.1:8000/api/auth/admin/callback -c customerWeb=http://127.0.0.1:5173 -c adminWeb=http://127.0.0.1:5174 -c cognitoDomainPrefix=foodtech-synthetic-test --output /tmp/foodtech-identity-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_cognito_rotation.py /tmp/foodtech-identity-cdk/FoodtechAuthIdentity-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechPrivacyStorage-dev --strict -c provisionPrivacyStorage=true --output /tmp/foodtech-privacy-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_privacy_storage.py /tmp/foodtech-privacy-cdk/FoodtechPrivacyStorage-dev.template.json
 
   python:
     runs-on: ubuntu-latest
