@@ -84,7 +84,8 @@ try:
  src.put_item(Item={**orphan_key,'job_pk':f'SCOPE#USER#{u}#JOB#orphan','job_id':'orphan'},ConditionExpression='attribute_not_exists(pk)')
  residual=JobResidualScan(source_table=src,progress_store=store,cipher=cipher)
  binding_residual=JobBindingResidualScan(source_table=src,progress_store=store,cipher=cipher)
- coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual,binding_residual=binding_residual)
+ meta_worker=JobMetaDeletion(inventory=inventory,residual=residual,binding_residual=binding_residual)
+ coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual,binding_residual=binding_residual,metadata=meta_worker)
  orphan_record={'pk':f'SCOPE#USER#{u}#JOB#lost','sk':'EVENT#1'}
  inserted=observed=binding_inserted=binding_observed=False
  remaining_binding={'pk':'JEYUK#jeyuk-late-'+u,'sk':'BINDING'}
@@ -106,9 +107,6 @@ try:
  assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#job'},ConsistentRead=True).get('Item')
  assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#orphan'},ConsistentRead=True).get('Item')
  assert src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'HISTORY#REVISION'},ConsistentRead=True).get('Item')
- assert worker.delete_one(subject=u,request_id=q,index=0)=={'index':0,'state':'META_ONLY','removed':False}
- assert src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')
- meta_worker=JobMetaDeletion(inventory=inventory,residual=residual,binding_residual=binding_residual)
  assert meta_worker.remove_one(subject=u,request_id=q,index=0)['state']=='VERIFYING'
  assert meta_worker.remove_one(subject=u,request_id=q,index=0)['state']=='VERIFYING'
  assert not src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')

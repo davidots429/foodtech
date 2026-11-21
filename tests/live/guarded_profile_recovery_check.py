@@ -35,6 +35,7 @@ from foodtech_business_api.job_deletion_residual import JobResidualScan
 from foodtech_business_api.job_binding_residual import JobBindingResidualScan
 from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
 from foodtech_business_api.job_deletion_recovery import JobDeletionRecovery
+from foodtech_business_api.job_meta_deletion import JobMetaDeletion
 from foodtech_business_api.deletion_progress import DeletionProgressStore
 from foodtech_business_api.deletion_checkpoint_cipher import DeletionCheckpointCipher
 from foodtech_capsule_crypto.tenant_scope import TenantScope, TenantScopeResolver
@@ -226,7 +227,7 @@ def main():
         except ValueError: pass
         else: raise AssertionError('other subject recovered profile deletion')
         job_pk=f'SCOPE#USER#{subject}#JOB#job'
-        for job_item in ({'pk':job_pk,'sk':'META','owner_subject':subject,'job_id':'job'},
+        for job_item in ({'pk':job_pk,'sk':'META','owner_subject':subject,'job_id':'job','version':1},
                          {'pk':job_pk,'sk':'EVENT#1'}):
             vault.put_item(Item=job_item,ConditionExpression=Attr('pk').not_exists())
             job_created.append({'pk':job_item['pk'],'sk':job_item['sk']})
@@ -235,17 +236,20 @@ def main():
         job_bindings=JobBindingInventory(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
         job_residual=JobResidualScan(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
         binding_residual=JobBindingResidualScan(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
+        metadata=JobMetaDeletion(inventory=jobs,residual=job_residual,binding_residual=binding_residual)
         job_coordinator=JobDeletionCoordinator(jobs=jobs,worker=job_worker,bindings=job_bindings,
-                                                residual=job_residual,binding_residual=binding_residual)
+                                                residual=job_residual,binding_residual=binding_residual,metadata=metadata)
         job_recovery=JobDeletionRecovery(recovery=recovery,coordinator=job_coordinator)
         for _ in range(1000):
             job_result=job_recovery.step(authenticated_subject=subject,request_id=winner,limit=100)
             if job_result.get('residual_found'):raise AssertionError('unexpected synthetic job residual')
             if job_result['phase']=='VERIFYING':break
         else:raise AssertionError('bounded job recovery did not finish')
-        if vault.get_item(Key=job_created[1],ConsistentRead=True).get('Item') or \
-                not vault.get_item(Key=job_created[0],ConsistentRead=True).get('Item'):
-            raise AssertionError('job recovery did not preserve META or remove event')
+        if any(vault.get_item(Key=key,ConsistentRead=True).get('Item') for key in job_created):
+            raise AssertionError('job recovery did not remove META and event')
+        snapshot=plan_progress.load_checkpoint(cipher=profile_cipher,subject=subject,request_id=winner,
+                                               domain='JOB_META_000000000000')
+        if not snapshot:raise AssertionError('job recovery did not preserve encrypted META snapshot')
         try:job_recovery.step(authenticated_subject=str(uuid.uuid4()),request_id=winner)
         except ValueError:pass
         else:raise AssertionError('other subject recovered job deletion')

@@ -13,6 +13,7 @@ class CoordinatorTests(unittest.TestCase):
         self.cipher=SimpleNamespace(source_table_arn='arn:source')
         self.jobs=JobDeletionInventory(source_table=self.source,progress_store=self.progress,cipher=self.cipher)
         self.jobs.capture_page=Mock(return_value={'complete':True,'count':1})
+        self.jobs._head=Mock(return_value={'complete':True,'count':1})
         self.worker=SimpleNamespace(inventory=self.jobs,delete_one=Mock(side_effect=[
             {'state':'IN_PROGRESS','removed':True},{'state':'META_ONLY','removed':False}]))
         self.bindings=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
@@ -21,14 +22,16 @@ class CoordinatorTests(unittest.TestCase):
             observe_page=Mock(side_effect=[{'residual_found':True,'scan_complete':False},{'residual_found':False,'scan_complete':True}]))
         self.binding_residual=SimpleNamespace(source_table=self.source,progress_store=self.progress,cipher=self.cipher,
             observe_page=Mock(side_effect=[{'residual_found':True,'scan_complete':False},{'residual_found':False,'scan_complete':True}]))
-        self.coordinator=JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual,binding_residual=self.binding_residual)
+        self.metadata=SimpleNamespace(inventory=self.jobs,residual=self.residual,binding_residual=self.binding_residual,
+                                      remove_one=Mock(return_value={'state':'VERIFYING'}))
+        self.coordinator=JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual,binding_residual=self.binding_residual,metadata=self.metadata)
         self.scope={'subject':str(uuid4()),'request_id':str(uuid4())}
 
     def test_order_and_meta_only_is_not_whole_deletion(self):
         with patch('foodtech_business_api.job_deletion_coordinator.clean_one_job_listing',
                    side_effect=[{'state':'IN_PROGRESS','removed':True},{'state':'VERIFYING','removed':False}]):
-            results=[self.coordinator.step(**self.scope)['phase'] for _ in range(12)]
-        self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','LISTINGS','RESIDUAL','RESIDUAL','BINDING_RESIDUAL','BINDING_RESIDUAL','VERIFYING','VERIFYING'])
+            results=[self.coordinator.step(**self.scope)['phase'] for _ in range(13)]
+        self.assertEqual(results,['RECORDS','RECORDS','BINDINGS','REMOVE_BINDINGS','LISTINGS','LISTINGS','RESIDUAL','RESIDUAL','BINDING_RESIDUAL','BINDING_RESIDUAL','META','VERIFYING','VERIFYING'])
         self.assertEqual([c.kwargs['index'] for c in self.worker.delete_one.call_args_list],[0,0])
         self.bindings.remove_one.assert_called_once()
 
@@ -43,7 +46,7 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_dependency_mismatch_fails(self):
         self.bindings.cipher=object()
-        with self.assertRaises(ValueError):JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual,binding_residual=self.binding_residual)
+        with self.assertRaises(ValueError):JobDeletionCoordinator(jobs=self.jobs,worker=self.worker,bindings=self.bindings,residual=self.residual,binding_residual=self.binding_residual,metadata=self.metadata)
 
 
 if __name__=='__main__':unittest.main()
