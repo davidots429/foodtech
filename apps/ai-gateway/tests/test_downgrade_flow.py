@@ -207,6 +207,39 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
             del app.state.mtls_listener
             del app.state.gateway_service
 
+    async def test_configured_tier_one_request_remains_blocked_until_evidence_is_verified(self):
+        app.state.mtls_listener = True
+        app.state.gateway_service = GatewayService(self.registry)
+        job = str(uuid4())
+        body = {"tenant_id": "customer-a", "job_id": job, "job_version": 7}
+        try:
+            with patch.dict('os.environ', {"FOODTECH_RECIPE_TIER1_MODEL_ID": "tier-one"}):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway") as client:
+                    blocked = await client.post("/internal/ai/recipe-requests", json=body)
+                    self.assertEqual(blocked.status_code, 201, blocked.text)
+                    self.assertEqual(blocked.json()['reason'], 'MODEL_NOT_ACTIVE')
+                    self.assertFalse(blocked.json()['execution_available'])
+                    self.assertEqual(self.registry.execution(blocked.json()['execution_id']).model_id, 'tier-one')
+                    self.resource.table.items[('MODEL#tier-one', 'META')]['state'] = 'ACTIVE'
+                    active = await client.post("/internal/ai/recipe-requests", json=body)
+                    self.assertEqual(active.status_code, 201, active.text)
+                    self.assertEqual(active.json()['reason'], 'RECOMMENDATION_EVIDENCE_UNVERIFIED')
+                    self.assertFalse(active.json()['execution_available'])
+                    self.assertEqual(self.registry.execution_state(active.json()['execution_id']), 'PENDING')
+                    model = AsyncMock()
+                    outcome = await app.state.gateway_service.execute_local(
+                        Caller('business-api', 'customer-a'), active.json()['execution_id'], 'test', model)
+                    self.assertEqual((outcome.state, outcome.error_code), ('DENIED', 'STRUCTURED_RECIPE_REQUIRED'))
+                    model.generate.assert_not_called()
+            for invalid in ('missing-model', 'llama3.1:8b', UNCONFIGURED_TIER1):
+                with patch.dict('os.environ', {"FOODTECH_RECIPE_TIER1_MODEL_ID": invalid}):
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway") as client:
+                        response = await client.post("/internal/ai/recipe-requests", json=body)
+                        self.assertEqual(response.status_code, 503)
+        finally:
+            del app.state.mtls_listener
+            del app.state.gateway_service
+
     def test_unconfigured_marker_cannot_become_a_model_during_confirmation(self):
         parent = str(uuid4())
         self.registry.create_execution(Execution(parent, "customer-a", Feature.RECIPE_CORRECTION,

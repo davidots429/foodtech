@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from typing import Literal
 
 from .ollama import OllamaClient
-from .policy import Caller, Execution, Feature, UNCONFIGURED_TIER1
+from .policy import Caller, Execution, Feature, Tier, UNCONFIGURED_TIER1
 from .registry import DynamoRegistry
 from .service import GatewayService
 from .provider import LiteLLMProvider
@@ -190,20 +190,30 @@ async def downgrade_preview(request: Request, body: DowngradePreview) -> dict:
 async def recipe_request(request: Request, body: RecipeRequest) -> dict:
     _internal(request)
     service = _service(request)
-    # Tier 1 execution configuration is a separate implementation; never silently
-    # select an unapproved provider or call the local model on this path.
-    if os.getenv("FOODTECH_RECIPE_TIER1_MODEL_ID"):
-        raise HTTPException(503, "TIER1_REQUEST_NOT_IMPLEMENTED")
     if service.registry.model(UNCONFIGURED_TIER1) is not None:
         raise HTTPException(503, "RESERVED_MODEL_MARKER_IN_USE")
+    model_id = os.getenv("FOODTECH_RECIPE_TIER1_MODEL_ID", "").strip()
+    if model_id:
+        model = service.registry.model(model_id)
+        if model_id == UNCONFIGURED_TIER1 or len(model_id) > 128 or not model or model.tier != Tier.TIER_1:
+            raise HTTPException(503, "TIER1_MODEL_CONFIGURATION_INVALID")
+    else:
+        model_id = UNCONFIGURED_TIER1
     trial = _trial_limits()
     if trial is not None:
         service.registry.ensure_trial_tenant_limit(body.tenant_id, *trial)
     execution_id = str(uuid4())
     service.registry.create_execution(Execution(execution_id, body.tenant_id, Feature.RECIPE_CORRECTION,
-        UNCONFIGURED_TIER1, None, "SYNTHETIC", Decimal("0"),
+        model_id, None, "SYNTHETIC", Decimal("0"),
         job_id=str(body.job_id), job_version=body.job_version, comparison_id=body.comparison_id))
-    return {"execution_id": execution_id, "state": "BLOCKED", "reason": "TIER1_MODEL_NOT_CONFIGURED",
+    if model_id == UNCONFIGURED_TIER1:
+        reason = "TIER1_MODEL_NOT_CONFIGURED"
+    else:
+        service.registry.begin_request()
+        decision = service.policy.authorize(Caller("business-api", body.tenant_id), execution_id)
+        reason = "RECOMMENDATION_EVIDENCE_UNVERIFIED" if decision.allowed else decision.code
+    return {"execution_id": execution_id, "state": "BLOCKED", "reason": reason,
+            "execution_available": False,
             "job_id": str(body.job_id), "job_version": body.job_version, "comparison_id": body.comparison_id}
 
 
