@@ -105,14 +105,20 @@ def list_partition_keys(table, *, tenant: str, partition: str, limit: int,
     if cursor is not None:
         args['ExclusiveStartKey'] = {'pk': partition, 'sk': cursor}
     page = table.query(**args)
+    items = page.get('Items')
+    if not isinstance(items, list) or len(items) > limit:
+        raise ValueError('invalid partition inventory page')
     keys = []
-    for item in page.get('Items', []):
-        if item.get('pk') != partition or not isinstance(item.get('sk'), str) or not 1 <= len(item['sk']) <= 2048:
+    previous = cursor
+    for item in items:
+        if not isinstance(item, dict) or item.get('pk') != partition or not isinstance(item.get('sk'), str) or \
+                not 1 <= len(item['sk']) <= 2048 or (previous is not None and item['sk'] <= previous):
             raise ValueError('invalid partition inventory record')
         keys.append(item['sk'])
+        previous = item['sk']
     next_key = page.get('LastEvaluatedKey')
     _checkpoint(next_key)
-    if next_key is not None and next_key['pk'] != partition:
+    if next_key is not None and (next_key['pk'] != partition or not keys or next_key['sk'] != keys[-1]):
         raise ValueError('invalid partition inventory checkpoint')
     return {'keys': keys, 'next_cursor': next_key['sk'] if next_key else None}
 

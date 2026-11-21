@@ -45,6 +45,21 @@ class TenantInventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             list_partition_keys(table, tenant='alice', partition='EXEC#run', limit=1)
 
+    def test_child_inventory_rejects_malformed_or_nonadvancing_pages(self):
+        table = Mock()
+        table.get_item.return_value = {'Item': {'pk': 'EXEC#run', 'sk': 'META', 'tenant_id': 'alice'}}
+        row = lambda sk: {'pk': 'EXEC#run', 'sk': sk}
+        for result in ({}, {'Items': None}, {'Items': [row('A'), row('A')]},
+                       {'Items': [row('B'), row('A')]},
+                       {'Items': [], 'LastEvaluatedKey': {'pk': 'EXEC#run', 'sk': 'A'}},
+                       {'Items': [row('A')], 'LastEvaluatedKey': {'pk': 'EXEC#run', 'sk': 'B'}}):
+            table.query.return_value = result
+            with self.subTest(result=result), self.assertRaises(ValueError):
+                list_partition_keys(table, tenant='alice', partition='EXEC#run', limit=2)
+        table.query.return_value = {'Items': [row('A')]}
+        with self.assertRaises(ValueError):
+            list_partition_keys(table, tenant='alice', partition='EXEC#run', limit=2, cursor='A')
+
     def test_tenant_limit_ownership_is_encoded_in_partition_key(self):
         table = Mock()
         table.get_item.return_value = {'Item': {'pk': 'LIMIT#2026-11#TENANT#alice', 'sk': 'META'}}
