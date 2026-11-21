@@ -245,7 +245,7 @@ def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: s
     return page
 
 
-def observe_active_markers(table, client, *, auth_table: str, tenant: str, request_id: str) -> str:
+def observe_active_markers(table, client, *, auth_table: str, deletion_registry_table: str, tenant: str, request_id: str) -> str:
     """Observe a customer's active marker partition while the same lock holds.
 
     CLEAR is a point-in-time observation only: legacy reservations may lack a
@@ -254,7 +254,9 @@ def observe_active_markers(table, client, *, auth_table: str, tenant: str, reque
     _scope(tenant, 1)
     try:
         if str(UUID(request_id)) != request_id or not isinstance(auth_table, str) or not auth_table or \
-                not isinstance(getattr(table, 'name', None), str) or table.name == auth_table:
+                not isinstance(deletion_registry_table,str) or not deletion_registry_table or \
+                not isinstance(getattr(table, 'name', None), str) or \
+                len({auth_table,deletion_registry_table,table.name}) != 3:
             raise ValueError
     except (TypeError, ValueError, AttributeError):
         raise ValueError('invalid active marker scope') from None
@@ -265,8 +267,12 @@ def observe_active_markers(table, client, *, auth_table: str, tenant: str, reque
         try:
             client.transact_write_items(TransactItems=[{'ConditionCheck': {
                 'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
-                'ConditionExpression': 'deletion_lock_request = :request',
-                'ExpressionAttributeValues': encode({':request': request_id})}}])
+                'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes',
+                'ExpressionAttributeValues': encode({':request': request_id, ':yes':True})}},
+                {'ConditionCheck': {'TableName':deletion_registry_table,
+                 'Key':encode({'pk':'REGISTRY','sk':f'REQ#{request_id}'}),
+                 'ConditionExpression':'#status = :active','ExpressionAttributeNames':{'#status':'status'},
+                 'ExpressionAttributeValues':encode({':active':'DELETING'})}}])
         except client.exceptions.TransactionCanceledException as exc:
             if any(reason.get('Code') == 'ConditionalCheckFailed'
                    for reason in (exc.response.get('CancellationReasons') or [])):

@@ -66,14 +66,19 @@ def main():
         else:raise AssertionError('inactive request restored marker')
         if table.get_item(Key=marker_key,ConsistentRead=True).get('Item'):
             raise AssertionError('inactive request left marker')
+        try:
+            observe_active_markers(table,session.client('dynamodb'),auth_table=auth.name,
+                deletion_registry_table=deletion_registry.name,tenant=tenant,request_id=request)
+        except ActiveReconciliationConflict:pass
+        else:raise AssertionError('inactive request observed markers')
         deletion_registry.update_item(Key=deletion_key,UpdateExpression='SET #s=:s',
             ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'DELETING'})
         ensure(request)
         ensure(request)
-        if observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant, request_id=request) != 'PRESENT':
+        if observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, deletion_registry_table=deletion_registry.name, tenant=tenant, request_id=request) != 'PRESENT':
             raise AssertionError('active marker was not observed')
         try:
-            observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant, request_id=str(uuid4()))
+            observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, deletion_registry_table=deletion_registry.name, tenant=tenant, request_id=str(uuid4()))
         except ActiveReconciliationConflict:
             pass
         else:
@@ -102,7 +107,7 @@ def main():
         table.update_item(Key={'pk': exec_pk, 'sk': 'META'}, UpdateExpression='SET #s = :done',
                           ExpressionAttributeNames={'#s': 'state'}, ExpressionAttributeValues={':done': 'SUCCEEDED'})
         table.delete_item(Key=marker_key)
-        if observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant, request_id=request) != 'CLEAR':
+        if observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, deletion_registry_table=deletion_registry.name, tenant=tenant, request_id=request) != 'CLEAR':
             raise AssertionError('settled marker still observed')
         try:
             ensure(request)

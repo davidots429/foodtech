@@ -35,19 +35,23 @@ class TenantInventoryTests(unittest.TestCase):
         table.name = 'registry'
         request = str(uuid4())
         table.query.return_value = {'Items': [{'pk': 'ACTIVE#alice', 'sk': 'EXEC#run'}]}
-        self.assertEqual(observe_active_markers(table, client, auth_table='auth', tenant='alice',
+        self.assertEqual(observe_active_markers(table, client, auth_table='auth', deletion_registry_table='deletion', tenant='alice',
                                                 request_id=request), 'PRESENT')
         self.assertEqual(client.transact_write_items.call_count, 2)
+        for call in client.transact_write_items.call_args_list:
+            guards=call.kwargs['TransactItems']
+            self.assertIn('suspended = :yes',guards[0]['ConditionCheck']['ConditionExpression'])
+            self.assertEqual(guards[1]['ConditionCheck']['ExpressionAttributeValues'][':active'],{'S':'DELETING'})
         self.assertTrue(table.query.call_args.kwargs['ConsistentRead'])
         table.query.return_value = {'Items': []}
-        self.assertEqual(observe_active_markers(table, client, auth_table='auth', tenant='alice',
+        self.assertEqual(observe_active_markers(table, client, auth_table='auth', deletion_registry_table='deletion', tenant='alice',
                                                 request_id=request), 'CLEAR')
         table.query.return_value = {'Items': [{'pk': 'ACTIVE#other', 'sk': 'EXEC#run'}]}
         with self.assertRaises(ValueError):
-            observe_active_markers(table, client, auth_table='auth', tenant='alice', request_id=request)
+            observe_active_markers(table, client, auth_table='auth', deletion_registry_table='deletion', tenant='alice', request_id=request)
         table.query.return_value = {}
         with self.assertRaises(ValueError):
-            observe_active_markers(table, client, auth_table='auth', tenant='alice', request_id=request)
+            observe_active_markers(table, client, auth_table='auth', deletion_registry_table='deletion', tenant='alice', request_id=request)
 
     def test_child_keys_require_owner_meta_and_are_paginated(self):
         table = Mock()

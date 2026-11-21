@@ -19,7 +19,8 @@ class ExecutionQuiescence:
     def observe(self, *, subject, request_id):
         def markers():
             return observe_active_markers(self.source_table, self.progress_store.client,
-                auth_table=self.progress_store.auth_table, tenant=subject, request_id=request_id)
+                auth_table=self.progress_store.auth_table, deletion_registry_table=self.progress_store.registry_table,
+                tenant=subject, request_id=request_id)
         initial = markers()
         if initial not in {'PRESENT', 'CLEAR'}:
             raise ValueError('invalid active marker observation')
