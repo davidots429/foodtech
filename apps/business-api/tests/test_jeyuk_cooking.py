@@ -106,6 +106,9 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         context_events = [item for item in events if item["domain"] == "VALIDATION_CONTEXT"]
         self.assertEqual(len(context_events), 2)
         self.assertEqual(context_events[1]["previous_digest"], job["validation_context_digest"])
+        self.assertEqual(context_events[1]["change_reasons"], ["INGREDIENT_CHANGED"])
+        self.assertEqual(context_events[1]["unknown_fields"], [])
+        self.assertNotIn("change_reasons", context_events[0])
         bad = {**body, "expected_version": changed.json()["version"], "sensor_id": "probe a"}
         self.assertEqual((await self.client.post(path + "/validation-context", headers=CSRF,
                                                  json=bad)).status_code, 422)
@@ -356,6 +359,8 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(failed.json()["evaluation_blocked"])
         events = (await self.client.get(path + "/events")).json()
         self.assertEqual(len([event for event in events if event["trigger"] == "JEYUK_DISCHARGE_CHECK"]), 4)
+        self.assertEqual([event for event in events if event["trigger"] == "JEYUK_DISCHARGE_CHECK"][-1]["validation_change_reason"],
+                         "SAFETY_ANOMALY")
 
     async def test_discharge_missing_invalid_and_ordered_samples(self):
         job = await self.create()

@@ -13,6 +13,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.validation_changes import compare_jeyuk_context, recorded_safety_change
 from foodtech_contracts.cooking_live_time import observe as observe_live_time
 from foodtech_contracts.tonkatsu_process import (RULE_VERSION, TEMPERATURE_RULE_VERSION,
                                                  cooking_time_status, process_status, thickness_profile)
@@ -103,6 +104,10 @@ def _jeyuk_feed_safety_current(job: dict) -> bool:
 async def _commit(store, pk: str, previous: dict, meta: dict,
                   assessment: dict | None = None, pointer: dict | None = None,
                   event: dict | None = None):
+    if event is not None:
+        reason = recorded_safety_change(event)
+        if reason:
+            event = {**event, "validation_change_reason": reason}
     try:
         await _store_call(store, store.commit, pk, int(previous["version"]), meta, assessment, pointer, event)
     except Conflict as exc:
@@ -563,6 +568,10 @@ async def record_jeyuk_validation_context(job_id: str, request: Request,
              "to_status": "DECLARED_UNVERIFIED", "previous_digest": old.get("validation_context_digest"),
              "context_digest": digest, "context_version": version, "context": context,
              "actor_subject": session.subject, "occurred_at": now}
+    if old.get("validation_context") is not None:
+        changes = compare_jeyuk_context(old["validation_context"], context)
+        event["change_reasons"] = list(changes.reasons)
+        event["unknown_fields"] = list(changes.unknown_fields)
     await _commit(store, pk, old, meta, event=event)
     return meta
 

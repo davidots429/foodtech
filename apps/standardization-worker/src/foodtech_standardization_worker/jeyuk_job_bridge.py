@@ -7,6 +7,7 @@ import boto3
 from boto3.dynamodb.types import TypeSerializer
 
 from foodtech_contracts.jeyuk_process import RULE_VERSION
+from foodtech_contracts.validation_changes import recorded_safety_change
 
 
 class DynamoJeyukJobBridge:
@@ -79,6 +80,9 @@ class DynamoJeyukJobBridge:
                      "source_assessment_pk": stream_pk,
                      "source_assessment_sk": f"ASSESSMENT#{second:06d}",
                      "rule_version": RULE_VERSION, "occurred_at": now}
+            validation_reason = recorded_safety_change(event)
+            if validation_reason:
+                event["validation_change_reason"] = validation_reason
             previous_reasons = old.get("process_assessment", {}).get("reason_codes", [])
             history_changed = (old.get("process_assessment_status") != process_status or
                                previous_reasons != result["reason_codes"] or

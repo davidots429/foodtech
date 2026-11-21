@@ -93,6 +93,7 @@ class JeyukJobBridgeTests(unittest.TestCase):
         self.assertEqual(job["process_assessment"]["second"], 30)
         event = self.table.items[(self.job_pk, "EVENT#JEYUK#000030")]
         self.assertEqual(event["trigger"], "PROCESS_FAILURE_DETECTED")
+        self.assertEqual(event["validation_change_reason"], "PROCESS_ANOMALY")
         self.assertEqual(self.bridge.apply(decision(30, "FAILED")), "REPLAYED")
         self.assertEqual(self.table.items[(self.job_pk, "META")]["version"], 31)
         self.assertEqual(self.table.items[("SCOPE#USER#one#JOBS", "HISTORY#REVISION")]["revision"], 3)
