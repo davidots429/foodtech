@@ -77,9 +77,9 @@ MQTT 수집 명령의 `--instance mockprofile-300-b-001` 또는 `--instance mock
 
 합성 Session-less Browse/Read 수집 명령의 `--instance mockprofile-200-b-001` 또는 `mockprofile-200-c-001`로 vendor 원천을 선택할 수 있다. 읽은 인스턴스 식별자와 원천 Schema를 검사하고 저장 실패 후 합성 이력에서 재조회한다. vendor-b의 출력 비율과 vendor-c의 속도 단계는 RPM으로 바꾸지 않는다. 이는 프로젝트 전용 HTTPS 계약이며 OPC UA 표준 JSON 서비스나 실제 제조사 호환 구현이 아니다. AWS 실저장은 후속이다.
 
-볶음·교반 장비의 합성 Session-less Browse/Read 계열은 `--instance mockprofile-210-a-001`, `mockprofile-210-b-001`, `mockprofile-210-c-001`을 지원한다. 각 원천 스키마에서 합성 장비 유형을 확인하고, 온도는 `POT_TEMPERATURE`로 표준화한다. vendor-a의 RPM, vendor-b의 출력 비율, vendor-c의 속도 단계는 별도로 유지하며 서로 환산하지 않는다. 인증·순서 복구·원천 이력 위반 격리는 기존 프로젝트 전용 HTTPS 계약과 같다. 이 경로는 로컬 통합 검증 범위이며 실제 제조사 호환성이나 AWS 실저장 검증을 주장하지 않는다.
+볶음·교반 장비의 합성 Session-less Browse/Read 계열은 `--instance mockprofile-210-a-001`, `mockprofile-210-b-001`, `mockprofile-210-c-001`을 지원한다. 각 원천 스키마에서 합성 장비 유형을 확인하고, 온도는 `POT_TEMPERATURE`로 표준화한다. vendor-a의 RPM, vendor-b의 출력 비율, vendor-c의 속도 단계는 별도로 유지하며 서로 환산하지 않는다. 인증·순서 복구·원천 이력 위반 격리는 기존 프로젝트 전용 HTTPS 계약과 같다. 이 경로는 프로젝트 합성 계약이며 실제 제조사 호환성을 주장하지 않는다. 개발 AWS 실저장 검증 범위는 아래 기록을 따른다.
 
-콤비오븐의 합성 Session-less Browse/Read 계열 `mockprofile-220-a-001`, `-b-001`, `-c-001`은 챔버 온도, 기후 설정 비율, 팬 단계와 습도 출처를 구분한다. 실제 습도만 `RELATIVE_HUMIDITY`로 표준화하며 제어기 추정값은 `HUMIDITY_ESTIMATE_PERCENT`로, 미지원은 수치 없이 기록한다. vendor-c의 중복 팬 단계가 서로 다르면 수집을 거부한다. 이 경로는 프로젝트 전용 합성 HTTPS 계약이며 로컬 통합 검증 범위다. AWS 실저장은 후속 검증이다.
+콤비오븐의 합성 Session-less Browse/Read 계열 `mockprofile-220-a-001`, `-b-001`, `-c-001`은 챔버 온도, 기후 설정 비율, 팬 단계와 습도 출처를 구분한다. 실제 습도만 `RELATIVE_HUMIDITY`로 표준화하며 제어기 추정값은 `HUMIDITY_ESTIMATE_PERCENT`로, 미지원은 수치 없이 기록한다. vendor-c의 중복 팬 단계가 서로 다르면 수집을 거부한다. 이 경로는 프로젝트 전용 합성 HTTPS 계약이다. 개발 AWS 실저장 검증 범위는 아래 기록을 따른다.
 
 OPC UA Binary 수집 명령의 `--instance mockprofile-203-b-001` 또는 `mockprofile-203-c-001`은 각각의 합성 namespace·장비 ID와 원천 Schema를 확인한다. SDK 인증서 신뢰·SignAndEncrypt·읽기 전용 Subscription과 합성 이력 재조회는 기존 인스턴스와 동일하다. vendor-b의 출력 비율과 vendor-c의 순서형 속도 단계는 RPM으로 환산하지 않는다. 원천 이력과 합성 Node는 프로젝트 시험 계약이며 실제 제조사 사양이나 UA 표준 이력 서비스라는 주장은 아니다. AWS 실저장은 후속이다.
 
@@ -97,3 +97,5 @@ OPC UA Binary 수집 명령의 `--instance mockprofile-203-b-001` 또는 `mockpr
 `combi_import --live`를 사용하면 각 원표본 묶음을 고객 배치의 수집 중 영역에도 기록한다. 예: `uv run --no-sync python -m foodtech_collection_adapter.combi_import --meal-id <배치 ID> --device-id <합성 장비 ID> --live`. 기존 환경변수로 Mock과 고객 세션을 설정하고 Mock은 `serve --realtime`으로 실행한다. 고객 화면은 5초마다 최근 합성 표본, 마지막 수신 시각과 완전한 5초 구간의 현재·최저·최고·평균 온도 및 목표 범위 이탈 초를 조회한다. 수집 중 표본은 안전·공정 판정이 아니며, 완료 연결 전에 저장된 모든 표본과 최종 원본의 내용·순서를 대조한다. 같은 자료 재전송은 중복으로 처리하고 다른 내용이나 건너뛴 순번은 거부한다. 작업 상태가 수집 중 바뀌어도 최종 연결 직전의 버전을 다시 확인한다. 장시간 실행 중 세션이 만료되면 수집이 중단된다. 재로그인 후 동일 Mock과 배치로 다시 실행하면 서버에 저장된 스냅샷과 Mock 원본을 처음부터 순서대로 대조한 뒤 나머지를 이어 수집한다. 원본이 다르거나 저장된 지점보다 일찍 끝나면 중단한다. AWS 실저장·장애 복구 실검증은 아직 수행하지 않았다.
 
 콤비오븐 `--live` 수집은 HTTPS 대기 요청으로 합성 Mock의 단계·문·치명 알람·환기 변화를 일반 5초 묶음보다 먼저 수신한다. 순번 중간의 원표본도 함께 수신하여 재개와 중복 판정이 동일하게 유지된다. 일반 묶음 전에 전달되는 이탈 원표본으로 플랫폼의 기존 공정 감지도 갱신한다. 고객 화면 갱신 주기와 AWS 종단간 지연은 별도 검증 대상이다.
+
+2026-11-21 개발 AWS에서 `mockprofile-210`·`220`의 각 vendor a/b/c에 대해 로컬 C# Mock의 HTTPS 응답부터 DynamoDB Resequencer·SQS FIFO·Worker 및 격리 큐까지 실검증했다. 각 조합은 고유 합성 표본 3건을 순서대로 처리했고 정상 2건·격리 1건을 확인한 뒤 합성 항목을 정리했다. 콤비오븐의 기후 설정·실측 습도·팬 단계와 볶음 장비의 솥 온도 구분도 확인했다. 재실행은 Mock Release 빌드 후 공유 개발 큐가 비어 있는 상태에서 `AWS_PROFILE=foodtech .venv/bin/python tests/live/opcua_json_aws_check.py`를 사용한다. 이 결과는 로컬 프로세스를 이용한 검증이며 배포된 Task 역할, 장기 복구와 부하를 검증하지 않는다.
