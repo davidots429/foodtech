@@ -122,6 +122,38 @@ class ComparisonTests(unittest.IsolatedAsyncioTestCase):
         self.subject = "another-customer"
         self.assertEqual((await self.client.get(path, params={"comparison_id": comparison["comparison_id"]})).status_code, 404)
 
+    async def test_selected_jeyuk_comparison_returns_owned_recorded_feed_timing(self):
+        for index, job_id in enumerate((self.baseline_id, self.candidate_id)):
+            pk = cooking._pk(self.subject, job_id)
+            meta = self.store.items[(pk, "META")]
+            meta.update(menu="JEYUK", equipment_profile="jeyuk-small", jeyuk_feed_safety_aligned=True,
+                        actual_placed_at=f"2026-11-14T0{index}:00:05Z",
+                        actual_lifted_at=f"2026-11-14T0{index}:02:00Z",
+                        jeyuk_addition_group_id="group-private", jeyuk_additions_simultaneous=True)
+            def feed(name, second, group):
+                return {"ingredient": name, "started_at": f"2026-11-14T0{index}:00:{second:02d}Z",
+                        "completed_at": f"2026-11-14T0{index}:00:{second + 1:02d}Z",
+                        "addition_group_id": group, "provenance": "SYNTHETIC"}
+            meta["jeyuk_feeds"] = {"MEAT": feed("MEAT", 4, None),
+                                   "VEGETABLE": feed("VEGETABLE", 15 + index, "group-private"),
+                                   "SAUCE": feed("SAUCE", 20 + index, "group-private")}
+            self.store.items[(pk, "ASSESSMENT#REV#000000000001")].update(
+                menu="JEYUK", equipment_profile="jeyuk-small", scale_version="jeyuk-common-v1")
+        comparison = await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
+                                            headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(comparison.status_code, 201, comparison.text)
+        response = await self.client.get(f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence",
+                                         params={"comparison_id": comparison.json()["comparison_id"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        value = response.json()
+        self.assertEqual(value["recorded"]["jeyuk_feed_timing"]["vegetable_start_offset_us"], 11_000_000)
+        self.assertEqual(value["selected_comparison"]["baseline_jeyuk_feed_timing"]["vegetable_start_offset_us"], 10_000_000)
+        self.assertFalse(value["selected_comparison"]["immediately_previous_verified"])
+        self.assertNotIn("group-private", response.text)
+        self.subject = "other-customer"
+        self.assertEqual((await self.client.get(f"/api/customer/cooking-jobs/{self.candidate_id}/recommendation-evidence",
+                               params={"comparison_id": comparison.json()["comparison_id"]})).status_code, 404)
+
     async def test_selected_comparison_rejects_later_or_undated_baseline(self):
         comparison = (await self.client.post(self._path(), json={"baseline_job_id": self.baseline_id},
                       headers={"X-CSRF-Token": "test-csrf"})).json()

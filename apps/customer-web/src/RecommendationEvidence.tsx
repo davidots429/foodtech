@@ -1,10 +1,13 @@
 import { useRef, useState } from "react";
 import { api, jobPath } from "./cookingApi";
 
+type FeedTiming = { status: "RECORDED"; vegetable_start_offset_us: number; sauce_start_offset_us: number;
+  start_separation_us: number; simultaneous: boolean } | { status: "NOT_RECORDED" | "INCONSISTENT" };
+
 type Evidence = {
   job_version: number; process_view: "AS_PROCESSED" | "LATEST_RESTATED"; process_stale: boolean;
   recorded: { menu: string | null; recipe_version: string | null; safety_status: string | null; process_status: string | null;
-    job_status: string | null; cooking_seconds: number | null; quality: { score_percent: string | null } | null;
+    job_status: string | null; cooking_seconds: number | null; jeyuk_feed_timing: FeedTiming | null; quality: { score_percent: string | null } | null;
     temperature_sample_summary: { sample_count: number; minimum_sample_celsius: string;
       maximum_sample_celsius: string; below_160_between_qualifying_samples_us: number;
       above_180_between_qualifying_samples_us: number; longest_above_180_sample_span_us: number;
@@ -20,8 +23,16 @@ type Evidence = {
   reheat_history: { segment_id: string; started_at: string; lifted_at: string; duration_seconds: string;
     rechecks: { status: string; recorded_at: string | null }[] }[];
   selected_comparison: { comparison_id: string; baseline_job_id: string; baseline_recipe_version: string; baseline_score_percent: string;
-    candidate_score_percent: string; immediately_previous_verified: boolean } | null;
+    candidate_score_percent: string; baseline_jeyuk_feed_timing: FeedTiming | null; immediately_previous_verified: boolean } | null;
 };
+
+function FeedTimingView({ timing, label }: { timing: FeedTiming | null; label: string }) {
+  if (!timing) return null;
+  if (timing.status !== "RECORDED") return <p>{label} 투입 시각: {timing.status === "INCONSISTENT" ? "기록 불일치" : "기록 부족"}</p>;
+  return <p>{label} 투입 시각: 고기 투입 완료 후 채소 {timing.vegetable_start_offset_us / 1_000_000}초,
+    소스 {timing.sauce_start_offset_us / 1_000_000}초 · 시작 차이 {timing.start_separation_us / 1_000_000}초
+    ({timing.simultaneous ? "논리적 동시 투입" : "동시 투입 아님"})</p>;
+}
 
 const completenessLabels: Record<string, string> = {
   MENU_NOT_ASSESSED: "이 메뉴의 입력 완전성은 아직 판정하지 않았습니다.",
@@ -142,6 +153,9 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId }: { jobId: s
       {value.selected_comparison && <div><p>선택한 이전 비교 작업: {value.selected_comparison.baseline_job_id} ·
         레시피 {value.selected_comparison.baseline_recipe_version} · 평가 {value.selected_comparison.baseline_score_percent}점</p>
         <p className="small">선택한 비교는 현재 작업보다 이전입니다. 비교 가능한 작업 중 가장 직전인지는 확인하지 않았습니다.</p></div>}
+      <FeedTimingView label="현재 작업" timing={value.recorded.jeyuk_feed_timing} />
+      {value.selected_comparison && <FeedTimingView label="선택한 이전 작업"
+        timing={value.selected_comparison.baseline_jeyuk_feed_timing} />}
       <p>공정 {value.recorded.process_status ?? "미기록"} · 안전 {value.recorded.safety_status ?? "미기록"}
         {" "}· 품질평가 {value.recorded.quality?.score_percent == null ? "현재 유효 평가 없음" : `${value.recorded.quality.score_percent}점`}</p>
       {value.reheat_history_status === "INCONSISTENT" && <p className="warning">추가 가열 이력의 연결을 확인할 수 없습니다.</p>}
