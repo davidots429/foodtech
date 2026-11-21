@@ -171,7 +171,7 @@ class CookingStore(Protocol):
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
-                        record: dict) -> dict: ...
+                        record: dict, expected_epoch: int | None = None) -> dict: ...
     def aggregate(self, pk: str, result_id: str) -> dict | None: ...
     def list_aggregate_results(self, pk: str, limit: int, cursor: str | None) -> dict: ...
     def aggregate_dependencies(self, job_pk: str) -> list[dict]: ...
@@ -510,7 +510,7 @@ class MemoryCookingStore:
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
-                        record: dict) -> dict:
+                        record: dict, expected_epoch: int | None = None) -> dict:
         with self.lock:
             key = (candidate_pk, f"COMPARISON#{record['comparison_id']}")
             for pk, meta, pointer in ((baseline_pk, baseline_meta, baseline_pointer),
@@ -1198,8 +1198,14 @@ class DynamoCookingStore:
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
-                        record: dict) -> dict:
-        operations = []
+                        record: dict, expected_epoch: int | None = None) -> dict:
+        history_pk = _history_pk(candidate_pk)
+        if _history_pk(baseline_pk) != history_pk:
+            raise ValueError('comparison owner mismatch')
+        subject = history_pk.removeprefix('SCOPE#USER#').removesuffix('#JOBS')
+        if not subject:
+            raise ValueError('invalid comparison owner')
+        operations = [self._derived_owner_guard(subject, expected_epoch)]
         for pk, meta, pointer in ((baseline_pk, baseline_meta, baseline_pointer),
                                   (candidate_pk, candidate_meta, candidate_pointer)):
             operations.extend([

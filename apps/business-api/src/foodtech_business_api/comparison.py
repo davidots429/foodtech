@@ -100,7 +100,8 @@ async def _calculate(session, store, candidate_id: str, baseline_id: str) -> dic
               "recipe_improvement_status": "NOT_EVALUATED", "provenance": "SYNTHETIC"}
     try:
         return await _store_call(store, store.save_comparison, baseline_pk, candidate_pk,
-                                 baseline_meta, candidate_meta, baseline_pointer, candidate_pointer, record)
+                                 baseline_meta, candidate_meta, baseline_pointer, candidate_pointer, record,
+                                 getattr(session, 'epoch', None))
     except Conflict as exc:
         raise HTTPException(409, "평가 또는 안전 상태가 변경되었습니다. 다시 비교해 주세요.") from exc
 
