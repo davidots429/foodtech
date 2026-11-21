@@ -40,8 +40,12 @@ class CapsuleWriter:
         The locator must not be returned externally until that transaction succeeds.
         """
         locator = secrets.token_urlsafe(32)
+        return locator, self.creation_action(locator)
+
+    def creation_action(self, locator: str) -> dict:
+        """Build the conditional META put for a previously generated locator."""
         self._locator(locator)
-        return locator, {"Put": {"TableName": self.table_name,
+        return {"Put": {"TableName": self.table_name,
             "Item": self._item({"pk": locator, "sk": "META", "state": "ACTIVE", "revision": 1}),
             "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}}
 

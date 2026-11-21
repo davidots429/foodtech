@@ -45,7 +45,7 @@ def main():
         raise SystemExit("Synthetic identifiers already exist")
     auth_created = vault_created = capsule_created = False
     try:
-        auth.put_item(Item={**auth_key, "epoch": 0, "provenance": "SYNTHETIC"},
+        auth.put_item(Item={**auth_key, "epoch": 0, "vault_id": vault_id, "provenance": "SYNTHETIC"},
                       ConditionExpression=Attr("pk").not_exists())
         auth_created = True
         vault.put_item(Item={**vault_key, "state": "ACTIVE", "revision": 2,
@@ -58,7 +58,7 @@ def main():
                                 capsule_table=CAPSULE, approved_purposes=frozenset({"BILLING"}), client=client)
         def call(request_id, vault_revision, capsule_revision=1):
             store.lock_and_register(subject=subject, request_id=request_id,
-                snapshot=VaultSnapshot(subject, vault_id, vault_revision, locator, capsule_revision),
+                snapshot=VaultSnapshot(subject, vault_id, vault_revision, locator, capsule_revision, 0),
                 encrypted_user_id=b"synthetic-ciphertext-id", encrypted_capsule_locator=b"synthetic-ciphertext-locator",
                 requested_at="2026-11-21T00:00:00Z", policy_version="synthetic-v1")
         try:
