@@ -16,9 +16,7 @@ from foodtech_contracts import decode_record, stream_key
 from .aws_flow import DynamoOrderedIngestor
 from .ingestion_quarantine import IngestionQuarantine, failure as ingestion_failure
 
-INSTANCES = ("mockprofile-300-a-001", "mockprofile-300-b-001", "mockprofile-300-c-001",
-             "mockprofile-301-a-001", "mockprofile-301-b-001", "mockprofile-301-c-001",
-             "mockprofile-302-a-001", "mockprofile-302-b-001", "mockprofile-302-c-001")
+INSTANCES = tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("300", "301", "302", "310", "320") for vendor in "abc")
 TOPIC = "foodtech/synthetic/mockprofile-300-a-001/observations"
 
 
@@ -59,7 +57,7 @@ def accept_message(client, message, ingestor, quarantine, client_id, instance=IN
             raise ValueError("ingestion quarantine bucket is required for malformed input")
         quarantine.preserve_mqtt(bytes(message.payload), topic=message.topic, client_id=client_id,
                                  reason=invalid[0], missing=invalid[1],
-                                 profile_id="mockprofile-302" if csv_source else "mockprofile-301" if xml else "mockprofile-300")
+                                 profile_id="-".join(instance.split("-")[:2]))
         stream = None
     else:
         record = record if record is not None else decode_record(raw)

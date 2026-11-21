@@ -31,11 +31,8 @@ internal static class MqttMock
         var instance = root.GetProperty("instanceId").GetString();
         var profile = root.GetProperty("profileId").GetString();
         if (root.GetProperty("provenance").GetString() != "SYNTHETIC" ||
-            profile is not ("mockprofile-300" or "mockprofile-301" or "mockprofile-302") ||
-            instance is not ("mockprofile-300-a-001" or "mockprofile-300-b-001" or "mockprofile-300-c-001" or
-                             "mockprofile-301-a-001" or "mockprofile-301-b-001" or "mockprofile-301-c-001" or
-                             "mockprofile-302-a-001" or "mockprofile-302-b-001" or "mockprofile-302-c-001") ||
-            !instance.StartsWith(profile + "-", StringComparison.Ordinal))
+            profile is not ("mockprofile-300" or "mockprofile-301" or "mockprofile-302" or "mockprofile-310" or "mockprofile-320") ||
+            instance is null || !new[] { $"{profile}-a-001", $"{profile}-b-001", $"{profile}-c-001" }.Contains(instance))
             throw new InvalidDataException("Only the approved synthetic MQTT profile is supported.");
         var topic = $"foodtech/synthetic/{instance}/observations";
         var b = instance.EndsWith("-b-001", StringComparison.Ordinal);
@@ -76,6 +73,13 @@ internal static class MqttMock
                 item.GetProperty(b ? "device_id" : c ? "DeviceId" : "deviceId").GetString() != instance ||
                 item.GetProperty(b ? "sequence_number" : c ? "SeqNo" : "sequenceNumber").GetInt32() != index + 1)
                 throw new InvalidDataException("Invalid synthetic MQTT record identity or sequence.");
+            if (profile is "mockprofile-310" or "mockprofile-320") {
+                var equipment = b ? item.GetProperty("ext_equipment_type").GetString() : c ?
+                    item.GetProperty("Extension").GetProperty("EquipmentType").GetString() :
+                    item.GetProperty("extensions").GetProperty("equipmentType").GetString();
+                if (equipment != (profile == "mockprofile-310" ? "STIR_FRYER" : "COMBI_OVEN"))
+                    throw new InvalidDataException("Equipment type does not match the synthetic profile.");
+            }
             return item.GetRawText();
         }).ToArray();
         if (records.Length is < 1 or > 5000) throw new InvalidDataException("Invalid fixture length.");
