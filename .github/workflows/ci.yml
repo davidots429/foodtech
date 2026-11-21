@@ -43,6 +43,7 @@ jobs:
       - run: uv run --no-sync python -m unittest discover -s apps/credential-registration/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/collection-adapter/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/standardization-worker/tests -v
+      - run: uv run --no-sync python -m unittest discover -s tests/security -v
 
   mock:
     runs-on: ubuntu-latest
