@@ -260,7 +260,7 @@ class RegistryTests(unittest.TestCase):
                 return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
         class Guard:
             def __init__(self): self.values = iter([True, False])
-            def verify(self, _execution): return next(self.values)
+            def verify_scoped(self, _execution, _jobs, _sources): return next(self.values)
         model = FakeOllama()
         args = dict(evidence=Evidence("COMPLETE", "PASSED", True, False),
                     baseline=JeyukBaseline("SMALL", Decimal("200"), Decimal("30"), 480, Decimal("1.8"), 60, 60, False),
@@ -280,7 +280,8 @@ class RegistryTests(unittest.TestCase):
         wrong_scope = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
         self.assertEqual((wrong_scope.state, wrong_scope.error_code, model.calls),
                          ("DENIED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 0))
-        self.service.recipe_source_guard = Guard()
+        self.service.recipe_source_guard = BoundRecipeSourceGuard(Guard(), self.registry.execution('recipe-jeyuk'),
+                                                                  ('a', 'b'), ('c', 'd'))
         changed = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
         self.assertEqual((changed.state, changed.error_code, model.calls), ("FAILED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 1))
         self.assertIsNone(changed.response_text)
@@ -302,6 +303,33 @@ class RegistryTests(unittest.TestCase):
             evidence=Evidence("UNKNOWN", "NOT_MEASURED", None, None), **args))
         self.assertEqual(missing.state, "INDETERMINATE")
         self.assertEqual(self.registry.execution_state("recipe-3"), "PENDING")
+
+    def test_bound_source_guard_allows_matching_internal_recipe_execution(self):
+        self.recipe_execution()
+        execution = Execution('recipe-bound', 'tenant-a', Feature.RECIPE_CORRECTION,
+                              'synthetic-tier1', None, 'SYNTHETIC', Decimal('0'))
+        self.registry.create_execution(execution)
+        checks = []
+        class ScopedGuard:
+            def verify_scoped(self, value, jobs, sources):
+                checks.append((value, jobs, sources))
+                return True
+        jobs, sources = ('job-current', 'job-prior'), ('source-current', 'source-prior')
+        self.service.recipe_source_guard = BoundRecipeSourceGuard(ScopedGuard(), execution, jobs, sources)
+        class FakeOllama:
+            calls = 0
+            async def structured_chat(self, *_args):
+                self.calls += 1
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        model = FakeOllama()
+        result = asyncio.run(self.service.execute_local_recipe(Caller('business-api', 'tenant-a'), 'recipe-bound',
+            evidence=Evidence('COMPLETE', 'PASSED', True, False),
+            baseline=JeyukBaseline('SMALL', Decimal('200'), Decimal('30'), 480, Decimal('1.8'), 60, 60, False),
+            context={}, ollama=model))
+        self.assertEqual((result.state, model.calls), ('SUCCEEDED', 1))
+        self.assertEqual(len(checks), 2)
+        self.assertTrue(all(value == execution and job_scope == jobs and source_scope == sources
+                            for value, job_scope, source_scope in checks))
 
     def test_general_execution_paths_cannot_bypass_recipe_output_guard(self):
         self.registry.create_execution(Execution("recipe-guard", "tenant-a", Feature.RECIPE_CORRECTION,
