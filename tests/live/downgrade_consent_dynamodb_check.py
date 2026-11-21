@@ -1,17 +1,21 @@
 """Opt-in consent transaction check using only synthetic registry records."""
 import json
 import os
+import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch
 from uuid import uuid4
 
 import boto3
+import httpx
 
 from foodtech_ai_gateway import downgrade_flow
 from foodtech_ai_gateway.downgrade_flow import DowngradeError, DowngradeFlow, NOTICE_VERSION
 from foodtech_ai_gateway.policy import Caller, Execution, Feature, GatewayPolicy, Model, Tier, UNCONFIGURED_TIER1
 from foodtech_ai_gateway.registry import DynamoRegistry
+from foodtech_ai_gateway.main import app
+from foodtech_ai_gateway.service import GatewayService
 
 TABLE = "foodtech-ai-execution-registry-dev"
 
@@ -30,7 +34,7 @@ def main():
     comparison = uuid4().hex + uuid4().hex
     period = "2097-11"
     registry = DynamoRegistry(TABLE, period, resource=session.resource("dynamodb"),
-                              client=session.client("dynamodb"), local_models={target})
+                              client=session.client("dynamodb"), local_models={target, source})
     keys = []
     def mark(kind, ident): keys.append({"pk": f"{kind}#{ident}", "sk": "META"})
     try:
@@ -88,6 +92,33 @@ def main():
             assert (registry.execution(unconfigured_child).prior_job_id,
                     registry.execution(unconfigured_child).prior_job_version) == (prior_job_id, 3)
             assert GatewayPolicy(registry).authorize(Caller("business-api", tenant), unconfigured_child).allowed
+            table.update_item(Key={"pk": f"MODEL#{source}", "sk": "META"},
+                              UpdateExpression="SET #s = :active ADD #v :one",
+                              ExpressionAttributeNames={"#s": "state", "#v": "version"},
+                              ExpressionAttributeValues={":active": "ACTIVE", ":one": 1})
+            app.state.mtls_listener = True
+            app.state.gateway_service = GatewayService(registry)
+            async def request_configured():
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway") as client:
+                    return await client.post("/internal/ai/recipe-requests", json={
+                        "tenant_id": tenant, "job_id": job_id, "job_version": 7,
+                        "prior_job_id": prior_job_id, "prior_job_version": 3})
+            try:
+                with patch.dict(os.environ, {"FOODTECH_RECIPE_TIER1_MODEL_ID": source}), \
+                        patch("foodtech_ai_gateway.main._trial_limits", return_value=None):
+                    response = asyncio.run(request_configured())
+                assert response.status_code == 201
+                configured_id = response.json()["execution_id"]
+                mark("EXEC", configured_id)
+                assert response.json()["reason"] == "RECOMMENDATION_EVIDENCE_UNVERIFIED"
+                assert response.json()["execution_available"] is False
+                configured = registry.execution(configured_id)
+                assert (configured.model_id, configured.prior_job_id, configured.prior_job_version) == (source, prior_job_id, 3)
+                assert registry.execution_state(configured_id) == "PENDING"
+                assert registry.budget(tenant, "ollama").calls_remaining == 3
+            finally:
+                del app.state.mtls_listener
+                del app.state.gateway_service
     finally:
         for key in reversed(keys): table.delete_item(Key=key)
         if any(table.get_item(Key=key, ConsistentRead=True).get("Item") for key in keys):
