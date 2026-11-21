@@ -238,9 +238,28 @@ def read_collection_completion(table_name: str, batch_id: str) -> dict:
                 raise ValueError("Jeyuk collection evidence exceeds supported size")
         return items
 
+    def revision() -> int | None:
+        item = table.get_item(Key={"pk": pk, "sk": "SOURCE#REVISION"}, ConsistentRead=True).get("Item")
+        if item is None:
+            return None
+        value = item.get("revision")
+        if isinstance(value, bool) or not isinstance(value, (int, Decimal)) or \
+                (isinstance(value, Decimal) and not value.is_finite()) or \
+                not 1 <= value <= MAX_SAMPLES or value != int(value):
+            raise ValueError("invalid Jeyuk source revision")
+        return int(value)
+
+    before = revision()
     receipts = query("COLLECTION#RECEIPT#", 100)
     if not receipts:
         return {"status": "NOT_RECORDED", "raw_count": None}
     raws = query("RAW#", MAX_SAMPLES)
+    after = revision()
+    if before != after:
+        return {"status": "CHANGED_DURING_READ", "raw_count": len(raws)}
+    # Legacy records have no atomic revision. A mixed legacy/new stream also
+    # cannot establish a complete tracked history when its count differs.
+    if before is None or before != len(raws):
+        return {"status": "REVISION_UNVERIFIED", "raw_count": len(raws)}
     matched = any(matches_jeyuk_snapshot(receipt, batch_id, raws) for receipt in receipts)
     return {"status": "MATCHED_AT_READ" if matched else "NOT_MATCHED", "raw_count": len(raws)}

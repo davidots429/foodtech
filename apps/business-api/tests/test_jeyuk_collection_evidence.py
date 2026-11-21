@@ -25,7 +25,12 @@ class EvidenceReadTests(unittest.TestCase):
         receipt = tracker.finish(cursor=3, complete=True, explicit=True)
         class Table:
             name = "table"
-            def __init__(self): self.calls = 0; self.meta = self; self.client = self
+            def __init__(self):
+                self.calls = 0; self.meta = self; self.client = self; self.revisions = [3, 3]
+            def get_item(self, **kwargs):
+                assert kwargs["ConsistentRead"]
+                value = self.revisions.pop(0)
+                return {"Item": {"revision": value}} if value is not None else {}
             def get_paginator(self, operation):
                 assert operation == "query"
                 return self
@@ -42,5 +47,12 @@ class EvidenceReadTests(unittest.TestCase):
         with patch("foodtech_business_api.jeyuk_source_evidence.boto3.Session", Session):
             self.assertEqual(read_collection_completion("table", "evidence"),
                              {"status": "MATCHED_AT_READ", "raw_count": 3})
-            rows.append({**rows[-1], "sk": "RAW#000004"})
+            rows[1] = {**rows[1], "raw": rows[1]["raw"] + " "}
+            table.revisions = [3, 3]
             self.assertEqual(read_collection_completion("table", "evidence")["status"], "NOT_MATCHED")
+            table.revisions = [3, 4]
+            self.assertEqual(read_collection_completion("table", "evidence")["status"], "CHANGED_DURING_READ")
+            table.revisions = [None, None]
+            self.assertEqual(read_collection_completion("table", "evidence")["status"], "REVISION_UNVERIFIED")
+            table.revisions = [2, 2]
+            self.assertEqual(read_collection_completion("table", "evidence")["status"], "REVISION_UNVERIFIED")

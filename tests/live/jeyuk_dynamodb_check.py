@@ -5,6 +5,7 @@ Uses existing development resources and removes one unique synthetic fixture.
 
 import argparse
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import os
@@ -146,6 +147,22 @@ def main(*, mock_wire: bool = False) -> int:
                 raise AssertionError("Collected raw samples do not match the terminal receipt")
             if read_collection_completion(DATA_TABLE, fixture_id) != {"status": "MATCHED_AT_READ", "raw_count": expected_count}:
                 raise AssertionError("Business API could not verify the stored receipt")
+            original = raws[0]["raw"]
+            ingestor.ingest(original)
+            current = table.get_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"}, ConsistentRead=True)["Item"]
+            if int(current["revision"]) != expected_count:
+                raise AssertionError("Duplicate input incorrectly advanced source revision")
+            altered = json.loads(original)
+            altered["surfaceCelsius"] = 1
+            try:
+                ingestor.ingest(json.dumps(altered))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Changed raw input was not rejected")
+            current = table.get_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"}, ConsistentRead=True)["Item"]
+            if int(current["revision"]) != expected_count:
+                raise AssertionError("Conflicting input incorrectly advanced source revision")
         for _ in range(8):
             page = sqs.receive_message(QueueUrl=ordered_url, MaxNumberOfMessages=10,
                                        WaitTimeSeconds=1, VisibilityTimeout=30)
@@ -179,6 +196,21 @@ def main(*, mock_wire: bool = False) -> int:
                                "raw_sk": "RAW#000030", "fixture_id": fixture_id,
                                "second": 30})["replayed"]:
             raise AssertionError("FIFO replay did not reuse the stored assessment")
+        if mock_wire:
+            last = table.get_item(Key={"pk": stream_pk, "sk": "RAW#000030"}, ConsistentRead=True)["Item"]
+            later = json.loads(last["raw"])
+            later["second"] = 31
+            payload = json.dumps(later, separators=(",", ":"))
+            def concurrent_ingest(_):
+                return DynamoJeyukIngestor(DATA_TABLE, ordered_url).ingest(payload)
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(concurrent_ingest, range(4)))
+            revision = table.get_item(Key={"pk": stream_pk, "sk": "SOURCE#REVISION"}, ConsistentRead=True)["Item"]
+            if int(revision["revision"]) != 31:
+                raise AssertionError("Concurrent duplicate writes advanced source revision incorrectly")
+            changed = read_collection_completion(DATA_TABLE, fixture_id)
+            if changed != {"status": "NOT_MATCHED", "raw_count": 31}:
+                raise AssertionError("Later source addition did not invalidate the receipt match")
         print(json.dumps({"processed": len(processed), "warning_at": 5, "failure_at": 30,
                           "replay": "REPLAYED", "state_second": int(state["last_second"])}), flush=True)
         return 0
