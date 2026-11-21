@@ -151,6 +151,18 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(self.tier.deletion_index_candidates.call_count, 1)
         self.capture.ensure_ready(**self.scope)
 
+    def test_observation_waits_for_all_pages_to_be_verified(self):
+        self.tier.deletion_index_candidates.side_effect = [
+            {'queue_sorts': ['date#a'], 'next_cursor': 'APPLICATION#a'},
+            {'queue_sorts': ['date#b'], 'next_cursor': None}]
+        self.capture.capture_page(**self.scope, limit=1)
+        self.capture.capture_page(**self.scope, limit=1)
+        page_key = (self.scope['subject'], self.scope['request_id'], 'TIER_INDEX_PAGE_000000000002')
+        del self.progress.items[page_key]
+        with self.assertRaises(ValueError):
+            self.capture.observe_one(**self.scope, index=0)
+        self.tier.observe_pending_index.assert_not_called()
+
     def test_many_pages_have_bounded_independent_checkpoints(self):
         pages = 100
         def next_page(subject, request, limit, cursor):

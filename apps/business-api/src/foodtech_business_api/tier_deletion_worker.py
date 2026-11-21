@@ -107,7 +107,7 @@ class TierIndexCapture:
         head = self._head(entry)
         if not head['complete']:
             raise ValueError('tier index capture is not complete')
-        cursor, count, pages = None, 0, []
+        cursor, count = None, 0
         for number in range(1, head['pages'] + 1):
             page = self._page(self._load(subject, request_id, self._page_domain(number)))
             if page['start'] != cursor or (number < head['pages'] and page['next'] is None) or \
@@ -115,23 +115,25 @@ class TierIndexCapture:
                 raise ValueError('invalid tier index page sequence')
             cursor = page['next']
             count += len(page['keys'])
-            pages.append(page['keys'])
+            yield page['keys']
         if count != head['count']:
             raise ValueError('invalid tier index page count')
-        return pages
 
     def observe_one(self, *, subject, request_id, index):
         if type(index) is not int or index < 0:
             raise ValueError('invalid tier index observation')
-        pages = self._verified_pages(subject, request_id)
-        for keys in pages:
-            if index < len(keys):
-                result = self.tier_store.observe_pending_index(subject, request_id, keys[index])
-                if result not in {'PRESENT', 'NOT_OBSERVED', 'INCONCLUSIVE'}:
-                    raise ValueError('invalid tier index observation result')
-                return {'observation': result}
-            index -= len(keys)
-        raise ValueError('invalid tier index observation')
+        remaining, candidate = index, None
+        for keys in self._verified_pages(subject, request_id):
+            if candidate is None and remaining < len(keys):
+                candidate = keys[remaining]
+            elif candidate is None:
+                remaining -= len(keys)
+        if candidate is None:
+            raise ValueError('invalid tier index observation')
+        result = self.tier_store.observe_pending_index(subject, request_id, candidate)
+        if result not in {'PRESENT', 'NOT_OBSERVED', 'INCONCLUSIVE'}:
+            raise ValueError('invalid tier index observation result')
+        return {'observation': result}
 
     def observe_and_record(self, *, subject, request_id, index):
         """Persist one bounded observation without declaring deletion complete."""
@@ -158,7 +160,8 @@ class TierIndexCapture:
         return {'index': index, 'observation': observed['observation'], 'version': saved}
 
     def ensure_ready(self, *, subject, request_id):
-        self._verified_pages(subject, request_id)
+        for _ in self._verified_pages(subject, request_id):
+            pass
 
 
 class TierDeletionWorker:
