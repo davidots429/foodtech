@@ -17,7 +17,7 @@ from starlette.requests import Request
 
 from foodtech_ai_gateway.policy import Execution, Feature
 from foodtech_ai_gateway.recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
-from foodtech_ai_gateway.registry import DynamoRegistry
+from foodtech_ai_gateway.registry import DynamoRegistry, RegistryConflict
 from foodtech_business_api import auth as auth_module
 from foodtech_business_api.auth_store import DynamoAuthStore, Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
@@ -154,6 +154,45 @@ def main():
                 raise
         else:
             raise AssertionError('changed source revision passed settlement conditions')
+        # Isolated budget keys avoid modifying any real tenant, provider or project limit.
+        original_limit_id = registry._limit_id
+        registry._limit_id = lambda scope, identifier: original_limit_id(scope, f'synthetic-{suffix}-{identifier}')
+        for scope, identifier in (('TENANT', owner), ('PROVIDER', 'ollama'), ('PROJECT', 'GLOBAL')):
+            limit_id = registry._limit_id(scope, identifier)
+            fields = {'remaining_usd': Decimal('1'), 'period': registry.period}
+            if scope == 'TENANT':
+                fields['calls_remaining'] = 1
+            registry._put_new('LIMIT', limit_id, fields)
+            created.append((registry.table, {'pk': f'LIMIT#{limit_id}', 'sk': 'META'}))
+        execution_key = {'pk': f'EXEC#{execution.execution_id}', 'sk': 'META'}
+        result_key = {'pk': execution_key['pk'], 'sk': 'RESULT'}
+        created.append((registry.table, result_key))
+        registry.table.update_item(Key=execution_key,
+            UpdateExpression='SET #state = :reserved, reserved_provider = :provider ADD #version :one',
+            ExpressionAttributeNames={'#state': 'state', '#version': 'version'},
+            ExpressionAttributeValues={':reserved': 'RESERVED', ':provider': 'ollama', ':one': 1},
+            ConditionExpression=Attr('tenant_id').eq(owner))
+        try:
+            registry.finish(execution.execution_id, succeeded=True, actual_cost_usd=Decimal('0'),
+                            response_text='synthetic', expected_execution=execution, recipe_source_guard=bound)
+        except RegistryConflict:
+            pass
+        else:
+            raise AssertionError('stale source allowed result settlement')
+        if registry.table.get_item(Key=result_key, ConsistentRead=True).get('Item') or \
+                registry.table.get_item(Key=execution_key, ConsistentRead=True)['Item']['state'] != 'RESERVED':
+            raise AssertionError('failed source condition partially committed settlement')
+        for scope, identifier in (('TENANT', owner), ('PROVIDER', 'ollama'), ('PROJECT', 'GLOBAL')):
+            key = {'pk': f'LIMIT#{registry._limit_id(scope, identifier)}', 'sk': 'META'}
+            if int(registry.table.get_item(Key=key, ConsistentRead=True)['Item']['version']) != 1:
+                raise AssertionError('failed source condition changed a synthetic limit')
+        sources.update_item(Key={'pk': f'JEYUK#{source_ids[1]}', 'sk': 'SOURCE#REVISION'},
+                            UpdateExpression='SET revision = :original', ExpressionAttributeValues={':original': 2})
+        registry.finish(execution.execution_id, succeeded=True, actual_cost_usd=Decimal('0'),
+                        response_text='synthetic', expected_execution=execution, recipe_source_guard=bound)
+        if registry.table.get_item(Key=execution_key, ConsistentRead=True)['Item']['state'] != 'SUCCEEDED' or \
+                not registry.table.get_item(Key=result_key, ConsistentRead=True).get('Item'):
+            raise AssertionError('valid source settlement did not commit')
         print('synthetic source, timeline and job version recheck verified')
     finally:
         for table, key in reversed(created): table.delete_item(Key=key)

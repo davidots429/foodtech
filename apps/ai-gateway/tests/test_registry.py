@@ -192,6 +192,15 @@ class RegistryTests(unittest.TestCase):
                                  response_text='synthetic', expected_execution=execution)
         self.assertIsNone(self.registry.execution_result('run-1'))
 
+    def test_settlement_rejects_untrusted_guard_before_writing(self):
+        execution = self.registry.execution('run-1')
+        before = len(self.client.calls)
+        with self.assertRaises(ValueError):
+            self.registry.finish('run-1', succeeded=True, actual_cost_usd=Decimal('0'),
+                                 response_text='synthetic', expected_execution=execution,
+                                 recipe_source_guard=SimpleNamespace())
+        self.assertEqual(len(self.client.calls), before)
+
     def recipe_execution(self):
         self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
                                          True, NOW, NOW))

@@ -18,6 +18,7 @@ from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
 
 from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, Model, Tier, UNCONFIGURED_TIER1
+from .recipe_source_guard import BoundRecipeSourceGuard
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -455,12 +456,17 @@ class DynamoRegistry:
 
     def finish(self, execution_id: str, *, succeeded: bool, actual_cost_usd: Decimal,
                response_text: str | None = None, error_code: str | None = None,
-               expected_execution: Execution | None = None) -> None:
+               expected_execution: Execution | None = None,
+               recipe_source_guard: BoundRecipeSourceGuard | None = None) -> None:
         """Persist result, settle cost and terminal state in one transaction."""
         if succeeded != (response_text is not None) or (not succeeded and not error_code):
             raise ValueError("success requires a response; failure requires an error code")
         if response_text is not None and len(response_text.encode("utf-8")) > 16384:
             raise ValueError("model response exceeds the first-flow limit")
+        if recipe_source_guard is not None and (not succeeded or expected_execution is None or
+                type(recipe_source_guard) is not BoundRecipeSourceGuard or
+                recipe_source_guard.execution != expected_execution or expected_execution.execution_id != execution_id):
+            raise ValueError('invalid recipe settlement guard')
         item = self._get("EXEC", execution_id)
         if not item or item["state"] != "RESERVED" or actual_cost_usd < 0:
             raise RegistryConflict("execution is not reserved or actual cost is invalid")
@@ -521,6 +527,11 @@ class DynamoRegistry:
                             "ConditionExpression": condition,
                             "ExpressionAttributeNames": {"#v": "version"},
                             "ExpressionAttributeValues": self._av(values)}})
+        if recipe_source_guard is not None:
+            checks = recipe_source_guard.settlement_checks()
+            if any(check['ConditionCheck']['TableName'] == self.table_name for check in checks):
+                raise ValueError('recipe source tables must differ from execution registry')
+            changes.extend(checks)
         try:
             token = _transaction_token(self.table_name, "finish", execution_id, changes)
             self.client.transact_write_items(TransactItems=changes, ClientRequestToken=token)

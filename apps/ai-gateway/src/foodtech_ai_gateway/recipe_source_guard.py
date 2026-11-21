@@ -42,7 +42,7 @@ class BoundRecipeSourceGuard:
         return self.guard.verify_scoped(execution, self.job_partitions, self.source_partitions) is True
 
     def settlement_checks(self):
-        if not isinstance(self.guard, DynamoRecipeSourceGuard):
+        if type(self.guard) is not DynamoRecipeSourceGuard:
             raise ValueError('DynamoDB source guard is required')
         return self.guard.settlement_checks(self.execution, self.job_partitions, self.source_partitions)
 
