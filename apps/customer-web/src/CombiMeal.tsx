@@ -346,7 +346,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
           (meal.transition.source?.raw_sha256 !== meal.meal.source.raw_sha256 || meal.transition.source?.phase !== "TRANSITION"))}
           onClick={recordStep}>{mealSteps[meal.meal.status].label}</button></div>}
       {meal.meal.status === "MODE_TRANSITION" && <div><p>합성 표본으로 전환 조건을 시험합니다. 전환 시작 시각 이후 30초 또는 180초가 경과해야 합니다.</p>
-        {meal.meal.source && <button type="button" disabled={busy} onClick={() => assessSource("transition")}>연결된 전환 원표본 판정</button>}{" "}
+        {meal.meal.source && !meal.transition.samples?.length && <button type="button" disabled={busy} onClick={() => assessSource("transition")}>연결된 전환 원표본 판정</button>}{" "}
         {!meal.meal.source && <><button type="button" disabled={busy} onClick={() => simulateTransition(true)}>습도 지원 합성 표본</button>{" "}
         <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></>}</div>}
       {meal.meal.status === "MACKEREL_UNLOADED" && <div><p>인양 후 제품 {Math.min(3, products.length)}개를 선택해 각 75°C 합성 표본을 60초간 확인합니다. 인양 후 60초가 경과해야 합니다.</p>
