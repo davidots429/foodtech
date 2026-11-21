@@ -48,6 +48,15 @@ def main():
         store.decide(customer, app, admin, 'REJECTED', 'now', 0)
         if store.current(customer)['status'] != 'REJECTED':
             raise AssertionError('valid review not saved')
+        cursor, inventory = None, []
+        while True:
+            page = store.inventory_keys(customer, 1, cursor)
+            inventory.extend(page['keys'])
+            cursor = page['next_cursor']
+            if cursor is None:
+                break
+        if set(inventory) != {key['sk'] for key in keys} or store.inventory_keys(admin, 10, None)['keys']:
+            raise AssertionError('tier history inventory incomplete or cross-owner')
     finally:
         for key in keys:
             table.delete_item(Key=key)

@@ -1,6 +1,7 @@
 """Demo tier applications; the full business number is never persisted."""
 
 import os
+import re
 import threading
 from functools import lru_cache
 from typing import Protocol
@@ -18,12 +19,20 @@ class TierStore(Protocol):
     def current(self, subject: str) -> dict | None: ...
     def submit(self, subject: str, item: dict, expected_epoch: int = 0) -> None: ...
     def pending(self, limit: int = 20) -> list[dict]: ...
+    def inventory_keys(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def decide(self, subject: str, application_id: str, reviewer: str,
                decision: str, reviewed_at: str, reviewer_epoch: int = 0) -> dict: ...
 
 
 def _current(item: dict) -> dict:
     return {key: value for key, value in item.items() if key not in {"pk", "sk", "queue_status", "queue_sort"}}
+
+
+def _inventory_args(subject: str, limit: int, cursor: str | None) -> None:
+    if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
+            type(limit) is not int or not 1 <= limit <= 100 or (cursor is not None and
+            (not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048)):
+        raise ValueError('invalid tier inventory scope')
 
 
 class MemoryTierStore:
@@ -53,6 +62,14 @@ class MemoryTierStore:
             values = [item for (_, sk), item in self.items.items()
                       if sk == "CURRENT" and item.get("queue_status") == "REQUESTED"]
             return [_current(item) for item in sorted(values, key=lambda row: row["queue_sort"])[:limit]]
+
+    def inventory_keys(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _inventory_args(subject, limit, cursor)
+        with self.lock:
+            pk = f'TENANT#{subject}'
+            keys = sorted(sk for (item_pk, sk) in self.items if item_pk == pk and (cursor is None or sk > cursor))
+            page = keys[:limit]
+            return {'keys': page, 'next_cursor': page[-1] if len(keys) > limit else None}
 
     def decide(self, subject: str, application_id: str, reviewer: str,
                decision: str, reviewed_at: str, reviewer_epoch: int = 0) -> dict:
@@ -135,6 +152,26 @@ class DynamoTierStore:
         page = self.table.query(IndexName="PendingRequests", KeyConditionExpression=Key("queue_status").eq("REQUESTED"),
                                 Limit=limit, ScanIndexForward=True)
         return [_current(item) for item in page.get("Items", [])]
+
+    def inventory_keys(self, subject: str, limit: int, cursor: str | None) -> dict:
+        """Internal key inventory; the caller must authorize and protect its scope."""
+        _inventory_args(subject, limit, cursor)
+        pk = f'TENANT#{subject}'
+        args = {'KeyConditionExpression': Key('pk').eq(pk), 'ProjectionExpression': 'pk, sk',
+                'ConsistentRead': True, 'Limit': limit}
+        if cursor is not None:
+            args['ExclusiveStartKey'] = {'pk': pk, 'sk': cursor}
+        page = self.table.query(**args)
+        keys = []
+        for row in page.get('Items', []):
+            if row.get('pk') != pk or not isinstance(row.get('sk'), str) or not 1 <= len(row['sk']) <= 2048:
+                raise ValueError('invalid tier inventory record')
+            keys.append(row['sk'])
+        next_key = page.get('LastEvaluatedKey')
+        if next_key is not None and (not isinstance(next_key, dict) or set(next_key) != {'pk', 'sk'} or
+                next_key['pk'] != pk or not isinstance(next_key['sk'], str) or not 1 <= len(next_key['sk']) <= 2048):
+            raise ValueError('invalid tier inventory checkpoint')
+        return {'keys': keys, 'next_cursor': next_key['sk'] if next_key is not None else None}
 
     def decide(self, subject: str, application_id: str, reviewer: str,
                decision: str, reviewed_at: str, reviewer_epoch: int = 0) -> dict:

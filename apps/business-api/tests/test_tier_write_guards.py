@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from boto3.dynamodb.types import TypeSerializer
-from foodtech_business_api.tier_store import DynamoTierStore
+from foodtech_business_api.tier_store import DynamoTierStore, MemoryTierStore
 
 
 class TierGuardTests(unittest.TestCase):
@@ -42,6 +42,34 @@ class TierGuardTests(unittest.TestCase):
         self.store.auth_table_name = ''
         with self.assertRaises(ValueError):
             self.store.submit('customer', self.item)
+
+    def test_inventory_is_scoped_key_only_and_paginated(self):
+        store = MemoryTierStore()
+        store.submit('alice', {**self.item, 'business_name': 'private'})
+        store.decide('alice', 'app', 'admin', 'REJECTED', 'now')
+        store.submit('bob', self.item)
+        first = store.inventory_keys('alice', 2, None)
+        second = store.inventory_keys('alice', 2, first['next_cursor'])
+        self.assertEqual(first['keys'] + second['keys'], ['APPLICATION#app', 'CURRENT', 'REVIEW#app'])
+        self.assertIsNone(second['next_cursor'])
+        self.assertNotIn('private', repr(first))
+        with self.assertRaises(ValueError):
+            store.inventory_keys('alice#bob', 2, None)
+
+    def test_dynamo_inventory_uses_consistent_tenant_partition(self):
+        self.store.table = Mock()
+        self.store.table.query.return_value = {
+            'Items': [{'pk': 'TENANT#alice', 'sk': 'CURRENT'}],
+            'LastEvaluatedKey': {'pk': 'TENANT#alice', 'sk': 'CURRENT'}}
+        result = self.store.inventory_keys('alice', 1, 'APPLICATION#old')
+        self.assertEqual(result, {'keys': ['CURRENT'], 'next_cursor': 'CURRENT'})
+        args = self.store.table.query.call_args.kwargs
+        self.assertTrue(args['ConsistentRead'])
+        self.assertEqual(args['ProjectionExpression'], 'pk, sk')
+        self.assertEqual(args['ExclusiveStartKey'], {'pk': 'TENANT#alice', 'sk': 'APPLICATION#old'})
+        self.store.table.query.return_value['Items'][0]['pk'] = 'TENANT#bob'
+        with self.assertRaises(ValueError):
+            self.store.inventory_keys('alice', 1, None)
 
 
 if __name__ == '__main__':
