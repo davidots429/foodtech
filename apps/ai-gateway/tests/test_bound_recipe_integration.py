@@ -13,7 +13,7 @@ from foodtech_contracts.recommendation_guard import Evidence
 from foodtech_contracts.recommendation_output import JeyukBaseline
 
 import test_recipe_source_guard as source_fixture
-from test_registry import AtomicClient, MemoryResource
+from test_registry import AtomicClient, MemoryResource, TransactionCanceledException
 
 
 class BoundRecipeIntegrationTests(unittest.TestCase):
@@ -22,8 +22,9 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
         self.source.setUp()
         self.execution = self.source.execution
         resource = MemoryResource()
+        client = AtomicClient(resource.table)
         self.registry = DynamoRegistry('synthetic', '2026-11', resource=resource,
-                                       client=AtomicClient(resource.table), local_models={'model'})
+                                       client=client, local_models={'model'})
         now = datetime.now(timezone.utc)
         self.registry.create_model(Model('model', 'ollama', Tier.TIER_1, 'ACTIVE', True, True, now, now))
         self.registry.create_execution(self.execution)
@@ -34,6 +35,16 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
                 f'SCOPE#USER#tenant-a#JOB#{self.source.prior}')
         self.guard = BoundRecipeSourceGuard(self.source.guard, self.execution, jobs,
                                            ('JEYUK#batch-current', 'JEYUK#batch-prior'))
+        original_transact = client.transact_write_items
+        def transact(*, TransactItems, ClientRequestToken):
+            source_checks = [item for item in TransactItems if 'ConditionCheck' in item and
+                             item['ConditionCheck']['TableName'] != self.registry.table_name]
+            if source_checks:
+                if len(source_checks) != 6 or not self.guard.verify(self.execution):
+                    raise TransactionCanceledException()
+                TransactItems = [item for item in TransactItems if item not in source_checks]
+            return original_transact(TransactItems=TransactItems, ClientRequestToken=ClientRequestToken)
+        client.transact_write_items = transact
         self.service = GatewayService(self.registry, recipe_source_guard=self.guard)
 
     def invoke(self, model):
@@ -70,7 +81,7 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
                 execution['version'] += 1
                 return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
         result = self.invoke(Model())
-        self.assertEqual((result.state, result.error_code), ('FAILED', 'EXECUTION_CHANGED_RECONCILIATION_REQUIRED'))
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED'))
         self.assertIsNone(result.response_text)
         self.assertIsNone(self.registry.execution_result('exec'))
         self.assertEqual(self.registry.execution_state('exec'), 'RESERVED')
@@ -87,9 +98,25 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
             async def structured_chat(self, *_):
                 return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
         result = self.invoke(Model())
-        self.assertEqual((result.state, result.error_code), ('FAILED', 'EXECUTION_CHANGED_RECONCILIATION_REQUIRED'))
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED'))
         self.assertIsNone(result.response_text)
         self.assertIsNone(self.registry.execution_result('exec'))
+
+    def test_source_revision_change_immediately_before_settlement_is_rejected(self):
+        original_finish = self.registry.finish
+        def racing_finish(*args, **kwargs):
+            source = self.source.resource.tables['foodtech-data-flow-dev']
+            source.items[('JEYUK#batch-prior', 'SOURCE#REVISION')]['revision'] += 1
+            return original_finish(*args, **kwargs)
+        self.registry.finish = racing_finish
+        class Model:
+            async def structured_chat(self, *_):
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        result = self.invoke(Model())
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED'))
+        self.assertIsNone(result.response_text)
+        self.assertIsNone(self.registry.execution_result('exec'))
+        self.assertEqual(self.registry.execution_state('exec'), 'RESERVED')
 
 
 if __name__ == '__main__':

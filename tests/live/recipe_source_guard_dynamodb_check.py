@@ -15,14 +15,18 @@ from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 from starlette.requests import Request
 
-from foodtech_ai_gateway.policy import Execution, Feature
+from foodtech_ai_gateway.policy import Caller, Execution, Feature, Model, Tier
+from foodtech_ai_gateway.ollama import OllamaResult
 from foodtech_ai_gateway.recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from foodtech_ai_gateway.registry import DynamoRegistry, RegistryConflict
+from foodtech_ai_gateway.service import GatewayService
 from foodtech_business_api import auth as auth_module
 from foodtech_business_api.auth_store import DynamoAuthStore, Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.recipe_scope import RecipeScopeDenied, resolve_recipe_scope, verify_recipe_sources
 from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
+from foodtech_contracts.recommendation_guard import Evidence
+from foodtech_contracts.recommendation_output import JeyukBaseline
 
 
 def main():
@@ -161,7 +165,7 @@ def main():
             limit_id = registry._limit_id(scope, identifier)
             fields = {'remaining_usd': Decimal('1'), 'period': registry.period}
             if scope == 'TENANT':
-                fields['calls_remaining'] = 1
+                fields['calls_remaining'] = 2
             registry._put_new('LIMIT', limit_id, fields)
             created.append((registry.table, {'pk': f'LIMIT#{limit_id}', 'sk': 'META'}))
         execution_key = {'pk': f'EXEC#{execution.execution_id}', 'sk': 'META'}
@@ -193,6 +197,42 @@ def main():
         if registry.table.get_item(Key=execution_key, ConsistentRead=True)['Item']['state'] != 'SUCCEEDED' or \
                 not registry.table.get_item(Key=result_key, ConsistentRead=True).get('Item'):
             raise AssertionError('valid source settlement did not commit')
+        model_id = 'synthetic-tier1-' + suffix
+        now = datetime.now(timezone.utc)
+        registry.create_model(Model(model_id, 'ollama', Tier.TIER_1, 'ACTIVE', True, True, now, now))
+        created.append((registry.table, {'pk': f'MODEL#{model_id}', 'sk': 'META'}))
+        registry.local_models.add(model_id)
+        class SyntheticModel:
+            async def structured_chat(self, *_):
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        def start_execution():
+            next_execution = replace(execution, execution_id=str(uuid.uuid4()), model_id=model_id)
+            registry.create_execution(next_execution)
+            created.append((registry.table, {'pk': f'EXEC#{next_execution.execution_id}', 'sk': 'META'}))
+            created.append((registry.table, {'pk': f'EXEC#{next_execution.execution_id}', 'sk': 'RESULT'}))
+            next_guard = BoundRecipeSourceGuard(guard, next_execution, scoped.job_partitions, scoped.source_partitions)
+            return next_execution, next_guard
+        def invoke(service, next_execution):
+            return asyncio.run(service.execute_local_recipe(Caller('business-api', owner), next_execution.execution_id,
+                evidence=Evidence('COMPLETE', 'PASSED', True, False),
+                baseline=JeyukBaseline('SMALL', Decimal('200'), Decimal('30'), 480, Decimal('1.8'), 60, 60, False),
+                context={}, ollama=SyntheticModel()))
+        next_execution, next_guard = start_execution()
+        outcome = invoke(GatewayService(registry, recipe_source_guard=next_guard), next_execution)
+        if outcome.state != 'SUCCEEDED':
+            raise AssertionError(f'synthetic guarded gateway failed: {outcome.error_code}')
+        racing_execution, racing_guard = start_execution()
+        original_finish = registry.finish
+        def race_before_settlement(*args, **kwargs):
+            sources.update_item(Key={'pk': f'JEYUK#{source_ids[1]}', 'sk': 'SOURCE#REVISION'},
+                                UpdateExpression='ADD revision :one', ExpressionAttributeValues={':one': 1})
+            return original_finish(*args, **kwargs)
+        registry.finish = race_before_settlement
+        outcome = invoke(GatewayService(registry, recipe_source_guard=racing_guard), racing_execution)
+        if (outcome.state, outcome.error_code, outcome.response_text) != \
+                ('FAILED', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED', None) or \
+                registry.execution_result(racing_execution.execution_id) is not None:
+            raise AssertionError('source race allowed a gateway result')
         print('synthetic source, timeline and job version recheck verified')
     finally:
         for table, key in reversed(created): table.delete_item(Key=key)

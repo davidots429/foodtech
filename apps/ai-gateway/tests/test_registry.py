@@ -278,9 +278,6 @@ class RegistryTests(unittest.TestCase):
             async def structured_chat(self, *_args):
                 self.calls += 1
                 return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
-        class Guard:
-            def __init__(self): self.values = iter([True, False])
-            def verify_scoped(self, _execution, _jobs, _sources): return next(self.values)
         model = FakeOllama()
         args = dict(evidence=Evidence("COMPLETE", "PASSED", True, False),
                     baseline=JeyukBaseline("SMALL", Decimal("200"), Decimal("30"), 480, Decimal("1.8"), 60, 60, False),
@@ -290,7 +287,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual((unavailable.state, unavailable.error_code, model.calls), ("DENIED", "SOURCE_GUARD_UNAVAILABLE", 0))
         self.service.recipe_source_guard = SimpleNamespace(verify=lambda _execution: False)
         stale = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
-        self.assertEqual((stale.state, stale.error_code, model.calls), ("DENIED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 0))
+        self.assertEqual((stale.state, stale.error_code, model.calls), ("DENIED", "SOURCE_SCOPE_UNAVAILABLE", 0))
         other_execution = Execution("other", "tenant-a", Feature.RECIPE_CORRECTION,
                                     "synthetic-tier1", None, "SYNTHETIC", Decimal("0"))
         def unexpected(*_args):
@@ -299,14 +296,7 @@ class RegistryTests(unittest.TestCase):
                                                                   other_execution, ('a', 'b'), ('c', 'd'))
         wrong_scope = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
         self.assertEqual((wrong_scope.state, wrong_scope.error_code, model.calls),
-                         ("DENIED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 0))
-        self.service.recipe_source_guard = BoundRecipeSourceGuard(Guard(), self.registry.execution('recipe-jeyuk'),
-                                                                  ('a', 'b'), ('c', 'd'))
-        changed = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
-        self.assertEqual((changed.state, changed.error_code, model.calls), ("FAILED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 1))
-        self.assertIsNone(changed.response_text)
-        self.assertNotIn('temperature_c', str(self.registry.execution_result("recipe-jeyuk")))
-        self.assertEqual(self.registry.budget("tenant-a", "ollama").calls_remaining, 1)
+                         ("DENIED", "SOURCE_SCOPE_UNAVAILABLE", 0))
 
     def test_recipe_tier_and_missing_evidence_do_not_invoke_model(self):
         self.registry.create_execution(Execution("recipe-3", "tenant-a", Feature.RECIPE_CORRECTION,
@@ -324,7 +314,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(missing.state, "INDETERMINATE")
         self.assertEqual(self.registry.execution_state("recipe-3"), "PENDING")
 
-    def test_bound_source_guard_allows_matching_internal_recipe_execution(self):
+    def test_bound_source_guard_with_untrusted_inner_guard_cannot_invoke_model(self):
         self.recipe_execution()
         execution = Execution('recipe-bound', 'tenant-a', Feature.RECIPE_CORRECTION,
                               'synthetic-tier1', None, 'SYNTHETIC', Decimal('0'))
@@ -346,10 +336,8 @@ class RegistryTests(unittest.TestCase):
             evidence=Evidence('COMPLETE', 'PASSED', True, False),
             baseline=JeyukBaseline('SMALL', Decimal('200'), Decimal('30'), 480, Decimal('1.8'), 60, 60, False),
             context={}, ollama=model))
-        self.assertEqual((result.state, model.calls), ('SUCCEEDED', 1))
-        self.assertEqual(len(checks), 2)
-        self.assertTrue(all(value == execution and job_scope == jobs and source_scope == sources
-                            for value, job_scope, source_scope in checks))
+        self.assertEqual((result.state, result.error_code, model.calls), ('DENIED', 'SOURCE_SCOPE_UNAVAILABLE', 0))
+        self.assertEqual(checks, [])
 
     def test_general_execution_paths_cannot_bypass_recipe_output_guard(self):
         self.registry.create_execution(Execution("recipe-guard", "tenant-a", Feature.RECIPE_CORRECTION,
