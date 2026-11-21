@@ -65,10 +65,13 @@ class RecipeJobRequest(BaseModel):
     comparison_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     prior_job_id: UUID | None = None
     prior_job_version: int | None = Field(default=None, strict=True, ge=1)
+    jeyuk_source_revision: int | None = Field(default=None, strict=True, ge=1, le=10**18)
+    prior_source_revision: int | None = Field(default=None, strict=True, ge=1, le=10**18)
 
     @model_validator(mode="after")
     def validate_prior(self):
-        if (self.prior_job_id is None) != (self.prior_job_version is None) or self.prior_job_id == self.job_id:
+        if (self.prior_job_id is None) != (self.prior_job_version is None) or self.prior_job_id == self.job_id or \
+                (self.prior_source_revision is not None and self.prior_job_id is None):
             raise ValueError("invalid prior job binding")
         return self
 
@@ -89,6 +92,17 @@ async def _recipe_job(request: Request, body: RecipeJobRequest):
     if body.prior_job_id and (not evidence.get("selected_prior_job") or
             evidence["selected_prior_job"].get("job_version") != body.prior_job_version):
         raise HTTPException(409, "이전 작업이 변경되었습니다. 근거를 다시 조회해 주세요.")
+    current_source = evidence.get("jeyuk_collection") or {}
+    prior = evidence.get("selected_prior_job") or {}
+    prior_source = prior.get("collection") or {}
+    if body.jeyuk_source_revision is not None and (
+            current_source.get("status") != "MATCHED_AT_READ" or
+            current_source.get("source_revision") != body.jeyuk_source_revision):
+        raise HTTPException(409, "현재 작업의 원천 기록이 변경되었습니다. 근거를 다시 조회해 주세요.")
+    if body.prior_source_revision is not None and (
+            prior_source.get("status") != "MATCHED_AT_READ" or
+            prior_source.get("source_revision") != body.prior_source_revision):
+        raise HTTPException(409, "이전 작업의 원천 기록이 변경되었습니다. 근거를 다시 조회해 주세요.")
     if evidence["recorded"].get("provenance") != "SYNTHETIC" or \
             evidence["recorded"].get("menu") not in {"TONKATSU", "JEYUK"}:
         raise HTTPException(409, "합성 조리 기록만 요청할 수 있습니다.")
@@ -106,6 +120,10 @@ def _recipe_binding(body: RecipeJobRequest) -> dict:
     if body.prior_job_id is not None:
         result["prior_job_id"] = str(body.prior_job_id)
         result["prior_job_version"] = body.prior_job_version
+    if body.jeyuk_source_revision is not None:
+        result["jeyuk_source_revision"] = body.jeyuk_source_revision
+    if body.prior_source_revision is not None:
+        result["prior_source_revision"] = body.prior_source_revision
     return result
 
 

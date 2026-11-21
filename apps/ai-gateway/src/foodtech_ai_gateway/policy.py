@@ -59,6 +59,8 @@ class Execution:
     comparison_id: str | None = None
     prior_job_id: str | None = None
     prior_job_version: int | None = None
+    jeyuk_source_revision: int | None = None
+    prior_source_revision: int | None = None
 
 
 @dataclass(frozen=True)

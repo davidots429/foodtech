@@ -14,7 +14,7 @@ from foodtech_ai_gateway.registry import DynamoRegistry
 from foodtech_ai_gateway.service import GatewayService
 from foodtech_ai_gateway.ollama import OllamaResult
 from foodtech_contracts.recommendation_guard import Evidence
-from foodtech_contracts.recommendation_output import TonkatsuBaseline
+from foodtech_contracts.recommendation_output import JeyukBaseline, TonkatsuBaseline
 
 
 NOW = datetime.now(timezone.utc)
@@ -229,6 +229,35 @@ class RegistryTests(unittest.TestCase):
         self.assertIn('"status":"NEEDS_REVIEW"', outcome.response_text)
         self.assertNotIn("invalid secret", str(self.resource.table.items))
         self.assertEqual(self.registry.budget("tenant-a", "ollama").calls_remaining, 0)
+
+    def test_jeyuk_source_guard_is_required_and_discards_changed_source_result(self):
+        self.recipe_execution()
+        self.registry.create_execution(Execution("recipe-jeyuk", "tenant-a", Feature.RECIPE_CORRECTION,
+                                                  "synthetic-tier1", None, "SYNTHETIC", Decimal("0")))
+        class FakeOllama:
+            calls = 0
+            async def structured_chat(self, *_args):
+                self.calls += 1
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        class Guard:
+            def __init__(self): self.values = iter([True, False])
+            def verify(self, _execution): return next(self.values)
+        model = FakeOllama()
+        args = dict(evidence=Evidence("COMPLETE", "PASSED", True, False),
+                    baseline=JeyukBaseline("SMALL", Decimal("200"), Decimal("30"), 480, Decimal("1.8"), 60, 60, False),
+                    context={}, ollama=model)
+        caller = Caller("business-api", "tenant-a")
+        unavailable = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
+        self.assertEqual((unavailable.state, unavailable.error_code, model.calls), ("DENIED", "SOURCE_GUARD_UNAVAILABLE", 0))
+        self.service.recipe_source_guard = SimpleNamespace(verify=lambda _execution: False)
+        stale = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
+        self.assertEqual((stale.state, stale.error_code, model.calls), ("DENIED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 0))
+        self.service.recipe_source_guard = Guard()
+        changed = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
+        self.assertEqual((changed.state, changed.error_code, model.calls), ("FAILED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 1))
+        self.assertIsNone(changed.response_text)
+        self.assertNotIn('temperature_c', str(self.registry.execution_result("recipe-jeyuk")))
+        self.assertEqual(self.registry.budget("tenant-a", "ollama").calls_remaining, 1)
 
     def test_recipe_tier_and_missing_evidence_do_not_invoke_model(self):
         self.registry.create_execution(Execution("recipe-3", "tenant-a", Feature.RECIPE_CORRECTION,

@@ -265,7 +265,8 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
         app.state.gateway_service = GatewayService(self.registry)
         job, prior = str(uuid4()), str(uuid4())
         binding = {'tenant_id': 'customer-a', 'job_id': job, 'job_version': 7,
-                   'prior_job_id': prior, 'prior_job_version': 3}
+                   'prior_job_id': prior, 'prior_job_version': 3,
+                   'jeyuk_source_revision': 30, 'prior_source_revision': 29}
         try:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://gateway') as client:
                 created = await client.post('/internal/ai/recipe-requests', json=binding)
@@ -273,19 +274,25 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
                 parent_id = created.json()['execution_id']
                 parent = self.registry.execution(parent_id)
                 self.assertEqual((parent.prior_job_id, parent.prior_job_version), (prior, 3))
+                self.assertEqual((parent.jeyuk_source_revision, parent.prior_source_revision), (30, 29))
                 preview = '/internal/ai/recipe-downgrades/preview'
                 wrong = await client.post(preview, json={**binding, 'parent_execution_id': parent_id, 'prior_job_version': 4})
                 self.assertEqual(wrong.status_code, 409)
+                wrong_source = await client.post(preview, json={**binding, 'parent_execution_id': parent_id,
+                                                                'jeyuk_source_revision': 31})
+                self.assertEqual(wrong_source.status_code, 409)
                 result = await client.post(preview, json={**binding, 'parent_execution_id': parent_id})
                 self.assertEqual(result.status_code, 201, result.text)
                 quote = result.json()
                 self.assertEqual((quote['prior_job_id'], quote['prior_job_version']), (prior, 3))
+                self.assertEqual((quote['jeyuk_source_revision'], quote['prior_source_revision']), (30, 29))
                 confirm = f"/internal/ai/recipe-downgrades/{quote['quote_id']}/confirm"
                 response = await client.post(confirm, json={**binding, 'notice_version': NOTICE_VERSION,
                                                             'quality_warning_acknowledged': True})
                 self.assertEqual(response.status_code, 201, response.text)
                 child = self.registry.execution(response.json()['execution_id'])
                 self.assertEqual((child.prior_job_id, child.prior_job_version), (prior, 3))
+                self.assertEqual((child.jeyuk_source_revision, child.prior_source_revision), (30, 29))
                 invalid = await client.post('/internal/ai/recipe-requests', json={**binding, 'prior_job_version': None})
                 self.assertEqual(invalid.status_code, 422)
         finally:
@@ -315,7 +322,9 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
             return SimpleNamespace(subject="customer-a", csrf="token")
         evidence = {"job_version": 7, "completeness": "NOT_ASSESSED",
                     "recorded": {"provenance": "SYNTHETIC", "menu": "JEYUK"},
-                    "selected_prior_job": {"job_id": prior, "job_version": 3}}
+                    "jeyuk_collection": {"status": "MATCHED_AT_READ", "source_revision": 30},
+                    "selected_prior_job": {"job_id": prior, "job_version": 3,
+                                           "collection": {"status": "MATCHED_AT_READ", "source_revision": 29}}}
         app.state.mtls_listener = True
         app.state.gateway_service = GatewayService(self.registry)
         try:
@@ -329,11 +338,16 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
                      transport=httpx.ASGITransport(app=app), base_url="https://gateway")):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=business_app),
                                              base_url="http://business") as customer:
-                    body = {"job_id": job, "job_version": 7, "prior_job_id": prior, "prior_job_version": 3}
+                    body = {"job_id": job, "job_version": 7, "prior_job_id": prior, "prior_job_version": 3,
+                            "jeyuk_source_revision": 30, "prior_source_revision": 29}
                     headers = {"X-CSRF-Token": "token"}
                     stale = await customer.post("/api/customer/ai/recipe-requests", headers=headers,
                                                 json={**body, "prior_job_version": 2})
                     self.assertEqual(stale.status_code, 409)
+                    for key, version in (("jeyuk_source_revision", 31), ("prior_source_revision", 28)):
+                        stale = await customer.post("/api/customer/ai/recipe-requests", headers=headers,
+                                                    json={**body, key: version})
+                        self.assertEqual(stale.status_code, 409)
                     created = await customer.post("/api/customer/ai/recipe-requests", headers=headers, json=body)
                     self.assertEqual(created.status_code, 201, created.text)
                     parent = created.json()["execution_id"]
@@ -346,12 +360,16 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
                                "quality_warning_acknowledged": False}
                     self.assertEqual((await customer.post(path, headers=headers, json=consent)).status_code, 409)
                     consent["quality_warning_acknowledged"] = True
+                    evidence['jeyuk_collection']['source_revision'] = 31
+                    self.assertEqual((await customer.post(path, headers=headers, json=consent)).status_code, 409)
+                    evidence['jeyuk_collection']['source_revision'] = 30
                     confirmed = await customer.post(path, headers=headers, json=consent)
                     self.assertEqual(confirmed.status_code, 201, confirmed.text)
                     self.assertFalse(confirmed.json()["execution_available"])
                     child = self.registry.execution(confirmed.json()["execution_id"])
                     self.assertEqual((child.job_id, child.job_version), (job, 7))
                     self.assertEqual((child.prior_job_id, child.prior_job_version), (prior, 3))
+                    self.assertEqual((child.jeyuk_source_revision, child.prior_source_revision), (30, 29))
                     self.assertEqual(self.registry.execution_state(child.execution_id), "PENDING")
                     self.assertEqual((await customer.post(path, headers=headers, json=consent)).status_code, 409)
         finally:

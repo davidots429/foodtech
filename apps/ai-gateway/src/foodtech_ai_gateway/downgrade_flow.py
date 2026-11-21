@@ -31,6 +31,8 @@ class DowngradeFlow:
         if (parent.comparison_id is not None and (parent.job_id is None or not isinstance(parent.comparison_id, str) or
                 len(parent.comparison_id) != 64 or
                 any(char not in "0123456789abcdef" for char in parent.comparison_id))) or \
+                (parent.jeyuk_source_revision is not None and (parent.job_id is None or parent.jeyuk_source_revision < 1)) or \
+                (parent.prior_source_revision is not None and (parent.prior_job_id is None or parent.prior_source_revision < 1)) or \
                 (parent.prior_job_id is None) != (parent.prior_job_version is None) or \
                 (parent.prior_job_id is not None and (parent.job_id is None or parent.prior_job_id == parent.job_id or parent.prior_job_version < 1)) or \
                 (parent.job_id is None) != (parent.job_version is None) or \
@@ -70,11 +72,13 @@ class DowngradeFlow:
             "source_model_id": parent.model_id,
             "job_id": parent.job_id, "job_version": parent.job_version, "comparison_id": parent.comparison_id,
             "prior_job_id": parent.prior_job_id, "prior_job_version": parent.prior_job_version,
+            "jeyuk_source_revision": parent.jeyuk_source_revision, "prior_source_revision": parent.prior_source_revision,
             "model_id": MODEL_ID, "notice_version": NOTICE_VERSION, "estimated_cost_usd": Decimal("0"),
             "created_at": now.isoformat(), "expires": int(expires.timestamp())})
         return {"quote_id": quote_id, "parent_execution_id": parent_id, "execution_id": execution_id,
                 "job_id": parent.job_id, "job_version": parent.job_version, "comparison_id": parent.comparison_id,
             "prior_job_id": parent.prior_job_id, "prior_job_version": parent.prior_job_version,
+            "jeyuk_source_revision": parent.jeyuk_source_revision, "prior_source_revision": parent.prior_source_revision,
                 "model_id": MODEL_ID, "notice_version": NOTICE_VERSION, "transmission_location": "LOCAL",
                 "estimated_cost_usd": "0", "quality_warning": True,
                 "quality_notice": "Tier 1보다 분석·권고 품질이 낮을 수 있습니다. 운영자 검토가 필요합니다.",
@@ -90,14 +94,15 @@ class DowngradeFlow:
                 quote.get("expires", 0) <= int(datetime.now(timezone.utc).timestamp()):
             raise DowngradeError("NOTICE_UNAVAILABLE")
         parent = self._check(tenant, quote["parent_execution_id"])
-        if (parent.job_id, parent.job_version, parent.comparison_id, parent.prior_job_id, parent.prior_job_version) != (quote.get("job_id"), quote.get("job_version"), quote.get("comparison_id"), quote.get("prior_job_id"), quote.get("prior_job_version")) or \
+        if (parent.job_id, parent.job_version, parent.comparison_id, parent.prior_job_id, parent.prior_job_version, parent.jeyuk_source_revision, parent.prior_source_revision) != (quote.get("job_id"), quote.get("job_version"), quote.get("comparison_id"), quote.get("prior_job_id"), quote.get("prior_job_version"), quote.get("jeyuk_source_revision"), quote.get("prior_source_revision")) or \
                 (quote.get("source_model_id") is not None and parent.model_id != quote["source_model_id"]):
             raise DowngradeError("PARENT_CHANGED")
         execution = Execution(quote["execution_id"], tenant, Feature.RECIPE_CORRECTION, MODEL_ID,
                               None, "SYNTHETIC", Decimal("0"), downgrade_consent_id=quote_id,
                               parent_execution_id=quote["parent_execution_id"],
                               job_id=parent.job_id, job_version=parent.job_version, comparison_id=parent.comparison_id,
-                              prior_job_id=parent.prior_job_id, prior_job_version=parent.prior_job_version)
+                              prior_job_id=parent.prior_job_id, prior_job_version=parent.prior_job_version,
+                              jeyuk_source_revision=parent.jeyuk_source_revision, prior_source_revision=parent.prior_source_revision)
         consent = Consent(quote_id, execution.execution_id, tenant, MODEL_ID, "TIER_DOWNGRADE", NOTICE_VERSION,
                           datetime.now(timezone.utc), parent_execution_id=execution.parent_execution_id,
                           quality_warning_acknowledged=True, transmission_location="LOCAL", estimated_cost_usd=Decimal("0"))

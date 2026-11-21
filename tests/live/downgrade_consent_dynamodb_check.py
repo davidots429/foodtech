@@ -49,13 +49,15 @@ def main():
             mark("LIMIT", f"{period}#{scope}#{ident}")
         registry.create_execution(Execution(parent, tenant, Feature.RECIPE_CORRECTION, source,
                                               None, "SYNTHETIC", Decimal("0"), job_id=job_id, job_version=7,
-                                              comparison_id=comparison, prior_job_id=prior_job_id, prior_job_version=3))
+                                              comparison_id=comparison, prior_job_id=prior_job_id, prior_job_version=3,
+                                              jeyuk_source_revision=30, prior_source_revision=29))
         mark("EXEC", parent)
         with patch.object(downgrade_flow, "MODEL_ID", target):
             flow = DowngradeFlow(registry)
             quote = flow.preview(tenant, parent)
             assert (quote["job_id"], quote["job_version"], quote["comparison_id"]) == (job_id, 7, comparison)
             assert (quote["prior_job_id"], quote["prior_job_version"]) == (prior_job_id, 3)
+            assert (quote["jeyuk_source_revision"], quote["prior_source_revision"]) == (30, 29)
             mark("QUOTE", quote["quote_id"])
             mark("CONSENT", quote["quote_id"])
             mark("EXEC", quote["execution_id"])
@@ -69,6 +71,7 @@ def main():
             assert (registry.execution(child).job_id, registry.execution(child).job_version,
                     registry.execution(child).comparison_id) == (job_id, 7, comparison)
             assert (registry.execution(child).prior_job_id, registry.execution(child).prior_job_version) == (prior_job_id, 3)
+            assert (registry.execution(child).jeyuk_source_revision, registry.execution(child).prior_source_revision) == (30, 29)
             assert registry.consent(quote["quote_id"]).parent_execution_id == parent
             assert GatewayPolicy(registry).authorize(Caller("business-api", tenant), child).allowed
             try:

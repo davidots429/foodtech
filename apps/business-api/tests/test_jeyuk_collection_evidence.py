@@ -46,7 +46,7 @@ class EvidenceReadTests(unittest.TestCase):
             def Table(self, _name): return table
         with patch("foodtech_business_api.jeyuk_source_evidence.boto3.Session", Session):
             self.assertEqual(read_collection_completion("table", "evidence"),
-                             {"status": "MATCHED_AT_READ", "raw_count": 3})
+                             {"status": "MATCHED_AT_READ", "raw_count": 3, "source_revision": 3})
             # Settings are derived only from a matching, tracked complete receipt.
             for index, row in enumerate(rows):
                 value = json.loads(row["raw"]); value["heatingSetpointCelsius"] = 200
@@ -100,13 +100,19 @@ class EvidenceReadTests(unittest.TestCase):
             table.revisions = [3, 3]
             rows[1] = {**rows[1], "raw": rows[1]["raw"] + " "}
             table.revisions = [3, 3]
-            self.assertEqual(read_collection_completion("table", "evidence")["status"], "NOT_MATCHED")
+            mismatch = read_collection_completion("table", "evidence")
+            self.assertEqual(mismatch["status"], "NOT_MATCHED")
+            self.assertNotIn("source_revision", mismatch)
             table.revisions = [3, 3]
             self.assertNotIn("settings", read_collection_completion("table", "evidence", include_settings=True))
             table.revisions = [3, 4]
-            self.assertEqual(read_collection_completion("table", "evidence")["status"], "CHANGED_DURING_READ")
+            changed = read_collection_completion("table", "evidence")
+            self.assertEqual(changed["status"], "CHANGED_DURING_READ")
+            self.assertNotIn("source_revision", changed)
             table.revisions = [None, None]
-            self.assertEqual(read_collection_completion("table", "evidence")["status"], "REVISION_UNVERIFIED")
+            untracked = read_collection_completion("table", "evidence")
+            self.assertEqual(untracked["status"], "REVISION_UNVERIFIED")
+            self.assertNotIn("source_revision", untracked)
             table.revisions = [2, 2]
             self.assertEqual(read_collection_completion("table", "evidence")["status"], "REVISION_UNVERIFIED")
 
