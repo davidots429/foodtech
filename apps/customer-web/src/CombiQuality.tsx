@@ -52,7 +52,7 @@ export function CombiQuality({ menu, mealId, version, safety, jobStatus, current
 
   return <div className="binding-box"><h4>{menu === "rice" ? "밥" : "고등어"} 품질평가</h4><p>{details[menu]}</p>
     {current && (current.usable === false || safety !== "PASSED" ?
-      <p role="status">평가 v{current.version} · 안전 상태 변경으로 사용이 차단되었습니다. 재평가가 필요합니다.</p> :
+      <p role="status">평가 v{current.version} · 안전 또는 공정 근거 변경으로 사용이 차단되었습니다. 재평가가 필요합니다.</p> :
       <p>현재 평가 v{current.version} · {current.quality_status === "QUALITY_PASSED" ? "합격" : "불합격"} · {current.score_percent}점 · 목표 {current.quality_target ? "달성" : "미달"}</p>)}
     {!canAssess ? <p>{!sourceReady ? "연결된 원표본의 공정 판정을 먼저 확인해 주세요." : `인양과 안전 확인이 완료되면 평가할 수 있습니다. 현재 안전 상태: ${safety}`}</p> : <>
       {scoreItems.map(item => <div key={item.key} className="field-row"><label>{item.label} 점수
