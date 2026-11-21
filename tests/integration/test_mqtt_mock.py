@@ -27,10 +27,12 @@ class MqttMockTests(unittest.TestCase):
     def test_tls_acl_and_qos1_collection(self):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
+            host = os.environ.get('FOODTECH_MOCK_TEST_HOST', 'localhost')
+            san = 'DNS:localhost,IP:127.0.0.1' + (f',IP:{host}' if host != 'localhost' else '')
             key, cert, pfx = (temp / name for name in ("key.pem", "cert.pem", "cert.pfx"))
             subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
                             "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
-                            "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+                            "-addext", f"subjectAltName={san}"],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
                             "-password", "pass:test-password"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -47,21 +49,21 @@ class MqttMockTests(unittest.TestCase):
                     if server.poll() is not None:
                         self.fail("MQTT Mock exited before accepting connections")
                     try:
-                        with socket.create_connection(("127.0.0.1", port), timeout=.1):
+                        with socket.create_connection((host, port), timeout=.1):
                             break
                     except OSError:
                         time.sleep(.1)
                 else:
                     self.fail("MQTT Mock did not start")
-                with socket.create_connection(("localhost", port), timeout=5) as connection:
+                with socket.create_connection((host, port), timeout=5) as connection:
                     with self.assertRaises(ssl.SSLCertVerificationError):
-                        ssl.create_default_context().wrap_socket(connection, server_hostname="localhost")
+                        ssl.create_default_context().wrap_socket(connection, server_hostname=host)
                 rejected = threading.Event()
                 invalid = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="foodtech-collector-invalid", protocol=mqtt.MQTTv5)
                 invalid.tls_set_context(ssl.create_default_context(cafile=str(cert)))
                 invalid.username_pw_set("test-user", "wrong-secret")
                 invalid.on_connect = lambda c, u, f, reason, p: rejected.set() if reason.is_failure else None
-                invalid.connect("localhost", port)
+                invalid.connect(host, port)
                 invalid.loop_start()
                 self.assertTrue(rejected.wait(5), "invalid credentials must be rejected")
                 invalid.loop_stop()
@@ -70,7 +72,7 @@ class MqttMockTests(unittest.TestCase):
                 old.tls_set_context(ssl.create_default_context(cafile=str(cert)))
                 old.username_pw_set("test-user", "test-secret")
                 old.on_connect = lambda c, u, f, reason, p: old_protocol_rejected.set() if reason.is_failure else None
-                old.connect("localhost", port)
+                old.connect(host, port)
                 old.loop_start()
                 self.assertTrue(old_protocol_rejected.wait(5), "MQTT 3 must be rejected")
                 old.loop_stop()
@@ -80,7 +82,7 @@ class MqttMockTests(unittest.TestCase):
                 client.username_pw_set("test-user", "test-secret")
                 client.on_connect = lambda c, u, f, reason, p: c.subscribe("foodtech/#", qos=1)
                 client.on_subscribe = lambda c, u, mid, reasons, p: denied.set() if reasons[0].is_failure else None
-                client.connect("localhost", port)
+                client.connect(host, port)
                 client.loop_start()
                 self.assertTrue(denied.wait(5), "wildcard subscription must be denied")
                 client.disconnect()
@@ -92,7 +94,7 @@ class MqttMockTests(unittest.TestCase):
                 writer.username_pw_set("test-user", "test-secret")
                 writer.on_connect = lambda c, u, f, reason, p: c.publish(TOPIC, "untrusted", qos=1)
                 writer.on_disconnect = lambda c, u, flags, reason, p: closed.set()
-                writer.connect("localhost", port)
+                writer.connect(host, port)
                 writer.loop_start()
                 self.assertTrue(closed.wait(5), "external publishers must be disconnected")
                 writer.loop_stop()
@@ -114,10 +116,10 @@ class MqttMockTests(unittest.TestCase):
                     def drain(self, _stream):
                         return []
                 with self.assertRaisesRegex(RuntimeError, "not durably accepted"):
-                    collect("localhost", port, str(cert), "test-user", "test-secret",
+                    collect(host, port, str(cert), "test-user", "test-secret",
                             "foodtech-collector-integration", FailingIngestor(), count=3, timeout_seconds=20)
                 ingestor = Ingestor()
-                self.assertEqual(collect("localhost", port, str(cert), "test-user", "test-secret",
+                self.assertEqual(collect(host, port, str(cert), "test-user", "test-secret",
                                          "foodtech-collector-integration", ingestor, count=3, timeout_seconds=20), 3)
                 self.assertEqual(len(ingestor.records), 3)
                 self.assertTrue(all('"synthetic-mqtt"' in raw for raw in ingestor.records))
