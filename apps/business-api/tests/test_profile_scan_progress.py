@@ -38,8 +38,8 @@ class ProgressTests(unittest.TestCase):
         self.table, self.cipher = Table(), Cipher()
         self.store = ProfileScanProgressStore(self.table, self.cipher)
         self.job = '12c5f2d4-c6d2-4165-adf7-e7fed537af06'
-        self.store.start(self.job, 'owner-a', 'cooking')
-        self.source = SimpleNamespace(name='cooking')
+        self.store.start(self.job, 'owner-a', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking')
+        self.source = SimpleNamespace(table_arn='arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking')
         self.profiles = SimpleNamespace(table=self.source)
 
     def test_completed_pages_advance_and_wrong_owner_is_rejected(self):
@@ -53,10 +53,10 @@ class ProgressTests(unittest.TestCase):
             self.table.item['version'] = Decimal(2)
             second = self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source, profile_store=self.profiles, limit=10)
             self.assertEqual((second.phase, second.version), ('SCAN_COMPLETE', 3))
-            self.assertEqual(self.store.read_progress(self.job, 'owner-a', 'cooking'), second)
-            self.assertNotIn('other-owner', repr(self.store.read_progress(self.job, 'owner-a', 'cooking')))
+            self.assertEqual(self.store.read_progress(self.job, 'owner-a', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking'), second)
+            self.assertNotIn('other-owner', repr(self.store.read_progress(self.job, 'owner-a', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking')))
             with self.assertRaises(ValueError):
-                self.store.read_progress(self.job, 'owner-b', 'cooking')
+                self.store.read_progress(self.job, 'owner-b', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking')
             self.assertEqual(scan.call_args.kwargs['checkpoint'], key)
             with self.assertRaises(ValueError):
                 self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source, profile_store=self.profiles, limit=10)
@@ -66,7 +66,7 @@ class ProgressTests(unittest.TestCase):
             self.store.read_progress(self.job, 'owner-a', 'different-table')
         with self.assertRaises(ValueError):
             self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source,
-                                profile_store=SimpleNamespace(table=SimpleNamespace(name='different-table')), limit=10)
+                                profile_store=SimpleNamespace(table=SimpleNamespace(table_arn='arn:aws:dynamodb:ap-southeast-2:999999999999:table/cooking')), limit=10)
         with patch('foodtech_business_api.profile_scan_progress.reconcile_legacy_page', side_effect=RuntimeError('failed')):
             with self.assertRaises(RuntimeError):
                 self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source, profile_store=self.profiles, limit=10)
@@ -77,7 +77,7 @@ class ProgressTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source, profile_store=self.profiles, limit=10)
         self.assertEqual((self.table.item['phase'], self.table.item['version']), ('INITIAL', 1))
-        self.assertEqual(self.store.read_progress(self.job, 'owner-a', 'cooking').phase, 'INITIAL')
+        self.assertEqual(self.store.read_progress(self.job, 'owner-a', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking').phase, 'INITIAL')
 
     def test_response_loss_can_be_resolved_without_exposing_checkpoint(self):
         self.table.fail_after_update = True
@@ -85,10 +85,10 @@ class ProgressTests(unittest.TestCase):
                    return_value=LegacyProfilePage((), None, 0)):
             with self.assertRaisesRegex(RuntimeError, 'response lost'):
                 self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source, profile_store=self.profiles, limit=10)
-        result = self.store.read_progress(self.job, 'owner-a', 'cooking')
+        result = self.store.read_progress(self.job, 'owner-a', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking')
         self.assertEqual((result.phase, result.version), ('SCAN_COMPLETE', 2))
         with self.assertRaises(ValueError):
-            self.store.read_progress(self.job, 'owner-b', 'cooking')
+            self.store.read_progress(self.job, 'owner-b', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking')
 
     def test_old_ciphertext_cannot_be_replayed_at_a_new_version(self):
         old_ciphertext = self.table.item['ciphertext']
@@ -97,18 +97,18 @@ class ProgressTests(unittest.TestCase):
             self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source, profile_store=self.profiles, limit=1)
         self.table.item['ciphertext'] = old_ciphertext
         with self.assertRaises(ValueError):
-            self.store.read_progress(self.job, 'owner-a', 'cooking')
+            self.store.read_progress(self.job, 'owner-a', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking')
 
     def test_last_version_is_readable_but_cannot_advance(self):
         maximum = 2**63 - 1
         self.table.item.update(phase='CONTINUE', version=maximum - 1,
             ciphertext=self.cipher.seal(self.job, 'owner-a', {'pk': 'next', 'sk': 'META'},
-                                        phase='CONTINUE', version=maximum - 1, source_table='cooking'))
+                                        phase='CONTINUE', version=maximum - 1, source_table='arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking'))
         with patch('foodtech_business_api.profile_scan_progress.reconcile_legacy_page',
                    return_value=LegacyProfilePage((), {'pk': 'next2', 'sk': 'META'}, 1)):
             self.assertEqual(self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source,
                                                  profile_store=self.profiles, limit=10).version, maximum)
-        self.assertEqual(self.store.read_progress(self.job, 'owner-a', 'cooking').version, maximum)
+        self.assertEqual(self.store.read_progress(self.job, 'owner-a', 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/cooking').version, maximum)
         with patch('foodtech_business_api.profile_scan_progress.reconcile_legacy_page') as scan:
             with self.assertRaisesRegex(ValueError, 'version exhausted'):
                 self.store.run_page(job_id=self.job, subject='owner-a', source_table=self.source, profile_store=self.profiles, limit=10)

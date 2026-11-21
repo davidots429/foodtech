@@ -31,7 +31,7 @@ def main():
     race_job = str(uuid4())
     race_key = {'pk': f'PROFILE_SCAN#{race_job}', 'sk': 'META'}
     try:
-        progress.start(job, subject, table.name)
+        progress.start(job, subject, table.table_arn)
         try:
             progress.run_page(job_id=job, subject='different-owner', source_table=table, profile_store=profiles, limit=1)
         except ValueError:
@@ -42,11 +42,11 @@ def main():
         item = table.get_item(Key=key, ConsistentRead=True)['Item']
         if result.version != 2 or item['version'] != 2 or result.phase not in ('CONTINUE', 'SCAN_COMPLETE'):
             raise AssertionError('scan checkpoint did not advance')
-        if progress.read_progress(job, subject, table.name) != result:
+        if progress.read_progress(job, subject, table.table_arn) != result:
             raise AssertionError('persisted progress could not be recovered')
         if subject.encode() in bytes(item['ciphertext']):
             raise AssertionError('plaintext scope in encrypted checkpoint')
-        progress.start(race_job, subject, table.name)
+        progress.start(race_job, subject, table.table_arn)
         barrier = Barrier(2, timeout=30)
         def run_competitor(_):
             worker_session = boto3.Session(profile_name='foodtech', region_name='ap-southeast-2')
@@ -57,7 +57,7 @@ def main():
             worker_cipher = ProfileCheckpointCipher(key_arn, 'dev', kms_client=worker_session.client('kms'))
             worker = ProfileScanProgressStore(worker_table, worker_cipher)
             class SynchronizedScan:
-                name = worker_table.name
+                table_arn = worker_table.table_arn
                 def scan(self, **kwargs):
                     barrier.wait()
                     return worker_table.scan(**kwargs)
@@ -72,7 +72,7 @@ def main():
         with ThreadPoolExecutor(max_workers=2) as executor:
             if sorted(executor.map(run_competitor, range(2))) != ['advanced', 'conflict']:
                 raise AssertionError('concurrent checkpoint update did not select one winner')
-        if progress.read_progress(race_job, subject, table.name).version != 2:
+        if progress.read_progress(race_job, subject, table.table_arn).version != 2:
             raise AssertionError('unexpected race checkpoint version')
     finally:
         table.delete_item(Key=key)

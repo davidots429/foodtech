@@ -48,7 +48,7 @@ class ProfileCheckpointCipher:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise ValueError('invalid checkpoint job') from None
-        if not isinstance(source_table, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{3,255}', source_table):
+        if not isinstance(source_table, str) or not re.fullmatch(r'arn:aws:dynamodb:ap-southeast-2:[0-9]{12}:table/[A-Za-z0-9_.-]{3,255}', source_table):
             raise ValueError('invalid source table')
         if phase not in {'INITIAL', 'CONTINUE', 'SCAN_COMPLETE'} or type(version) is not int or \
                 not 1 <= version < 2**63:
