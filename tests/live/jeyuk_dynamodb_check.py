@@ -3,18 +3,24 @@
 Uses existing development resources and removes one unique synthetic fixture.
 """
 
+import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import boto3
+import httpx
 
 from foodtech_collection_adapter.jeyuk_aws import DynamoJeyukIngestor
+from foodtech_collection_adapter import __main__ as collector
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 
 from mock_quality_dynamodb_check import empty_queue
@@ -43,7 +49,56 @@ def csharp_samples(fixture_id: str, fixture_path: Path = FIXTURE, logical_start_
         return output.read_text().splitlines()
 
 
-def main() -> int:
+def collect_over_https(fixture_id: str, queue_url: str, cursor_key: str) -> int:
+    """Run the real collector against a local read-only C# Mock and AWS."""
+    with tempfile.TemporaryDirectory(prefix="foodtech-jeyuk-wire-") as directory:
+        temp = Path(directory)
+        fixture = json.loads(FIXTURE.read_text())
+        fixture["fixtureId"] = fixture_id
+        source = temp / "fixture.json"
+        source.write_text(json.dumps(fixture), encoding="utf-8")
+        key, cert, pfx = (temp / name for name in ("key.pem", "cert.pem", "cert.pfx"))
+        password, secret = uuid.uuid4().hex, uuid.uuid4().hex
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
+                        "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
+                        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["openssl", "pkcs12", "-export", "-out", str(pfx), "-inkey", str(key), "-in", str(cert),
+                        "-password", f"pass:{password}"], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        base = f"https://localhost:{port}"
+        config = {"FOODTECH_MOCK_BASE_URL": base, "FOODTECH_MOCK_CA_FILE": str(cert),
+                  "FOODTECH_MOCK_CLIENT_ID": "synthetic-test", "FOODTECH_MOCK_CLIENT_SECRET": secret,
+                  "FOODTECH_MOCK_CERT_PASSWORD": password, "FOODTECH_DATA_TABLE": DATA_TABLE,
+                  "FOODTECH_ORDERED_QUEUE_URL": queue_url}
+        server = subprocess.Popen(["dotnet", str(MOCK_DLL), "serve", "--fixture", str(source),
+                                   "--cert", str(pfx), "--port", str(port)],
+                                  env={**os.environ, **config}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if server.poll() is not None:
+                    raise RuntimeError("C# Mock exited before HTTPS startup")
+                try:
+                    if httpx.get(base + "/health", verify=str(cert), timeout=.3).status_code == 200:
+                        break
+                except httpx.TransportError:
+                    time.sleep(.1)
+            else:
+                raise TimeoutError("C# Mock HTTPS startup timed out")
+            with patch.dict(os.environ, config), patch.object(sys, "argv", ["collector", "--profile", "mockprofile-110",
+                    "--cursor-key", cursor_key, "--until-complete", "--interval", "0.1", "--max-runtime", "30"]):
+                if collector.main() != 0:
+                    raise RuntimeError("Collector failed")
+            return DynamoJeyukIngestor(DATA_TABLE, queue_url).cursor(cursor_key)
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
+
+
+def main(*, mock_wire: bool = False) -> int:
     if os.getenv("AWS_PROFILE") != "foodtech":
         raise SystemExit("Use AWS_PROFILE=foodtech for the development account.")
     session = boto3.Session(profile_name="foodtech", region_name=REGION)
@@ -55,15 +110,22 @@ def main() -> int:
     if not empty_queue(sqs, ordered_url) or not empty_queue(sqs, quarantine_url):
         raise SystemExit("Shared development queues must be empty.")
     fixture_id = f"jeyuk-live-{uuid.uuid4().hex[:12]}"
+    cursor_key = f"wire-{uuid.uuid4().hex}"
     stream_pk = f"JEYUK#{fixture_id}"
     table = session.resource("dynamodb").Table(DATA_TABLE)
     ingestor = DynamoJeyukIngestor(DATA_TABLE, ordered_url)
     worker = DynamoStandardizationWorker(DATA_TABLE, ordered_url, quarantine_url)
     processed = []
     try:
-        raws = csharp_samples(fixture_id)
-        for raw in raws:
-            ingestor.ingest(raw)
+        if mock_wire:
+            expected_count = collect_over_https(fixture_id, ordered_url, cursor_key)
+            if expected_count != 30:
+                raise AssertionError("Collector did not save the completed synthetic cursor")
+        else:
+            raws = csharp_samples(fixture_id)
+            for raw in raws:
+                ingestor.ingest(raw)
+            expected_count = len(raws)
         for _ in range(8):
             page = sqs.receive_message(QueueUrl=ordered_url, MaxNumberOfMessages=10,
                                        WaitTimeSeconds=1, VisibilityTimeout=30)
@@ -80,7 +142,7 @@ def main() -> int:
                                                   ReceiptHandle=message["ReceiptHandle"], VisibilityTimeout=0)
                     raise
                 sqs.delete_message(QueueUrl=ordered_url, ReceiptHandle=message["ReceiptHandle"])
-            if len(processed) == len(raws):
+            if len(processed) == expected_count:
                 break
         if len(processed) != 30 or [item["second"] for item in processed] != list(range(1, 31)):
             raise AssertionError("Jeyuk FIFO samples were not processed in order")
@@ -108,6 +170,8 @@ def main() -> int:
             errors.append(f"queue cleanup: {exc}")
         try:
             remove_partition(table, stream_pk)
+            if mock_wire:
+                remove_partition(table, f"MOCK#mockprofile-110-a-001#{cursor_key}")
         except Exception as exc:
             errors.append(f"table cleanup: {exc}")
         if errors:
@@ -116,4 +180,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mock-wire", action="store_true")
+    sys.exit(main(mock_wire=parser.parse_args().mock_wire))
