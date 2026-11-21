@@ -90,6 +90,10 @@ const labels: Record<string, string> = {
   TARGET_SETTINGS_AND_INTERVALS: "목표 설정과 투입 간격", PREVIOUS_JAM_OR_OVERLOAD: "이전 걸림·과부하 여부",
 };
 
+type PriorCandidate = { status: "NOT_BOUND" | "CURRENT_NOT_STARTED" | "HISTORY_INCOMPLETE" | "NO_CANDIDATE" | "AMBIGUOUS" | "CANDIDATE" | "UNAVAILABLE";
+  candidate: { job_id: string; status: string; safety_status: string; started_at: string } | null;
+  immediately_previous_verified: false };
+
 type RecipeRequest = { execution_id: string; state: string; reason: string };
 type LocalNotice = { quote_id: string; notice_version: string; model_id: string; quality_notice: string;
   transmission_location: "LOCAL"; estimated_cost_usd: string; expires_at: string };
@@ -97,6 +101,7 @@ type LocalNotice = { quote_id: string; notice_version: string; model_id: string;
 export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jobId: string; csrf: string; comparisonId?: string; menu: string }) {
   const [value, setValue] = useState<Evidence | null>(null);
   const [priorJobId, setPriorJobId] = useState("");
+  const [priorCandidate, setPriorCandidate] = useState<PriorCandidate | null>(null);
   const [requested, setRequested] = useState<RecipeRequest | null>(null);
   const [notice, setNotice] = useState<LocalNotice | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -105,6 +110,13 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
   const [restatementStatus, setRestatementStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  async function findPriorCandidate() {
+    if (busy) return;
+    setBusy(true); setError(""); setPriorCandidate(null);
+    try { setPriorCandidate(await api<PriorCandidate>(jobPath(jobId) + "/prior-job-candidate")); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "이전 작업 후보를 조회하지 못했습니다."); }
+    finally { setBusy(false); }
+  }
   async function load() {
     if (busy) return;
     setBusy(true); setError(""); setValue(null); setRequested(null); setNotice(null); setConfirmed(false); setAcknowledged(false);
@@ -172,6 +184,19 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
     <h4 id="recommendation-evidence-title">AI 권고에 사용할 조리 기록 확인</h4>
     <p className="small">기록된 정보와 필수 근거의 일부를 확인합니다. 전체 데이터 완전성과 AI 권고는 아직 판정하지 않습니다.</p>
     <p className="small">아래에서 비교 기록을 선택하고 최신성을 확인하면 다음 근거 조회에 포함됩니다.</p>
+    {menu === "JEYUK" && <div>
+      <button type="button" className="secondary" onClick={() => void findPriorCandidate()} disabled={busy}>이전 작업 후보 찾기</button>
+      {priorCandidate && <div className="small" role="status">
+        <p>{({ NOT_BOUND: "수집 배치를 연결해야 합니다.", CURRENT_NOT_STARTED: "현재 조리의 시작 시각이 필요합니다.",
+          HISTORY_INCOMPLETE: "확인할 수 없는 작업이 있거나 목록이 너무 길어 후보를 정할 수 없습니다.",
+          NO_CANDIDATE: "조회한 목록에서 이전 작업 후보가 없습니다.", AMBIGUOUS: "같은 시각의 후보가 여러 개입니다.",
+          CANDIDATE: "조회한 목록에서 가장 최근에 시작한 후보입니다.", UNAVAILABLE: "가장 최근 후보가 진행 중이거나 이력 조회 조건에 맞지 않습니다." })[priorCandidate.status]}</p>
+        {priorCandidate.status === "CANDIDATE" && priorCandidate.candidate && <button type="button" onClick={() => {
+          setPriorJobId(priorCandidate.candidate!.job_id); setValue(null);
+        }}>이 후보 선택</button>}
+        <p>목록에 없는 과거 작업이나 조회 직후의 변경은 확인할 수 없어 가장 직전이라고 확정하지 않습니다.</p>
+      </div>}
+    </div>}
     {menu === "JEYUK" && <label>확인할 이전 작업 ID (선택)
       <input value={priorJobId} disabled={busy} onChange={event => { setPriorJobId(event.target.value); setValue(null); }}
         placeholder="이전 조리작업의 ID" />

@@ -7,7 +7,7 @@ from functools import lru_cache
 from typing import Protocol
 
 from boto3.dynamodb.conditions import Key
-from boto3.dynamodb.types import TypeSerializer
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 
 class Conflict(Exception):
@@ -69,6 +69,7 @@ class CookingStore(Protocol):
     def read_meal_live_chunks(self, pk: str) -> list[dict]: ...
     def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None: ...
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
+    def read_meta(self, pk: str) -> dict | None: ...
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
     def create(self, pk: str, meta: dict) -> None: ...
@@ -199,6 +200,11 @@ class MemoryCookingStore:
             meta = self.items.get((pk, "META"))
             pointer = self.items.get((pk, "ASSESSMENT#CURRENT"))
             return (meta.copy() if meta else None, pointer.copy() if pointer else None)
+
+    def read_meta(self, pk: str) -> dict | None:
+        with self.lock:
+            meta = self.items.get((pk, "META"))
+            return meta.copy() if meta else None
 
     def process_pointer(self, pk: str) -> dict | None:
         with self.lock:
@@ -611,6 +617,16 @@ class DynamoCookingStore:
             Key={"pk": pk, "sk": "ASSESSMENT#CURRENT"}, ConsistentRead=True,
         ).get("Item")
         return _api_numbers(meta), _api_numbers(pointer)
+
+    def read_meta(self, pk: str) -> dict | None:
+        # Discovery reads several jobs in parallel. Low-level clients can be
+        # shared between threads; boto3 resource objects cannot.
+        item = self.client.get_item(TableName=self.table.name,
+            Key={"pk": {"S": pk}, "sk": {"S": "META"}}, ConsistentRead=True).get("Item")
+        if not item:
+            return None
+        decoder = TypeDeserializer()
+        return _api_numbers({key: decoder.deserialize(value) for key, value in item.items()})
 
     def process_pointer(self, pk: str) -> dict | None:
         item = self.table.get_item(Key={"pk": pk, "sk": "PROCESS#LATEST_RESTATED"},

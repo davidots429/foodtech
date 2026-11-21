@@ -691,6 +691,13 @@ async def get_job(job_id: str, request: Request, response: Response,
     return {"job": meta, "current_assessment": pointer, "process_assessment_view": process}
 
 
+@router.get("/{job_id}/prior-job-candidate")
+async def prior_job_candidate(job_id: str, request: Request, response: Response) -> dict:
+    from .prior_job_discovery import discover
+    response.headers["Cache-Control"] = "no-store"
+    return await discover(request, job_id)
+
+
 @router.get("/{job_id}/recommendation-evidence")
 async def recommendation_evidence(job_id: str, request: Request, response: Response,
                                   comparison_id: str | None = None, prior_job_id: str | None = None) -> dict:
