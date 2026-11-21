@@ -5,6 +5,7 @@ validate sensor samples, establish the immediately previous job, or authorize
 an AI request. Those checks must be performed independently.
 """
 import re
+from copy import deepcopy
 from decimal import Decimal
 from uuid import UUID
 
@@ -42,33 +43,37 @@ class DynamoRecipeSourceGuard:
         if not all(job and _positive_integer(version) and _positive_integer(revision)
                    for job, version, revision in bindings) or bindings[0][0] == bindings[1][0]:
             return False
+        first = self._read_snapshot(subject, bindings)
+        return first is not None and first == self._read_snapshot(subject, bindings)
+
+    def _read_snapshot(self, subject, bindings):
         observed = []
         for job_id, expected_version, expected_revision in bindings:
             try:
                 if not isinstance(job_id, str) or str(UUID(job_id)) != job_id:
-                    return False
+                    return None
             except ValueError:
-                return False
+                return None
             pk = f'SCOPE#USER#{subject}#JOB#{job_id}'
             job = self.cooking.get_item(Key={'pk': pk, 'sk': 'META'}, ConsistentRead=True).get('Item')
             if not job or job.get('owner_subject') != subject or job.get('job_id') != job_id or \
                     _positive_integer(job.get('version')) != expected_version or job.get('menu') != 'JEYUK' or \
                     job.get('provenance') != 'SYNTHETIC':
-                return False
+                return None
             binding = job.get('source_binding')
             if not isinstance(binding, dict) or binding.get('source_id') != 'synthetic-rest' or \
                     binding.get('device_id') != 'mockprofile-110-a-001':
-                return False
+                return None
             batch = binding.get('batch_id')
             if not isinstance(batch, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', batch):
-                return False
+                return None
             reverse = self.cooking.get_item(Key={'pk': f'JEYUK#{batch}', 'sk': 'BINDING'},
                                             ConsistentRead=True).get('Item')
             if not reverse or reverse.get('job_pk') != pk or reverse.get('job_id') != job_id:
-                return False
+                return None
             source = self.data.get_item(Key={'pk': f'JEYUK#{batch}', 'sk': 'SOURCE#REVISION'},
                                         ConsistentRead=True).get('Item')
             if not source or _positive_integer(source.get('revision')) != expected_revision:
-                return False
-            observed.append(batch)
-        return observed[0] != observed[1]
+                return None
+            observed.append((batch, deepcopy(job), deepcopy(reverse), deepcopy(source)))
+        return tuple(observed) if observed[0][0] != observed[1][0] else None

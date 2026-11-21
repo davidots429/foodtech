@@ -65,6 +65,21 @@ class RecipeSourceGuardTests(unittest.TestCase):
         self.resource.tables['foodtech-cooking-jobs-dev'].items[key] = binding
         self.assertFalse(self.guard.verify(self.execution))
 
+    def test_rejects_record_change_during_multi_item_read(self):
+        table = self.resource.tables['foodtech-cooking-jobs-dev']
+        original = table.get_item
+        current_key = f'SCOPE#USER#tenant-a#JOB#{self.current}'
+        reads = 0
+        def changing(*, Key, ConsistentRead):
+            nonlocal reads
+            if Key['pk'] == current_key and Key['sk'] == 'META':
+                reads += 1
+                if reads == 2:
+                    table.items[(current_key, 'META')]['status'] = 'CHANGED_WITHOUT_VERSION'
+            return original(Key=Key, ConsistentRead=ConsistentRead)
+        table.get_item = changing
+        self.assertFalse(self.guard.verify(self.execution))
+
     def test_rejects_unrelated_tables(self):
         with self.assertRaises(ValueError):
             DynamoRecipeSourceGuard('foodtech-credential-vault-dev', 'foodtech-data-flow-dev', resource=self.resource)
