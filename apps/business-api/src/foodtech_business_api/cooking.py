@@ -420,7 +420,7 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "process_time_status": "NOT_MEASURED",
     }
     try:
-        await _store_call(store, store.create, _pk(session.subject, job_id), meta)
+        await _store_call(store, store.create, _pk(session.subject, job_id), meta, session.epoch)
     except Conflict as exc:
         raise _conflict() from exc
     return meta

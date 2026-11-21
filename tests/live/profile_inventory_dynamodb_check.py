@@ -35,6 +35,14 @@ def main():
     locked_key = {'pk': f'{owner}#CONDITION_PROFILE#blocked', 'sk': 'VERSION#v1'}
     locked_ref = {'pk': f'{owner}#CONDITION_PROFILES', 'sk': 'PROFILE#blocked#VERSION#v1'}
     auth_key = {'pk': f'USER#{subject}'}
+    job_pk = f'{owner}#JOB#synthetic-job'
+    job_index = f'{owner}#JOBS'
+    timestamp = '2026-11-21T00:00:00Z'
+    job_meta = {'owner_subject': subject, 'job_id': 'synthetic-job', 'created_at': timestamp,
+                'recipe_version': 'synthetic-v1', 'planned_portions': 2}
+    job_keys = [{'pk': job_pk, 'sk': 'META'},
+                {'pk': job_index, 'sk': f'CREATED#{timestamp}#synthetic-job'},
+                {'pk': job_index, 'sk': 'HISTORY#REVISION'}]
     auth_created = False
     try:
         for version in ('v1', 'v2'):
@@ -77,8 +85,19 @@ def main():
                 pass
             else:
                 raise AssertionError(f'profile write accepted for {state}')
+            try:
+                store.create(job_pk, job_meta, 0)
+            except Conflict:
+                pass
+            else:
+                raise AssertionError(f'job write accepted for {state}')
         if any(table.get_item(Key=k, ConsistentRead=True).get('Item') for k in (locked_key, locked_ref)):
             raise AssertionError('blocked write left a profile or reference')
+        if any(table.get_item(Key=k, ConsistentRead=True).get('Item') for k in job_keys):
+            raise AssertionError('blocked write left a job, listing or history revision')
+        store.create(job_pk, job_meta, 1)
+        if any(table.get_item(Key=k, ConsistentRead=True).get('Item') is None for k in job_keys):
+            raise AssertionError('valid session did not create complete job history')
         table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
                        ConditionExpression='attribute_not_exists(pk)')
         checkpoint, found = None, False
@@ -102,9 +121,11 @@ def main():
     finally:
         for key in keys:
             table.delete_item(Key=key)
+        for key in job_keys:
+            table.delete_item(Key=key)
         if auth_created:
             auth_table.delete_item(Key=auth_key)
-    print('profile transaction, concurrent write and deletion lock rejection, owner isolation, pagination, bounded scan, legacy reconciliation and cleanup verified')
+    print('profile and job write guards, concurrent profile creation, owner isolation, bounded scan and cleanup verified')
 
 
 if __name__ == '__main__':

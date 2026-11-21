@@ -150,7 +150,7 @@ class CookingStore(Protocol):
     def read_meta(self, pk: str) -> dict | None: ...
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
-    def create(self, pk: str, meta: dict) -> None: ...
+    def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None: ...
     def list_jobs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def history_revision(self, subject: str) -> int | None: ...
     def ensure_listed(self, pk: str, meta: dict) -> None: ...
@@ -372,7 +372,7 @@ class MemoryCookingStore:
         with self.lock:
             return _history_number(self.items.get((f"SCOPE#USER#{subject}#JOBS", "HISTORY#REVISION")))
 
-    def create(self, pk: str, meta: dict) -> None:
+    def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None:
         with self.lock:
             listing = _job_list_item(pk, meta)
             list_key = (listing["pk"], listing["sk"])
@@ -621,20 +621,24 @@ class DynamoCookingStore:
         self.serializer = TypeSerializer()
         self.auth_table_name = auth_table_name or os.getenv("FOODTECH_AUTH_TABLE", "")
 
-    def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None:
+    def _owner_guard(self, subject: str, expected_epoch: int) -> dict:
         if not getattr(self, 'auth_table_name', '') or type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63:
             raise ValueError('authentication table and valid epoch are required')
+        return {"ConditionCheck": {"TableName": self.auth_table_name,
+                    "Key": self._item({"pk": f"USER#{subject}"}),
+                    "ConditionExpression": "((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) "
+                        "AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+                    "ExpressionAttributeNames": {"#epoch": "epoch"},
+                    "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}}
+
+    def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None:
+        guard = self._owner_guard(subject, expected_epoch)
         item = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}",
                 "sk": f"VERSION#{profile['profile_version']}", **profile}
         listing = _profile_listing(subject, profile)
         try:
             self.client.transact_write_items(TransactItems=[
-                {"ConditionCheck": {"TableName": self.auth_table_name,
-                    "Key": self._item({"pk": f"USER#{subject}"}),
-                    "ConditionExpression": "((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) "
-                        "AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
-                    "ExpressionAttributeNames": {"#epoch": "epoch"},
-                    "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}},
+                guard,
                 {"Put": {"TableName": self.table.name, "Item": self._item(item),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
                 {"Put": {"TableName": self.table.name, "Item": self._item(listing),
@@ -950,10 +954,12 @@ class DynamoCookingStore:
                                    ConsistentRead=True).get("Item")
         return _history_number(item)
 
-    def create(self, pk: str, meta: dict) -> None:
+    def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None:
         listing = _job_list_item(pk, meta)
+        guard = self._owner_guard(meta['owner_subject'], expected_epoch)
         try:
             self._history_transact([
+                guard,
                 {"Put": {"TableName": self.table.name,
                          "Item": self._item({"pk": pk, "sk": "META", **meta}),
                          "ConditionExpression": "attribute_not_exists(pk)"}},

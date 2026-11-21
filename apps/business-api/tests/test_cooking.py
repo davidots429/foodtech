@@ -917,6 +917,7 @@ class DynamoTransactionContractTests(unittest.TestCase):
         calls = []
         store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-table")
+        store.auth_table_name = "auth-table"
         store.serializer = TypeSerializer()
         store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
         meta = {"owner_subject": "one", "job_id": "job", "created_at": "2026-11-15T00:00:00Z",
@@ -924,10 +925,12 @@ class DynamoTransactionContractTests(unittest.TestCase):
         job_pk = "SCOPE#USER#one#JOB#job"
         store.create(job_pk, meta)
         writes = calls[0]["TransactItems"]
-        self.assertEqual(len(writes), 3)
-        self.assertEqual(writes[2]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
-        self.assertEqual(writes[1]["Put"]["Item"]["pk"]["S"], "SCOPE#USER#one#JOBS")
-        self.assertEqual(writes[1]["Put"]["Item"]["sk"]["S"],
+        self.assertEqual(len(writes), 4)
+        self.assertEqual(writes[0]["ConditionCheck"]["TableName"], "auth-table")
+        self.assertIn("deletion_lock_request", writes[0]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual(writes[3]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
+        self.assertEqual(writes[2]["Put"]["Item"]["pk"]["S"], "SCOPE#USER#one#JOBS")
+        self.assertEqual(writes[2]["Put"]["Item"]["sk"]["S"],
                          "CREATED#2026-11-15T00:00:00Z#job")
         store.create_recook(job_pk, 3, "SCOPE#USER#one#JOB#recook",
                             {**meta, "job_id": "recook", "source_job_id": "job"})
