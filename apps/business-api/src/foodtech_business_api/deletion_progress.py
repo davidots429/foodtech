@@ -27,6 +27,16 @@ class DeletionProgressStore:
     def _encode(self, values):
         return {key: self.serializer.serialize(value) for key, value in values.items()}
 
+    def save_checkpoint(self, *, cipher, subject: str, request_id: str, domain: str,
+                        expected_version: int, state: str, checkpoint: bytes) -> int:
+        """Seal a checkpoint for its next version before the guarded write."""
+        if type(expected_version) is not int or not 0 <= expected_version < 2**63 - 1:
+            raise ValueError('invalid deletion progress')
+        ciphertext = cipher.seal(subject=subject, request_id=request_id, domain=domain,
+                                 version=expected_version + 1, state=state, checkpoint=checkpoint)
+        return self.save(subject=subject, request_id=request_id, domain=domain, expected_version=expected_version,
+                         state=state, encrypted_checkpoint=ciphertext)
+
     def save(self, *, subject: str, request_id: str, domain: str, expected_version: int,
              state: str, encrypted_checkpoint: bytes) -> int:
         """Advance one domain atomically under the matching active deletion lock.

@@ -35,6 +35,18 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(update['ConditionExpression'], '#version = :expected')
         self.assertEqual(update['ExpressionAttributeValues'][':expected'], {'N': '1'})
 
+    def test_save_checkpoint_seals_the_next_version_before_guarded_write(self):
+        class Cipher:
+            def seal(inner, **scope):
+                self.assertEqual(scope['version'], 2)
+                self.assertEqual(scope['subject'], self.args['subject'])
+                self.assertEqual(scope['checkpoint'], b'private cursor')
+                return b'sealed'
+        self.assertEqual(self.store.save_checkpoint(cipher=Cipher(), subject=self.args['subject'], request_id=self.args['request_id'],
+                domain='COOKING', expected_version=1, state='IN_PROGRESS', checkpoint=b'private cursor'), 2)
+        value = self.client.calls[-1]['TransactItems'][2]['Update']['ExpressionAttributeValues'][':checkpoint']
+        self.assertEqual(value, {'B': b'sealed'})
+
     def test_invalid_scope_and_completion_are_rejected_without_writes(self):
         for changes in ({'state': 'COMPLETED'}, {'expected_version': True}, {'domain': 'OTHER#CUSTOMER'},
                         {'encrypted_checkpoint': b''}, {'request_id': 'invalid'}):
