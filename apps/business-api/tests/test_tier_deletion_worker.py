@@ -160,6 +160,19 @@ class CaptureTests(unittest.TestCase):
         self.assertTrue(all(len(item['checkpoint']) < 16384 for item in self.progress.items.values()))
         self.capture.ensure_ready(**self.scope)
 
+    def test_observation_is_recorded_without_claiming_completion(self):
+        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['private#key'], 'next_cursor': None}
+        self.capture.capture_page(**self.scope, limit=1)
+        self.tier.observe_pending_index.return_value = 'PRESENT'
+        first = self.capture.observe_and_record(**self.scope, index=0)
+        self.assertEqual(first, {'index': 0, 'observation': 'PRESENT', 'version': 1})
+        self.assertNotIn('private#key', repr(first))
+        self.tier.observe_pending_index.return_value = 'NOT_OBSERVED'
+        second = self.capture.observe_and_record(**self.scope, index=0)
+        self.assertEqual(second, {'index': 0, 'observation': 'NOT_OBSERVED', 'version': 2})
+        with self.assertRaises(ValueError):
+            self.capture.observe_and_record(**self.scope, index=1)
+
     def test_deletion_refuses_incomplete_capture(self):
         worker = TierDeletionWorker(tier_store=self.tier, progress_store=self.progress,
                                     cipher=self.cipher, index_capture=self.capture)

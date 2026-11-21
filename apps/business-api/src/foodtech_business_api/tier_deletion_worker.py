@@ -129,6 +129,30 @@ class TierIndexCapture:
             index -= len(keys)
         raise ValueError('invalid tier index observation')
 
+    def observe_and_record(self, *, subject, request_id, index):
+        """Persist one bounded observation without declaring deletion complete."""
+        if type(index) is not int or not 0 <= index < 10**12:
+            raise ValueError('invalid tier index observation')
+        scope = {'subject': subject, 'request_id': request_id, 'domain': f'TIER_OBSERVE_{index:012d}'}
+        previous = self.progress_store.load_checkpoint(cipher=self.cipher, **scope)
+        version = 0 if previous is None else previous['version']
+        if previous is not None:
+            old = self._json(previous['checkpoint'])
+            if previous.get('state') != 'VERIFYING' or set(old) != {'schema', 'index', 'observation', 'observed_at'} or \
+                    old.get('schema') != 1 or old.get('index') != index or \
+                    old.get('observation') not in {'PRESENT', 'NOT_OBSERVED', 'INCONCLUSIVE'} or \
+                    not isinstance(old.get('observed_at'), str):
+                raise ValueError('invalid tier observation record')
+        if type(version) is not int or not 0 <= version < 2**63 - 1:
+            raise ValueError('invalid tier observation version')
+        observed = self.observe_one(subject=subject, request_id=request_id, index=index)
+        from datetime import datetime, timezone
+        record = {'schema': 1, 'index': index, 'observation': observed['observation'],
+                  'observed_at': datetime.now(timezone.utc).isoformat()}
+        saved = self.progress_store.save_checkpoint(cipher=self.cipher, **scope, expected_version=version,
+                                                    state='VERIFYING', checkpoint=self._pack(record))
+        return {'index': index, 'observation': observed['observation'], 'version': saved}
+
     def ensure_ready(self, *, subject, request_id):
         self._verified_pages(subject, request_id)
 
