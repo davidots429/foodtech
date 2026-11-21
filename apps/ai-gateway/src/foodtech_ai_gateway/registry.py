@@ -15,7 +15,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import boto3
-from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.conditions import Attr, Key
 from boto3.dynamodb.types import TypeSerializer
 
 from .policy import Budget, Consent, Credential, Execution, Feature, Model, Tier, UNCONFIGURED_TIER1
@@ -357,6 +357,28 @@ class DynamoRegistry:
                 "ConditionExpression": "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
                 "ExpressionAttributeValues": self._av({":false": False})}}
 
+    def active_execution_keys(self, tenant_id: str, limit: int = 100, cursor: str | None = None) -> dict:
+        if not isinstance(tenant_id, str) or not tenant_id or len(tenant_id) > 128 or \
+                type(limit) is not int or not 1 <= limit <= 100 or \
+                (cursor is not None and (not isinstance(cursor, str) or not cursor.startswith("EXEC#") or len(cursor) > 261)):
+            raise ValueError("invalid active execution inventory")
+        pk = f"ACTIVE#{tenant_id}"
+        args = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with("EXEC#"),
+                "ProjectionExpression": "pk, sk", "ConsistentRead": True, "Limit": limit}
+        if cursor is not None:
+            args["ExclusiveStartKey"] = {"pk": pk, "sk": cursor}
+        page = self.table.query(**args)
+        keys = []
+        for item in page.get("Items", []):
+            if item.get("pk") != pk or not isinstance(item.get("sk"), str) or not item["sk"].startswith("EXEC#"):
+                raise ValueError("invalid active execution record")
+            keys.append(item["sk"])
+        next_key = page.get("LastEvaluatedKey")
+        if next_key is not None and (not isinstance(next_key, dict) or set(next_key) != {"pk", "sk"} or
+                next_key["pk"] != pk or not isinstance(next_key["sk"], str) or not next_key["sk"].startswith("EXEC#")):
+            raise ValueError("invalid active execution checkpoint")
+        return {"keys": keys, "next_cursor": next_key["sk"] if next_key else None}
+
     def reserve(self, execution: Execution, provider: str) -> None:
         """Claim one execution and all three limits in one DynamoDB transaction."""
         cost = execution.estimated_cost_usd
@@ -389,6 +411,10 @@ class DynamoRegistry:
                          "UpdateExpression": update, "ConditionExpression": condition,
                          "ExpressionAttributeNames": {"#v": "version"},
                          "ExpressionAttributeValues": self._av(values)}})
+        items.append({"Put": {"TableName": self.table_name,
+                              "Item": self._av({"pk": f"ACTIVE#{execution.tenant_id}",
+                                                "sk": f"EXEC#{execution.execution_id}"}),
+                              "ConditionExpression": "attribute_not_exists(pk)"}})
         checked: set[str] = set()
         for kind, identifier in (("MODEL", execution.model_id),
                                  ("CREDENTIAL", execution.credential_id),
@@ -520,6 +546,8 @@ class DynamoRegistry:
                             "ConditionExpression": condition,
                             "ExpressionAttributeNames": {"#v": "version"},
                             "ExpressionAttributeValues": self._av(values)}})
+        changes.append({"Delete": {"TableName": self.table_name,
+                                    "Key": self._av({"pk": f"ACTIVE#{tenant_id}", "sk": f"EXEC#{execution_id}"})}})
         try:
             token = _transaction_token(self.table_name, "finish", execution_id, changes)
             self.client.transact_write_items(TransactItems=changes, ClientRequestToken=token)

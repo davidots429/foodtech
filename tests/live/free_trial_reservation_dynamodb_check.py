@@ -104,6 +104,8 @@ def main():
             raise AssertionError("Settlement retry did not succeed")
         print("Settlement after a known conditional conflict verified")
     finally:
+        for execution_id in ids:
+            table.delete_item(Key={"pk": f"ACTIVE#{tenant}", "sk": f"EXEC#{execution_id}"})
         for key in reversed(keys):
             table.delete_item(Key=key)
         if any(table.get_item(Key=key, ConsistentRead=True).get("Item") for key in keys):

@@ -25,6 +25,7 @@ def main():
     keys.append({'pk': f'EXEC#{run}', 'sk': 'META'})
     blocked_run, blocked_quote = str(uuid4()), str(uuid4())
     keys += [{'pk': f'EXEC#{blocked_run}', 'sk': 'META'}, {'pk': f'QUOTE#{blocked_quote}', 'sk': 'META'}]
+    keys += [{'pk': f'ACTIVE#{tenant}', 'sk': f'EXEC#{run}'}, {'pk': f'EXEC#{run}', 'sk': 'RESULT'}]
     registry = DynamoRegistry(table.name, period, resource=resource, client=session.client('dynamodb'), auth_table=auth.name)
     auth_created = False
     try:
@@ -66,6 +67,15 @@ def main():
         registry.reserve(registry.execution(run), provider)
         if table.get_item(Key=keys[3], ConsistentRead=True)['Item']['state'] != 'RESERVED':
             raise AssertionError('valid reservation failed')
+        if registry.active_execution_keys(tenant)['keys'] != [f'EXEC#{run}']:
+            raise AssertionError('active reservation was not indexed')
+        auth.update_item(Key=auth_key, UpdateExpression='SET deletion_lock_request = :request',
+                         ExpressionAttributeValues={':request': str(uuid4())})
+        registry.begin_request()
+        registry.finish(run, succeeded=True, actual_cost_usd=Decimal('0'), response_text='synthetic')
+        if registry.active_execution_keys(tenant)['keys'] or \
+                table.get_item(Key=keys[3], ConsistentRead=True)['Item']['state'] != 'SUCCEEDED':
+            raise AssertionError('settled reservation retained active marker')
     finally:
         for key in keys:
             table.delete_item(Key=key)

@@ -80,7 +80,11 @@ class AtomicClient:
         self.calls.append(TransactItems)
         updates = []
         puts = []
+        deletes = []
         for action in TransactItems:
+            if "Delete" in action:
+                deletes.append(self._decode(action["Delete"]["Key"]))
+                continue
             if "Put" in action:
                 value = self._decode(action["Put"]["Item"])
                 if (value["pk"], value["sk"]) in self.table.items:
@@ -158,6 +162,8 @@ class AtomicClient:
                     item["calls_remaining"] -= 1
         for value in puts:
             self.table.items[(value["pk"], value["sk"])] = value
+        for value in deletes:
+            self.table.items.pop((value["pk"], value["sk"]), None)
 
 
 class RegistryTests(unittest.TestCase):
@@ -491,6 +497,24 @@ class RegistryTests(unittest.TestCase):
         decision = self.service.prepare_local_recipe_retry(Caller('business-api', 'tenant-a'), 'recipe-1', 2)
         self.assertFalse(decision.allowed)
         self.assertNotIn(('EXEC#recipe-1', 'CALL#2'), self.resource.table.items)
+
+    def test_active_marker_survives_lock_until_settlement(self):
+        self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)
+        marker = ('ACTIVE#tenant-a', 'EXEC#run-1')
+        self.assertIn(marker, self.resource.table.items)
+        self.client.auth_states = {'USER#tenant-a': {'deletion_lock_request': 'synthetic'}}
+        self.registry.finish('run-1', succeeded=True, actual_cost_usd=Decimal('0.1'), response_text='synthetic')
+        self.assertNotIn(marker, self.resource.table.items)
+        self.assertEqual(self.registry.execution_state('run-1'), 'SUCCEEDED')
+
+    def test_active_marker_remains_if_settlement_fails(self):
+        self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)
+        marker = ('ACTIVE#tenant-a', 'EXEC#run-1')
+        self.client.before_commit = lambda: self.resource.table.items[
+            ('LIMIT#2026-11#TENANT#tenant-a', 'META')].update(version=999)
+        with self.assertRaises(RegistryConflict):
+            self.registry.finish('run-1', succeeded=True, actual_cost_usd=Decimal('0.1'), response_text='synthetic')
+        self.assertIn(marker, self.resource.table.items)
 
 
 if __name__ == "__main__":
