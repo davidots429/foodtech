@@ -145,6 +145,21 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
         state = (await self.login())["state"][0]
         self.assertEqual((await self.callback("customer", state)).status_code, 403)
 
+    async def test_deletion_lock_blocks_login_even_without_suspension_flag(self):
+        self.store.principals["subject-1"] = {"epoch": 0, "deletion_lock_request": "request-1"}
+        state = (await self.login())["state"][0]
+        self.assertEqual((await self.callback("customer", state)).status_code, 403)
+        state = (await self.login("admin"))["state"][0]
+        self.assertEqual((await self.callback("admin", state, ["foodtech-admin"])).status_code, 403)
+
+    async def test_deletion_lock_revokes_session_even_without_suspension_flag(self):
+        state = (await self.login())["state"][0]
+        self.assertEqual((await self.callback("customer", state)).status_code, 303)
+        self.store.principals["subject-1"] = {"epoch": 0, "deletion_lock_request": "request-1"}
+        self.assertEqual((await self.client.get("/api/customer/me")).status_code, 401)
+        self.store.principals["subject-1"] = {"epoch": 0}
+        self.assertEqual((await self.client.get("/api/customer/me")).status_code, 401)
+
     async def test_totp_enrollment_keeps_secret_and_access_token_off_me(self):
         state = (await self.login())["state"][0]
         self.assertEqual((await self.callback("customer", state)).status_code, 303)
