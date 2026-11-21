@@ -632,7 +632,12 @@ def _display_climate_legacy(step: dict) -> dict:
 @router.get("/{meal_id}")
 async def get_meal(meal_id: UUID, request: Request) -> dict:
     session, store = await _context(request)
-    records = await _store_call(store, store.read_meal, _pk(session.subject, str(meal_id)))
+    return await read_meal_for_subject(store, session.subject, meal_id)
+
+
+async def read_meal_for_subject(store, subject: str, meal_id: UUID) -> dict:
+    """Read a scoped meal for an already-authorized customer or trusted worker."""
+    records = await _store_call(store, store.read_meal, _pk(subject, str(meal_id)))
     rows = {row["sk"]: {k: v for k, v in row.items() if k != "pk"} for row in records}
     meta = rows.get("META")
     if not meta:

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from foodtech_contracts.combi_quality_load import RULE_VERSION, classify
 
 from .assessment_aggregate import _hash, _percent, _valid_hash
-from .combi_meal import _pk, get_meal
+from .combi_meal import _pk, read_meal_for_subject
 from .combi_quality_sample import current_quality
 from .cooking import SCORE_ITEMS, _context, _store_call
 from .cooking_store import Conflict
@@ -41,6 +41,11 @@ class MealAggregateComparisonRequest(BaseModel):
 @router.post('', status_code=201)
 async def create_meal_aggregate(request: Request, body: MealAggregateRequest) -> dict:
     session, store = await _context(request, write=True)
+    return await create_meal_aggregate_for_subject(store, session.subject, session.epoch, body)
+
+
+async def create_meal_aggregate_for_subject(store, subject: str, epoch: int, body: MealAggregateRequest) -> dict:
+    """Create a snapshot for an already-authorized subject; writes recheck account state."""
     if body.period_start.utcoffset() is None or body.period_end.utcoffset() is None:
         raise HTTPException(422, '집계 기간에는 시간대가 필요합니다.')
     start, end = body.period_start.astimezone(timezone.utc), body.period_end.astimezone(timezone.utc)
@@ -54,8 +59,8 @@ async def create_meal_aggregate(request: Request, body: MealAggregateRequest) ->
                  'period_start': start.isoformat(), 'period_end': end.isoformat(), 'load_rule_version': RULE_VERSION}
     snapshots, references, included = [], [], []
     for meal_id in meal_ids:
-        first = await get_meal(UUID(meal_id), request)
-        view = await get_meal(UUID(meal_id), request)
+        first = await read_meal_for_subject(store, subject, UUID(meal_id))
+        view = await read_meal_for_subject(store, subject, UUID(meal_id))
         if first != view:
             raise HTTPException(409, '조회 중 식사 배치가 변경되었습니다. 다시 집계해 주세요.')
         meta = view['meal']
@@ -66,7 +71,7 @@ async def create_meal_aggregate(request: Request, body: MealAggregateRequest) ->
             sample = current_quality(view, body.menu)
         except (KeyError, ValueError, TypeError) as exc:
             raise HTTPException(409, '현재 품질평가 이력을 확인할 수 없습니다.') from exc
-        snapshots.append((_pk(session.subject, meal_id), version))
+        snapshots.append((_pk(subject, meal_id), version))
         reason = None
         assessment = sample.get('assessment')
         if sample['status'] == 'EXCLUDED':
@@ -116,9 +121,9 @@ async def create_meal_aggregate(request: Request, body: MealAggregateRequest) ->
               'quality_pass_rate_percent': _percent(sum(item['quality_passed'] for item in included), count),
               'quality_target_rate_percent': _percent(sum(item['quality_target'] for item in included), count),
               'representativeness_status': 'NOT_EVALUATED', 'provenance': 'SYNTHETIC'}
-    pk = f'SCOPE#USER#{session.subject}#MEAL_AGGREGATE#{group_id}'
+    pk = f'SCOPE#USER#{subject}#MEAL_AGGREGATE#{group_id}'
     try:
-        return await _store_call(store, store.save_meal_aggregate, pk, snapshots, record, session.subject, session.epoch)
+        return await _store_call(store, store.save_meal_aggregate, pk, snapshots, record, subject, epoch)
     except Conflict as exc:
         raise HTTPException(409, '집계 중 식사 배치가 변경되었습니다. 다시 계산해 주세요.') from exc
     except ValueError as exc:
@@ -151,7 +156,11 @@ async def list_meal_dependencies(meal_id: UUID, request: Request, limit: int = Q
     if cursor is not None and not _valid_hash(cursor):
         raise HTTPException(400, '집계 그룹 목록 커서가 올바르지 않습니다.')
     session, store = await _context(request)
-    meal_pk = _pk(session.subject, str(meal_id))
+    return await list_meal_dependencies_for_subject(store, session.subject, meal_id, limit, cursor)
+
+
+async def list_meal_dependencies_for_subject(store, subject: str, meal_id: UUID, limit: int, cursor: str | None) -> dict:
+    meal_pk = _pk(subject, str(meal_id))
     meta = await _store_call(store, store.read_meta, meal_pk)
     if not meta or meta.get('meal_batch_id') != str(meal_id):
         raise HTTPException(404, '식사 배치를 찾을 수 없습니다.')
@@ -174,7 +183,12 @@ async def list_meal_dependencies(meal_id: UUID, request: Request, limit: int = Q
 async def refresh_pending_meal_aggregates(meal_id: UUID, request: Request) -> dict:
     """Refresh all linked groups; acknowledge only the exact observed meal version."""
     session, store = await _context(request, write=True)
-    meal_pk = _pk(session.subject, str(meal_id))
+    return await refresh_pending_for_subject(store, session.subject, session.epoch, meal_id)
+
+
+async def refresh_pending_for_subject(store, subject: str, epoch: int, meal_id: UUID) -> dict:
+    """Refresh a scoped meal after caller authentication or worker authorization."""
+    meal_pk = _pk(subject, str(meal_id))
     meta = await _store_call(store, store.read_meta, meal_pk)
     if not meta or meta.get('meal_batch_id') != str(meal_id):
         raise HTTPException(404, '식사 배치를 찾을 수 없습니다.')
@@ -186,7 +200,7 @@ async def refresh_pending_meal_aggregates(meal_id: UUID, request: Request) -> di
         raise HTTPException(409, '재집계 대기 상태가 변경되었습니다. 다시 시도해 주세요.')
     cursor, seen, refreshed = None, set(), 0
     while True:
-        page = await list_meal_dependencies(meal_id, request, limit=50, cursor=cursor)
+        page = await list_meal_dependencies_for_subject(store, subject, meal_id, limit=50, cursor=cursor)
         for group in page['items']:
             try:
                 selection = group['selection']
@@ -196,7 +210,7 @@ async def refresh_pending_meal_aggregates(meal_id: UUID, request: Request) -> di
                     'meal_ids', 'menu', 'equipment_size', 'recipe_version', 'load_band', 'period_start', 'period_end')})
             except (KeyError, TypeError, ValueError, ValidationError):
                 raise HTTPException(409, '배치의 집계 조건을 확인할 수 없습니다.') from None
-            result = await create_meal_aggregate(request, body)
+            result = await create_meal_aggregate_for_subject(store, subject, epoch, body)
             if result.get('group_id') != group['group_id']:
                 raise HTTPException(409, '배치의 집계 연결이 변경되었습니다.')
             refreshed += 1
@@ -210,7 +224,7 @@ async def refresh_pending_meal_aggregates(meal_id: UUID, request: Request) -> di
         seen.add(next_cursor)
         cursor = next_cursor
     try:
-        await _store_call(store, store.acknowledge_meal_aggregate_dirty, meal_pk, version, session.subject, session.epoch)
+        await _store_call(store, store.acknowledge_meal_aggregate_dirty, meal_pk, version, subject, epoch)
     except Conflict as exc:
         raise HTTPException(409, '재집계 중 배치 또는 계정 상태가 변경되었습니다. 다시 시도해 주세요.') from exc
     except ValueError as exc:

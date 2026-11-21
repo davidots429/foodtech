@@ -3,10 +3,13 @@ import unittest
 import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
+
+from fastapi import HTTPException
 
 import httpx
 
-from foodtech_business_api import cooking, combi_meal
+from foodtech_business_api import cooking, combi_meal, combi_quality_aggregate
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app
@@ -261,6 +264,16 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         changed_compare = await self.client.post(path + '/compare', headers=headers, json=comparison_body)
         self.assertEqual(changed_compare.json()['baseline']['freshness']['status'], 'CHANGED')
         self.assertEqual((await self.client.get(link)).json()['result_id'], result['result_id'])
+        # The trusted execution entry point remains scoped and uses the same pending-version guard.
+        with self.assertRaises(HTTPException) as wrong_owner:
+            await combi_quality_aggregate.refresh_pending_for_subject(
+                self.store, 'another-customer', 0, UUID(meta['meal_batch_id']))
+        self.assertEqual(wrong_owner.exception.status_code, 404)
+        self.assertIn(marker_key, self.store.items)
+        internal = await combi_quality_aggregate.refresh_pending_for_subject(
+            self.store, self.subject, 0, UUID(meta['meal_batch_id']))
+        self.assertEqual(internal, {'status': 'REFRESHED', 'refreshed_group_count': 3, 'meal_version': 3})
+        self.assertNotIn(marker_key, self.store.items)
         del self.store.items[(pk, 'META')]
         missing = await self.client.get(link + '/freshness')
         self.assertEqual(missing.json()['changed'], [{'meal_id': meta['meal_batch_id'], 'reason': 'UNAVAILABLE'}])
