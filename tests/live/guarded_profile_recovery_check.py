@@ -37,6 +37,13 @@ from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinato
 from foodtech_business_api.job_deletion_recovery import JobDeletionRecovery
 from foodtech_business_api.job_meta_deletion import JobMetaDeletion
 from foodtech_business_api.job_source_snapshot import JobSourceSnapshot
+from foodtech_business_api.meal_deletion_coordinator import MealDeletionCoordinator
+from foodtech_business_api.meal_deletion_inventory import MealDeletionInventory
+from foodtech_business_api.meal_deletion_recovery import MealDeletionRecovery
+from foodtech_business_api.meal_deletion_residual import MealFinalResidualScan, MealResidualScan
+from foodtech_business_api.meal_deletion_worker import MealDeletionWorker
+from foodtech_business_api.meal_meta_deletion import MealMetaDeletion
+from foodtech_business_api.meal_source_snapshot import MealSourceSnapshot
 from foodtech_business_api.deletion_progress import DeletionProgressStore
 from foodtech_business_api.deletion_checkpoint_cipher import DeletionCheckpointCipher
 from foodtech_capsule_crypto.tenant_scope import TenantScope, TenantScopeResolver
@@ -87,6 +94,7 @@ def main():
     plan_request = None
     profile_created = []
     job_created = []
+    meal_created = []
     try:
         auth.put_item(Item={**auth_key, "epoch": 0, "vault_id": vault_id, "provenance": "SYNTHETIC"},
                       ConditionExpression=Attr("pk").not_exists())
@@ -257,6 +265,41 @@ def main():
         try:job_recovery.step(authenticated_subject=str(uuid.uuid4()),request_id=winner)
         except ValueError:pass
         else:raise AssertionError('other subject recovered job deletion')
+        meal_id = str(uuid.uuid4())
+        meal_pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}'
+        for meal_item in ({'pk': meal_pk, 'sk': 'META', 'meal_batch_id': meal_id, 'version': 1},
+                          {'pk': meal_pk, 'sk': 'EVENT#1'},
+                          {'pk': f'SCOPE#USER#{subject}#COMBI_MEALS', 'sk': f'MEAL#{meal_id}',
+                           'meal_batch_id': meal_id}):
+            vault.put_item(Item=meal_item, ConditionExpression=Attr('pk').not_exists())
+            meal_created.append({'pk': meal_item['pk'], 'sk': meal_item['sk']})
+        meals = MealDeletionInventory(source_table=vault, progress_store=plan_progress, cipher=profile_cipher)
+        meal_worker = MealDeletionWorker(inventory=meals, source_table=vault, progress_store=plan_progress, cipher=profile_cipher)
+        meal_residual = MealResidualScan(source_table=vault, progress_store=plan_progress, cipher=profile_cipher)
+        meal_final = MealFinalResidualScan(source_table=vault, progress_store=plan_progress, cipher=profile_cipher)
+        meal_meta = MealMetaDeletion(inventory=meals, residual=meal_residual)
+        meal_coordinator = MealDeletionCoordinator(meals=meals, worker=meal_worker, residual=meal_residual,
+            metadata=meal_meta, final_residual=meal_final, sources=MealSourceSnapshot(inventory=meals))
+        meal_recovery = MealDeletionRecovery(recovery=recovery, coordinator=meal_coordinator)
+        try:
+            meal_recovery.step(authenticated_subject=str(uuid.uuid4()), request_id=winner)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('other subject recovered meal deletion')
+        for _ in range(1000):
+            meal_result = meal_recovery.step(authenticated_subject=subject, request_id=winner, limit=100)
+            if meal_result.get('residual_found') or meal_result.get('source_ownership_required'):
+                raise AssertionError('unexpected synthetic meal residual or source')
+            if meal_result['phase'] == 'VERIFYING':
+                break
+        else:
+            raise AssertionError('bounded meal recovery did not finish')
+        if any(vault.get_item(Key=k, ConsistentRead=True).get('Item') for k in meal_created):
+            raise AssertionError('meal recovery did not remove synthetic records')
+        if not plan_progress.load_checkpoint(cipher=profile_cipher, subject=subject, request_id=winner,
+                                             domain='MEAL_META_000000000000'):
+            raise AssertionError('meal recovery did not preserve encrypted META snapshot')
         worker = CapsulePlanWorker(recovery=recovery, inventory=CapsuleInventory(CAPSULE, purposes, client=client),
             source_table=capsule, progress_store=plan_progress, progress_cipher=plan_cipher,
             tenant_resolver=resolver, key_map=key_map, approved_purposes=purposes,
@@ -278,7 +321,7 @@ def main():
             raise AssertionError("Losing request created a tombstone")
     finally:
         if plan_request:
-            for profile_key in profile_created + job_created:
+            for profile_key in profile_created + job_created + meal_created:
                 vault.delete_item(Key=profile_key)
             cursor = None
             while True:
@@ -287,7 +330,7 @@ def main():
                     query['ExclusiveStartKey'] = cursor
                 pages = progress_table.query(**query)
                 for item in pages['Items']:
-                    if item['sk'].startswith(('DOMAIN#PROFILE_', 'DOMAIN#JOB_')):
+                    if item['sk'].startswith(('DOMAIN#PROFILE_', 'DOMAIN#JOB_', 'DOMAIN#MEAL_')):
                         profile_progress_key = {'pk': item['pk'], 'sk': item['sk']}
                         progress_table.delete_item(Key=profile_progress_key)
                         if progress_table.get_item(Key=profile_progress_key, ConsistentRead=True).get('Item'):
@@ -295,7 +338,7 @@ def main():
                 cursor = pages.get('LastEvaluatedKey')
                 if not cursor:
                     break
-            for profile_key in profile_created + job_created:
+            for profile_key in profile_created + job_created + meal_created:
                 if vault.get_item(Key=profile_key, ConsistentRead=True).get('Item'):
                     raise RuntimeError('synthetic profile cleanup failed')
             for domain in ('CAPSULE_PLAN', 'CAPSULE_PLAN_PAGE_000000000001'):
@@ -322,7 +365,7 @@ def main():
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
     print(json.dumps({"stale_vault_and_capsule_atomicity": "verified", "competing_registration": "verified",
-                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "profile_recovery": "verified", "job_recovery": "verified", "cleanup": "verified"}))
+                      "identical_retry": "verified", "locked_recovery": "verified", "encrypted_recovery": "verified", "locked_encrypted_target_plan": "verified", "durable_plan_retry": "verified", "verified_target_visit": "verified", "profile_recovery": "verified", "job_recovery": "verified", "meal_recovery": "verified", "cleanup": "verified"}))
 
 
 if __name__ == "__main__":
