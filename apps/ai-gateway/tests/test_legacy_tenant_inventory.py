@@ -132,15 +132,17 @@ class TenantInventoryTests(unittest.TestCase):
         client = Mock()
         client.exceptions.TransactionCanceledException = type('Canceled', (Exception,), {})
         request = str(uuid4())
-        ensure_reserved_marker(client, auth_table='auth', registry_table='registry', tenant='alice',
+        ensure_reserved_marker(client, auth_table='auth', registry_table='registry', deletion_registry_table='deletion', tenant='alice',
                                request_id=request, execution_id='run')
         ops = client.transact_write_items.call_args.kwargs['TransactItems']
         self.assertEqual(ops[0]['ConditionCheck']['ExpressionAttributeValues'][':request'], {'S': request})
-        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':reserved'], {'S': 'RESERVED'})
-        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':tenant'], {'S': 'alice'})
-        self.assertEqual(ops[2]['Update']['Key']['pk'], {'S': 'ACTIVE#alice'})
+        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':active'], {'S': 'DELETING'})
+        self.assertIn('suspended = :yes', ops[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[2]['ConditionCheck']['ExpressionAttributeValues'][':reserved'], {'S': 'RESERVED'})
+        self.assertEqual(ops[2]['ConditionCheck']['ExpressionAttributeValues'][':tenant'], {'S': 'alice'})
+        self.assertEqual(ops[3]['Update']['Key']['pk'], {'S': 'ACTIVE#alice'})
         with self.assertRaises(ValueError):
-            ensure_reserved_marker(client, auth_table='auth', registry_table='registry', tenant='alice',
+            ensure_reserved_marker(client, auth_table='auth', registry_table='registry', deletion_registry_table='deletion', tenant='alice',
                                    request_id=request, execution_id='bad#id')
 
     def test_reconcile_page_returns_progress_only_after_all_markers_succeed(self):
@@ -152,12 +154,12 @@ class TenantInventoryTests(unittest.TestCase):
         with patch('foodtech_ai_gateway.legacy_tenant_inventory.scan_registry_partitions', return_value=page), \
              patch('foodtech_ai_gateway.legacy_tenant_inventory.ensure_reserved_marker', side_effect=[None, RuntimeError('changed')]) as ensure:
             with self.assertRaises(RuntimeError):
-                reconcile_reserved_page(table, client, auth_table='auth', registry_table='registry',
+                reconcile_reserved_page(table, client, auth_table='auth', registry_table='registry', deletion_registry_table='deletion',
                                         tenant='alice', request_id=request, limit=3)
             self.assertEqual(ensure.call_count, 2)
         with patch('foodtech_ai_gateway.legacy_tenant_inventory.scan_registry_partitions', return_value=page), \
              patch('foodtech_ai_gateway.legacy_tenant_inventory.ensure_reserved_marker') as ensure:
-            result = reconcile_reserved_page(table, client, auth_table='auth', registry_table='registry',
+            result = reconcile_reserved_page(table, client, auth_table='auth', registry_table='registry', deletion_registry_table='deletion',
                                              tenant='alice', request_id=request, limit=3)
             self.assertEqual(result.checkpoint, page.checkpoint)
             self.assertEqual(ensure.call_count, 2)

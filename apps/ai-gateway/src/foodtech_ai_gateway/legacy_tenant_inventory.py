@@ -149,7 +149,7 @@ def resolve_credential_vault(registry, vault, *, tenant: str, credential_id: str
     return VaultLocation(key, pseudonym)
 
 
-def ensure_reserved_marker(client, *, auth_table: str, registry_table: str,
+def ensure_reserved_marker(client, *, auth_table: str, registry_table: str, deletion_registry_table: str,
                            tenant: str, request_id: str, execution_id: str) -> None:
     """Mark a confirmed legacy reservation while its exact deletion lock is held.
 
@@ -164,7 +164,8 @@ def ensure_reserved_marker(client, *, auth_table: str, registry_table: str,
             raise ValueError
     except (ValueError, TypeError, AttributeError):
         raise ValueError('invalid active reconciliation scope') from None
-    if not auth_table or not registry_table or auth_table == registry_table:
+    if any(not isinstance(name,str) or not name for name in (auth_table,registry_table,deletion_registry_table)) or \
+            len({auth_table,registry_table,deletion_registry_table}) != 3:
         raise ValueError('separate auth and registry tables required')
     serializer = TypeSerializer()
     def encode(values):
@@ -172,8 +173,12 @@ def ensure_reserved_marker(client, *, auth_table: str, registry_table: str,
     try:
         client.transact_write_items(TransactItems=[
             {'ConditionCheck': {'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
-                                'ConditionExpression': 'deletion_lock_request = :request',
-                                'ExpressionAttributeValues': encode({':request': request_id})}},
+                                'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes',
+                                'ExpressionAttributeValues': encode({':request': request_id, ':yes': True})}},
+            {'ConditionCheck': {'TableName': deletion_registry_table,
+                                'Key': encode({'pk':'REGISTRY','sk':f'REQ#{request_id}'}),
+                                'ConditionExpression':'#status = :active', 'ExpressionAttributeNames':{'#status':'status'},
+                                'ExpressionAttributeValues':encode({':active':'DELETING'})}},
             {'ConditionCheck': {'TableName': registry_table,
                                 'Key': encode({'pk': f'EXEC#{execution_id}', 'sk': 'META'}),
                                 'ConditionExpression': 'tenant_id = :tenant AND #state = :reserved',
@@ -190,7 +195,7 @@ def ensure_reserved_marker(client, *, auth_table: str, registry_table: str,
         raise
 
 
-def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: str,
+def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: str, deletion_registry_table: str,
                             tenant: str, request_id: str, limit: int,
                             checkpoint: dict | None = None) -> InventoryPage:
     """Reconcile reserved executions in one scan page or return no progress.
@@ -204,7 +209,8 @@ def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: s
             raise ValueError
     except (ValueError, TypeError, AttributeError):
         raise ValueError('invalid active reconciliation request') from None
-    if not auth_table or not registry_table or auth_table == registry_table or getattr(table, 'name', None) != registry_table:
+    if any(not isinstance(name,str) or not name for name in (auth_table,registry_table,deletion_registry_table)) or \
+            len({auth_table,registry_table,deletion_registry_table}) != 3 or getattr(table, 'name', None) != registry_table:
         raise ValueError('invalid active reconciliation tables')
     serializer = TypeSerializer()
     def encode(values):
@@ -213,8 +219,12 @@ def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: s
         try:
             client.transact_write_items(TransactItems=[{'ConditionCheck': {
                 'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
-                'ConditionExpression': 'deletion_lock_request = :request',
-                'ExpressionAttributeValues': encode({':request': request_id})}}])
+                'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes',
+                'ExpressionAttributeValues': encode({':request': request_id, ':yes':True})}},
+                {'ConditionCheck': {'TableName':deletion_registry_table,
+                 'Key':encode({'pk':'REGISTRY','sk':f'REQ#{request_id}'}),
+                 'ConditionExpression':'#status = :active','ExpressionAttributeNames':{'#status':'status'},
+                 'ExpressionAttributeValues':encode({':active':'DELETING'})}}])
         except client.exceptions.TransactionCanceledException as exc:
             if any(reason.get('Code') == 'ConditionalCheckFailed' for reason in exc.response.get('CancellationReasons', [])):
                 raise ActiveReconciliationConflict from exc
@@ -229,7 +239,7 @@ def reconcile_reserved_page(table, client, *, auth_table: str, registry_table: s
                 item.get('state') not in {'PENDING', 'RESERVED', 'SUCCEEDED', 'FAILED'}:
             raise ActiveReconciliationConflict('execution changed or is unavailable')
         if item['state'] == 'RESERVED':
-            ensure_reserved_marker(client, auth_table=auth_table, registry_table=registry_table,
+            ensure_reserved_marker(client, auth_table=auth_table, registry_table=registry_table, deletion_registry_table=deletion_registry_table,
                                    tenant=tenant, request_id=request_id, execution_id=partition.removeprefix('EXEC#'))
     check_lock()
     return page

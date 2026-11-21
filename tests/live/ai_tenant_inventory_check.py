@@ -51,7 +51,7 @@ def main():
         deletion_registry.put_item(Item={**deletion_key,'status':'DELETING'},ConditionExpression='attribute_not_exists(pk)')
         deletion_created = True
         def ensure(request_id):
-            ensure_reserved_marker(session.client('dynamodb'), auth_table=auth.name, registry_table=table.name,
+            ensure_reserved_marker(session.client('dynamodb'), auth_table=auth.name, registry_table=table.name, deletion_registry_table=deletion_registry.name,
                                    tenant=tenant, request_id=request_id, execution_id=run)
         try:
             ensure(str(uuid4()))
@@ -59,6 +59,15 @@ def main():
             pass
         else:
             raise AssertionError('incorrect lock restored an active marker')
+        deletion_registry.update_item(Key=deletion_key,UpdateExpression='SET #s=:s',
+            ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'PAUSED'})
+        try:ensure(request)
+        except ActiveReconciliationConflict:pass
+        else:raise AssertionError('inactive request restored marker')
+        if table.get_item(Key=marker_key,ConsistentRead=True).get('Item'):
+            raise AssertionError('inactive request left marker')
+        deletion_registry.update_item(Key=deletion_key,UpdateExpression='SET #s=:s',
+            ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'DELETING'})
         ensure(request)
         ensure(request)
         if observe_active_markers(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant, request_id=request) != 'PRESENT':
@@ -75,7 +84,7 @@ def main():
         checkpoint, found_reserved = None, False
         for _ in range(100):
             page = reconcile_reserved_page(table, session.client('dynamodb'), auth_table=auth.name,
-                                           registry_table=table.name, tenant=tenant, request_id=request,
+                                           registry_table=table.name, deletion_registry_table=deletion_registry.name, tenant=tenant, request_id=request,
                                            limit=100, checkpoint=checkpoint)
             found_reserved |= exec_pk in page.partitions
             checkpoint = page.checkpoint

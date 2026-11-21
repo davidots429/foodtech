@@ -98,6 +98,7 @@ class TenantInventoryCapture:
         if entry is None:
             found = reconcile_reserved_page(self.source_table, self.progress_store.client,
                 auth_table=self.progress_store.auth_table, registry_table=self.source_table.name,
+                deletion_registry_table=self.progress_store.registry_table,
                 tenant=subject, request_id=request_id, limit=min(limit, 20), checkpoint=head['cursor'])
             value = {'schema': 1, 'start': head['cursor'], 'next': found.checkpoint,
                      'partitions': list(found.partitions)}

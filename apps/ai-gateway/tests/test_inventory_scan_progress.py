@@ -46,7 +46,7 @@ class InventoryProgressTests(unittest.TestCase):
     def setUp(self):
         self.table, self.cipher = Table(), Cipher()
         self.client = Client(self.table)
-        self.store = InventoryScanProgressStore(self.table, self.client, self.cipher, auth_table='auth')
+        self.store = InventoryScanProgressStore(self.table, self.client, self.cipher, auth_table='auth', deletion_registry_table='deletion-registry')
         self.job, self.request = str(uuid4()), str(uuid4())
         self.arn = 'arn:aws:dynamodb:ap-southeast-2:123456789012:table/registry'
         self.source = SimpleNamespace(name='registry', table_arn=self.arn)
