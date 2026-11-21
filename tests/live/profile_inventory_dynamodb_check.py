@@ -1,0 +1,49 @@
+"""Opt-in isolated profile inventory transaction check; synthetic data only."""
+import os
+from uuid import uuid4
+
+import boto3
+from boto3.dynamodb.types import TypeSerializer
+
+from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
+
+
+def main():
+    table_name = 'foodtech-cooking-jobs-dev'
+    if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_COOKING_TABLE') != table_name:
+        raise SystemExit('explicit development profile and cooking table required')
+    session = boto3.Session(profile_name='foodtech', region_name='ap-southeast-2')
+    if session.client('sts').get_caller_identity()['Account'] != '573693340100':
+        raise SystemExit('unexpected AWS account')
+    table = session.resource('dynamodb').Table(table_name)
+    store = DynamoCookingStore.__new__(DynamoCookingStore)
+    store.table, store.client, store.serializer = table, session.client('dynamodb'), TypeSerializer()
+    subject = 'synthetic-' + uuid4().hex
+    owner = f'SCOPE#USER#{subject}'
+    keys = [{'pk': f'{owner}#CONDITION_PROFILE#p1', 'sk': f'VERSION#{v}'} for v in ('v1', 'v2')]
+    keys += [{'pk': f'{owner}#CONDITION_PROFILES', 'sk': f'PROFILE#p1#VERSION#{v}'} for v in ('v1', 'v2')]
+    try:
+        for version in ('v1', 'v2'):
+            store.create_condition_profile(subject, {'profile_id': 'p1', 'profile_version': version})
+        try:
+            store.create_condition_profile(subject, {'profile_id': 'p1', 'profile_version': 'v1'})
+        except Conflict:
+            pass
+        else:
+            raise AssertionError('duplicate profile was accepted')
+        page = store.list_condition_profile_refs(subject, 1, None)
+        next_page = store.list_condition_profile_refs(subject, 1, page['next_cursor'])
+        if [x['profile_version'] for x in page['items'] + next_page['items']] != ['v1', 'v2']:
+            raise AssertionError('inventory pages mismatch')
+        if store.list_condition_profile_refs(subject + '-other', 1, None)['items']:
+            raise AssertionError('cross-owner inventory leak')
+        if any(table.get_item(Key=key, ConsistentRead=True).get('Item') is None for key in keys):
+            raise AssertionError('missing profile or reference')
+    finally:
+        for key in keys:
+            table.delete_item(Key=key)
+    print('profile transaction, duplicate rejection, owner isolation, pagination and cleanup verified')
+
+
+if __name__ == '__main__':
+    main()
