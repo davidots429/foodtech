@@ -181,6 +181,17 @@ class RegistryTests(unittest.TestCase):
         snapshot = self.registry.execution_snapshot('run-1')
         self.assertEqual((snapshot.state, snapshot.version), ('FAILED', 2))
 
+    def test_settlement_rejects_corrupt_execution_without_storing_response(self):
+        execution = self.registry.execution('run-1')
+        self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)
+        item = self.resource.table.items[('EXEC#run-1', 'META')]
+        item['feature'] = 'INVALID'
+        item['version'] += 1
+        with self.assertRaises(RegistryConflict):
+            self.registry.finish('run-1', succeeded=True, actual_cost_usd=Decimal('0'),
+                                 response_text='synthetic', expected_execution=execution)
+        self.assertIsNone(self.registry.execution_result('run-1'))
+
     def recipe_execution(self):
         self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
                                          True, NOW, NOW))

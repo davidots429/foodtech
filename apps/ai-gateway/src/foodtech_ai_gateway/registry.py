@@ -454,7 +454,8 @@ class DynamoRegistry:
             raise RegistryConflict("retry conflict or call limit exhausted") from error
 
     def finish(self, execution_id: str, *, succeeded: bool, actual_cost_usd: Decimal,
-               response_text: str | None = None, error_code: str | None = None) -> None:
+               response_text: str | None = None, error_code: str | None = None,
+               expected_execution: Execution | None = None) -> None:
         """Persist result, settle cost and terminal state in one transaction."""
         if succeeded != (response_text is not None) or (not succeeded and not error_code):
             raise ValueError("success requires a response; failure requires an error code")
@@ -463,6 +464,13 @@ class DynamoRegistry:
         item = self._get("EXEC", execution_id)
         if not item or item["state"] != "RESERVED" or actual_cost_usd < 0:
             raise RegistryConflict("execution is not reserved or actual cost is invalid")
+        if expected_execution is not None:
+            try:
+                matches = self._execution_from_item(item) == expected_execution
+            except (KeyError, TypeError, ValueError):
+                matches = False
+            if not matches:
+                raise RegistryConflict("execution changed before settlement")
         provider = item["reserved_provider"]
         tenant_id = item["tenant_id"]
         if self.budget(tenant_id, provider) is None:

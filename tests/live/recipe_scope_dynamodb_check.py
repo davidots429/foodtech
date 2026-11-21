@@ -18,7 +18,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from foodtech_ai_gateway.policy import Execution, Feature
-from foodtech_ai_gateway.registry import DynamoRegistry
+from foodtech_ai_gateway.registry import DynamoRegistry, RegistryConflict
 from foodtech_business_api import auth as auth_module
 from foodtech_business_api.auth_store import DynamoAuthStore, Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
@@ -138,6 +138,21 @@ def main():
             pass
         else:
             raise AssertionError('stale job accepted')
+        registry.table.update_item(Key=execution_key,
+            UpdateExpression='SET #state = :reserved, reserved_provider = :provider ADD #version :one',
+            ExpressionAttributeNames={'#state': 'state', '#version': 'version'},
+            ExpressionAttributeValues={':reserved': 'RESERVED', ':provider': 'ollama', ':one': 1},
+            ConditionExpression=Attr('tenant_id').eq(subject))
+        try:
+            registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal('0'),
+                            response_text='synthetic', expected_execution=execution)
+        except RegistryConflict as error:
+            if str(error) != 'execution changed before settlement':
+                raise
+        else:
+            raise AssertionError('changed execution allowed a stale result')
+        if registry.table.get_item(Key={'pk': f'EXEC#{execution_id}', 'sk': 'RESULT'}, ConsistentRead=True).get('Item'):
+            raise AssertionError('stale execution result was stored')
     finally:
         for table, key, condition in reversed(created):
             if table.get_item(Key=key, ConsistentRead=True).get('Item'):

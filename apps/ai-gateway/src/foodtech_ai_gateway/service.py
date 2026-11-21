@@ -112,8 +112,21 @@ class GatewayService:
             if not isinstance(baseline, JeyukBaseline):
                 return True
             try:
-                return await asyncio.to_thread(self.recipe_source_guard.verify, execution) is True
+                if await asyncio.to_thread(self.registry.execution, execution_id) != execution:
+                    return False
+                if await asyncio.to_thread(self.recipe_source_guard.verify, execution) is not True:
+                    return False
+                return await asyncio.to_thread(self.registry.execution, execution_id) == execution
             except Exception:
+                return False
+
+        def finish_recipe(*, succeeded: bool, response_text: str | None = None, error_code: str | None = None) -> bool:
+            try:
+                self.registry.finish(execution_id, succeeded=succeeded, actual_cost_usd=Decimal('0'),
+                                     response_text=response_text, error_code=error_code,
+                                     expected_execution=execution)
+                return True
+            except RegistryConflict:
                 return False
 
         async def invoke(messages, schema):
@@ -146,17 +159,19 @@ class GatewayService:
             if not await source_current():
                 code = "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE"
                 if reserved:
-                    self.registry.finish(execution_id, succeeded=False, actual_cost_usd=Decimal("0"), error_code=code)
+                    if not finish_recipe(succeeded=False, error_code=code):
+                        return ExecutionOutcome(execution_id, "FAILED", error_code="EXECUTION_CHANGED_RECONCILIATION_REQUIRED")
                     return ExecutionOutcome(execution_id, "FAILED", error_code=code)
                 return ExecutionOutcome(execution_id, "DENIED", error_code=code)
             if result["status"] == "NEEDS_REVIEW":
                 response = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-                self.registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal("0"),
-                                     response_text=response)
+                if not finish_recipe(succeeded=True, response_text=response):
+                    return ExecutionOutcome(execution_id, "FAILED", error_code="EXECUTION_CHANGED_RECONCILIATION_REQUIRED")
                 return ExecutionOutcome(execution_id, "SUCCEEDED", response_text=response)
             code = result["error_code"]
         if reserved:
-            self.registry.finish(execution_id, succeeded=False, actual_cost_usd=Decimal("0"), error_code=code)
+            if not finish_recipe(succeeded=False, error_code=code):
+                return ExecutionOutcome(execution_id, "FAILED", error_code="EXECUTION_CHANGED_RECONCILIATION_REQUIRED")
             return ExecutionOutcome(execution_id, "FAILED", error_code=code)
         return ExecutionOutcome(execution_id, "DENIED", error_code=code)
 
