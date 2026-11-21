@@ -7,6 +7,7 @@ from foodtech_business_api.deletion_progress import DeletionProgressStore
 from foodtech_business_api.deletion_checkpoint_cipher import DeletionCheckpointCipher
 from foodtech_business_api.job_partition_deletion import delete_one_job_record
 from foodtech_business_api.job_deletion_inventory import JobDeletionInventory
+from foodtech_business_api.job_deletion_worker import JobDeletionWorker
 from boto3.dynamodb.conditions import Key
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_JOB_DELETION_LIVE') != '1':
@@ -35,6 +36,7 @@ try:
   if found['complete']: break
  else: raise AssertionError('bounded job scan incomplete')
  assert [item.job_id for item in inventory.targets(subject=u,request_id=q)]==['job']
+ worker=JobDeletionWorker(inventory=inventory,source_table=src,progress_store=store,cipher=cipher)
  reg.update_item(Key=rk,UpdateExpression='SET #s=:s',ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'PAUSED'})
  stale=SimpleNamespace(auth_table=auth.name,registry_table=reg.name,progress_table=progress.name,client=store.client,load_checkpoint=lambda **kw:None)
  try: delete_one_job_record(**{**args,'progress_store':stale})
@@ -42,9 +44,9 @@ try:
  else: raise AssertionError('inactive request accepted')
  assert src.get_item(Key={'pk':pk,'sk':'ASSESSMENT#1'},ConsistentRead=True).get('Item')
  reg.update_item(Key=rk,UpdateExpression='SET #s=:s',ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'DELETING'})
- assert delete_one_job_record(**args)['removed']
- assert delete_one_job_record(**args)['removed']
- assert delete_one_job_record(**args)=={'state':'META_ONLY','removed':False}
+ assert worker.delete_one(subject=u,request_id=q,index=0)['removed']
+ assert worker.delete_one(subject=u,request_id=q,index=0)['removed']
+ assert worker.delete_one(subject=u,request_id=q,index=0)=={'index':0,'state':'META_ONLY','removed':False}
  assert src.get_item(Key={'pk':pk,'sk':'META'},ConsistentRead=True).get('Item')
  assert src.get_item(Key={'pk':other,'sk':'EVENT#1'},ConsistentRead=True).get('Item')
  print('locked job record deletion, inactive request rejection and other partition isolation verified')
