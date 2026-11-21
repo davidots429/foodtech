@@ -80,6 +80,14 @@ def main():
             raise AssertionError("Losing identity creation left an orphan")
         vault_service.commit(authenticated_subject=subject, prepared=winner)
         vault_service.verify_committed(authenticated_subject=subject, prepared=winner)
+        restarted = IdentityVault(auth_table=AUTH, vault_table=VAULT, capsule_table=CAPSULE,
+                                  approved_purposes=frozenset({"BILLING"}), client=client)
+        recovered, recovered_id = restarted.resolve_deletion(authenticated_subject=subject, expected_epoch=0)
+        try:
+            if recovered.vault_id != winner.vault_id or bytes(recovered_id) != winner.internal_id.encode("utf-8"):
+                raise AssertionError("Fresh service could not recover the persisted linkage")
+        finally:
+            recovered_id[:] = b"\x00" * len(recovered_id)
         try:
             vault_service.verify_committed(authenticated_subject=subject,
                                            prepared=replace(winner, request_id=str(uuid.uuid4())))
@@ -147,7 +155,7 @@ def main():
             auth.delete_item(Key=auth_key, ConditionExpression=Attr("provenance").eq("SYNTHETIC"))
             if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
                 raise RuntimeError("Synthetic auth cleanup failed")
-    print(json.dumps({"missing_principal_rejected": "verified", "atomic_provisioning": "verified", "lost_response_verification": "verified", "stale_auth_rejected": "verified",
+    print(json.dumps({"missing_principal_rejected": "verified", "atomic_provisioning": "verified", "lost_response_verification": "verified", "fresh_service_resolution": "verified", "stale_auth_rejected": "verified",
                       "guarded_deletion_registration": "verified", "cleanup": "verified"}))
 
 

@@ -63,6 +63,19 @@ class IdentityVaultTests(unittest.TestCase):
         self.assertNotIn(self.prepared.locator, repr(snapshot))
         internal_id[:] = b"\0" * len(internal_id)
 
+    def test_fresh_service_can_resolve_persisted_link_without_prepared_request(self):
+        principal, vault, capsule = self.items()
+        client = Client()
+        client.responses = [principal, vault, capsule, principal]
+        restarted = IdentityVault(auth_table="auth", vault_table="vault", capsule_table="capsule",
+                                  approved_purposes=frozenset({"BILLING"}), client=client)
+        snapshot, internal_id = restarted.resolve_deletion(authenticated_subject=self.subject, expected_epoch=0)
+        try:
+            self.assertEqual(snapshot.vault_id, self.prepared.vault_id)
+            self.assertEqual(bytes(internal_id), self.prepared.internal_id.encode())
+        finally:
+            internal_id[:] = b"\0" * len(internal_id)
+
     def test_owner_change_suspension_and_stale_capsule_fail_closed(self):
         principal, vault, capsule = self.items()
         cases = ([{**principal, "suspended": {"BOOL": True}}],
