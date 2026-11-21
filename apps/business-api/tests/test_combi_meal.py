@@ -186,14 +186,24 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(duplicate.status_code, 422)
         link = f"{path}/{result['group_id']}/{result['result_id']}"
         self.assertEqual((await self.client.get(link)).status_code, 200)
+        unchanged = await self.client.get(link + '/freshness')
+        self.assertEqual(unchanged.json()['status'], 'UNCHANGED_AS_OBSERVED')
         save = self.store.save_meal_aggregate
         def change_before_save(*args):
             self.store.items[(pk, 'META')]['version'] += 1
             return save(*args)
         with patch.object(self.store, 'save_meal_aggregate', side_effect=change_before_save):
             self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 409)
+        freshness = await self.client.get(link + '/freshness')
+        self.assertEqual(freshness.json()['status'], 'CHANGED')
+        self.assertEqual(freshness.json()['changed'], [{'meal_id': meta['meal_batch_id'], 'reason': 'VERSION_CHANGED'}])
+        self.assertEqual((await self.client.get(link)).json()['result_id'], result['result_id'])
+        del self.store.items[(pk, 'META')]
+        missing = await self.client.get(link + '/freshness')
+        self.assertEqual(missing.json()['changed'], [{'meal_id': meta['meal_batch_id'], 'reason': 'UNAVAILABLE'}])
         self.subject = 'another-customer'
         self.assertEqual((await self.client.get(link)).status_code, 404)
+        self.assertEqual((await self.client.get(link + '/freshness')).status_code, 404)
         self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 404)
 
     async def test_linked_source_blocks_unrelated_transition_and_mackerel_samples(self):

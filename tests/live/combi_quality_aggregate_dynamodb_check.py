@@ -75,8 +75,10 @@ async def scenario(store, partitions):
             assert retry.json()['result_id'] == result['result_id']
             link = f"/api/customer/combi-quality-aggregates/{group}/{result['result_id']}"
             assert (await client.get(link)).status_code == 200
+            assert (await client.get(link + '/freshness')).json()['status'] == 'UNCHANGED_AS_OBSERVED'
             owner[0] = 'synthetic-other-' + uuid4().hex
             assert (await client.get(link)).status_code == 404
+            assert (await client.get(link + '/freshness')).status_code == 404
             assert (await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)).status_code == 404
             owner[0] = subject
             original = store.save_meal_aggregate
@@ -89,6 +91,9 @@ async def scenario(store, partitions):
             with patch.object(store, 'save_meal_aggregate', side_effect=change_before_save):
                 changed = await client.post('/api/customer/combi-quality-aggregates', headers=headers, json=body)
             assert changed.status_code == 409, changed.text
+            freshness = await client.get(link + '/freshness')
+            assert freshness.json()['status'] == 'CHANGED'
+            assert freshness.json()['changed'] == [{'meal_id': meal_id, 'reason': 'VERSION_CHANGED'}]
     print('synthetic meal aggregate, retry, version conflict and customer scope verified')
 
 

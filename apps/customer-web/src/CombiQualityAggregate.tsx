@@ -12,6 +12,8 @@ type Result = {
     period_start: string; period_end: string };
   references: { meal_id: string; included: boolean; exclusion_reason: string | null }[];
 };
+type Freshness = { status: "CHANGED" | "UNCHANGED_AS_OBSERVED"; checked_at: string;
+  changed: { meal_id: string; reason: "UNAVAILABLE" | "VERSION_CHANGED" }[] };
 
 const reasons: Record<string, string> = {
   NO_CURRENT_ASSESSMENT: "현재 평가 없음", CURRENT_ASSESSMENT_BLOCKED: "안전 또는 평가 사용 불가",
@@ -44,12 +46,13 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
   const [resultId, setResultId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [freshness, setFreshness] = useState<Freshness | null>(null);
   const active = useRef(false);
 
   async function calculate() {
     if (active.current) return;
     active.current = true;
-    setBusy(true); setError(""); setResult(null);
+    setBusy(true); setError(""); setResult(null); setFreshness(null);
     try {
       const mealIds = ids.split(/[\s,]+/).filter(Boolean);
       const value = await api<Result>("/api/customer/combi-quality-aggregates", csrf, {
@@ -64,10 +67,19 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
   async function open() {
     if (active.current) return;
     active.current = true;
-    setBusy(true); setError(""); setResult(null);
+    setBusy(true); setError(""); setResult(null); setFreshness(null);
     try {
       setResult(await api<Result>(`/api/customer/combi-quality-aggregates/${encodeURIComponent(groupId.trim())}/${encodeURIComponent(resultId.trim())}`));
     } catch (cause) { setError(cause instanceof Error ? cause.message : "집계를 불러오지 못했습니다."); }
+    finally { active.current = false; setBusy(false); }
+  }
+
+  async function checkFreshness() {
+    if (active.current || !result) return;
+    active.current = true; setBusy(true); setError(""); setFreshness(null);
+    try {
+      setFreshness(await api<Freshness>(`/api/customer/combi-quality-aggregates/${encodeURIComponent(result.group_id)}/${encodeURIComponent(result.result_id)}/freshness`));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "배치 변경 여부를 확인하지 못했습니다."); }
     finally { active.current = false; setBusy(false); }
   }
 
@@ -100,6 +112,9 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
       {result.item_score_means && <ul>{scoreItems.map(item => <li key={item.key}>{item.label}: {result.item_score_means?.[item.key] ?? "-"}</li>)}</ul>}
       {result.references.filter(item => !item.included).length > 0 && <ul>{result.references.filter(item => !item.included).map(item =>
         <li key={item.meal_id}>{item.meal_id}: {reasons[item.exclusion_reason ?? ""] ?? item.exclusion_reason}</li>)}</ul>}
+      <button type="button" className="secondary" disabled={busy} onClick={checkFreshness}>배치 변경 여부 확인</button>
+      {freshness && <div><p>{freshness.status === "CHANGED" ? "집계 후 변경된 배치가 있습니다." : "확인 시점에 배치 버전이 변경되지 않았습니다."} · {freshness.checked_at}</p>
+        {freshness.changed.length > 0 && <ul>{freshness.changed.map(item => <li key={item.meal_id}>{item.meal_id}: {item.reason === "UNAVAILABLE" ? "배치를 찾을 수 없음" : "배치 버전 변경"}</li>)}</ul>}</div>}
       <p className="small">이 결과는 저장 시점의 선택 표본입니다. 이후 변경은 자동 반영되지 않으며 전체 모집단을 대표하지 않습니다.</p>
     </div>}
   </section>;

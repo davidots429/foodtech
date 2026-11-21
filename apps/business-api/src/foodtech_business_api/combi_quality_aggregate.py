@@ -125,3 +125,35 @@ async def get_meal_aggregate(group_id: str, result_id: str, request: Request) ->
     if not result or result.get('group_id') != group_id or result.get('result_id') != result_id:
         raise HTTPException(404, '집계 기록을 찾을 수 없습니다.')
     return result
+
+
+@router.get('/{group_id}/{result_id}/freshness')
+async def meal_aggregate_freshness(group_id: str, result_id: str, request: Request) -> dict:
+    """Compare captured versions with current customer-owned META records."""
+    record = await get_meal_aggregate(group_id, result_id, request)
+    session, store = await _context(request)
+    try:
+        selection, references = record['selection'], record['references']
+        if not isinstance(selection, dict) or not isinstance(references, list) or not 1 <= len(references) <= 20 or \
+                selection.get('meal_ids') != [ref['meal_id'] for ref in references] or \
+                _hash(selection) != group_id or record.get('formula_version') != FORMULA_VERSION or \
+                _hash({'selection': selection, 'references': references, 'formula_version': FORMULA_VERSION}) != result_id:
+            raise ValueError
+        seen = set()
+        for ref in references:
+            meal_id, version = ref['meal_id'], ref['meal_version']
+            if not isinstance(meal_id, str) or str(UUID(meal_id)) != meal_id or meal_id in seen or \
+                    type(version) is not int or version < 1:
+                raise ValueError
+            seen.add(meal_id)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise HTTPException(409, '집계의 배치 참조를 확인할 수 없습니다.') from None
+    changed = []
+    for ref in references:
+        meta = await _store_call(store, store.read_meta, _pk(session.subject, ref['meal_id']))
+        if not meta:
+            changed.append({'meal_id': ref['meal_id'], 'reason': 'UNAVAILABLE'})
+        elif meta.get('version') != ref['meal_version']:
+            changed.append({'meal_id': ref['meal_id'], 'reason': 'VERSION_CHANGED'})
+    return {'status': 'CHANGED' if changed else 'UNCHANGED_AS_OBSERVED', 'changed': changed,
+            'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
