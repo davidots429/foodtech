@@ -80,6 +80,15 @@ class InventoryCaptureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             next(self.capture.partitions(**self.scope))
 
+    def test_duplicate_partition_across_pages_is_rejected_before_exposure(self):
+        with patch('foodtech_ai_gateway.tenant_inventory_capture.reconcile_reserved_page',
+                   side_effect=[InventoryPage(('EXEC#same',), {'pk': 'p', 'sk': 's'}, 1),
+                                InventoryPage(('EXEC#same',), None, 1)]):
+            self.capture.capture_page(**self.scope, limit=1)
+            self.capture.capture_page(**self.scope, limit=1)
+        with self.assertRaisesRegex(ValueError, 'duplicate AI inventory partition'):
+            next(self.capture.partitions(**self.scope))
+
     def test_rejects_other_source_and_nonadvancing_scan(self):
         self.cipher.source_table_arn = 'other'
         with self.assertRaises(ValueError):

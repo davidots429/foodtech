@@ -123,7 +123,7 @@ class TenantInventoryCapture:
         if not head['complete']:
             raise ValueError('AI inventory scan is not complete')
         # Verify the entire page chain before exposing even the first target.
-        cursor, count, visited, hashes = None, 0, set(), []
+        cursor, count, visited, partitions, hashes = None, 0, set(), set(), []
         for number in range(1, head['pages'] + 1):
             entry = self._load(subject, request_id, self._domain(number))
             value = self._page(entry)
@@ -131,6 +131,9 @@ class TenantInventoryCapture:
             if value['start'] != cursor or (number < head['pages'] and value['next'] is None) or \
                     (number == head['pages'] and value['next'] is not None):
                 raise ValueError('invalid AI inventory page sequence')
+            if partitions.intersection(value['partitions']):
+                raise ValueError('duplicate AI inventory partition')
+            partitions.update(value['partitions'])
             cursor = value['next']
             if cursor is not None:
                 serialized = self._pack(cursor)
