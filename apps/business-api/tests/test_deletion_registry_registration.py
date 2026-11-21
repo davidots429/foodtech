@@ -28,19 +28,21 @@ class RegistrationTests(unittest.TestCase):
     def setUp(self):
         self.subject = str(uuid4())
         self.request_id = str(uuid4())
+        self.internal_id = bytearray(b"private-internal-identifier")
         self.locator = bytearray(b"private-capsule")
         self.lookups = []
         self.cipher, self.store = Cipher(), Store()
         def lookup(subject):
             self.lookups.append(subject)
-            return self.locator
+            return self.internal_id, self.locator
         self.registration = DeletionRegistration(self.cipher, self.store, lookup)
 
     def test_server_lookup_and_authenticated_subject_are_bound_to_registration(self):
         prepared = self.registration.prepare(authenticated_subject=self.subject, request_id=self.request_id,
                                                requested_at="2026-11-21T00:00:00Z", policy_version="v1")
         self.assertEqual(self.lookups, [self.subject])
-        self.assertEqual(self.cipher.inputs, [(self.request_id, self.subject.encode(), b"private-capsule")])
+        self.assertEqual(self.cipher.inputs, [(self.request_id, b"private-internal-identifier", b"private-capsule")])
+        self.assertEqual(self.internal_id, bytes(len(self.internal_id)))
         self.assertEqual(self.locator, bytes(len(self.locator)))
         self.assertNotIn(self.subject, repr(prepared))
         self.assertNotIn("encrypted-id", repr(prepared))
@@ -52,7 +54,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(len(self.store.calls), 2)
 
     def test_missing_capsule_or_invalid_identity_never_registers(self):
-        self.registration.capsule_lookup = lambda _: None
+        self.registration.identity_lookup = lambda _: None
         with self.assertRaisesRegex(ValueError, "capsule is unavailable"):
             self.registration.prepare(authenticated_subject=self.subject, request_id=self.request_id,
                                       requested_at="2026-11-21T00:00:00Z", policy_version="v1")
@@ -61,6 +63,15 @@ class RegistrationTests(unittest.TestCase):
                                       requested_at="2026-11-21T00:00:00Z", policy_version="v1")
         self.assertEqual(self.store.calls, [])
         self.assertEqual(self.cipher.inputs, [])
+
+    def test_incomplete_identity_lookup_wipes_any_mutable_private_value(self):
+        private_id = bytearray(b"private-id")
+        self.registration.identity_lookup = lambda _: (private_id, None)
+        with self.assertRaisesRegex(ValueError, "capsule is unavailable"):
+            self.registration.prepare(authenticated_subject=self.subject, request_id=self.request_id,
+                                      requested_at="2026-11-21T00:00:00Z", policy_version="v1")
+        self.assertEqual(private_id, bytes(len(private_id)))
+        self.assertEqual(self.store.calls, [])
 
 
 if __name__ == "__main__":
