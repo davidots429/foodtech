@@ -1149,6 +1149,10 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
     meta = {**old, "status": next_status, "version": version, "updated_at": _now()}
     if phase == "transition":
         meta["last_observed_at"] = observed_at
+        if body.reassess_manual_transition and old.get("last_observed_at") and \
+                datetime.fromisoformat(old["last_observed_at"].replace("Z", "+00:00")) > \
+                datetime.fromisoformat(observed_at.replace("Z", "+00:00")):
+            meta["last_observed_at"] = old["last_observed_at"]
     event_name = ("RICE_SOURCE_REASSESSED" if body.reassess_legacy_fan else
                   "TRANSITION_SOURCE_REASSESSED" if body.reassess_manual_transition else
                   "MACKEREL_SOURCE_REASSESSED" if body.reassess_manual_mackerel else

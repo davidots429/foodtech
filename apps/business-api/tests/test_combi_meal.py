@@ -150,7 +150,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(imported.status_code, 201, imported.text)
         pk = combi_meal._pk(self.subject, meal_id)
         stored = self.store.items[(pk, "META")]
-        stored.update(status="MACKEREL_READY", last_observed_at=(start + timedelta(seconds=32)).isoformat())
+        stored.update(status="MACKEREL_READY", last_observed_at=(start + timedelta(seconds=50)).isoformat())
         rice = self.store.items[(pk, f"JOB#RICE#{meta['rice_cooking_job_id']}")]
         rice.update(status="UNLOADED", active_cooking_started_at=start.isoformat(),
                     program_completed_at=(start + timedelta(seconds=2)).isoformat(), program_cooking_duration=2,
@@ -179,7 +179,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
                     started_at=(start + timedelta(seconds=2)).isoformat(),
                     samples=[{"second": 1, "private": "earlier manual record"}])
         fish = await self.client.post(path + "/events", headers=headers, json={"expected_version": 3,
-            "event": "MACKEREL_STARTED", "observed_at": (start + timedelta(seconds=33)).isoformat()})
+            "event": "MACKEREL_STARTED", "observed_at": (start + timedelta(seconds=51)).isoformat()})
         self.assertEqual(fish.status_code, 409)
         verified = await self.client.post(path + "/source-assessment/transition", headers=headers,
             json={"expected_version": 3, "reassess_manual_transition": True})
@@ -188,6 +188,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verified.json()["event"]["previous_transition"]["samples"][0]["private"], "earlier manual record")
         self.assertEqual(verified.json()["step"]["source"]["raw_sha256"], imported.json()["meal"]["source"]["raw_sha256"])
         self.assertEqual(verified.json()["meal"]["status"], "MACKEREL_READY")
+        self.assertEqual(verified.json()["meal"]["last_observed_at"], (start + timedelta(seconds=50)).isoformat())
         repeat = await self.client.post(path + "/source-assessment/transition", headers=headers,
             json={"expected_version": 4, "reassess_manual_transition": True})
         self.assertEqual(repeat.status_code, 409)
