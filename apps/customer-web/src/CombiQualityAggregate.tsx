@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, scoreItems, type ScoreKey } from "./cookingApi";
 
 type Menu = "RICE" | "MACKEREL";
@@ -38,8 +38,8 @@ function dayBoundary(date: string, following: boolean): string {
   return new Date(year, month - 1, day + Number(following)).toISOString();
 }
 
-export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerelRecipe }: {
-  csrf: string; mealId: string; size: string; riceRecipe?: string; mackerelRecipe?: string;
+export function CombiQualityAggregate({ csrf, mealId, mealVersion, size, riceRecipe, mackerelRecipe }: {
+  csrf: string; mealId: string; mealVersion: number; size: string; riceRecipe?: string; mackerelRecipe?: string;
 }) {
   const today = new Date();
   const [ids, setIds] = useState(mealId);
@@ -65,6 +65,27 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
   const [groupsCursor, setGroupsCursor] = useState<string | null>(null);
   const [refreshMessage, setRefreshMessage] = useState("");
   const active = useRef(false);
+  const lastAutoAttempt = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (busy || active.current || lastAutoAttempt.current === mealVersion) return;
+    lastAutoAttempt.current = mealVersion;
+    active.current = true; setBusy(true);
+    void (async () => {
+      try {
+        const response = await api<{ status: "NO_PENDING" | "REFRESHED"; refreshed_group_count: number }>(
+          `/api/customer/combi-quality-aggregates/meals/${encodeURIComponent(mealId)}/refresh-pending`, csrf, {});
+        if (response.status === "REFRESHED") {
+          setRefreshMessage(`연결된 집계 ${response.refreshed_group_count}개를 다시 계산했습니다.`);
+          setVersions([]); setVersionsGroup(""); setVersionsCursor(null); setFreshness(null); setComparison(null);
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? `자동 재집계 실패: ${cause.message}` : "자동 재집계에 실패했습니다. 다시 시도해 주세요.");
+      } finally {
+        active.current = false; setBusy(false);
+      }
+    })();
+  }, [busy, csrf, mealId, mealVersion]);
 
   async function calculate() {
     if (active.current) return;

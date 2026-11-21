@@ -447,7 +447,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       <p>시간 판정은 전체 공정·안전 판정과 별도입니다. 화면의 전환 자료는 합성 표본입니다.</p>
       {meal.events && <ul>{meal.events.map((event, index) => <li key={index}>{event.event} · {new Date(event.observed_at).toLocaleString()}</li>)}</ul>}
       <CombiQualityAggregate key={meal.meal.meal_batch_id} csrf={csrf} mealId={meal.meal.meal_batch_id}
-        size={meal.meal.equipment_size} riceRecipe={meal.meal.rice_recipe_version} mackerelRecipe={meal.meal.mackerel_recipe_version} />
+        mealVersion={meal.meal.version} size={meal.meal.equipment_size} riceRecipe={meal.meal.rice_recipe_version} mackerelRecipe={meal.meal.mackerel_recipe_version} />
     </div>}
   </section>;
 }
