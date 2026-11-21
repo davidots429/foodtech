@@ -23,13 +23,13 @@ class CoordinatorTests(unittest.TestCase):
 
     def test_order_residual_retry_and_no_completion_claim(self):
         with patch('foodtech_business_api.profile_deletion_coordinator.clean_one_orphan',
-                   side_effect=[{'removed':True},{'removed':False}]) as orphan:
-            states=[self.coordinator.step(**self.scope) for _ in range(9)]
+                   side_effect=[{'removed':True},{'removed':False},{'removed':True},{'removed':False}]) as orphan:
+            states=[self.coordinator.step(**self.scope) for _ in range(11)]
         self.assertEqual([s['phase'] for s in states],
-                         ['CAPTURE','DELETE','DELETE','ORPHANS','ORPHANS','RESIDUAL','RESIDUAL','VERIFYING','VERIFYING'])
+                         ['CAPTURE','DELETE','DELETE','ORPHANS','ORPHANS','RESIDUAL','RESIDUAL','FINAL_LISTING','FINAL_LISTING','VERIFYING','VERIFYING'])
         self.assertTrue(states[6]['residual_found'])
         self.assertEqual([x.kwargs['index'] for x in self.worker.delete_one.call_args_list],[0,1])
-        self.assertEqual(orphan.call_count,2)
+        self.assertEqual(orphan.call_count,4)
         self.assertEqual(self.residual.observe_page.call_count,2)
 
     def test_failed_checkpoint_retries_same_delete(self):

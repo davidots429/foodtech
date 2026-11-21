@@ -26,11 +26,11 @@ class ProfileDeletionCoordinator:
         else:
             data, version = self.inventory._json(record['checkpoint']), record['version']
             if set(data) != {'schema', 'phase', 'index', 'total'} or type(data['schema']) is not int or \
-                    data['schema'] != 1 or data['phase'] not in {'CAPTURE', 'DELETE', 'ORPHANS', 'RESIDUAL', 'VERIFYING'} or \
+                    data['schema'] != 1 or data['phase'] not in {'CAPTURE', 'DELETE', 'ORPHANS', 'RESIDUAL', 'FINAL_LISTING', 'VERIFYING'} or \
                     type(data['index']) is not int or type(data['total']) is not int or \
                     not 0 <= data['index'] <= data['total'] < 10**12 or \
                     (data['phase'] == 'CAPTURE' and (data['index'] != 0 or data['total'] != 0)) or \
-                    (data['phase'] in {'ORPHANS', 'RESIDUAL', 'VERIFYING'} and data['index'] != data['total']) or \
+                    (data['phase'] in {'ORPHANS', 'RESIDUAL', 'FINAL_LISTING', 'VERIFYING'} and data['index'] != data['total']) or \
                     type(version) is not int or version < 1 or \
                     record['state'] != ('VERIFYING' if data['phase'] == 'VERIFYING' else 'IN_PROGRESS'):
                 raise ValueError('invalid profile coordinator checkpoint')
@@ -46,17 +46,17 @@ class ProfileDeletionCoordinator:
                 data['index'] += 1
             if data['index'] == data['total']:
                 data['phase'] = 'ORPHANS'
-        elif data['phase'] == 'ORPHANS':
+        elif data['phase'] in {'ORPHANS', 'FINAL_LISTING'}:
             result = clean_one_orphan(source_table=self.inventory.source_table, progress_store=self.store,
                                       cipher=self.cipher, subject=subject, request_id=request_id)
             if not result['removed']:
-                data['phase'] = 'RESIDUAL'
+                data['phase'] = 'RESIDUAL' if data['phase'] == 'ORPHANS' else 'VERIFYING'
         else:
             result = self.residual.observe_page(subject=subject, request_id=request_id, limit=limit)
             if result['residual_found']:
                 return {'phase': 'RESIDUAL', 'residual_found': True}
             if result['scan_complete']:
-                data['phase'] = 'VERIFYING'
+                data['phase'] = 'FINAL_LISTING'
         raw = json.dumps(data, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('ascii')
         self.store.save_checkpoint(cipher=self.cipher, **scope, expected_version=version,
             state='VERIFYING' if data['phase'] == 'VERIFYING' else 'IN_PROGRESS', checkpoint=raw)
