@@ -295,6 +295,15 @@ class CredentialVaultStack extends Stack {
     );
     registry.grant(gateway, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
       "dynamodb:ConditionCheckItem");
+    gateway.addToPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:DeleteItem"],
+      resources: [registry.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVE#*"] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+        "ForAnyValue:StringEquals": { "dynamodb:EnclosingOperation": ["TransactWriteItems"] },
+      },
+    }));
     registry.grant(registration, "dynamodb:PutItem");
     const restrictContext = (grant: iam.Grant) => {
       for (const statement of [...grant.principalStatements, ...grant.resourceStatements]) {
