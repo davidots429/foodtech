@@ -1,11 +1,15 @@
 """Check privacy-storage CloudFormation invariants; does not validate AWS IAM."""
 import json
 import sys
+from pathlib import Path
 
 
 def main():
     with open(sys.argv[1], encoding="utf-8") as stream:
         template = json.load(stream)
+    with (Path(sys.argv[1]).parent / "manifest.json").open(encoding="utf-8") as stream:
+        assembly = json.load(stream)
+    assert assembly["artifacts"]["FoodtechPrivacyStorage-dev"]["properties"]["terminationProtection"] is True
     resources = template["Resources"]
     tables = {value["Properties"]["TableName"]: value for value in resources.values()
               if value["Type"] == "AWS::DynamoDB::Table"}
