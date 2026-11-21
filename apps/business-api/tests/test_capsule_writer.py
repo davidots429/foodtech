@@ -9,19 +9,24 @@ from foodtech_business_api.capsule_writer import CapsuleWriter
 
 LOCATOR = "A" * 43
 KEY_METADATA = {"pool_version": "pool-v1", "shard_id": "shard-0",
-                "key_arn": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key"}
+                "key_arn": "arn:aws:kms:ap-southeast-2:123456789012:key/test-key",
+                "user_key_id": "d9b699c2-61c7-462e-a65d-15f019a0cf13"}
 
 
 class Client:
     def __init__(self):
         self.puts = []
         self.transactions = []
+        self.updates = []
 
     def put_item(self, **kwargs):
         self.puts.append(kwargs)
 
     def transact_write_items(self, **kwargs):
         self.transactions.append(kwargs["TransactItems"])
+
+    def update_item(self, **kwargs):
+        self.updates.append(kwargs)
 
 
 class CapsuleWriterTests(unittest.TestCase):
@@ -52,6 +57,9 @@ class CapsuleWriterTests(unittest.TestCase):
         self.assertEqual(put["Item"]["sk"], {"S": "ENTRY#BILLING#2026-11"})
         self.assertEqual(put["Item"]["ciphertext"], {"B": b"encrypted"})
         self.assertEqual(put["Item"]["pool_version"], {"S": "pool-v1"})
+        self.assertEqual(put["Item"]["user_key_id"], {"S": KEY_METADATA["user_key_id"]})
+        self.assertIn("user_key_id = :user_key", update["ConditionExpression"])
+        self.assertIn("attribute_exists(encrypted_user_dek)", update["ConditionExpression"])
         self.assertIn("attribute_not_exists", put["ConditionExpression"])
 
     def test_lock_is_only_a_transaction_action_and_checks_state_and_revision(self):
@@ -61,6 +69,15 @@ class CapsuleWriterTests(unittest.TestCase):
         self.assertEqual(action["ExpressionAttributeValues"][":request"], {"S": request_id})
         self.assertIn("#revision = :expected", action["ConditionExpression"])
         self.assertEqual(self.client.transactions, [])
+
+    def test_user_key_attachment_is_conditioned_and_stores_only_wrapped_key(self):
+        self.writer.attach_user_key(locator=LOCATOR, expected_revision=1, encrypted_dek=b"wrapped", **KEY_METADATA)
+        update = self.client.updates[0]
+        self.assertIn("attribute_not_exists(encrypted_user_dek)", update["ConditionExpression"])
+        for field in ("pool_version", "shard_id", "key_arn"):
+            self.assertIn(f"attribute_not_exists({field})", update["ConditionExpression"])
+        self.assertEqual(update["ExpressionAttributeValues"][":dek"], {"B": b"wrapped"})
+        self.assertEqual(update["ExpressionAttributeValues"][":next"], {"N": "2"})
 
     def test_invalid_input_cannot_issue_write(self):
         base = {"locator": LOCATOR, "purpose": "BILLING", "epoch": "2026-11",

@@ -12,7 +12,7 @@ from uuid import UUID
 import boto3
 from boto3.dynamodb.types import Binary, TypeDeserializer, TypeSerializer
 
-from .capsule_metadata import validate_key_metadata
+from .capsule_metadata import validate_key_metadata, validate_user_key_id
 
 class CapsuleInventoryError(Exception):
     pass
@@ -37,7 +37,8 @@ class CapsuleInventory:
     def _read_meta(self, locator: str, request_id: str) -> dict:
         item = self.client.get_item(TableName=self.table_name, ConsistentRead=True,
             Key={"pk": self.serializer.serialize(locator), "sk": self.serializer.serialize("META")},
-            ProjectionExpression="pk, sk, #revision, #state, deletion_request_id",
+            ProjectionExpression="pk, sk, #revision, #state, deletion_request_id, user_key_id, encrypted_user_dek, "
+                                 "pool_version, shard_id, key_arn",
             ExpressionAttributeNames={"#revision": "revision", "#state": "state"}).get("Item")
         if not item:
             raise CapsuleInventoryError("capsule metadata is unavailable")
@@ -49,6 +50,19 @@ class CapsuleInventory:
                     value["deletion_request_id"] != request_id or \
                     not revision.is_finite() or revision < 1 or revision != int(revision):
                 raise ValueError
+            key_fields = ("user_key_id", "encrypted_user_dek", "pool_version", "shard_id", "key_arn")
+            present = [name in item for name in key_fields]
+            if any(present):
+                if not all(present):
+                    raise ValueError
+                for name in key_fields:
+                    value[name] = self.deserializer.deserialize(item[name])
+                if isinstance(value["encrypted_user_dek"], Binary):
+                    value["encrypted_user_dek"] = bytes(value["encrypted_user_dek"])
+                validate_user_key_id(value["user_key_id"])
+                validate_key_metadata(value["pool_version"], value["shard_id"], value["key_arn"])
+                if not isinstance(value["encrypted_user_dek"], bytes) or not 1 <= len(value["encrypted_user_dek"]) <= 8192:
+                    raise ValueError
             value["revision"] = int(revision)
             return value
         except (KeyError, TypeError, ValueError, AttributeError, ArithmeticError):
@@ -77,7 +91,7 @@ class CapsuleInventory:
                 KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
                 ExpressionAttributeValues={":pk": self.serializer.serialize(locator),
                                            ":prefix": self.serializer.serialize("ENTRY#")},
-                ProjectionExpression="pk, sk, ciphertext, pool_version, shard_id, key_arn"):
+                ProjectionExpression="pk, sk, ciphertext, pool_version, shard_id, key_arn, user_key_id"):
             page_count += 1
             if not isinstance(page.get("Items"), list):
                 raise CapsuleInventoryError("invalid capsule query page")
@@ -89,6 +103,10 @@ class CapsuleInventory:
                     key_metadata = {name: self.deserializer.deserialize(item[name]) for name in
                                     ("pool_version", "shard_id", "key_arn")}
                     validate_key_metadata(**key_metadata)
+                    key_metadata["user_key_id"] = self.deserializer.deserialize(item["user_key_id"])
+                    validate_user_key_id(key_metadata["user_key_id"])
+                    if any(key_metadata[name] != before.get(name) for name in key_metadata):
+                        raise ValueError
                     if isinstance(ciphertext, Binary):
                         ciphertext = bytes(ciphertext)
                     match = re.fullmatch(r"ENTRY#([A-Z][A-Z0-9_]{0,63})#([0-9]{4}-(?:0[1-9]|1[0-2]))", sk)

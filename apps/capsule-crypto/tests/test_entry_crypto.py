@@ -41,7 +41,7 @@ class CapsuleEntryCryptoTests(unittest.TestCase):
         self.key_map = {("2026-11-v1", "shard-0"): self.key}
         self.purposes = frozenset({"BILLING", "USAGE"})
         kwargs = {"kms_client": object(), "sdk": self.sdk, "providers": self.providers,
-                  "approved_tenant_purposes": frozenset({"credential"})}
+                  "approved_tenant_purposes": frozenset({"credential"}), "keyring_factory": lambda _: object()}
         self.writer = CapsuleEntryWriter(self.purposes, self.key_map, **kwargs)
         self.reader = CapsuleEntryReader(self.purposes, self.key_map, **kwargs)
         self.tenant = f"psn:v1:credential:2026-11:v1:{digest(1)}"
@@ -94,6 +94,14 @@ class CapsuleEntryCryptoTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.writer.seal(tenant_pseudonym=f"psn:v1:unknown:2026-11:v1:{digest(1)}", entry=self.entry,
                              pool_version="2026-11-v1", shard_id="shard-0")
+
+    def test_direct_kms_entry_path_is_not_enabled(self):
+        with self.assertRaises(ValueError):
+            CapsuleEntryWriter(self.purposes, self.key_map, approved_tenant_purposes=frozenset({"credential"}),
+                               kms_client=object(), sdk=self.sdk, providers=self.providers)
+        with self.assertRaises(ValueError):
+            CapsuleEntryReader(self.purposes, self.key_map, approved_tenant_purposes=frozenset({"credential"}),
+                               kms_client=object(), sdk=self.sdk, providers=self.providers)
 
 
 if __name__ == "__main__":
