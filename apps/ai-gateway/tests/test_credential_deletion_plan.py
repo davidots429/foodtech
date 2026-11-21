@@ -12,7 +12,7 @@ class PlanTests(unittest.TestCase):
     def setUp(self):
         self.source = SimpleNamespace(name='registry')
         self.vault = SimpleNamespace(name='vault', table_arn='arn:aws:dynamodb:ap-southeast-2:123456789012:table/vault')
-        self.progress = Mock(auth_table='auth', progress_table='progress')
+        self.progress = Mock(auth_table='auth', registry_table='deletion-registry', progress_table='progress')
         self.progress.load_checkpoint.return_value = None
         self.progress.save_checkpoint.return_value = 1
         self.cipher = SimpleNamespace(source_table_arn='arn:aws:dynamodb:ap-southeast-2:123456789012:table/registry')
@@ -21,6 +21,12 @@ class PlanTests(unittest.TestCase):
         self.planner = CredentialDeletionPlan(capture=self.capture, progress_store=self.progress, cipher=self.cipher,
                                                source_table=self.source, vault_table=self.vault)
         self.scope = {'subject': str(uuid4()), 'request_id': str(uuid4()), 'index': 0}
+
+    def test_deletion_registry_cannot_be_used_as_vault(self):
+        wrong = SimpleNamespace(name='deletion-registry')
+        with self.assertRaises(ValueError):
+            CredentialDeletionPlan(capture=self.capture,progress_store=self.progress,cipher=self.cipher,
+                                   source_table=self.source,vault_table=wrong)
 
     def test_prepare_persists_secret_target_only_inside_checkpoint(self):
         location = VaultLocation({'pk': 'CREDENTIAL#key', 'sk': 'META'}, 'private-pseudonym')

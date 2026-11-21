@@ -22,7 +22,7 @@ class TenantInventoryCapture:
     def _load(self, subject, request_id, domain):
         if not isinstance(getattr(self.source_table, 'table_arn', None), str) or \
                 self.source_table.table_arn != getattr(self.cipher, 'source_table_arn', None) or \
-                self.source_table.name in {self.progress_store.auth_table, self.progress_store.progress_table}:
+                self.source_table.name in {self.progress_store.auth_table, self.progress_store.registry_table, self.progress_store.progress_table}:
             raise ValueError('AI source does not match inventory scope')
         return self.progress_store.load_checkpoint(cipher=self.cipher, subject=subject,
                                                    request_id=request_id, domain=domain)

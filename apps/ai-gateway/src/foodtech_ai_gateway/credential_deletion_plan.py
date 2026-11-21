@@ -14,7 +14,7 @@ class CredentialDeletionPlan:
     def __init__(self, *, capture, progress_store, cipher, source_table, vault_table):
         if capture.progress_store is not progress_store or capture.cipher is not cipher or \
                 capture.source_table is not source_table or source_table.name == vault_table.name or \
-                vault_table.name in {progress_store.auth_table, progress_store.progress_table}:
+                vault_table.name in {progress_store.auth_table, progress_store.registry_table, progress_store.progress_table}:
             raise ValueError('invalid credential planning dependencies')
         self.capture, self.progress_store, self.cipher = capture, progress_store, cipher
         self.source_table, self.vault_table = source_table, vault_table

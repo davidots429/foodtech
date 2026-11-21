@@ -9,6 +9,7 @@ from foodtech_ai_gateway.tenant_inventory_capture import TenantInventoryCapture
 
 class Progress:
     auth_table = 'auth'
+    registry_table = 'deletion-registry'
     progress_table = 'progress'
     client = object()
     def __init__(self):
@@ -35,6 +36,11 @@ class InventoryCaptureTests(unittest.TestCase):
         self.cipher = SimpleNamespace(source_table_arn=self.source.table_arn)
         self.capture = TenantInventoryCapture(source_table=self.source, progress_store=self.progress, cipher=self.cipher)
         self.scope = {'subject': str(uuid4()), 'request_id': str(uuid4())}
+
+    def test_source_cannot_be_deletion_registry(self):
+        self.source.name='deletion-registry'
+        with self.assertRaises(ValueError):self.capture.capture_page(**self.scope,limit=1)
+        self.assertFalse(self.progress.items)
 
     def test_captures_resumable_pages_and_checks_all_before_exposing(self):
         first = InventoryPage(('EXEC#first',), {'pk': 'other', 'sk': 'key'}, 2)

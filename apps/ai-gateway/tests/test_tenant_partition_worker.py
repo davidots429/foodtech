@@ -10,7 +10,7 @@ from foodtech_ai_gateway.tenant_partition_worker import TenantPartitionWorker
 class WorkerTests(unittest.TestCase):
     def setUp(self):
         self.table, self.progress, self.cipher = Mock(), Mock(), object()
-        self.progress.auth_table, self.progress.client = 'auth', object()
+        self.progress.auth_table, self.progress.registry_table, self.progress.client = 'auth', 'deletion-registry', object()
         self.progress.load_checkpoint.return_value = None
         self.progress.save_checkpoint.return_value = 1
         self.capture = SimpleNamespace(source_table=self.table, progress_store=self.progress, cipher=self.cipher,
@@ -22,8 +22,9 @@ class WorkerTests(unittest.TestCase):
 
     def test_page_progress_records_cursor_without_exposing_partition(self):
         result = {'deleted_children': 2, 'next_cursor': 'CALL#2', 'partition_removed': False}
-        with patch('foodtech_ai_gateway.tenant_partition_worker.delete_registry_partition_page', return_value=result):
+        with patch('foodtech_ai_gateway.tenant_partition_worker.delete_registry_partition_page', return_value=result) as delete:
             output = self.worker.run_page(**self.scope)
+        self.assertEqual(delete.call_args.kwargs['deletion_registry_table'],'deletion-registry')
         self.assertEqual(output, {'index': 0, 'version': 1, 'state': 'IN_PROGRESS', 'deleted_children': 2})
         self.assertNotIn('EXEC#run', repr(output))
         self.assertEqual(json.loads(self.progress.save_checkpoint.call_args.kwargs['checkpoint'])['cursor'], 'CALL#2')

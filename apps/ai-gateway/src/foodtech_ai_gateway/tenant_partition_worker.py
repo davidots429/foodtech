@@ -47,12 +47,12 @@ class TenantPartitionWorker:
         if owner is None:
             # Also checks there are no child rows and no active execution marker.
             delete_registry_key(self.source_table, self.progress_store.client,
-                auth_table=self.progress_store.auth_table, tenant=subject, request_id=request_id,
+                auth_table=self.progress_store.auth_table, deletion_registry_table=self.progress_store.registry_table, tenant=subject, request_id=request_id,
                 partition=partition, sk='META')
             result = {'deleted_children': 0, 'next_cursor': None, 'partition_removed': True}
         else:
             result = delete_registry_partition_page(self.source_table, self.progress_store.client,
-                auth_table=self.progress_store.auth_table, tenant=subject, request_id=request_id,
+                auth_table=self.progress_store.auth_table, deletion_registry_table=self.progress_store.registry_table, tenant=subject, request_id=request_id,
                 partition=partition, limit=limit, cursor=cursor)
         state = 'VERIFYING' if result['partition_removed'] else 'IN_PROGRESS'
         raw = json.dumps({'schema': 1, 'partition': partition, 'cursor': result['next_cursor']},

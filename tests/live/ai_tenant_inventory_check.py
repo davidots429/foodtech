@@ -20,6 +20,7 @@ def main():
     table = session.resource('dynamodb').Table('foodtech-ai-execution-registry-dev')
     vault = session.resource('dynamodb').Table('foodtech-ai-credential-vault-dev')
     auth = session.resource('dynamodb').Table('foodtech-auth-sessions-dev')
+    deletion_registry = session.resource('dynamodb').Table('foodtech-cooking-jobs-dev')
     tenant, run = 'synthetic-' + uuid4().hex, uuid4().hex
     exec_pk, consent_pk = f'EXEC#{run}', f'CONSENT#{run}'
     credential_pk = f'CREDENTIAL#{run}'
@@ -36,6 +37,8 @@ def main():
     auth_key, request = {'pk': f'USER#{tenant}'}, str(uuid4())
     marker_key = {'pk': f'ACTIVE#{tenant}', 'sk': f'EXEC#{run}'}
     auth_created = False
+    deletion_key = {'pk':'REGISTRY','sk':f'REQ#{request}'}
+    deletion_created = False
     try:
         for item in items:
             table.put_item(Item=item, ConditionExpression='attribute_not_exists(pk)')
@@ -43,8 +46,10 @@ def main():
         vault.put_item(Item={**vault_key, 'credential_id': run, 'tenant_pseudonym': 'synthetic-' + run},
                        ConditionExpression='attribute_not_exists(pk)')
         vault_created = True
-        auth.put_item(Item={**auth_key, 'deletion_lock_request': request}, ConditionExpression='attribute_not_exists(pk)')
+        auth.put_item(Item={**auth_key, 'deletion_lock_request': request, 'suspended': True}, ConditionExpression='attribute_not_exists(pk)')
         auth_created = True
+        deletion_registry.put_item(Item={**deletion_key,'status':'DELETING'},ConditionExpression='attribute_not_exists(pk)')
+        deletion_created = True
         def ensure(request_id):
             ensure_reserved_marker(session.client('dynamodb'), auth_table=auth.name, registry_table=table.name,
                                    tenant=tenant, request_id=request_id, execution_id=run)
@@ -79,7 +84,7 @@ def main():
         if checkpoint is not None or not found_reserved or not table.get_item(Key=marker_key, ConsistentRead=True).get('Item'):
             raise AssertionError('legacy scan did not reconcile reservation')
         try:
-            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
+            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, deletion_registry_table=deletion_registry.name, tenant=tenant,
                                 request_id=request, partition=exec_pk, sk='RESULT')
         except RegistryDeletionConflict:
             pass
@@ -124,15 +129,33 @@ def main():
         else:
             raise AssertionError('other tenant read partition keys')
         try:
-            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
+            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, deletion_registry_table=deletion_registry.name, tenant=tenant,
                                 request_id=request, partition=exec_pk, sk='META')
         except RegistryDeletionConflict:
             pass
         else:
             raise AssertionError('execution parent deleted before children')
+        deletion_registry.update_item(Key=deletion_key,UpdateExpression='SET #s=:s',
+            ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'PAUSED'})
+        try:
+            delete_registry_key(table,session.client('dynamodb'),auth_table=auth.name,
+                deletion_registry_table=deletion_registry.name,tenant=tenant,request_id=request,partition=exec_pk,sk='RESULT')
+        except RegistryDeletionConflict:pass
+        else:raise AssertionError('inactive deletion request removed registry child')
+        try:
+            delete_credential_pair(session.client('dynamodb'),auth_table=auth.name,registry_table=table.name,
+                vault_table=vault.name,deletion_registry_table=deletion_registry.name,tenant=tenant,
+                request_id=request,location=location)
+        except CredentialDeletionConflict:pass
+        else:raise AssertionError('inactive deletion request removed credential')
+        if not table.get_item(Key={'pk':exec_pk,'sk':'RESULT'},ConsistentRead=True).get('Item') or \
+                not vault.get_item(Key=vault_key,ConsistentRead=True).get('Item'):
+            raise AssertionError('failed deletion altered protected items')
+        deletion_registry.update_item(Key=deletion_key,UpdateExpression='SET #s=:s',
+            ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'DELETING'})
         cursor, removed = None, 0
         while True:
-            page = delete_registry_partition_page(table, session.client('dynamodb'), auth_table=auth.name,
+            page = delete_registry_partition_page(table, session.client('dynamodb'), auth_table=auth.name, deletion_registry_table=deletion_registry.name,
                 tenant=tenant, request_id=request, partition=exec_pk, limit=1, cursor=cursor)
             removed += page['deleted_children']
             cursor = page['next_cursor']
@@ -141,13 +164,13 @@ def main():
         if removed != 2:
             raise AssertionError('execution child deletion count mismatch')
         for partition in (consent_pk, limit_pk):
-            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, tenant=tenant,
+            delete_registry_key(table, session.client('dynamodb'), auth_table=auth.name, deletion_registry_table=deletion_registry.name, tenant=tenant,
                                 request_id=request, partition=partition, sk='META')
         if any(table.get_item(Key={'pk': partition, 'sk': 'META'}, ConsistentRead=True).get('Item')
                for partition in (exec_pk, consent_pk, limit_pk)):
             raise AssertionError('registry parent remains after deletion')
         def remove(request_id):
-            delete_credential_pair(session.client('dynamodb'), auth_table=auth.name, registry_table=table.name,
+            delete_credential_pair(session.client('dynamodb'), auth_table=auth.name, deletion_registry_table=deletion_registry.name, registry_table=table.name,
                                    vault_table=vault.name, tenant=tenant, request_id=request_id, location=location)
         try:
             remove(str(uuid4()))
@@ -178,6 +201,10 @@ def main():
         if vault_created:
             vault.delete_item(Key=vault_key)
         table.delete_item(Key=marker_key)
+        if deletion_created:
+            deletion_registry.delete_item(Key=deletion_key)
+            if deletion_registry.get_item(Key=deletion_key,ConsistentRead=True).get('Item'):
+                raise RuntimeError('synthetic deletion registry cleanup failed')
         if auth_created:
             auth.delete_item(Key=auth_key)
     print('tenant partition discovery, execution children, isolation and cleanup verified')

@@ -279,7 +279,7 @@ def observe_active_markers(table, client, *, auth_table: str, tenant: str, reque
     return 'PRESENT' if items else 'CLEAR'
 
 
-def delete_registry_key(table, client, *, auth_table: str, tenant: str, request_id: str,
+def delete_registry_key(table, client, *, auth_table: str, deletion_registry_table: str, tenant: str, request_id: str,
                         partition: str, sk: str) -> None:
     """Delete a noncredential registry key under the exact deletion lock.
 
@@ -296,7 +296,8 @@ def delete_registry_key(table, client, *, auth_table: str, tenant: str, request_
         raise ValueError('invalid registry deletion scope') from None
     table_name = getattr(table, 'name', None)
     if not isinstance(auth_table, str) or not auth_table or not isinstance(table_name, str) or \
-            not table_name or auth_table == table_name:
+            not table_name or not isinstance(deletion_registry_table,str) or not deletion_registry_table or \
+            len({auth_table,table_name,deletion_registry_table}) != 3:
         raise ValueError('separate auth and registry tables required')
     execution = bool(re.fullmatch(r'EXEC#[A-Za-z0-9_-]{1,128}', partition))
     ordinary = bool(re.fullmatch(r'(CONSENT|QUOTE)#[A-Za-z0-9_-]{1,128}', partition))
@@ -314,8 +315,12 @@ def delete_registry_key(table, client, *, auth_table: str, tenant: str, request_
     def encode(values):
         return {name: serializer.serialize(value) for name, value in values.items()}
     operations = [{'ConditionCheck': {'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
-        'ConditionExpression': 'deletion_lock_request = :request',
-        'ExpressionAttributeValues': encode({':request': request_id})}}]
+        'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes',
+        'ExpressionAttributeValues': encode({':request': request_id, ':yes': True})}},
+        {'ConditionCheck': {'TableName': deletion_registry_table,
+        'Key': encode({'pk': 'REGISTRY', 'sk': f'REQ#{request_id}'}),
+        'ConditionExpression': '#status = :active', 'ExpressionAttributeNames': {'#status': 'status'},
+        'ExpressionAttributeValues': encode({':active': 'DELETING'})}}]
     if execution:
         operations.append({'ConditionCheck': {'TableName': table_name,
             'Key': encode({'pk': f'ACTIVE#{tenant}', 'sk': partition}),
@@ -348,7 +353,7 @@ def delete_registry_key(table, client, *, auth_table: str, tenant: str, request_
         raise
 
 
-def delete_registry_partition_page(table, client, *, auth_table: str, tenant: str, request_id: str,
+def delete_registry_partition_page(table, client, *, auth_table: str, deletion_registry_table: str, tenant: str, request_id: str,
                                    partition: str, limit: int, cursor: str | None = None) -> dict:
     """Remove a bounded page of child keys, then remove META after a final check.
 
@@ -360,17 +365,17 @@ def delete_registry_partition_page(table, client, *, auth_table: str, tenant: st
     removed = 0
     for sk in page['keys']:
         if sk != 'META':
-            delete_registry_key(table, client, auth_table=auth_table, tenant=tenant, request_id=request_id,
+            delete_registry_key(table, client, auth_table=auth_table, deletion_registry_table=deletion_registry_table, tenant=tenant, request_id=request_id,
                                 partition=partition, sk=sk)
             removed += 1
     if page['next_cursor'] is None:
-        delete_registry_key(table, client, auth_table=auth_table, tenant=tenant, request_id=request_id,
+        delete_registry_key(table, client, auth_table=auth_table, deletion_registry_table=deletion_registry_table, tenant=tenant, request_id=request_id,
                             partition=partition, sk='META')
         return {'deleted_children': removed, 'next_cursor': None, 'partition_removed': True}
     return {'deleted_children': removed, 'next_cursor': page['next_cursor'], 'partition_removed': False}
 
 
-def delete_credential_pair(client, *, auth_table: str, registry_table: str, vault_table: str,
+def delete_credential_pair(client, *, auth_table: str, registry_table: str, vault_table: str, deletion_registry_table: str,
                            tenant: str, request_id: str, location: VaultLocation) -> None:
     """Delete matched metadata and vault entry under the exact deletion lock.
 
@@ -379,8 +384,8 @@ def delete_credential_pair(client, *, auth_table: str, registry_table: str, vaul
     must be handled separately before deletion can be called complete.
     """
     _scope(tenant, 1)
-    tables = (auth_table, registry_table, vault_table)
-    if any(not isinstance(table, str) or not table for table in tables) or len(set(tables)) != 3:
+    tables = (auth_table, registry_table, vault_table, deletion_registry_table)
+    if any(not isinstance(table, str) or not table for table in tables) or len(set(tables)) != 4:
         raise ValueError('separate authentication, registry and vault tables required')
     try:
         if str(UUID(request_id)) != request_id or not isinstance(location, VaultLocation):
@@ -401,8 +406,12 @@ def delete_credential_pair(client, *, auth_table: str, registry_table: str, vaul
     try:
         client.transact_write_items(TransactItems=[
             {'ConditionCheck': {'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
-                                'ConditionExpression': 'deletion_lock_request = :request',
-                                'ExpressionAttributeValues': encode({':request': request_id})}},
+                                'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes',
+                                'ExpressionAttributeValues': encode({':request': request_id, ':yes': True})}},
+            {'ConditionCheck': {'TableName': deletion_registry_table,
+                                'Key': encode({'pk': 'REGISTRY', 'sk': f'REQ#{request_id}'}),
+                                'ConditionExpression': '#status = :active', 'ExpressionAttributeNames': {'#status': 'status'},
+                                'ExpressionAttributeValues': encode({':active': 'DELETING'})}},
             {'Delete': {'TableName': registry_table, 'Key': encode(key),
                         'ConditionExpression': 'attribute_not_exists(pk) OR (tenant_id = :tenant AND credential_id = :id AND tenant_pseudonym = :pseudonym AND vault_ref = :vault)',
                         'ExpressionAttributeValues': encode({':tenant': tenant, ':id': credential_id,

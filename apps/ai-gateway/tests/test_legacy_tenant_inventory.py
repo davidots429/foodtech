@@ -113,17 +113,19 @@ class TenantInventoryTests(unittest.TestCase):
         client.exceptions.TransactionCanceledException = type('Canceled', (Exception,), {})
         request = str(uuid4())
         location = VaultLocation({'pk': 'CREDENTIAL#key1', 'sk': 'META'}, 'pseudo')
-        delete_credential_pair(client, auth_table='auth', registry_table='registry', vault_table='vault',
+        delete_credential_pair(client, auth_table='auth', deletion_registry_table='deletion', registry_table='registry', vault_table='vault',
                                tenant='alice', request_id=request, location=location)
         ops = client.transact_write_items.call_args.kwargs['TransactItems']
         self.assertEqual(ops[0]['ConditionCheck']['Key']['pk'], {'S': 'USER#alice'})
         self.assertEqual(ops[0]['ConditionCheck']['ExpressionAttributeValues'][':request'], {'S': request})
-        self.assertEqual(ops[1]['Delete']['TableName'], 'registry')
-        self.assertEqual(ops[2]['Delete']['TableName'], 'vault')
-        self.assertIn('tenant_pseudonym = :pseudonym', ops[1]['Delete']['ConditionExpression'])
+        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':active'], {'S': 'DELETING'})
+        self.assertIn('suspended = :yes', ops[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[2]['Delete']['TableName'], 'registry')
+        self.assertEqual(ops[3]['Delete']['TableName'], 'vault')
         self.assertIn('tenant_pseudonym = :pseudonym', ops[2]['Delete']['ConditionExpression'])
+        self.assertIn('tenant_pseudonym = :pseudonym', ops[3]['Delete']['ConditionExpression'])
         with self.assertRaises(ValueError):
-            delete_credential_pair(client, auth_table='auth', registry_table='auth', vault_table='vault',
+            delete_credential_pair(client, auth_table='auth', deletion_registry_table='deletion', registry_table='auth', vault_table='vault',
                                    tenant='alice', request_id=request, location=location)
 
     def test_legacy_marker_requires_same_lock_and_reserved_owner(self):
@@ -166,22 +168,24 @@ class TenantInventoryTests(unittest.TestCase):
         client.exceptions.TransactionCanceledException = type('Canceled', (Exception,), {})
         table.query.return_value = {'Items': [{'pk': 'EXEC#one', 'sk': 'META'}, {'pk': 'EXEC#one', 'sk': 'RESULT'}]}
         with self.assertRaises(RegistryDeletionConflict):
-            delete_registry_key(table, client, auth_table='auth', tenant='alice', request_id=request,
+            delete_registry_key(table, client, auth_table='auth', deletion_registry_table='deletion', tenant='alice', request_id=request,
                                 partition='EXEC#one', sk='META')
         client.transact_write_items.assert_not_called()
-        delete_registry_key(table, client, auth_table='auth', tenant='alice', request_id=request,
+        delete_registry_key(table, client, auth_table='auth', deletion_registry_table='deletion', tenant='alice', request_id=request,
                             partition='EXEC#one', sk='RESULT')
         ops = client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(ops[1]['ConditionCheck']['Key']['pk'], {'S': 'ACTIVE#alice'})
-        self.assertIn('#state IN', ops[2]['ConditionCheck']['ConditionExpression'])
-        self.assertEqual(ops[3]['Delete']['Key']['sk'], {'S': 'RESULT'})
+        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':active'], {'S': 'DELETING'})
+        self.assertIn('suspended = :yes', ops[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[2]['ConditionCheck']['Key']['pk'], {'S': 'ACTIVE#alice'})
+        self.assertIn('#state IN', ops[3]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(ops[4]['Delete']['Key']['sk'], {'S': 'RESULT'})
         with self.assertRaises(ValueError):
-            delete_registry_key(table, client, auth_table='auth', tenant='alice', request_id=request,
+            delete_registry_key(table, client, auth_table='auth', deletion_registry_table='deletion', tenant='alice', request_id=request,
                                 partition='CREDENTIAL#one', sk='META')
 
     def test_partition_page_deletes_children_before_parent_and_does_not_advance_on_failure(self):
         table, client, request = Mock(), Mock(), str(uuid4())
-        kwargs = dict(auth_table='auth', tenant='alice', request_id=request, partition='EXEC#one', limit=2)
+        kwargs = dict(auth_table='auth', deletion_registry_table='deletion', tenant='alice', request_id=request, partition='EXEC#one', limit=2)
         with patch('foodtech_ai_gateway.legacy_tenant_inventory.list_partition_keys',
                    return_value={'keys': ['CALL#1', 'META'], 'next_cursor': 'META'}), \
              patch('foodtech_ai_gateway.legacy_tenant_inventory.delete_registry_key') as delete:
