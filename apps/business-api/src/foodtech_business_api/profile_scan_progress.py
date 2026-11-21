@@ -32,17 +32,22 @@ class Progress:
 
 
 class ProfileScanProgressStore:
+    _key = staticmethod(_job)
+
+    def _reconcile(self, table, store, **kwargs):
+        return reconcile_legacy_page(table, store, **kwargs)
+
     def __init__(self, table, cipher):
         self.table, self.cipher = table, cipher
 
     def start(self, job_id: str, subject: str, source_table_arn: str) -> None:
-        key = _job(job_id)
+        key = self._key(job_id)
         encrypted = self.cipher.seal(job_id, subject, _INITIAL, phase='INITIAL', version=1, source_table=source_table_arn)
         self.table.put_item(Item={**key, 'phase': 'INITIAL', 'version': 1, 'ciphertext': encrypted},
                             ConditionExpression='attribute_not_exists(pk)')
 
     def _read(self, job_id: str, subject: str, source_table_arn: str) -> tuple[Progress, dict | None]:
-        key = _job(job_id)
+        key = self._key(job_id)
         item = self.table.get_item(Key=key, ConsistentRead=True).get('Item')
         if not isinstance(item, dict) or item.get('pk') != key['pk'] or item.get('sk') != key['sk'] or \
                 item.get('phase') not in {'INITIAL', 'CONTINUE', 'SCAN_COMPLETE'}:
@@ -73,7 +78,7 @@ class ProfileScanProgressStore:
         return self._read(job_id, subject, source_table_arn)[0]
 
     def run_page(self, *, job_id: str, subject: str, source_table, profile_store, limit: int) -> Progress:
-        key = _job(job_id)
+        key = self._key(job_id)
         source_name = getattr(source_table, 'table_arn', None)
         if not isinstance(source_name, str) or getattr(getattr(profile_store, 'table', None), 'table_arn', None) != source_name:
             raise ValueError('profile source and destination differ')
@@ -82,7 +87,7 @@ class ProfileScanProgressStore:
             raise ValueError('scan job is complete')
         if progress.version == 2**63 - 1:
             raise ValueError('scan job version exhausted')
-        page = reconcile_legacy_page(source_table, profile_store, subject=subject, limit=limit, checkpoint=checkpoint)
+        page = self._reconcile(source_table, profile_store, subject=subject, limit=limit, checkpoint=checkpoint)
         next_phase = 'CONTINUE' if page.checkpoint is not None else 'SCAN_COMPLETE'
         next_checkpoint = page.checkpoint if page.checkpoint is not None else _FINISHED
         ciphertext = self.cipher.seal(job_id, subject, next_checkpoint, phase=next_phase, version=progress.version + 1,
