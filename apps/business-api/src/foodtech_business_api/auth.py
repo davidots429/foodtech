@@ -431,6 +431,17 @@ async def refresh_session(surface: str, request: Request) -> Response:
     return response
 
 
+@router.get("/{surface}/session/refresh-context")
+async def refresh_context(surface: str, request: Request) -> Response:
+    """Recover the CSRF value for an existing, refreshable BFF session after a reload."""
+    session = await _session(request, surface, allow_expired_access=True)
+    if not session.refresh_ciphertext or session.refresh_deadline <= time.time():
+        raise HTTPException(401, "다시 로그인해야 합니다.")
+    response = JSONResponse({"csrf": session.csrf})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @router.get("/{surface}/me")
 async def me(surface: str, request: Request) -> dict:
     session = await _session(request, surface)

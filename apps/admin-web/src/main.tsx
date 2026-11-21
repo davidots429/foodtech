@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { useSessionRefresh } from "./useSessionRefresh";
+import { loadSession, useSessionRefresh } from "./useSessionRefresh";
 import { TierReview } from "./TierReview";
 import "./style.css";
 
@@ -19,7 +19,7 @@ function App() {
   const requestActive = useRef(false);
 
   useEffect(() => {
-    fetch("/api/admin/me", { credentials: "same-origin" })
+    loadSession("admin")
       .then(async (response) => response.ok ? setSession(await response.json()) : null)
       .catch(() => setError("인증 서버에 연결할 수 없습니다."))
       .finally(() => setLoading(false));

@@ -2,6 +2,21 @@ import { useEffect } from "react";
 
 type RefreshSession = { csrf: string; refresh_available: boolean; expires_in: number };
 
+/** Recover a refreshable session after a page reload; the token stays on the server. */
+export async function loadSession(surface: "customer" | "admin"): Promise<Response> {
+  const path = `/api/${surface}`;
+  const me = await fetch(`${path}/me`, { credentials: "same-origin" });
+  if (me.status !== 401) return me;
+  const context = await fetch(`${path}/session/refresh-context`, { credentials: "same-origin", cache: "no-store" });
+  if (!context.ok) return me;
+  const value: { csrf?: unknown } = await context.json();
+  if (typeof value.csrf !== "string" || !value.csrf) return me;
+  const refreshed = await fetch(`${path}/session/refresh`, {
+    method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": value.csrf },
+  });
+  return refreshed.ok ? fetch(`${path}/me`, { credentials: "same-origin" }) : me;
+}
+
 /** Refresh only when configured; the server retains the refresh token. */
 export function useSessionRefresh(surface: "customer" | "admin", session: RefreshSession | null,
                                   report: (message: string) => void) {

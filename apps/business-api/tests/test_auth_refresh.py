@@ -76,12 +76,23 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_access_may_only_use_refresh_path(self):
         self.store.sessions['session-id'].access_expires = int(time.time()) - 1
         self.assertEqual((await self.client.get('/api/customer/me')).status_code, 401)
+        context = await self.client.get('/api/customer/session/refresh-context')
+        self.assertEqual(context.status_code, 200)
+        self.assertEqual(context.headers['cache-control'], 'no-store')
+        self.assertEqual(context.json(), {'csrf': 'csrf'})
         tokens = {'IdToken': 'id', 'AccessToken': 'access', 'RefreshToken': 'new-refresh'}
         claims = [{'sub': 'subject'}, {'sub': 'subject', 'exp': time.time() + 400}]
         with patch.object(auth, '_cognito_refresh', return_value=tokens), patch.object(auth, '_claims', side_effect=claims):
             result = await self.client.post('/api/customer/session/refresh', headers={'X-CSRF-Token': 'csrf'})
         self.assertEqual(result.status_code, 200)
         self.assertEqual((await self.client.get('/api/customer/me')).status_code, 200)
+
+    async def test_context_rejects_revoked_or_nonrefreshable_sessions(self):
+        self.store.sessions['session-id'].refresh_ciphertext = None
+        self.assertEqual((await self.client.get('/api/customer/session/refresh-context')).status_code, 401)
+        self.store.sessions['session-id'].refresh_ciphertext = b'encrypted'
+        self.store.suspend_user('subject')
+        self.assertEqual((await self.client.get('/api/customer/session/refresh-context')).status_code, 401)
 
     async def test_logout_deletes_first_and_revokes_latest_token(self):
         def revoke(client_id, token):

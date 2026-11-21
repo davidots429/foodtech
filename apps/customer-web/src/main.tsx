@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { useSessionRefresh } from "./useSessionRefresh";
+import { loadSession, useSessionRefresh } from "./useSessionRefresh";
 import { CookingWorkspace } from "./CookingWorkspace";
 import { CombiMeal } from "./CombiMeal";
 import { CredentialEnrollment } from "./CredentialEnrollment";
@@ -28,7 +28,7 @@ function App() {
   const totpRequestActive = useRef(false);
 
   useEffect(() => {
-    fetch("/api/customer/me", { credentials: "same-origin" })
+    loadSession("customer")
       .then(async (response) => response.ok ? setSession(await response.json()) : null)
       .catch(() => setError("인증 서버에 연결할 수 없습니다."))
       .finally(() => setLoading(false));
