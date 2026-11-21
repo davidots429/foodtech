@@ -31,8 +31,8 @@ from foodtech_business_api.profile_deletion_recovery import ProfileDeletionRecov
 from foodtech_business_api.job_deletion_inventory import JobDeletionInventory
 from foodtech_business_api.job_deletion_worker import JobDeletionWorker
 from foodtech_business_api.job_binding_inventory import JobBindingInventory
-from foodtech_business_api.job_deletion_residual import JobResidualScan
-from foodtech_business_api.job_binding_residual import JobBindingResidualScan
+from foodtech_business_api.job_deletion_residual import JobResidualScan, JobFinalResidualScan
+from foodtech_business_api.job_binding_residual import JobBindingResidualScan, JobBindingFinalResidualScan
 from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
 from foodtech_business_api.job_deletion_recovery import JobDeletionRecovery
 from foodtech_business_api.job_meta_deletion import JobMetaDeletion
@@ -237,8 +237,11 @@ def main():
         job_residual=JobResidualScan(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
         binding_residual=JobBindingResidualScan(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
         metadata=JobMetaDeletion(inventory=jobs,residual=job_residual,binding_residual=binding_residual)
+        final_jobs=JobFinalResidualScan(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
+        final_bindings=JobBindingFinalResidualScan(source_table=vault,progress_store=plan_progress,cipher=profile_cipher)
         job_coordinator=JobDeletionCoordinator(jobs=jobs,worker=job_worker,bindings=job_bindings,
-                                                residual=job_residual,binding_residual=binding_residual,metadata=metadata)
+            residual=job_residual,binding_residual=binding_residual,metadata=metadata,
+            final_jobs=final_jobs,final_bindings=final_bindings)
         job_recovery=JobDeletionRecovery(recovery=recovery,coordinator=job_coordinator)
         for _ in range(1000):
             job_result=job_recovery.step(authenticated_subject=subject,request_id=winner,limit=100)

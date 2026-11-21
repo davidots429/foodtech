@@ -10,8 +10,8 @@ from foodtech_business_api.job_deletion_inventory import JobDeletionInventory
 from foodtech_business_api.job_deletion_worker import JobDeletionWorker
 from foodtech_business_api.job_binding_inventory import JobBindingInventory
 from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
-from foodtech_business_api.job_deletion_residual import JobResidualScan
-from foodtech_business_api.job_binding_residual import JobBindingResidualScan
+from foodtech_business_api.job_deletion_residual import JobResidualScan, JobFinalResidualScan
+from foodtech_business_api.job_binding_residual import JobBindingResidualScan, JobBindingFinalResidualScan
 from foodtech_business_api.job_meta_deletion import JobMetaDeletion
 from boto3.dynamodb.conditions import Key
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
@@ -85,23 +85,31 @@ try:
  residual=JobResidualScan(source_table=src,progress_store=store,cipher=cipher)
  binding_residual=JobBindingResidualScan(source_table=src,progress_store=store,cipher=cipher)
  meta_worker=JobMetaDeletion(inventory=inventory,residual=residual,binding_residual=binding_residual)
- coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual,binding_residual=binding_residual,metadata=meta_worker)
+ final_jobs=JobFinalResidualScan(source_table=src,progress_store=store,cipher=cipher)
+ final_bindings=JobBindingFinalResidualScan(source_table=src,progress_store=store,cipher=cipher)
+ coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual,binding_residual=binding_residual,metadata=meta_worker,final_jobs=final_jobs,final_bindings=final_bindings)
  orphan_record={'pk':f'SCOPE#USER#{u}#JOB#lost','sk':'EVENT#1'}
  inserted=observed=binding_inserted=binding_observed=False
  remaining_binding={'pk':'JEYUK#jeyuk-late-'+u,'sk':'BINDING'}
+ late_meta={'pk':f'SCOPE#USER#{u}#JOB#late','sk':'META'}
+ late_inserted=late_observed=False
  for _ in range(1000):
   result=coordinator.step(subject=u,request_id=q,limit=100)
   if result['phase']=='RESIDUAL' and not inserted:
    src.put_item(Item=orphan_record,ConditionExpression='attribute_not_exists(pk)');created.append((src,orphan_record));inserted=True
   if result['phase']=='BINDING_RESIDUAL' and not binding_inserted:
    src.put_item(Item={**remaining_binding,'job_pk':pk,'job_id':'job'},ConditionExpression='attribute_not_exists(pk)');created.append((src,remaining_binding));binding_inserted=True
+  if result['phase']=='FINAL_JOBS' and not late_inserted:
+   src.put_item(Item=late_meta,ConditionExpression='attribute_not_exists(pk)');created.append((src,late_meta));late_inserted=True
+  if result.get('residual_found') and result['phase']=='FINAL_JOBS':
+   late_observed=True;src.delete_item(Key=late_meta)
   if result.get('residual_found') and result['phase']=='RESIDUAL':
    observed=True;src.delete_item(Key=orphan_record)
   if result.get('residual_found') and result['phase']=='BINDING_RESIDUAL':
    binding_observed=True;src.delete_item(Key=remaining_binding)
   if result['phase']=='VERIFYING':break
  else:raise AssertionError('bounded job cleanup incomplete')
- assert observed and binding_observed
+ assert observed and binding_observed and late_observed
  assert not src.get_item(Key=binding_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key=orphan_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#job'},ConsistentRead=True).get('Item')

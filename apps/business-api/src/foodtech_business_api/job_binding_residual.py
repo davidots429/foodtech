@@ -15,3 +15,7 @@ class JobBindingResidualScan(ProfileResidualScan):
 
     def repair_one(self, **_kwargs):
         raise ValueError('binding residual repair requires separate ownership verification')
+
+
+class JobBindingFinalResidualScan(JobBindingResidualScan):
+    DOMAIN='JOB_BINDING_FINAL_RESIDUAL'

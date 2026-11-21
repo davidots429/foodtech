@@ -12,6 +12,7 @@ from .profile_deletion_residual import ProfileResidualScan
 
 class JobResidualScan(ProfileResidualScan):
     DOMAIN='JOB_RESIDUAL'
+    INCLUDE_META=False
 
     def _scan(self, *, subject, limit, checkpoint):
         try:
@@ -21,7 +22,9 @@ class JobResidualScan(ProfileResidualScan):
             raise ValueError('invalid job residual scope') from None
         self.inventory._cursor(checkpoint)
         prefix=f'SCOPE#USER#{subject}#JOB#'
-        args={'FilterExpression':Attr('pk').begins_with(prefix) & Attr('sk').ne('META'),
+        condition=Attr('pk').begins_with(prefix)
+        if not self.INCLUDE_META:condition=condition & Attr('sk').ne('META')
+        args={'FilterExpression':condition,
               'ProjectionExpression':'pk, sk','ConsistentRead':True,'Limit':limit}
         if checkpoint is not None:args['ExclusiveStartKey']=checkpoint
         page=self.source_table.scan(**args)
@@ -34,7 +37,7 @@ class JobResidualScan(ProfileResidualScan):
                 pk,sk=row['pk'],row['sk']
                 if not isinstance(pk,str) or not pk.startswith(prefix) or \
                         not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',pk[len(prefix):]) or \
-                        not isinstance(sk,str) or not 1 <= len(sk) <= 1024 or sk=='META':raise ValueError
+                        not isinstance(sk,str) or not 1 <= len(sk) <= 1024 or (not self.INCLUDE_META and sk=='META'):raise ValueError
                 refs.append((pk[len(prefix):],sk))
             except (KeyError,TypeError,ValueError):raise ValueError('invalid job residual record') from None
         cursor=page.get('LastEvaluatedKey');self.inventory._cursor(cursor)
@@ -42,3 +45,8 @@ class JobResidualScan(ProfileResidualScan):
 
     def repair_one(self, **_kwargs):
         raise ValueError('job residual repair requires separate ownership verification')
+
+
+class JobFinalResidualScan(JobResidualScan):
+    DOMAIN='JOB_FINAL_RESIDUAL'
+    INCLUDE_META=True
