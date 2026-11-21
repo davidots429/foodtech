@@ -114,12 +114,26 @@ def collect(host: str, port: int, ca_file: str, username: str, password: str,
     client.on_connect, client.on_subscribe, client.on_message = on_connect, on_subscribe, on_message
     props = Properties(PacketTypes.CONNECT)
     props.SessionExpiryInterval = 300
-    client.connect(host, port, keepalive=30, clean_start=False, properties=props)
     deadline = time.monotonic() + timeout_seconds
     next_drain = time.monotonic() + 1
     next_reconnect = 0.0
     disconnected = False
     try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("MQTT initial connection deadline reached")
+            client.connect_timeout = min(5.0, remaining)
+            try:
+                client.connect(host, port, keepalive=30, clean_start=False, properties=props)
+                break
+            except ssl.SSLError:
+                raise
+            except (ConnectionRefusedError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("MQTT initial connection deadline reached") from None
+                time.sleep(min(0.2, remaining))
         while len(received) < count and not failure and time.monotonic() < deadline:
             if time.monotonic() >= next_drain:
                 for stream in streams:
