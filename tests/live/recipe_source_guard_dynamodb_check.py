@@ -6,14 +6,18 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import boto3
 from boto3.dynamodb.conditions import Attr
+from starlette.requests import Request
 
-from foodtech_ai_gateway.policy import Execution, ExecutionSnapshot, Feature
+from foodtech_ai_gateway.policy import Execution, Feature
 from foodtech_ai_gateway.recipe_source_guard import DynamoRecipeSourceGuard
-from foodtech_business_api.auth_store import MemoryStore, Session
+from foodtech_ai_gateway.registry import DynamoRegistry
+from foodtech_business_api import auth as auth_module
+from foodtech_business_api.auth_store import DynamoAuthStore, Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.recipe_scope import RecipeScopeDenied, resolve_recipe_scope, verify_recipe_sources
 from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
@@ -37,6 +41,20 @@ def main():
     created = []
     placed = datetime(2026, 1, 1, tzinfo=timezone.utc)
     try:
+        auth_store = DynamoAuthStore.__new__(DynamoAuthStore)
+        auth_store.table = resource.Table('foodtech-auth-sessions-dev')
+        principal_key = {'pk': f'USER#{owner}'}
+        auth_store.table.put_item(Item={**principal_key, 'epoch': 0, 'test_marker': suffix},
+                                  ConditionExpression=Attr('pk').not_exists())
+        created.append((auth_store.table, principal_key))
+        session_id = str(uuid.uuid4())
+        synthetic_session = Session('customer', owner, None, 'synthetic-csrf', int(time.time()) + 600, 0)
+        auth_store.save_session(session_id, synthetic_session)
+        created.append((auth_store.table, {'pk': f'SESSION#{session_id}'}))
+        registry = DynamoRegistry('foodtech-ai-execution-registry-dev', '2026-11', resource=resource,
+                                  client=session.client('dynamodb'))
+        registry.create_execution(execution)
+        created.append((registry.table, {'pk': f'EXEC#{execution.execution_id}', 'sk': 'META'}))
         for job, version, batch, revision in zip((current, prior), (7, 3), source_ids, (3, 2)):
             started = placed - timedelta(seconds=60 if job == prior else 0)
             job_key = {'pk': f'SCOPE#USER#{owner}#JOB#{job}', 'sk': 'META'}
@@ -71,18 +89,18 @@ def main():
             created.append((sources, receipt_key))
         guard = DynamoRecipeSourceGuard(jobs.name, sources.name, resource=resource)
         if not guard.verify(execution): raise AssertionError('matching versions rejected')
-        synthetic_session = Session('customer', owner, None, 'synthetic-csrf', int(time.time()) + 600, 0)
-        synthetic_auth = MemoryStore()
-        synthetic_auth.principals[owner] = {'epoch': 0}
         job_store = DynamoCookingStore(jobs.name)
-        def execution_read(_):
-            return ExecutionSnapshot(execution, 'PENDING', 1)
-        scoped = resolve_recipe_scope(synthetic_session, execution.execution_id, execution_read, job_store.read_meta)
+        execution_read = registry.execution_snapshot
+        scoped = resolve_recipe_scope(auth_store.read_session(session_id), execution.execution_id,
+                                      execution_read, job_store.read_meta)
+        request = Request({'type': 'http', 'method': 'GET', 'path': '/', 'headers': [
+            (b'cookie', f'{auth_module.SESSION_COOKIE}={session_id}'.encode())]})
         async def combined():
-            with patch('foodtech_business_api.recipe_scope._session', new_callable=AsyncMock,
-                       return_value=synthetic_session), \
-                 patch('foodtech_business_api.recipe_scope.get_store', return_value=synthetic_auth):
-                await verify_recipe_sources(object(), scoped, execution_read, job_store.read_meta, guard)
+            with patch.object(auth_module, 'get_store', return_value=auth_store), \
+                 patch('foodtech_business_api.recipe_scope.get_store', return_value=auth_store), \
+                 patch.object(auth_module.Settings, 'from_env', return_value=SimpleNamespace()), \
+                 patch.object(auth_module, '_cognito_access', return_value=True):
+                await verify_recipe_sources(request, scoped, execution_read, job_store.read_meta, guard)
         asyncio.run(combined())
         job_key = {'pk': f'SCOPE#USER#{owner}#JOB#{current}', 'sk': 'META'}
         jobs.update_item(Key=job_key, UpdateExpression='SET actual_lifted_at = :changed',
