@@ -15,9 +15,10 @@ import httpx
 
 from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
-from foodtech_business_api.cooking_store import DynamoCookingStore
+from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
 from foodtech_business_api.main import app
 from foodtech_collection_adapter.jeyuk_aws import DynamoJeyukIngestor
+from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 
 from jeyuk_dynamodb_check import csharp_samples
@@ -54,6 +55,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
     cooking_store = DynamoCookingStore(COOKING_TABLE)
     job_pk = None
     listing_key = None
+    profile_pk = f"SCOPE#USER#{subject}#CONDITION_PROFILE#live-{run_id}"
 
     async def fake_session(_request, surface):
         assert surface == "customer"
@@ -101,6 +103,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                 job = await post(client, path + "/transitions", {
                     "expected_version": job["version"], "event": "COOKING_STARTED",
                     "actual_placed_at": placed_at.isoformat()})
+                history_before = cooking_store.history_revision(subject)
                 fixture_kind = "full" if full else "safety"
                 raws = csharp_samples(fixture_id, FIXTURE_DIR / f"jeyuk-{size}-{fixture_kind}-v1.json",
                                       placed_at.isoformat() if timeline else None) if safety else csharp_samples(fixture_id)
@@ -131,6 +134,8 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                         break
                 if len(processed) != len(raws):
                     raise AssertionError("not all Jeyuk samples reached the bound job")
+                if cooking_store.history_revision(subject) <= history_before:
+                    raise AssertionError("Worker did not advance customer history for changed process status")
                 final = (await client.get(path)).json()["job"]
                 if safety:
                     if ((processed[59]["auto_safety_status"], processed[59]["mixture_hold_seconds"]) !=
@@ -173,6 +178,65 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                     if evidence_response.status_code != 200:
                         raise AssertionError(f"source evidence read failed: {evidence_response.text}")
                     evidence = evidence_response.json()
+                    if evidence["checks"]["source_completion_record_matched"] or evidence["source_revision"] is not None:
+                        raise AssertionError("missing collection receipt must not authorize a source revision")
+                    tracker = JeyukCompletionTracker(0)
+                    for raw in raws:
+                        tracker.record(raw)
+                    receipt = tracker.finish(cursor=len(raws), complete=True, explicit=True)
+                    if not receipt:
+                        raise AssertionError("could not construct synthetic completion receipt")
+                    data_table.put_item(Item={"pk": stream_pk, "sk": "COLLECTION#RECEIPT#live-test", **receipt},
+                                        ConditionExpression="attribute_not_exists(pk)")
+                    evidence_response = await client.get(path + "/validation-evidence")
+                    evidence_response.raise_for_status()
+                    evidence = evidence_response.json()
+                    if not evidence["checks"]["source_completion_record_matched"] or \
+                            not evidence["checks"]["source_revision_stable"] or evidence["source_revision"] != len(raws):
+                        raise AssertionError("completed source revision was not confirmed")
+                    receipt_ref = evidence["source_receipt_reference"]
+                    profile = {"profile_id": f"live-{run_id}", "profile_version": "v1",
+                               "equipment_profile": f"jeyuk-{size}", "heating_setpoint_celsius": "200",
+                               "target_rpm": "30"}
+                    cooking_store.create_condition_profile(subject, {**profile, "provenance": "SYNTHETIC",
+                                                                      "status": "DECLARED_UNVERIFIED"})
+                    snapshot = {"sk": f"VALIDATION#EVIDENCE#{uuid.uuid4()}", "status": "LINKED_UNVERIFIED",
+                                "job_version": final["version"], "source_revision": len(raws),
+                                "source_receipt_reference": receipt_ref, "condition_profile_reference": profile}
+                    await asyncio.to_thread(cooking_store.save_validation_evidence, job_pk, final["version"], snapshot,
+                                            DATA_TABLE, len(raws), receipt_ref)
+                    if not cooking_table.get_item(Key={"pk": job_pk, "sk": snapshot["sk"]}, ConsistentRead=True).get("Item"):
+                        raise AssertionError("evidence snapshot was not persisted")
+                    profile_key = {"pk": profile_pk, "sk": "VERSION#v1"}
+                    cooking_table.update_item(Key=profile_key, UpdateExpression="SET target_rpm = :changed",
+                                              ExpressionAttributeValues={":changed": "31"})
+                    try:
+                        stale = {**snapshot, "sk": f"VALIDATION#EVIDENCE#{uuid.uuid4()}"}
+                        try:
+                            await asyncio.to_thread(cooking_store.save_validation_evidence, job_pk, final["version"], stale,
+                                                    DATA_TABLE, len(raws), receipt_ref)
+                        except Conflict:
+                            pass
+                        else:
+                            raise AssertionError("changed condition profile was accepted")
+                    finally:
+                        cooking_table.update_item(Key=profile_key, UpdateExpression="SET target_rpm = :original",
+                                                  ExpressionAttributeValues={":original": profile["target_rpm"]})
+                    receipt_key = {"pk": stream_pk, "sk": "COLLECTION#RECEIPT#live-test"}
+                    data_table.update_item(Key=receipt_key, UpdateExpression="SET ordered_raw_sha256 = :bad",
+                                           ExpressionAttributeValues={":bad": "0" * 64})
+                    try:
+                        stale = {**snapshot, "sk": f"VALIDATION#EVIDENCE#{uuid.uuid4()}"}
+                        try:
+                            await asyncio.to_thread(cooking_store.save_validation_evidence, job_pk, final["version"], stale,
+                                                    DATA_TABLE, len(raws), receipt_ref)
+                        except Conflict:
+                            pass
+                        else:
+                            raise AssertionError("changed completion receipt was accepted")
+                    finally:
+                        data_table.update_item(Key=receipt_key, UpdateExpression="SET ordered_raw_sha256 = :original",
+                                               ExpressionAttributeValues={":original": receipt_ref["ordered_raw_sha256"]})
                     for check in ("source_records_contiguous", "source_records_match_binding",
                                   "source_derived_results_match_raw", "source_safety_samples_valid"):
                         if not evidence["checks"][check]:
@@ -190,8 +254,11 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
                       (final["status"], final["process_assessment_status"],
                        final["process_assessment"]["second"]) != ("FAILED", "FAILED", 30)):
                     raise AssertionError("Jeyuk warning or failure did not reach the bound job")
+                history_before_replay = cooking_store.history_revision(subject)
                 if worker.process(references[-1])["job_result"] != "REPLAYED":
                     raise AssertionError("replayed assessment changed the bound job")
+                if cooking_store.history_revision(subject) != history_before_replay:
+                    raise AssertionError("replayed assessment advanced customer history")
                 print(json.dumps({"processed": len(processed), "scenario": "SAFETY" if safety else "PROCESS", "size": size, "timeline": timeline, "full": full,
                                   "feed_safety": feed_safety, "job_status": final["status"],
                                   "auto_safety_status": final["auto_safety_status"],
@@ -206,6 +273,7 @@ async def run_check(*, safety: bool = False, size: str = "small", timeline: bool
         try:
             remove_partition(data_table, stream_pk)
             remove_partition(cooking_table, stream_pk)
+            remove_partition(cooking_table, profile_pk)
             if job_pk:
                 remove_partition(cooking_table, job_pk)
             if listing_key:

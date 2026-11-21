@@ -7,7 +7,8 @@ from foodtech_standardization_worker.jeyuk_job_bridge import DynamoJeyukJobBridg
 
 
 class TransactionCanceled(Exception):
-    pass
+    def __init__(self, reasons=None):
+        self.response = {"CancellationReasons": reasons or []}
 
 
 class Table:
@@ -39,6 +40,9 @@ class Client:
             if put["ConditionExpression"] == "#version = :expected":
                 expected = self.decoder.deserialize(put["ExpressionAttributeValues"][":expected"])
                 allowed = current is not None and current["version"] == expected
+            elif put["ConditionExpression"] == "revision = :prior":
+                expected = self.decoder.deserialize(put["ExpressionAttributeValues"][":prior"])
+                allowed = current is not None and current["revision"] == expected
             else:
                 allowed = current is None
             if not allowed:
@@ -65,7 +69,7 @@ class JeyukJobBridgeTests(unittest.TestCase):
         self.stream_pk = "JEYUK#jeyuk-small-process-v1"
         self.table.items[(self.stream_pk, "BINDING")] = {"job_pk": self.job_pk}
         self.table.items[(self.job_pk, "META")] = {
-            "job_id": "jeyuk", "menu": "JEYUK", "status": "RUNNING", "version": 1,
+            "owner_subject": "one", "job_id": "jeyuk", "menu": "JEYUK", "status": "RUNNING", "version": 1,
             "job_state_version": 1, "evaluation_blocked": True,
             "process_assessment_status": "INSUFFICIENT_DATA",
             "source_binding": {"source_id": "synthetic-rest",
@@ -89,8 +93,12 @@ class JeyukJobBridgeTests(unittest.TestCase):
         self.assertEqual(job["process_assessment"]["second"], 30)
         event = self.table.items[(self.job_pk, "EVENT#JEYUK#000030")]
         self.assertEqual(event["trigger"], "PROCESS_FAILURE_DETECTED")
+        self.assertEqual(event["validation_change_reason"], "PROCESS_ANOMALY")
         self.assertEqual(self.bridge.apply(decision(30, "FAILED")), "REPLAYED")
         self.assertEqual(self.table.items[(self.job_pk, "META")]["version"], 31)
+        self.assertEqual(self.table.items[("SCOPE#USER#one#JOBS", "HISTORY#REVISION")]["revision"], 3)
+        self.assertEqual(self.bridge.apply(decision(30, "FAILED")), "REPLAYED")
+        self.assertEqual(self.table.items[("SCOPE#USER#one#JOBS", "HISTORY#REVISION")]["revision"], 3)
 
     def test_unbound_and_out_of_order_are_not_applied(self):
         self.table.items.pop((self.stream_pk, "BINDING"))
@@ -101,6 +109,24 @@ class JeyukJobBridgeTests(unittest.TestCase):
         self.assertEqual(self.table.items[(self.job_pk, "META")]["version"], 1)
         self.assertEqual(self.bridge.apply({**decision(1, "NORMAL"), "actual_load_kg": "2.0"}),
                          "BINDING_MISMATCH")
+
+    def test_history_conflict_retries_without_losing_concurrent_change(self):
+        key = ("SCOPE#USER#one#JOBS", "HISTORY#REVISION")
+        self.table.items[key] = {"pk": key[0], "sk": key[1], "revision": 5, "marker": "preserve"}
+        original = self.bridge.client.transact_write_items
+        calls = 0
+        def concurrent(*, TransactItems):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                self.table.items[key]["revision"] = 6
+                raise TransactionCanceled([{"Code": "None"}, {"Code": "None"},
+                                           {"Code": "ConditionalCheckFailed"}])
+            return original(TransactItems=TransactItems)
+        self.bridge.client.transact_write_items = concurrent
+        self.assertEqual(self.bridge.apply(decision(1, "NORMAL")), "NORMAL")
+        self.assertEqual((calls, self.table.items[key]["revision"]), (2, 7))
+        self.assertEqual(self.table.items[key]["marker"], "preserve")
 
     def test_auto_safety_proof_is_visible_but_does_not_complete_manual_validation(self):
         for second in range(1, 62):

@@ -7,6 +7,7 @@ import boto3
 from boto3.dynamodb.types import TypeSerializer
 
 from foodtech_contracts.jeyuk_process import RULE_VERSION
+from foodtech_contracts.validation_changes import recorded_safety_change
 
 
 class DynamoJeyukJobBridge:
@@ -37,6 +38,9 @@ class DynamoJeyukJobBridge:
                     "batch_id": fixture_id} or old.get("jeyuk_size_profile") != result["profile"]
                     or old.get("actual_load_kg") is None
                     or Decimal(str(old.get("actual_load_kg"))) != Decimal(result["actual_load_kg"])):
+                return "BINDING_MISMATCH"
+            owner = old.get("owner_subject")
+            if not isinstance(owner, str) or not owner or job_pk != f"SCOPE#USER#{owner}#JOB#{old.get('job_id')}":
                 return "BINDING_MISMATCH"
             if old["status"] not in {"RUNNING", "PAUSED"}:
                 return "JOB_NOT_ACTIVE"
@@ -76,22 +80,47 @@ class DynamoJeyukJobBridge:
                      "source_assessment_pk": stream_pk,
                      "source_assessment_sk": f"ASSESSMENT#{second:06d}",
                      "rule_version": RULE_VERSION, "occurred_at": now}
+            validation_reason = recorded_safety_change(event)
+            if validation_reason:
+                event["validation_change_reason"] = validation_reason
+            previous_reasons = old.get("process_assessment", {}).get("reason_codes", [])
+            history_changed = (old.get("process_assessment_status") != process_status or
+                               previous_reasons != result["reason_codes"] or
+                               old.get("auto_safety_status", "NOT_MEASURED") != result.get("auto_safety_status", "NOT_MEASURED"))
+            operations = [
+                {"Put": {"TableName": self.table.name,
+                         "Item": self._item({"pk": job_pk, "sk": "META", **new}),
+                         "ConditionExpression": "#version = :expected",
+                         "ExpressionAttributeNames": {"#version": "version"},
+                         "ExpressionAttributeValues": {":expected": {"N": str(old["version"])}}}},
+                {"Put": {"TableName": self.table.name, "Item": self._item(event),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+            ]
+            if history_changed:
+                history_key = {"pk": f"SCOPE#USER#{owner}#JOBS", "sk": "HISTORY#REVISION"}
+                history = self.table.get_item(Key=history_key, ConsistentRead=True).get("Item")
+                revision = history.get("revision") if history else 0
+                if isinstance(revision, bool) or not isinstance(revision, (int, Decimal)) or \
+                        (isinstance(revision, Decimal) and not revision.is_finite()) or \
+                        revision != int(revision) or not (0 if history is None else 1) <= revision < 10**18:
+                    raise ValueError("invalid customer history revision")
+                put = {"TableName": self.table.name, "Item": self._item({**(history or {}), **history_key, "revision": int(revision) + 1}),
+                       "ConditionExpression": "attribute_not_exists(pk)" if history is None else "revision = :prior"}
+                if history is not None:
+                    put["ExpressionAttributeValues"] = {":prior": {"N": str(int(revision))}}
+                operations.append({"Put": put})
             try:
-                self.client.transact_write_items(TransactItems=[
-                    {"Put": {"TableName": self.table.name,
-                             "Item": self._item({"pk": job_pk, "sk": "META", **new}),
-                             "ConditionExpression": "#version = :expected",
-                             "ExpressionAttributeNames": {"#version": "version"},
-                             "ExpressionAttributeValues": {":expected": {"N": str(old["version"])}}}},
-                    {"Put": {"TableName": self.table.name, "Item": self._item(event),
-                             "ConditionExpression": "attribute_not_exists(pk)"}},
-                ])
+                self.client.transact_write_items(TransactItems=operations)
                 return process_status
             except self.client.exceptions.TransactionCanceledException as exc:
                 if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
                     return "REPLAYED"
                 reasons = exc.response.get("CancellationReasons", [])
-                if not reasons or reasons[0].get("Code") != "ConditionalCheckFailed":
+                codes = {reason.get("Code") for reason in reasons}
+                retryable = (reasons and codes <= {None, "None", "TransactionConflict", "ConditionalCheckFailed"} and
+                             ("TransactionConflict" in codes or reasons[0].get("Code") == "ConditionalCheckFailed" or
+                              (history_changed and len(reasons) > 2 and reasons[2].get("Code") == "ConditionalCheckFailed")))
+                if not retryable:
                     raise
         raise RuntimeError("Jeyuk process decision could not commit after concurrent job updates")
 

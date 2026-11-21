@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -13,6 +14,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.validation_changes import compare_jeyuk_context, recorded_safety_change
 from foodtech_contracts.cooking_live_time import observe as observe_live_time
 from foodtech_contracts.tonkatsu_process import (RULE_VERSION, TEMPERATURE_RULE_VERSION,
                                                  cooking_time_status, process_status, thickness_profile)
@@ -103,6 +105,10 @@ def _jeyuk_feed_safety_current(job: dict) -> bool:
 async def _commit(store, pk: str, previous: dict, meta: dict,
                   assessment: dict | None = None, pointer: dict | None = None,
                   event: dict | None = None):
+    if event is not None:
+        reason = recorded_safety_change(event)
+        if reason:
+            event = {**event, "validation_change_reason": reason}
     try:
         await _store_call(store, store.commit, pk, int(previous["version"]), meta, assessment, pointer, event)
     except Conflict as exc:
@@ -134,6 +140,18 @@ async def refresh_job_comparisons(job_id: str, request: Request) -> dict:
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class EvidenceSnapshotRequest(StrictModel):
+    expected_version: StrictInt = Field(ge=1)
+
+
+class ConditionProfileRequest(StrictModel):
+    profile_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    profile_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
+    equipment_profile: Literal["jeyuk-small", "jeyuk-medium", "jeyuk-large"]
+    heating_setpoint_celsius: Decimal = Field(ge=Decimal("-273.15"), le=Decimal("300"), allow_inf_nan=False)
+    target_rpm: Decimal = Field(ge=Decimal("0"), max_digits=8, decimal_places=2, allow_inf_nan=False)
 
 
 class NewJob(StrictModel):
@@ -524,6 +542,29 @@ async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dic
     return meta
 
 
+@router.post("/condition-profiles", status_code=201)
+async def create_condition_profile(request: Request, body: ConditionProfileRequest) -> dict:
+    session, store = await _context(request, write=True)
+    profile = {**body.model_dump(mode="json"), "provenance": "SYNTHETIC", "status": "DECLARED_UNVERIFIED",
+               "created_at": _now(), "created_by": session.subject}
+    try:
+        await _store_call(store, store.create_condition_profile, session.subject, profile)
+    except Conflict as exc:
+        raise HTTPException(409, "이미 기록된 공정조건 버전입니다. 다른 버전으로 기록해 주세요.") from exc
+    return profile
+
+
+@router.get("/condition-profiles/{profile_id}/{profile_version}")
+async def get_condition_profile(profile_id: str, profile_version: str, request: Request) -> dict:
+    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", value) for value in (profile_id, profile_version)):
+        raise HTTPException(404, "공정조건을 찾을 수 없습니다.")
+    session, store = await _context(request)
+    profile = await _store_call(store, store.condition_profile, session.subject, profile_id, profile_version)
+    if not profile:
+        raise HTTPException(404, "공정조건을 찾을 수 없습니다.")
+    return {key: value for key, value in profile.items() if key not in {"pk", "sk"}}
+
+
 @router.post("/{job_id}/validation-context")
 async def record_jeyuk_validation_context(job_id: str, request: Request,
                                           body: JeyukValidationContext) -> dict:
@@ -563,6 +604,10 @@ async def record_jeyuk_validation_context(job_id: str, request: Request,
              "to_status": "DECLARED_UNVERIFIED", "previous_digest": old.get("validation_context_digest"),
              "context_digest": digest, "context_version": version, "context": context,
              "actor_subject": session.subject, "occurred_at": now}
+    if old.get("validation_context") is not None:
+        changes = compare_jeyuk_context(old["validation_context"], context)
+        event["change_reasons"] = list(changes.reasons)
+        event["unknown_fields"] = list(changes.unknown_fields)
     await _commit(store, pk, old, meta, event=event)
     return meta
 
@@ -592,7 +637,7 @@ async def jeyuk_collection_evidence(job_id: str, request: Request) -> dict:
 
 @router.get("/{job_id}/validation-evidence")
 async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
-    _, store, pk, job, _ = await _read(request, job_id)
+    session, store, pk, job, _ = await _read(request, job_id)
     if job["menu"] != "JEYUK":
         raise HTTPException(422, "제육볶음 작업에만 재검증 증거를 조회할 수 있습니다.")
     binding = job.get("source_binding")
@@ -618,14 +663,58 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                      "source_safety_samples_valid": False,
                      "source_validation_identity_matches": False,
                      "source_relative_duration_covers_cooking": False,
-                     "source_process_span_covers_cooking": False}
+                     "source_process_span_covers_cooking": False,
+                     "source_completion_record_matched": False,
+                     "source_revision_stable": False,
+                     "source_condition_profile_matches": False}
+    observed_source_revision = None
+    observed_receipt_reference = None
+    observed_profile_reference = None
     source_table = os.getenv("FOODTECH_DATA_TABLE", "")
     if process_linked and context_matches_job and source_table and second <= max(
             profile.time_bands[-1] for profile in JEYUK_PROFILES.values()):
-        from .jeyuk_source_evidence import audit_source_records
+        from .jeyuk_source_evidence import audit_source_records, read_collection_completion
+        from .source_revision import read_source_revision
         try:
+            stream_pk = f"JEYUK#{binding['batch_id']}"
+            before = await read_source_revision(source_table, stream_pk)
             assessments, raws = await _read_jeyuk_source_records(source_table, binding["batch_id"], second)
-            source_checks = audit_source_records(job, assessments, raws)
+            audited = audit_source_records(job, assessments, raws)
+            completion = await asyncio.to_thread(read_collection_completion, source_table, binding["batch_id"],
+                                                 include_reference=True, include_settings=True)
+            after = await read_source_revision(source_table, stream_pk)
+            if before != after:
+                raise HTTPException(409, "원천 데이터가 조회 중 변경되었습니다. 다시 확인해 주세요.")
+            matched = (completion.get("status") == "MATCHED_AT_READ" and before is not None and
+                       completion.get("source_revision") == before and before == second and
+                       isinstance(completion.get("receipt_reference"), dict))
+            profile = None
+            profile_id, profile_version = context.get("process_condition_profile_id"), context.get("process_condition_version")
+            if isinstance(profile_id, str) and isinstance(profile_version, str):
+                profile = await _store_call(store, store.condition_profile, session.subject, profile_id, profile_version)
+            settings = completion.get("settings") or {}
+            heat, rpm = settings.get("heating_setpoint_celsius") or {}, settings.get("target_rpm") or {}
+            profile_matches = False
+            if matched and isinstance(profile, dict) and profile.get("provenance") == "SYNTHETIC" and \
+                    profile.get("status") == "DECLARED_UNVERIFIED" and profile.get("profile_id") == profile_id and \
+                    profile.get("profile_version") == profile_version and profile.get("equipment_profile") == job["equipment_profile"] and \
+                    heat.get("status") == "STABLE" and rpm.get("status") == "STABLE":
+                try:
+                    profile_matches = (Decimal(str(heat["value"])) == Decimal(str(profile["heating_setpoint_celsius"])) and
+                                       Decimal(str(rpm["value"])) == Decimal(str(profile["target_rpm"])))
+                except (KeyError, ValueError, ArithmeticError):
+                    profile_matches = False
+            if profile_matches:
+                observed_profile_reference = {key: profile[key] for key in
+                    ("profile_id", "profile_version", "equipment_profile", "heating_setpoint_celsius", "target_rpm")}
+            source_checks = {**source_checks, **audited, "source_completion_record_matched": matched,
+                             "source_revision_stable": before is not None and before == after,
+                             "source_condition_profile_matches": profile_matches}
+            if matched:
+                observed_source_revision = before
+                observed_receipt_reference = completion["receipt_reference"]
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.exception("Jeyuk source evidence read failed")
             raise HTTPException(503, "원천 수집 증거를 조회하지 못했습니다. 잠시 후 다시 시도해 주세요.") from exc
@@ -662,12 +751,54 @@ async def jeyuk_validation_evidence(job_id: str, request: Request) -> dict:
                                "sk": process["source_assessment_sk"], "second": second}
                               if process_linked else None),
         "source_table_configured": bool(source_table),
+        "source_revision": observed_source_revision,
+        "source_receipt_reference": observed_receipt_reference,
+        "condition_profile_reference": observed_profile_reference,
         "activation_allowed": False,
         "remaining_verification": ["SENSOR_AND_CALIBRATION_IDENTITY",
                                    "INGREDIENT_LOT_AND_SUPPLIER_TRACEABILITY",
                                    "PROCESS_CONDITION_PROFILE_IDENTITY"] +
                                   ([] if checks["source_process_span_covers_cooking"] else ["SOURCE_TIMELINE_ALIGNMENT"]),
     }
+
+
+@router.post("/{job_id}/validation-evidence-snapshots", status_code=201)
+async def capture_validation_evidence(job_id: str, request: Request, body: EvidenceSnapshotRequest) -> dict:
+    """Persist a source-bound observation; it does not activate validation."""
+    session, store, pk, job, _ = await _read(request, job_id, write=True)
+    if job.get("version") != body.expected_version:
+        raise _conflict()
+    evidence = await jeyuk_validation_evidence(job_id, request)
+    receipt = evidence.get("source_receipt_reference")
+    binding = job.get("source_binding") or {}
+    if evidence.get("status") != "LINKED_UNVERIFIED" or evidence.get("job_version") != body.expected_version or \
+            not isinstance(receipt, dict) or receipt.get("pk") != f"JEYUK#{binding.get('batch_id')}":
+        raise HTTPException(409, "기록할 수 있는 원천 증거가 부족하거나 변경되었습니다.")
+    snapshot_id = str(uuid.uuid4())
+    snapshot = {"sk": f"VALIDATION#EVIDENCE#{snapshot_id}", "snapshot_id": snapshot_id,
+                "status": "LINKED_UNVERIFIED", "job_version": body.expected_version,
+                "context_digest": evidence["context_digest"], "context_version": evidence["context_version"],
+                "safety_version": evidence["safety_version"], "discharge_check_version": evidence["discharge_check_version"],
+                "source_revision": evidence["source_revision"], "source_receipt_reference": receipt,
+                "condition_profile_reference": evidence["condition_profile_reference"],
+                "checks": evidence["checks"], "recorded_at": _now(), "recorded_by": session.subject}
+    try:
+        await _store_call(store, store.save_validation_evidence, pk, body.expected_version, snapshot,
+                          os.getenv("FOODTECH_DATA_TABLE", ""), evidence["source_revision"], receipt)
+    except Conflict as exc:
+        raise HTTPException(409, "작업 또는 원천 증거가 변경되었습니다. 다시 조회해 주세요.") from exc
+    except ValueError as exc:
+        raise HTTPException(503, "검증 증거 저장소 설정을 확인할 수 없습니다.") from exc
+    return {**snapshot, "activation_allowed": False}
+
+
+@router.get("/{job_id}/validation-evidence-snapshots")
+async def list_validation_evidence(job_id: str, request: Request, response: Response) -> list[dict]:
+    response.headers["Cache-Control"] = "no-store"
+    _, store, pk, job, _ = await _read(request, job_id)
+    if job.get("menu") != "JEYUK":
+        raise HTTPException(422, "제육볶음 작업에만 검증 증거 이력이 있습니다.")
+    return await _store_call(store, store.validation_evidence_snapshots, pk)
 
 
 @router.get("/{job_id}")

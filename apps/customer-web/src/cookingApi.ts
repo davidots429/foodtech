@@ -125,6 +125,9 @@ export type JobEvent = {
   from_status: string;
   to_status: string;
   reason?: string | null;
+  validation_change_reason?: string;
+  change_reasons?: string[];
+  unknown_fields?: string[];
   occurred_at: string;
   manual_stop_confirmed_at?: string | null;
   manual_stopped_at?: string | null;

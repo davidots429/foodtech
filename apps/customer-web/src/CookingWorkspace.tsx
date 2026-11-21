@@ -59,6 +59,10 @@ type ValidationEvidence = {
   activation_allowed: false;
   remaining_verification: string[];
 };
+type ValidationEvidenceSnapshot = {
+  snapshot_id: string; recorded_at: string; job_version: number;
+  source_revision: number; status: "LINKED_UNVERIFIED";
+};
 const validationCheckLabels: Record<string, string> = {
   context_recorded: "재검증 조합 기록", context_matches_job: "조합과 현재 작업 정보 일치",
   job_completed: "조리 완료", source_bound: "수집 배치 연결",
@@ -73,6 +77,16 @@ const validationCheckLabels: Record<string, string> = {
   source_validation_identity_matches: "원천의 합성 원재료·센서·공정 ID 일치",
   source_relative_duration_covers_cooking: "상대 표본 길이가 조리시간 이상",
   source_process_span_covers_cooking: "합성 원천 표본과 작업 조리구간의 시각 일치",
+  source_completion_record_matched: "수집 완료 기록과 원본 일치",
+  source_revision_stable: "조회 중 원천 버전 유지",
+  source_condition_profile_matches: "등록한 공정조건과 원천 설정값 일치",
+};
+const validationChangeLabels: Record<string, string> = {
+  RECIPE_CHANGED: "레시피 변경", EQUIPMENT_CHANGED: "장비 또는 수집 출처 변경",
+  INGREDIENT_CHANGED: "원재료 규격·로트·공급처 변경", SENSOR_CHANGED: "센서 또는 교정 기록 변경",
+  PROCESS_CONDITION_CHANGED: "공정조건 프로파일 변경", SAFETY_ANOMALY: "안전 이상",
+  MANUAL_SAFETY_REVISED: "수동 안전 판정 수정", INGREDIENT_RECORD_REVISED: "재료 투입 기록 수정",
+  DISCHARGE_RECORD_REVISED: "배출 기록 수정", PROCESS_ANOMALY: "공정 이상",
 };
 
 const jobLabels: Record<CookingJob["status"], string> = {
@@ -211,7 +225,11 @@ export function CookingWorkspace({ csrf }: Props) {
   const [liftedAt, setLiftedAt] = useState(() => localDateTime(new Date()));
   const [batchId, setBatchId] = useState("batch-a-001");
   const [validationForm, setValidationForm] = useState(emptyValidationFields);
+  const [conditionHeating, setConditionHeating] = useState("");
+  const [conditionRpm, setConditionRpm] = useState("");
   const [validationEvidence, setValidationEvidence] = useState<ValidationEvidence | null>(null);
+  const [validationSnapshots, setValidationSnapshots] = useState<ValidationEvidenceSnapshot[]>([]);
+  const [savingValidationSnapshot, setSavingValidationSnapshot] = useState(false);
   const [collectionEvidence, setCollectionEvidence] = useState<CollectionEvidence | null>(null);
   const [loadingJob, setLoadingJob] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -272,6 +290,7 @@ export function CookingWorkspace({ csrf }: Props) {
       const isNewJob = loadedJobId.current !== id;
       setJob(snapshot.job);
       setValidationEvidence(null);
+      setValidationSnapshots([]);
       setCollectionEvidence(null);
       setValidationForm(Object.fromEntries(validationFields.map(([key]) =>
         [key, snapshot.job.validation_context?.[key] ?? ""])) as Record<ValidationField, string>);
@@ -504,13 +523,63 @@ export function CookingWorkspace({ csrf }: Props) {
     }), "재검증 조합을 기록했습니다. 실제 유효성 검증은 아직 수행되지 않았습니다.");
   }
 
+  async function recordConditionProfile() {
+    if (!job || job.menu !== "JEYUK") return;
+    const id = validationForm.process_condition_profile_id;
+    const version = validationForm.process_condition_version;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(id) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(version) || !conditionHeating.trim() || !conditionRpm.trim()) {
+      setError("공정조건 ID·버전과 목표 열원 온도·RPM을 입력해 주세요.");
+      return;
+    }
+    if (activeRequest.current) return;
+    activeRequest.current = true;
+    setBusy(true); setError(""); setStatus("");
+    try {
+      await api<unknown>("/api/customer/cooking-jobs/condition-profiles", csrf, {
+        profile_id: id, profile_version: version, equipment_profile: job.equipment_profile,
+        heating_setpoint_celsius: conditionHeating, target_rpm: conditionRpm,
+      });
+      setStatus("합성 공정조건을 기록했습니다. 이 기록은 안전 승인이 아닙니다.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "공정조건을 기록하지 못했습니다.");
+    } finally {
+      activeRequest.current = false; setBusy(false);
+    }
+  }
+
   async function inspectValidationEvidence() {
     if (!job || job.menu !== "JEYUK") return;
     setError("");
     try {
-      setValidationEvidence(await api<ValidationEvidence>(jobPath(job.job_id) + "/validation-evidence"));
+      const path = jobPath(job.job_id);
+      const [evidence, snapshots] = await Promise.all([
+        api<ValidationEvidence>(path + "/validation-evidence"),
+        api<ValidationEvidenceSnapshot[]>(path + "/validation-evidence-snapshots"),
+      ]);
+      if (loadedJobId.current === job.job_id && loadedJobVersion.current === job.version) {
+        setValidationEvidence(evidence);
+        setValidationSnapshots(snapshots);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "재검증 증거를 조회하지 못했습니다.");
+    }
+  }
+
+  async function captureValidationEvidence() {
+    if (!job || !validationEvidence || validationEvidence.status !== "LINKED_UNVERIFIED" ||
+        validationEvidence.job_version !== job.version || savingValidationSnapshot) return;
+    setSavingValidationSnapshot(true);
+    setError("");
+    try {
+      const path = jobPath(job.job_id) + "/validation-evidence-snapshots";
+      await api<ValidationEvidenceSnapshot>(path, csrf, { expected_version: job.version });
+      const snapshots = await api<ValidationEvidenceSnapshot[]>(path);
+      if (loadedJobId.current === job.job_id && loadedJobVersion.current === job.version) setValidationSnapshots(snapshots);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "증거 이력을 기록하지 못했습니다.");
+    } finally {
+      setSavingValidationSnapshot(false);
     }
   }
 
@@ -844,6 +913,12 @@ export function CookingWorkspace({ csrf }: Props) {
                   onChange={(event) => setValidationForm(previous => ({ ...previous, [key]: event.target.value }))}
                   disabled={busy || loadingJob || !job.source_binding || !["PENDING", "READY"].includes(job.status)} />
               </label>)}</div>
+              <div className="field-row"><label>목표 열원 온도 (°C)
+                <input type="number" step="0.01" value={conditionHeating} onChange={(event) => setConditionHeating(event.target.value)} disabled={busy || loadingJob} />
+              </label><label>목표 교반 속도 (RPM)
+                <input type="number" min="0" step="0.01" value={conditionRpm} onChange={(event) => setConditionRpm(event.target.value)} disabled={busy || loadingJob} />
+              </label><button type="button" className="secondary" onClick={recordConditionProfile} disabled={busy || loadingJob}>공정조건 버전 기록</button></div>
+              <p className="small">합성 공정조건은 위 프로파일 ID·버전으로 저장하며, 값을 바꾸려면 새 버전이 필요합니다.</p>
               <button type="button" onClick={recordValidationContext}
                 disabled={busy || loadingJob || !job.source_binding || !["PENDING", "READY"].includes(job.status)}>조합 기록{job.validation_context_version ? " 수정" : ""}</button>
               <button type="button" className="secondary" onClick={inspectValidationEvidence}
@@ -864,6 +939,12 @@ export function CookingWorkspace({ csrf }: Props) {
                   {validationCheckLabels[key] ?? key}: {passed ? "확인" : "미확인"}
                 </li>)}</ul>
                 {validationEvidence.process_reference && <p>자동 판정 참조: <code>{validationEvidence.process_reference.pk} / {validationEvidence.process_reference.sk}</code></p>}
+                <button type="button" className="secondary" onClick={captureValidationEvidence}
+                  disabled={busy || loadingJob || savingValidationSnapshot || validationEvidence.status !== "LINKED_UNVERIFIED" || validationEvidence.job_version !== job.version}>
+                  {savingValidationSnapshot ? "기록 중" : "현재 증거 이력 기록"}
+                </button>
+                {validationSnapshots.length > 0 && <ul>{[...validationSnapshots].sort((a, b) => b.recorded_at.localeCompare(a.recorded_at)).map((item) =>
+                  <li key={item.snapshot_id}>{timeLabel(item.recorded_at)} · 작업 버전 {item.job_version} · 원천 버전 {item.source_revision} · 검증 전 기록</li>)}</ul>}
                 <p>식별값은 합성 fixture의 선언값입니다. 이 조회로 실제 원재료 이력이나 교정 증명, 72시간 유효성이 확인되는 것은 아닙니다.</p>
               </div>}
             </div>}
@@ -1160,6 +1241,9 @@ export function CookingWorkspace({ csrf }: Props) {
               <strong>{eventStatusLabel(item.domain, item.from_status)} → {eventStatusLabel(item.domain, item.to_status)}</strong>
               <small>{eventLabels[item.trigger] ?? item.trigger} · {timeLabel(item.occurred_at)}</small>
               {item.reason && <small>{processReasonLabels[item.reason] ?? item.reason}</small>}
+              {item.validation_change_reason && <small>재검증 관련 기록: {validationChangeLabels[item.validation_change_reason] ?? "기록된 변경"}</small>}
+              {!!item.change_reasons?.length && <small>조합 변경: {item.change_reasons.map((reason) => validationChangeLabels[reason] ?? "기록된 변경").join(", ")}</small>}
+              {!!item.unknown_fields?.length && <small>이전 조합에 확인되지 않은 항목이 있습니다.</small>}
               {item.manual_stop_confirmed_at && <small>운영자 수동 중단 확인: {timeLabel(item.manual_stop_confirmed_at)}</small>}
               {item.manual_stopped_at && <small>현장 수동 중단 시각: {timeLabel(item.manual_stopped_at)}</small>}
               {scoreItems.map(({ key, label }) => item.partial_scores?.[key] !== undefined || item.partial_observations?.[key]

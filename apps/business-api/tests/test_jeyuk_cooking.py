@@ -106,6 +106,9 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         context_events = [item for item in events if item["domain"] == "VALIDATION_CONTEXT"]
         self.assertEqual(len(context_events), 2)
         self.assertEqual(context_events[1]["previous_digest"], job["validation_context_digest"])
+        self.assertEqual(context_events[1]["change_reasons"], ["INGREDIENT_CHANGED"])
+        self.assertEqual(context_events[1]["unknown_fields"], [])
+        self.assertNotIn("change_reasons", context_events[0])
         bad = {**body, "expected_version": changed.json()["version"], "sensor_id": "probe a"}
         self.assertEqual((await self.client.post(path + "/validation-context", headers=CSRF,
                                                  json=bad)).status_code, 422)
@@ -169,18 +172,62 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
             "source_derived_results_match_raw",
             "source_process_conditions_normal", "source_safety_samples_valid",
             "source_validation_identity_matches",
+            "source_relative_duration_covers_cooking",
             "source_process_span_covers_cooking")}
-        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "test-source"}), \
+        self.store.create_condition_profile("jeyuk-customer", {"profile_id": "jeyuk-process-small", "profile_version": "v1",
+            "provenance": "SYNTHETIC", "status": "DECLARED_UNVERIFIED", "equipment_profile": "jeyuk-small",
+            "heating_setpoint_celsius": "200", "target_rpm": "30"})
+        settings = {"heating_setpoint_celsius": {"status": "STABLE", "value": "200"},
+                    "target_rpm": {"status": "STABLE", "value": "30"}}
+        receipt_ref = {"pk": "JEYUK#jeyuk-evidence-a", "sk": "COLLECTION#RECEIPT#test",
+                       "record_count": 61, "ordered_raw_sha256": "a" * 64}
+        self.store.validation_sources[("foodtech-data-flow-dev", receipt_ref["pk"])] = {
+            "revision": 61, "receipt": receipt_ref.copy()}
+        with patch.dict(os.environ, {"FOODTECH_DATA_TABLE": "foodtech-data-flow-dev"}), \
              patch.object(cooking, "_read_jeyuk_source_records",
                           return_value=([], [])) as source_read, \
              patch("foodtech_business_api.jeyuk_source_evidence.audit_source_records",
-                   return_value=source_checks):
+                   return_value=source_checks), \
+             patch("foodtech_business_api.source_revision.read_source_revision", return_value=61) as revision, \
+             patch("foodtech_business_api.jeyuk_source_evidence.read_collection_completion",
+                   return_value={"status": "MATCHED_AT_READ", "source_revision": 61,
+                                 "receipt_reference": receipt_ref,
+                                 "settings": settings}) as receipt:
             linked = (await self.client.get(path + "/validation-evidence")).json()
-            source_read.assert_called_once_with("test-source", "jeyuk-evidence-a", 61)
+            source_read.assert_called_once_with("foodtech-data-flow-dev", "jeyuk-evidence-a", 61)
+            saved = await self.client.post(path + "/validation-evidence-snapshots", headers=CSRF,
+                                           json={"expected_version": linked["job_version"]})
+            self.assertEqual(saved.status_code, 201, saved.text)
+            self.assertEqual(saved.json()["condition_profile_reference"], linked["condition_profile_reference"])
+            self.assertFalse(saved.json()["activation_allowed"])
+            self.assertEqual((await self.client.get(path + "/validation-evidence-snapshots")).json()[0]["snapshot_id"],
+                             saved.json()["snapshot_id"])
+            receipt.return_value = {"status": "NOT_RECORDED"}
+            missing_receipt = (await self.client.get(path + "/validation-evidence")).json()
+            self.assertEqual(missing_receipt["status"], "INCOMPLETE")
+            self.assertIn("source_completion_record_matched", missing_receipt["missing_checks"])
+            self.assertIsNone(missing_receipt["source_revision"])
+            receipt.return_value = {"status": "MATCHED_AT_READ", "source_revision": 61,
+                                    "receipt_reference": receipt_ref,
+                                    "settings": settings}
+            settings["target_rpm"]["value"] = "31"
+            mismatched = (await self.client.get(path + "/validation-evidence")).json()
+            self.assertFalse(mismatched["checks"]["source_condition_profile_matches"])
+            self.assertEqual(mismatched["status"], "INCOMPLETE")
+            settings["target_rpm"]["value"] = "30"
+            profile_key = ("SCOPE#USER#jeyuk-customer#CONDITION_PROFILE#jeyuk-process-small", "VERSION#v1")
+            profile = self.store.items.pop(profile_key)
+            missing_profile = (await self.client.get(path + "/validation-evidence")).json()
+            self.assertFalse(missing_profile["checks"]["source_condition_profile_matches"])
+            self.store.items[profile_key] = profile
+            revision.side_effect = [61, 62]
+            changed = await self.client.get(path + "/validation-evidence")
+            self.assertEqual(changed.status_code, 409)
         self.assertEqual(linked["status"], "LINKED_UNVERIFIED")
         self.assertEqual(linked["process_reference"],
                          {"pk": "JEYUK#jeyuk-evidence-a", "sk": "ASSESSMENT#000061", "second": 61})
         self.assertEqual(linked["context_digest"], recorded.json()["validation_context_digest"])
+        self.assertEqual(linked["source_revision"], 61)
         self.assertFalse(linked["activation_allowed"])
         meta["process_assessment"]["source_assessment_pk"] = "JEYUK#other-batch"
         mismatch = (await self.client.get(path + "/validation-evidence")).json()
@@ -342,6 +389,8 @@ class JeyukCookingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(failed.json()["evaluation_blocked"])
         events = (await self.client.get(path + "/events")).json()
         self.assertEqual(len([event for event in events if event["trigger"] == "JEYUK_DISCHARGE_CHECK"]), 4)
+        self.assertEqual([event for event in events if event["trigger"] == "JEYUK_DISCHARGE_CHECK"][-1]["validation_change_reason"],
+                         "SAFETY_ANOMALY")
 
     async def test_discharge_missing_invalid_and_ordered_samples(self):
         job = await self.create()
