@@ -22,6 +22,9 @@ def main():
     owner = f'SCOPE#USER#{subject}'
     keys = [{'pk': f'{owner}#CONDITION_PROFILE#p1', 'sk': f'VERSION#{v}'} for v in ('v1', 'v2')]
     keys += [{'pk': f'{owner}#CONDITION_PROFILES', 'sk': f'PROFILE#p1#VERSION#{v}'} for v in ('v1', 'v2')]
+    legacy = {'pk': f'{owner}#CONDITION_PROFILE#legacy', 'sk': 'VERSION#v1'}
+    legacy_ref = {'pk': f'{owner}#CONDITION_PROFILES', 'sk': 'PROFILE#legacy#VERSION#v1'}
+    keys += [legacy, legacy_ref]
     try:
         for version in ('v1', 'v2'):
             store.create_condition_profile(subject, {'profile_id': 'p1', 'profile_version': version})
@@ -37,12 +40,22 @@ def main():
             raise AssertionError('inventory pages mismatch')
         if store.list_condition_profile_refs(subject + '-other', 1, None)['items']:
             raise AssertionError('cross-owner inventory leak')
+        table.put_item(Item={**legacy, 'profile_id': 'legacy', 'profile_version': 'v1'},
+                       ConditionExpression='attribute_not_exists(pk)')
+        store.ensure_condition_profile_listed(subject, 'legacy', 'v1')
+        store.ensure_condition_profile_listed(subject, 'legacy', 'v1')
+        try:
+            store.ensure_condition_profile_listed(subject, 'missing', 'v1')
+        except Conflict:
+            pass
+        else:
+            raise AssertionError('missing legacy profile was listed')
         if any(table.get_item(Key=key, ConsistentRead=True).get('Item') is None for key in keys):
             raise AssertionError('missing profile or reference')
     finally:
         for key in keys:
             table.delete_item(Key=key)
-    print('profile transaction, duplicate rejection, owner isolation, pagination and cleanup verified')
+    print('profile transaction, duplicate rejection, owner isolation, pagination, legacy reconciliation and cleanup verified')
 
 
 if __name__ == '__main__':

@@ -60,6 +60,37 @@ class ProfileInventoryTests(unittest.TestCase):
         self.assertEqual(result['items'], [{'profile_id': 'p1', 'profile_version': 'v1'}])
         self.assertEqual(result['next_cursor'], 'PROFILE#p1#VERSION#v1')
 
+    def test_legacy_reference_requires_existing_matching_source_and_is_idempotent(self):
+        store = MemoryCookingStore()
+        source_key = ('SCOPE#USER#alice#CONDITION_PROFILE#legacy', 'VERSION#v1')
+        store.items[source_key] = {'pk': source_key[0], 'sk': source_key[1],
+                                   'profile_id': 'legacy', 'profile_version': 'v1'}
+        store.ensure_condition_profile_listed('alice', 'legacy', 'v1')
+        store.ensure_condition_profile_listed('alice', 'legacy', 'v1')
+        self.assertEqual(store.list_condition_profile_refs('alice', 10, None)['items'],
+                         [{'profile_id': 'legacy', 'profile_version': 'v1'}])
+        with self.assertRaises(Conflict):
+            store.ensure_condition_profile_listed('bob', 'legacy', 'v1')
+        store.items[source_key]['profile_version'] = 'different'
+        with self.assertRaises(Conflict):
+            store.ensure_condition_profile_listed('alice', 'legacy', 'v1')
+
+    def test_dynamo_reconciliation_is_single_transaction(self):
+        client = boto3.client('dynamodb', region_name='ap-southeast-2',
+                              aws_access_key_id='synthetic', aws_secret_access_key='synthetic')
+        store = DynamoCookingStore.__new__(DynamoCookingStore)
+        store.client, store.table, store.serializer = client, SimpleNamespace(name='cooking'), TypeSerializer()
+        requests = []
+        client.meta.events.register('before-parameter-build.dynamodb.TransactWriteItems',
+                                    lambda model, params, **kwargs: requests.append(params))
+        with Stubber(client) as stubber:
+            stubber.add_response('transact_write_items', {}, {'TransactItems': ANY})
+            store.ensure_condition_profile_listed('alice', 'legacy', 'v1')
+        operations = requests[0]['TransactItems']
+        self.assertIn('ConditionCheck', operations[0])
+        self.assertIn('Update', operations[1])
+        self.assertIn('profile_version = :version', operations[0]['ConditionCheck']['ConditionExpression'])
+
 
 if __name__ == '__main__':
     unittest.main()

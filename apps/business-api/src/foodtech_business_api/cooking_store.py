@@ -129,6 +129,7 @@ class CookingStore(Protocol):
     def create_condition_profile(self, subject: str, profile: dict) -> None: ...
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None: ...
     def list_condition_profile_refs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
+    def ensure_condition_profile_listed(self, subject: str, profile_id: str, version: str) -> None: ...
     def validation_evidence_snapshots(self, pk: str) -> list[dict]: ...
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
                                  source_table: str, revision: int, receipt: dict) -> None: ...
@@ -213,6 +214,19 @@ class MemoryCookingStore:
             page = rows[:limit]
             return {"items": [{"profile_id": item["profile_id"], "profile_version": item["profile_version"]}
                               for _, item in page], "next_cursor": page[-1][0] if len(rows) > limit else None}
+
+    def ensure_condition_profile_listed(self, subject: str, profile_id: str, version: str) -> None:
+        listing = _profile_listing(subject, {"profile_id": profile_id, "profile_version": version})
+        source_key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", f"VERSION#{version}")
+        list_key = (listing["pk"], listing["sk"])
+        with self.lock:
+            source, existing = self.items.get(source_key), self.items.get(list_key)
+            if not source or source.get("profile_id") != profile_id or source.get("profile_version") != version or \
+                    (existing is not None and (existing.get("profile_id") != profile_id or
+                                               existing.get("profile_version") != version)):
+                raise Conflict
+            if existing is None:
+                self.items[list_key] = listing
 
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
                                  source_table: str, revision: int, receipt: dict) -> None:
@@ -633,6 +647,26 @@ class DynamoCookingStore:
         return {"items": [{"profile_id": item["profile_id"], "profile_version": item["profile_version"]}
                           for item in page.get("Items", [])],
                 "next_cursor": page.get("LastEvaluatedKey", {}).get("sk")}
+
+    def ensure_condition_profile_listed(self, subject: str, profile_id: str, version: str) -> None:
+        listing = _profile_listing(subject, {"profile_id": profile_id, "profile_version": version})
+        source_key = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", "sk": f"VERSION#{version}"}
+        list_key = {"pk": listing["pk"], "sk": listing["sk"]}
+        values = self._item({":id": profile_id, ":version": version})
+        try:
+            self.client.transact_write_items(TransactItems=[
+                {"ConditionCheck": {"TableName": self.table.name, "Key": self._item(source_key),
+                    "ConditionExpression": "profile_id = :id AND profile_version = :version",
+                    "ExpressionAttributeValues": values}},
+                {"Update": {"TableName": self.table.name, "Key": self._item(list_key),
+                    "UpdateExpression": "SET profile_id = :id, profile_version = :version",
+                    "ConditionExpression": "attribute_not_exists(pk) OR (profile_id = :id AND profile_version = :version)",
+                    "ExpressionAttributeValues": values}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
+            raise
 
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None:
         key = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", "sk": f"VERSION#{version}"}
