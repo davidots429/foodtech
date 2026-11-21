@@ -126,6 +126,16 @@ async def scenario(store, partitions, auth, auth_keys):
             refreshed.raise_for_status()
             assert refreshed.json()['group_id'] == group and refreshed.json()['result_id'] != result['result_id']
             assert (await client.get(link)).json()['result_id'] == result['result_id']
+            list_path = f'/api/customer/combi-quality-aggregates/groups/{group}/results?limit=1'
+            first_page = await client.get(list_path)
+            first_page.raise_for_status()
+            assert len(first_page.json()['items']) == 1 and first_page.json()['next_cursor']
+            second_page = await client.get(list_path + '&cursor=' + first_page.json()['next_cursor'])
+            second_page.raise_for_status()
+            assert len(second_page.json()['items']) == 1 and second_page.json()['next_cursor'] is None
+            owner[0] = 'synthetic-other-' + uuid4().hex
+            assert (await client.get(list_path)).json()['items'] == []
+            owner[0] = subject
             compared = await client.post('/api/customer/combi-quality-aggregates/compare', headers=headers,
                                          json=compare_body)
             assert compared.json()['baseline']['freshness']['status'] == 'CHANGED'

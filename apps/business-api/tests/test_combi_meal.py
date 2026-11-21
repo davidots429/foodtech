@@ -217,6 +217,16 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(refreshed.json()['result_id'], result['result_id'])
         self.assertEqual((await self.client.post(link + '/recalculate', headers=headers)).json()['result_id'],
                          refreshed.json()['result_id'])
+        versions_path = f"{path}/groups/{result['group_id']}/results?limit=1"
+        versions = await self.client.get(versions_path)
+        self.assertEqual(versions.status_code, 200, versions.text)
+        self.assertEqual(len(versions.json()['items']), 1)
+        cursor = versions.json()['next_cursor']
+        self.assertIsNotNone(cursor)
+        next_page = await self.client.get(versions_path + '&cursor=' + cursor)
+        self.assertEqual(len(next_page.json()['items']), 1)
+        self.assertIsNone(next_page.json()['next_cursor'])
+        self.assertEqual((await self.client.get(versions_path + '&cursor=bad')).status_code, 400)
         changed_compare = await self.client.post(path + '/compare', headers=headers, json=comparison_body)
         self.assertEqual(changed_compare.json()['baseline']['freshness']['status'], 'CHANGED')
         self.assertEqual((await self.client.get(link)).json()['result_id'], result['result_id'])
@@ -226,6 +236,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         self.subject = 'another-customer'
         self.assertEqual((await self.client.get(link)).status_code, 404)
         self.assertEqual((await self.client.get(link + '/freshness')).status_code, 404)
+        self.assertEqual((await self.client.get(versions_path)).json()['items'], [])
         self.assertEqual((await self.client.post(link + '/recalculate', headers=headers)).status_code, 404)
         self.assertEqual((await self.client.post(path + '/compare', headers=headers, json=comparison_body)).status_code, 404)
         self.assertEqual((await self.client.post(path, headers=headers, json=body)).status_code, 404)

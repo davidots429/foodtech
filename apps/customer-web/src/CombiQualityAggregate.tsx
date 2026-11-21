@@ -14,6 +14,8 @@ type Result = {
 };
 type Freshness = { status: "CHANGED" | "UNCHANGED_AS_OBSERVED"; checked_at: string;
   changed: { meal_id: string; reason: "UNAVAILABLE" | "VERSION_CHANGED" }[] };
+type VersionPage = { items: { result_id: string; created_at: string; sample_count: number;
+  excluded_count: number; mean_quality_score_percent: string | null }[]; next_cursor: string | null };
 type Comparison = { baseline: { sample_count: number; freshness: Freshness; selection: Result["selection"] };
   candidate: { sample_count: number; freshness: Freshness; selection: Result["selection"] };
   deltas: { mean_quality_score_percent: string; quality_pass_rate_percent: string; quality_target_rate_percent: string };
@@ -54,6 +56,9 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
   const [baselineGroup, setBaselineGroup] = useState("");
   const [baselineResult, setBaselineResult] = useState("");
   const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [versions, setVersions] = useState<VersionPage["items"]>([]);
+  const [versionsGroup, setVersionsGroup] = useState("");
+  const [versionsCursor, setVersionsCursor] = useState<string | null>(null);
   const active = useRef(false);
 
   async function calculate() {
@@ -67,6 +72,7 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
         period_start: dayBoundary(start, false), period_end: dayBoundary(end, true),
       });
       setResult(value); setGroupId(value.group_id); setResultId(value.result_id);
+      setVersions([]); setVersionsGroup(""); setVersionsCursor(null);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "집계하지 못했습니다."); }
     finally { active.current = false; setBusy(false); }
   }
@@ -112,6 +118,19 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
     finally { active.current = false; setBusy(false); }
   }
 
+  async function listVersions(cursor?: string) {
+    if (active.current || !groupId.trim()) return;
+    active.current = true; setBusy(true); setError("");
+    const group = groupId.trim();
+    try {
+      const page = await api<VersionPage>(`/api/customer/combi-quality-aggregates/groups/${encodeURIComponent(group)}/results?limit=20` +
+        (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
+      setVersions(previous => cursor && versionsGroup === group ? [...previous, ...page.items] : page.items);
+      setVersionsGroup(group); setVersionsCursor(page.next_cursor);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "집계 목록을 불러오지 못했습니다."); }
+    finally { active.current = false; setBusy(false); }
+  }
+
   return <section className="binding-box"><h3>밥·고등어 품질 선택 표본 집계</h3>
     <p>같은 메뉴·장비·레시피·조리량 구간의 평가를 비교합니다. 합성 기준이며 선택한 표본만 집계합니다.</p>
     <p>장비 규모: {size === "MEDIUM_FIXED_RACK_10" ? "중형 고정 랙" : "대형 이동식 랙"}</p>
@@ -129,10 +148,15 @@ export function CombiQualityAggregate({ csrf, mealId, size, riceRecipe, mackerel
     </div>
     <button type="button" disabled={busy || !ids.trim() || !recipe.trim() || !start || !end} onClick={calculate}>품질 집계 저장</button>
     <div className="field-grid">
-      <label>집계 그룹 ID<input value={groupId} onChange={event => setGroupId(event.target.value)} /></label>
+      <label>집계 그룹 ID<input value={groupId} onChange={event => { setGroupId(event.target.value); setVersions([]); setVersionsCursor(null); setVersionsGroup(""); }} /></label>
       <label>결과 ID<input value={resultId} onChange={event => setResultId(event.target.value)} /></label>
     </div>
     <button type="button" className="secondary" disabled={busy || !groupId.trim() || !resultId.trim()} onClick={open}>저장된 집계 조회</button>
+    <button type="button" className="secondary" disabled={busy || !groupId.trim()} onClick={() => listVersions()}>이 그룹의 저장 결과 목록</button>
+    {versionsGroup && <div><p>저장 결과 {versions.length}건</p><ul>{versions.map(version => <li key={version.result_id}>
+      <button type="button" className="secondary" disabled={busy} onClick={() => setResultId(version.result_id)}>선택</button>
+      {" "}{version.created_at} · 포함 {version.sample_count}건 · 제외 {version.excluded_count}건 · {version.result_id}
+    </li>)}</ul>{versionsCursor && <button type="button" className="secondary" disabled={busy} onClick={() => listVersions(versionsCursor)}>목록 더 보기</button>}</div>}
     {error && <p role="alert">{error}</p>}
     {result && <div aria-live="polite"><p>저장 시점 스냅샷 · {result.created_at} · 포함 {result.sample_count}건 · 제외 {result.excluded_count}건</p>
       <p>{result.selection.menu === "RICE" ? "밥" : "고등어"} · {result.selection.equipment_size === "MEDIUM_FIXED_RACK_10" ? "중형 고정 랙" : "대형 이동식 랙"} · 레시피 {result.selection.recipe_version} · {({ PARTIAL: "부분 적재", REFERENCE: "기준 적재", OVER_RECOMMENDED: "권장량 초과" } as const)[result.selection.load_band]}</p>

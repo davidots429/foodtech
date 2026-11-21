@@ -62,6 +62,8 @@
 
 `POST /api/customer/combi-quality-aggregates/{group_id}/{result_id}/recalculate`와 화면 버튼은 기존에 저장된 선택 조건으로 새로운 스냅샷을 만든다. CSRF·소유자·현재 잠금·선택 배치 버전을 확인하며 기존 결과는 보존한다. 변화가 없으면 같은 결과를 재사용한다. 개발 DynamoDB에서 합성 재집계와 과거 결과 보존을 확인했으며 자동 재계산은 아직 제공하지 않는다.
 
+`GET /api/customer/combi-quality-aggregates/groups/{group_id}/results`는 고객 범위에서 해당 그룹의 저장 결과를 페이지로 나열하며 화면에서 결과를 선택해 조회할 수 있다. 순서는 결과 식별자 기준이며 생성시각 순서를 의미하지 않는다. 개발 DynamoDB에서 두 결과의 페이지 조회와 다른 고객에게 빈 목록이 반환되는 것을 확인했다.
+
 `POST /api/customer/combi-quality-aggregates/compare`는 같은 메뉴·장비·합성 조리량 구간·규칙의 고객 소유 스냅샷 두 개를 선택해 평균 점수와 합격률의 단순 차이를 계산한다. 각 결과의 표본 수·기간·레시피와 배치 변경 관찰을 함께 반환한다. 두 집계에 포함 평가가 있어야 하며, 차이는 인과 효과나 모집단 대표성을 뜻하지 않는다. 개발 DynamoDB의 합성 집계 비교·다른 고객 거부·변경 감지를 확인했다. 비교 응답은 저장하지 않는다.
 
 `POST /api/customer/combi-meals/{meal_id}/rice-safety`는 밥 인양 후 공정 판정과 운영자의 안전 이상 여부·확인 근거를 기록한다. 별도 온도 측정은 요구하지 않는다. 공정 정상·경고와 이상 없음이 확인되면 `PASSED`, 공정 미확인·실패는 `INCOMPLETE`, 이상 의심·센서 이상 의심·원천의 치명 알람은 `SUSPECTED`로 품질평가를 차단한다. 연결된 원천이 있으면 해당 원천을 이용한 공정 판정이 필요하다. 안전 확인을 다시 기록하면 이전 품질평가 사용을 차단하며, 재평가로만 새 포인터를 활성화한다. 2026-11-21 개발용 DynamoDB에서 합성 공정·안전 확인·품질평가·이상 차단·재평가와 시험 파티션 정리를 확인했다. `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev .venv/bin/python tests/live/rice_safety_dynamodb_check.py`로 재실행하며 고객 세션은 합성 대역이다.

@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from foodtech_contracts.combi_quality_load import RULE_VERSION, classify
@@ -135,6 +135,16 @@ async def get_meal_aggregate(group_id: str, result_id: str, request: Request) ->
     if not result or result.get('group_id') != group_id or result.get('result_id') != result_id:
         raise HTTPException(404, '집계 기록을 찾을 수 없습니다.')
     return result
+
+
+@router.get('/groups/{group_id}/results')
+async def list_meal_aggregate_results(group_id: str, request: Request,
+                                      limit: int = Query(20, ge=1, le=50), cursor: str | None = None) -> dict:
+    if not _valid_hash(group_id) or (cursor is not None and not _valid_hash(cursor)):
+        raise HTTPException(400, '집계 그룹 또는 목록 커서가 올바르지 않습니다.')
+    session, store = await _context(request)
+    pk = f'SCOPE#USER#{session.subject}#MEAL_AGGREGATE#{group_id}'
+    return await _store_call(store, store.list_aggregate_results, pk, limit, cursor)
 
 
 @router.get('/{group_id}/{result_id}/freshness')
