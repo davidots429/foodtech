@@ -174,6 +174,8 @@
 
 투입·원천 일치 확인 도입 전의 제육볶음 안전 합격 기록은 원본을 수정하지 않는다. 해당 작업 조회는 확인 전 안전 상태를 미완료로 표시하고 현재 평가를 차단하며, 새 비교·집계에서 제외한다. 이전에 포함된 비교·집계 결과의 상태는 `STALE`로 표시한다. 현재 안전 확인을 다시 통과해도 이전 평가는 자동 복원하지 않는다.
 
+2026-11-21 개발용 DynamoDB·SQS에서 C# Mock의 480개 합성 전체 조리 표본을 수집·처리하고 조리 완료, 개별 투입·배출 안전 확인, 원천 감사, 미검증 증거의 저장·조회 및 시험 데이터 정리를 확인했다. 시험은 완료 기록을 직접 생성하며 Mock 전송 종료나 실제 장비·원재료·교정 검증을 뜻하지 않는다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/jeyuk_job_dynamodb_check.py --safety --timeline --full --feed-safety --evidence`.
+
 2026-11-21 개발용 DynamoDB·SQS에서 C# Mock의 61개 합성 안전 표본과 개별 투입 기록을 연결해 안전 합격, 투입 시각 정정 후 합격 취소, 불일치 상태 재검증 차단과 시험 데이터 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/jeyuk_job_dynamodb_check.py --safety --timeline --feed-safety`. 이 시험은 전체 480초 원천 표본 범위를 검증하지 않는다.
 
 제육볶음 완료 품질평가는 같은 `/assessments` API의 `jeyuk-common-v1` 척도를 사용한다. 7개 공통 5점 항목에 제육볶음 관찰 설명을 붙이고 모두 점수와 관찰 근거를 요구한다. 운영자가 `QUALITY_PASSED` 또는 `QUALITY_FAILED`를 선택하며 실패에는 승인된 메뉴 품질 사유코드 하나 이상이 필요하다. 점수 기준에 미달한 `QUALITY_PASSED`는 거부한다. 1.8kg 합성 권장 배치의 50% 이하를 `PARTIAL`, 50% 초과~100%를 `REFERENCE`, 100% 초과~3.0kg 정격 이내를 `OVER_RECOMMENDED`로 기록한다. 평가 결과·사유·실제 적재량·인분과 안전 버전은 수정·재평가마다 새 불변 버전으로 저장되고 현재 포인터를 원자적으로 전환한다. 2026-11-15 개발용 DynamoDB에서 합성 제육볶음 작업의 최초 평가·안전 차단·재검증·재평가·현재 포인터 전환을 확인하고 시험 항목을 정리했다. 재실행 명령은 `AWS_PROFILE=foodtech FOODTECH_COOKING_TABLE=foodtech-cooking-jobs-dev uv run --no-sync python tests/live/jeyuk_assessment_dynamodb_check.py`다. 제육볶음 집계와 레시피 버전 개선 확정은 별도 범위다.
@@ -253,3 +255,5 @@
 결과는 누락·불일치, 검사 중 버전 변경, 버전 미추적 및 한도 초과를 구분한다. `MATCHED_IN_OBSERVATION`도 검사 시점의 관찰일 뿐 이전 작성자의 변경이나 검사 후 경쟁을 배제하지 않는다. 수정이나 확인 표식을 만들지 않고 고객 식별자·작업 ID를 출력하지 않으며 직전 작업 확인과 AI 실행은 계속 차단한다. 개발용 DynamoDB에서 합성 항목의 일치·누락·복구를 확인하고 시험 항목을 삭제했다. 인증은 합성 세션이며 실제 배포 운영자 역할은 검증하지 않았다.
 
 제육볶음 합성 공정조건은 `POST /api/customer/cooking-jobs/condition-profiles`로 고객별 ID·버전, 장비 규모, 목표 열원 온도와 목표 RPM을 기록하고, 같은 ID·버전은 덮어쓸 수 없다. GET으로 같은 고객의 버전을 조회한다. 기록은 `DECLARED_UNVERIFIED`이며 승인된 조건을 뜻하지 않는다. 원천 완료 기록이 일치하는 경우 검증 증거 조회는 해당 버전과 원표본의 설정값이 모두 일정하고 일치하는지 확인한다. 값이 없거나 버전이 등록되지 않은 과거 표본은 미확인이다.
+
+2026-11-21 개발용 DynamoDB·SQS에서 C# Mock HTTPS 응답과 실제 수집기가 생성한 완료 기록을 사용해 480개 합성 제육볶음 표본의 전체 수집·처리, 조리 및 안전 확인, 원천 감사와 검증 전 증거 저장·조회를 확인하고 시험 데이터와 커서를 정리했다. Mock은 표본 전체를 즉시 제공했고 고객 세션은 합성 대체 세션이다. 실제 장비·원재료·교정 증명이나 72시간 유효성 승인을 뜻하지 않는다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/jeyuk_job_dynamodb_check.py --safety --timeline --full --feed-safety --evidence --wire`.
