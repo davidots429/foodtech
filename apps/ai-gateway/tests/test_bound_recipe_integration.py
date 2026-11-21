@@ -4,6 +4,7 @@ import threading
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
+from botocore.exceptions import ReadTimeoutError
 
 from foodtech_ai_gateway.ollama import OllamaResult
 from foodtech_ai_gateway.policy import Caller, Model, Tier
@@ -93,6 +94,27 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
         self.assertEqual((result.state, result.error_code), ('FAILED', 'RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE'))
         self.assertIsNone(result.response_text)
         self.assertNotIn('temperature_c', str(self.registry.execution_result('exec')))
+
+    def test_uncertain_settlement_does_not_retry_or_return_candidate(self):
+        for committed in (False, True):
+            with self.subTest(committed=committed):
+                self.setUp()
+                original = self.registry.finish
+                attempts = []
+                def timeout(*args, **kwargs):
+                    attempts.append(kwargs['succeeded'])
+                    if committed:
+                        original(*args, **kwargs)
+                    raise ReadTimeoutError(endpoint_url='https://example.invalid', error='timeout')
+                self.registry.finish = timeout
+                class Model:
+                    async def structured_chat(self, *_):
+                        return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+                result = self.invoke(Model())
+                self.assertEqual((result.state, result.error_code, result.response_text),
+                                 ('INDETERMINATE', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED', None))
+                self.assertEqual(attempts, [True])
+                self.assertEqual(self.registry.execution_state('exec'), 'SUCCEEDED' if committed else 'RESERVED')
 
     def test_execution_change_during_model_call_cannot_store_candidate(self):
         table = self.registry.table

@@ -5,6 +5,7 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
+from botocore.exceptions import BotoCoreError, ClientError
 
 from foodtech_contracts.recommendation_guard import Evidence
 from foodtech_contracts.recommendation_output import JeyukBaseline, TonkatsuBaseline
@@ -115,7 +116,7 @@ class GatewayService:
                 checks = await asyncio.to_thread(guard.settlement_checks)
                 if any(check['ConditionCheck']['TableName'] == self.registry.table_name for check in checks):
                     raise ValueError('source table conflicts with execution registry')
-            except (TypeError, ValueError, KeyError):
+            except (TypeError, ValueError, KeyError, BotoCoreError, ClientError):
                 return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_SCOPE_UNAVAILABLE")
         attempts = 0
         reserved = False
@@ -132,16 +133,19 @@ class GatewayService:
             except Exception:
                 return False
 
-        async def finish_recipe(*, succeeded: bool, response_text: str | None = None, error_code: str | None = None) -> bool:
+        async def finish_recipe(*, succeeded: bool, response_text: str | None = None, error_code: str | None = None) -> str:
             try:
                 await asyncio.to_thread(self.registry.finish, execution_id, succeeded=succeeded,
                                         actual_cost_usd=Decimal('0'), response_text=response_text,
                                         error_code=error_code, expected_execution=execution,
                                         recipe_source_guard=self.recipe_source_guard if succeeded and
                                             isinstance(baseline, JeyukBaseline) else None)
-                return True
+                return 'settled'
             except RegistryConflict:
-                return False
+                return 'conflict'
+            except (BotoCoreError, ClientError):
+                # The transaction may have committed before the connection failed.
+                return 'unknown'
 
         async def invoke(messages, schema):
             nonlocal attempts, reserved
@@ -173,25 +177,30 @@ class GatewayService:
             if not await source_current():
                 code = "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE"
                 if reserved:
-                    if not await finish_recipe(succeeded=False, error_code=code):
-                        return ExecutionOutcome(execution_id, "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
+                    settlement = await finish_recipe(succeeded=False, error_code=code)
+                    if settlement != 'settled':
+                        return ExecutionOutcome(execution_id, "INDETERMINATE" if settlement == 'unknown' else "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
                     return ExecutionOutcome(execution_id, "FAILED", error_code=code)
                 return ExecutionOutcome(execution_id, "DENIED", error_code=code)
             if result["status"] == "NEEDS_REVIEW":
                 response = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-                if not await finish_recipe(succeeded=True, response_text=response):
+                settlement = await finish_recipe(succeeded=True, response_text=response)
+                if settlement != 'settled':
                     # The candidate cannot be published after a settlement conflict.
                     # A second conditional transaction may close the same execution
                     # as failed; it never refunds the consumed model call.
                     conflict_code = "RECIPE_SETTLEMENT_CONFLICT"
-                    if await finish_recipe(succeeded=False, error_code=conflict_code):
-                        return ExecutionOutcome(execution_id, "FAILED", error_code=conflict_code)
-                    return ExecutionOutcome(execution_id, "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
+                    if settlement == 'conflict':
+                        settlement = await finish_recipe(succeeded=False, error_code=conflict_code)
+                        if settlement == 'settled':
+                            return ExecutionOutcome(execution_id, "FAILED", error_code=conflict_code)
+                    return ExecutionOutcome(execution_id, "INDETERMINATE" if settlement == 'unknown' else "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
                 return ExecutionOutcome(execution_id, "SUCCEEDED", response_text=response)
             code = result["error_code"]
         if reserved:
-            if not await finish_recipe(succeeded=False, error_code=code):
-                return ExecutionOutcome(execution_id, "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
+            settlement = await finish_recipe(succeeded=False, error_code=code)
+            if settlement != 'settled':
+                return ExecutionOutcome(execution_id, "INDETERMINATE" if settlement == 'unknown' else "FAILED", error_code="SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED")
             return ExecutionOutcome(execution_id, "FAILED", error_code=code)
         return ExecutionOutcome(execution_id, "DENIED", error_code=code)
 
