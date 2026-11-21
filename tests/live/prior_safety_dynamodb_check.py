@@ -12,6 +12,7 @@ from foodtech_business_api import cooking
 from foodtech_business_api.auth_store import Session
 from foodtech_business_api.cooking_store import DynamoCookingStore
 from foodtech_business_api.main import app
+from foodtech_business_api.roster_audit import audit
 from process_flow_dynamodb_check import ACCOUNT, COOKING_TABLE, REGION, remove_partition
 
 
@@ -70,11 +71,18 @@ async def run() -> None:
         store.ensure_listed(keys[0], prior_meta)
         if store.history_revision(subject) != 2:
             raise AssertionError("Idempotent listing changed history revision")
+        if audit(store, subject)["status"] != "MATCHED_IN_OBSERVATION":
+            raise AssertionError("Expected matching observed roster")
         listing_key = {"pk": listing_pk, "sk": f"CREATED#{prior_meta['created_at']}#{ids[0]}"}
         table.delete_item(Key=listing_key)
+        observed = audit(store, subject)
+        if observed["status"] != "MISMATCH" or observed["missing_count"] != 1:
+            raise AssertionError("Missing listing was not detected")
         store.ensure_listed(keys[0], prior_meta)
         if store.history_revision(subject) != 3:
             raise AssertionError("Restoring a missing listing did not advance history revision")
+        if audit(store, subject)["status"] != "MATCHED_IN_OBSERVATION":
+            raise AssertionError("Restored listing did not match")
         new_id = str(uuid.uuid4()); new_pk = cooking._pk(subject, new_id); keys.append(new_pk)
         extra = {**{key: value for key, value in prior_meta.items() if key not in {"pk", "sk"}},
                  "job_id": new_id, "version": 1, "created_at": "2026-01-03T00:00:00Z",
