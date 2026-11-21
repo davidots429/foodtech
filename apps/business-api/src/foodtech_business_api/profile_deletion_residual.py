@@ -12,12 +12,14 @@ from .profile_deletion_inventory import ProfileDeletionInventory
 
 
 class ProfileResidualScan:
+    DOMAIN = 'PROFILE_RESIDUAL'
+
     def __init__(self, *, source_table, progress_store, cipher):
         self.inventory = ProfileDeletionInventory(source_table=source_table, progress_store=progress_store, cipher=cipher)
         self.source_table, self.progress_store, self.cipher = source_table, progress_store, cipher
 
     def _checkpoint(self, subject, request_id):
-        saved = self.inventory._load(subject, request_id, 'PROFILE_RESIDUAL')
+        saved = self.inventory._load(subject, request_id, self.DOMAIN)
         if saved is None:
             old = {'schema': 1, 'pages': 0, 'cursor': None, 'complete': False, 'residual': False}
             version = 0
@@ -37,14 +39,17 @@ class ProfileResidualScan:
             version = saved['version']
         return old, version
 
+    def _scan(self, *, subject, limit, checkpoint):
+        return scan_legacy_profiles(self.source_table, subject=subject, limit=limit, checkpoint=checkpoint)
+
     def observe_page(self, *, subject, request_id, limit):
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('invalid residual scan limit')
-        scope = {'subject': subject, 'request_id': request_id, 'domain': 'PROFILE_RESIDUAL'}
+        scope = {'subject': subject, 'request_id': request_id, 'domain': self.DOMAIN}
         old, version = self._checkpoint(subject, request_id)
         if old['complete']:
             return {'scan_complete': True, 'residual_found': False}
-        result = scan_legacy_profiles(self.source_table, subject=subject, limit=limit, checkpoint=old['cursor'])
+        result = self._scan(subject=subject, limit=limit, checkpoint=old['cursor'])
         if result.checkpoint is not None and result.checkpoint == old['cursor']:
             raise ValueError('nonadvancing profile residual scan')
         residual = bool(result.references)

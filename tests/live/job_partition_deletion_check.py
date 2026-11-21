@@ -10,6 +10,7 @@ from foodtech_business_api.job_deletion_inventory import JobDeletionInventory
 from foodtech_business_api.job_deletion_worker import JobDeletionWorker
 from foodtech_business_api.job_binding_inventory import JobBindingInventory
 from foodtech_business_api.job_deletion_coordinator import JobDeletionCoordinator
+from foodtech_business_api.job_deletion_residual import JobResidualScan
 from boto3.dynamodb.conditions import Key
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 if os.getenv('AWS_PROFILE') != 'foodtech' or os.getenv('FOODTECH_JOB_DELETION_LIVE') != '1':
@@ -18,7 +19,7 @@ s=boto3.Session(profile_name='foodtech',region_name='ap-southeast-2')
 if s.client('sts').get_caller_identity()['Account']!='573693340100': raise RuntimeError('unexpected account')
 db=s.resource('dynamodb'); auth=db.Table('foodtech-auth-sessions-dev'); reg=db.Table('foodtech-ai-execution-registry-dev'); src=db.Table('foodtech-cooking-jobs-dev'); progress=db.Table('foodtech-ai-credential-vault-dev')
 outputs=s.client('cloudformation').describe_stacks(StackName='FoodtechCredentialVault-dev')['Stacks'][0]['Outputs']; key=next(x['OutputValue'] for x in outputs if x['OutputKey']=='CredentialStorageKeyArn')
-u,q=str(uuid4()),str(uuid4()); pk=f'SCOPE#USER#{u}#JOB#job'; other=f'SCOPE#USER#{u}#JOB#other'
+u,q=str(uuid4()),str(uuid4()); pk=f'SCOPE#USER#{u}#JOB#job'; other=f'SCOPE#USER#{uuid4()}#JOB#other'
 ak={'pk':f'USER#{u}'}; rk={'pk':'REGISTRY','sk':f'REQ#{q}'}
 entries=[(auth,{**ak,'suspended':True,'deletion_lock_request':q}),(reg,{**rk,'status':'DELETING'}),
  (src,{'pk':pk,'sk':'META','owner_subject':u,'job_id':'job','menu':'JEYUK',
@@ -79,11 +80,19 @@ try:
  reg.update_item(Key=rk,UpdateExpression='SET #s=:s',ExpressionAttributeNames={'#s':'status'},ExpressionAttributeValues={':s':'DELETING'})
  src.put_item(Item={**binding_key,'job_pk':pk,'job_id':'job'},ConditionExpression='attribute_not_exists(pk)')
  src.put_item(Item={**orphan_key,'job_pk':f'SCOPE#USER#{u}#JOB#orphan','job_id':'orphan'},ConditionExpression='attribute_not_exists(pk)')
- coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings)
+ residual=JobResidualScan(source_table=src,progress_store=store,cipher=cipher)
+ coordinator=JobDeletionCoordinator(jobs=inventory,worker=worker,bindings=bindings,residual=residual)
+ orphan_record={'pk':f'SCOPE#USER#{u}#JOB#lost','sk':'EVENT#1'}
+ inserted=observed=False
  for _ in range(1000):
-  result=coordinator.step(subject=u,request_id=q,limit=20)
+  result=coordinator.step(subject=u,request_id=q,limit=100)
+  if result['phase']=='RESIDUAL' and not inserted:
+   src.put_item(Item=orphan_record,ConditionExpression='attribute_not_exists(pk)');created.append((src,orphan_record));inserted=True
+  if result.get('residual_found'):
+   observed=True;src.delete_item(Key=orphan_record)
   if result['phase']=='VERIFYING':break
  else:raise AssertionError('bounded job cleanup incomplete')
+ assert observed
  assert not src.get_item(Key=binding_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key=orphan_key,ConsistentRead=True).get('Item')
  assert not src.get_item(Key={'pk':f'SCOPE#USER#{u}#JOBS','sk':'CREATED#2026-01-01#job'},ConsistentRead=True).get('Item')
