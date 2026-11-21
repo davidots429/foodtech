@@ -8,7 +8,8 @@ import tempfile
 def main():
     protocol = os.environ.get('FOODTECH_COLLECTION_PROTOCOL', 'rest')
     settings = {'rest': ('foodtech_collection_adapter', 'FOODTECH_MOCK_CA_FILE'),
-                'mqtt': ('foodtech_collection_adapter.mqtt', 'FOODTECH_MQTT_CA_FILE')}
+                'mqtt': ('foodtech_collection_adapter.mqtt', 'FOODTECH_MQTT_CA_FILE'),
+                'opcua-json': ('foodtech_collection_adapter.opcua_json', 'FOODTECH_MOCK_CA')}
     if protocol not in settings:
         raise ValueError('unsupported collection protocol')
     module, ca_variable = settings[protocol]

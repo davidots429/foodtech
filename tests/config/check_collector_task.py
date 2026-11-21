@@ -8,22 +8,24 @@ def main(path):
         resources = json.load(stream)['Resources']
     tasks = {name: item['Properties'] for name, item in resources.items()
              if item['Type'] == 'AWS::ECS::TaskDefinition'}
-    if len(tasks) != 2:
-        raise AssertionError('expected REST and MQTT collection tasks')
-    for prefix, expected in (
+    if len(tasks) != 3:
+        raise AssertionError('expected REST, MQTT and OPC UA JSON collection tasks')
+    for prefix, expected, protocol in (
         ('RestCollectionTask', {'FOODTECH_MOCK_CLIENT_ID': 'client_id', 'FOODTECH_MOCK_CLIENT_SECRET': 'client_secret',
-                                'FOODTECH_MOCK_CA_PEM': 'ca_pem'}),
+                                'FOODTECH_MOCK_CA_PEM': 'ca_pem'}, None),
         ('MqttCollectionTask', {'FOODTECH_MQTT_USER': 'username', 'FOODTECH_MQTT_PASSWORD': 'password',
-                                'FOODTECH_MQTT_CLIENT_ID': 'client_id', 'FOODTECH_MOCK_CA_PEM': 'ca_pem'}),
+                                'FOODTECH_MQTT_CLIENT_ID': 'client_id', 'FOODTECH_MOCK_CA_PEM': 'ca_pem'}, 'mqtt'),
+        ('OpcUaJsonCollectionTask', {'FOODTECH_MOCK_CLIENT_ID': 'client_id', 'FOODTECH_MOCK_CLIENT_SECRET': 'client_secret',
+                                     'FOODTECH_MOCK_CA_PEM': 'ca_pem'}, 'opcua-json'),
     ):
         matches = [value for name, value in tasks.items() if name.startswith(prefix)]
         if len(matches) != 1:
             raise AssertionError('missing collection task ' + prefix)
-        check_task(matches[0], expected, prefix == 'MqttCollectionTask')
-    print('REST and MQTT task roles and secret references verified')
+        check_task(matches[0], expected, protocol)
+    print('REST, MQTT and OPC UA JSON task roles and secret references verified')
 
 
-def check_task(task, expected, mqtt):
+def check_task(task, expected, protocol):
     role = task['TaskRoleArn']['Fn::GetAtt'][0]
     if not role.startswith('CollectionAdapterTaskRole') or task['ExecutionRoleArn'] == task['TaskRoleArn']:
         raise AssertionError('task and execution roles are incorrect')
@@ -39,8 +41,8 @@ def check_task(task, expected, mqtt):
                 not secrets[name].endswith(':' + field + '::'):
             raise AssertionError('invalid Mock secret reference')
     values = {item['Name']: item['Value'] for item in container.get('Environment', [])}
-    if mqtt and values.get('FOODTECH_COLLECTION_PROTOCOL') != 'mqtt':
-        raise AssertionError('MQTT task protocol is not selected')
+    if protocol and values.get('FOODTECH_COLLECTION_PROTOCOL') != protocol:
+        raise AssertionError('collection task protocol is not selected')
 
 
 if __name__ == '__main__':
