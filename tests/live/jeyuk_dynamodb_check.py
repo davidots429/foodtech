@@ -4,6 +4,8 @@ Uses existing development resources and removes one unique synthetic fixture.
 """
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -75,7 +77,7 @@ def collect_over_https(fixture_id: str, queue_url: str, cursor_key: str) -> int:
                   "FOODTECH_MOCK_CERT_PASSWORD": password, "FOODTECH_DATA_TABLE": DATA_TABLE,
                   "FOODTECH_ORDERED_QUEUE_URL": queue_url}
         server = subprocess.Popen(["dotnet", str(MOCK_DLL), "serve", "--fixture", str(source),
-                                   "--cert", str(pfx), "--port", str(port)],
+                                   "--cert", str(pfx), "--port", str(port), "--realtime"],
                                   env={**os.environ, **config}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             for _ in range(100):
@@ -88,10 +90,17 @@ def collect_over_https(fixture_id: str, queue_url: str, cursor_key: str) -> int:
                     time.sleep(.1)
             else:
                 raise TimeoutError("C# Mock HTTPS startup timed out")
+            output = io.StringIO()
             with patch.dict(os.environ, config), patch.object(sys, "argv", ["collector", "--profile", "mockprofile-110",
-                    "--cursor-key", cursor_key, "--until-complete", "--interval", "0.1", "--max-runtime", "30"]):
+                    "--cursor-key", cursor_key, "--until-complete", "--interval", "0.5", "--max-runtime", "90"]), \
+                    contextlib.redirect_stdout(output):
                 if collector.main() != 0:
                     raise RuntimeError("Collector failed")
+            polls = output.getvalue().splitlines()
+            nonempty = [line for line in polls if "received=0 " not in line]
+            if len(nonempty) < 2:
+                raise AssertionError("Realtime collection did not observe multiple nonempty polls")
+            print(f"realtime_nonempty_polls={len(nonempty)}", flush=True)
             return DynamoJeyukIngestor(DATA_TABLE, queue_url).cursor(cursor_key)
         finally:
             server.terminate()
