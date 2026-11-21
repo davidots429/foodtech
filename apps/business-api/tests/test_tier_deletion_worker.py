@@ -10,7 +10,9 @@ class WorkerTests(unittest.TestCase):
         self.tier = Mock()
         self.progress = Mock()
         self.cipher = object()
-        self.worker = TierDeletionWorker(tier_store=self.tier, progress_store=self.progress, cipher=self.cipher)
+        self.index_capture = Mock()
+        self.worker = TierDeletionWorker(tier_store=self.tier, progress_store=self.progress, cipher=self.cipher,
+                                         index_capture=self.index_capture)
         self.scope = {'subject': str(uuid4()), 'request_id': str(uuid4()), 'limit': 2}
 
     def test_restartable_pages_end_in_verification_not_completion(self):
@@ -72,6 +74,55 @@ class WorkerTests(unittest.TestCase):
         self.progress.save_checkpoint.side_effect = RuntimeError('conflict')
         with self.assertRaises(RuntimeError):
             self.worker.run_page(**self.scope)
+
+
+class CaptureTests(unittest.TestCase):
+    def setUp(self):
+        from foodtech_business_api.tier_deletion_worker import TierIndexCapture
+        self.tier, self.progress, self.cipher = Mock(), Mock(), object()
+        self.capture = TierIndexCapture(tier_store=self.tier, progress_store=self.progress, cipher=self.cipher)
+        self.scope = {'subject': str(uuid4()), 'request_id': str(uuid4())}
+
+    def test_capture_pages_are_saved_before_ready(self):
+        self.progress.load_checkpoint.return_value = None
+        self.progress.save_checkpoint.return_value = 1
+        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['date#a'], 'next_cursor': 'APPLICATION#a'}
+        first = self.capture.capture_page(**self.scope, limit=1)
+        self.assertFalse(first['complete'])
+        payload = self.progress.save_checkpoint.call_args.kwargs['checkpoint']
+        self.progress.load_checkpoint.return_value = {'version': 1, 'state': 'IN_PROGRESS', 'checkpoint': payload}
+        with self.assertRaises(ValueError):
+            self.capture.ensure_ready(**self.scope)
+        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['date#b'], 'next_cursor': None}
+        self.progress.save_checkpoint.return_value = 2
+        final = self.capture.capture_page(**self.scope, limit=1)
+        self.assertTrue(final['complete'])
+        self.assertEqual(final['captured_count'], 2)
+        self.assertNotIn('date#a', repr(final))
+        payload = self.progress.save_checkpoint.call_args.kwargs['checkpoint']
+        self.progress.load_checkpoint.return_value = {'version': 2, 'state': 'VERIFYING', 'checkpoint': payload}
+        self.capture.ensure_ready(**self.scope)
+
+    def test_failed_save_and_oversized_page_do_not_become_ready(self):
+        self.progress.load_checkpoint.return_value = None
+        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['x' * 2048] * 10, 'next_cursor': None}
+        with self.assertRaises(ValueError):
+            self.capture.capture_page(**self.scope, limit=10)
+        self.progress.save_checkpoint.assert_not_called()
+        self.tier.deletion_index_candidates.return_value = {'queue_sorts': ['date#a'], 'next_cursor': None}
+        self.progress.save_checkpoint.side_effect = RuntimeError('conflict')
+        with self.assertRaises(RuntimeError):
+            self.capture.capture_page(**self.scope, limit=1)
+        with self.assertRaises(ValueError):
+            self.capture.ensure_ready(**self.scope)
+
+    def test_deletion_refuses_incomplete_capture(self):
+        self.progress.load_checkpoint.return_value = None
+        worker = TierDeletionWorker(tier_store=self.tier, progress_store=self.progress,
+                                    cipher=self.cipher, index_capture=self.capture)
+        with self.assertRaises(ValueError):
+            worker.run_page(**self.scope, limit=1)
+        self.tier.delete_inventory_page.assert_not_called()
 
 
 if __name__ == '__main__':
