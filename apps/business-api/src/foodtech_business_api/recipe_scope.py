@@ -8,6 +8,7 @@ returned bounds in AWS, independently of the gateway and request body.
 import re
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from uuid import UUID
 
 
@@ -33,9 +34,12 @@ def _uuid(value):
 def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
     """Observe two stable snapshots; no permission is granted by this function."""
     subject = getattr(session, 'subject', None)
+    expires = getattr(session, 'expires', None)
+    valid_expiry = (type(expires) is int and 0 < expires < 2**63) or (
+        isinstance(expires, Decimal) and expires.is_finite() and 0 < expires < 2**63 and expires == int(expires))
     if getattr(session, 'surface', None) != 'customer' or not isinstance(subject, str) or \
             not re.fullmatch(r'[A-Za-z0-9-]{1,128}', subject) or \
-            type(getattr(session, 'expires', None)) is not int or session.expires <= time.time() or \
+            not valid_expiry or expires <= time.time() or \
             not _uuid(execution_id):
         raise RecipeScopeDenied('recipe scope unavailable')
 

@@ -1,6 +1,7 @@
 import time
 import unittest
 from types import SimpleNamespace
+from decimal import Decimal
 from uuid import uuid4
 
 from foodtech_business_api.recipe_scope import RecipeScopeDenied, resolve_recipe_scope
@@ -37,6 +38,14 @@ class RecipeScopeTests(unittest.TestCase):
                 vars(self.session).update(changes)
                 with self.assertRaises(RecipeScopeDenied): self.resolve()
                 vars(self.session).update(saved)
+
+    def test_dynamodb_decimal_expiry_is_supported_but_invalid_values_are_denied(self):
+        self.session.expires = Decimal(int(time.time()) + 300)
+        self.resolve()
+        for invalid in (True, Decimal('NaN'), Decimal('Infinity'), Decimal('1.5')):
+            self.session.expires = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(RecipeScopeDenied):
+                self.resolve()
 
     def test_rejects_forged_execution_and_stale_or_shared_source(self):
         self.execution.tenant_id = 'other'
