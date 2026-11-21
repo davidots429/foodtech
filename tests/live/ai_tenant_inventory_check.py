@@ -3,7 +3,9 @@ import os
 from uuid import uuid4
 
 import boto3
-from foodtech_ai_gateway.legacy_tenant_inventory import list_partition_keys, resolve_credential_vault, scan_registry_partitions
+from foodtech_ai_gateway.legacy_tenant_inventory import (CredentialDeletionConflict, delete_credential_pair,
+                                                         list_partition_keys, resolve_credential_vault,
+                                                         scan_registry_partitions)
 
 
 def main():
@@ -14,6 +16,7 @@ def main():
         raise SystemExit('unexpected AWS account')
     table = session.resource('dynamodb').Table('foodtech-ai-execution-registry-dev')
     vault = session.resource('dynamodb').Table('foodtech-ai-credential-vault-dev')
+    auth = session.resource('dynamodb').Table('foodtech-auth-sessions-dev')
     tenant, run = 'synthetic-' + uuid4().hex, uuid4().hex
     exec_pk, consent_pk = f'EXEC#{run}', f'CONSENT#{run}'
     credential_pk = f'CREDENTIAL#{run}'
@@ -27,6 +30,8 @@ def main():
     created = []
     vault_key = {'pk': credential_pk, 'sk': 'META'}
     vault_created = False
+    auth_key, request = {'pk': f'USER#{tenant}'}, str(uuid4())
+    auth_created = False
     try:
         for item in items:
             table.put_item(Item=item, ConditionExpression='attribute_not_exists(pk)')
@@ -34,6 +39,8 @@ def main():
         vault.put_item(Item={**vault_key, 'credential_id': run, 'tenant_pseudonym': 'synthetic-' + run},
                        ConditionExpression='attribute_not_exists(pk)')
         vault_created = True
+        auth.put_item(Item={**auth_key, 'deletion_lock_request': request}, ConditionExpression='attribute_not_exists(pk)')
+        auth_created = True
         checkpoint, found = None, set()
         for _ in range(100):
             page = scan_registry_partitions(table, tenant=tenant, limit=100, checkpoint=checkpoint)
@@ -43,7 +50,8 @@ def main():
                 break
         if checkpoint is not None or found != {exec_pk, consent_pk, limit_pk, credential_pk}:
             raise AssertionError('synthetic tenant partitions were not discovered exactly')
-        if resolve_credential_vault(table, vault, tenant=tenant, credential_id=run).key != vault_key:
+        location = resolve_credential_vault(table, vault, tenant=tenant, credential_id=run)
+        if location.key != vault_key:
             raise AssertionError('vault location mismatch')
         cursor, keys = None, []
         while True:
@@ -60,11 +68,39 @@ def main():
             pass
         else:
             raise AssertionError('other tenant read partition keys')
+        def remove(request_id):
+            delete_credential_pair(session.client('dynamodb'), auth_table=auth.name, registry_table=table.name,
+                                   vault_table=vault.name, tenant=tenant, request_id=request_id, location=location)
+        try:
+            remove(str(uuid4()))
+        except CredentialDeletionConflict:
+            pass
+        else:
+            raise AssertionError('incorrect deletion lock accepted')
+        vault.update_item(Key=vault_key, UpdateExpression='SET tenant_pseudonym = :changed',
+                          ExpressionAttributeValues={':changed': 'synthetic-other'})
+        try:
+            remove(request)
+        except CredentialDeletionConflict:
+            pass
+        else:
+            raise AssertionError('changed vault record was deleted')
+        if not table.get_item(Key=vault_key, ConsistentRead=True).get('Item'):
+            raise AssertionError('failed deletion removed registry metadata')
+        vault.update_item(Key=vault_key, UpdateExpression='SET tenant_pseudonym = :original',
+                          ExpressionAttributeValues={':original': 'synthetic-' + run})
+        remove(request)
+        remove(request)
+        if table.get_item(Key=vault_key, ConsistentRead=True).get('Item') or \
+                vault.get_item(Key=vault_key, ConsistentRead=True).get('Item'):
+            raise AssertionError('credential pair remains after deletion')
     finally:
         for key in created:
             table.delete_item(Key=key)
         if vault_created:
             vault.delete_item(Key=vault_key)
+        if auth_created:
+            auth.delete_item(Key=auth_key)
     print('tenant partition discovery, execution children, isolation and cleanup verified')
 
 

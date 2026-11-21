@@ -6,8 +6,10 @@ provided. A completed scan is not a snapshot or proof of complete removal.
 """
 import re
 from dataclasses import dataclass, field
+from uuid import UUID
 
 from boto3.dynamodb.conditions import Attr, Key
+from boto3.dynamodb.types import TypeSerializer
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,11 @@ class InventoryPage:
 @dataclass(frozen=True)
 class VaultLocation:
     key: dict = field(repr=False)
+    tenant_pseudonym: str = field(repr=False)
+
+
+class CredentialDeletionConflict(Exception):
+    pass
 
 
 def _scope(tenant: str, limit: int) -> None:
@@ -125,4 +132,51 @@ def resolve_credential_vault(registry, vault, *, tenant: str, credential_id: str
     if not stored or any(stored.get(name) != value for name, value in key.items()) or \
             stored.get('credential_id') != credential_id or stored.get('tenant_pseudonym') != pseudonym:
         raise ValueError('credential inventory unavailable')
-    return VaultLocation(key)
+    return VaultLocation(key, pseudonym)
+
+
+def delete_credential_pair(client, *, auth_table: str, registry_table: str, vault_table: str,
+                           tenant: str, request_id: str, location: VaultLocation) -> None:
+    """Delete matched metadata and vault entry under the exact deletion lock.
+
+    The caller must authenticate the request and obtain the location from a
+    trusted resolution. Related active executions, backups and all other data
+    must be handled separately before deletion can be called complete.
+    """
+    _scope(tenant, 1)
+    tables = (auth_table, registry_table, vault_table)
+    if any(not isinstance(table, str) or not table for table in tables) or len(set(tables)) != 3:
+        raise ValueError('separate authentication, registry and vault tables required')
+    try:
+        if str(UUID(request_id)) != request_id or not isinstance(location, VaultLocation):
+            raise ValueError
+        key = location.key
+        if not isinstance(key, dict) or set(key) != {'pk', 'sk'} or key['sk'] != 'META' or \
+                not isinstance(key['pk'], str) or not re.fullmatch(r'CREDENTIAL#[A-Za-z0-9_-]{1,128}', key['pk']):
+            raise ValueError
+        credential_id = key['pk'].removeprefix('CREDENTIAL#')
+        pseudonym = location.tenant_pseudonym
+        if not isinstance(pseudonym, str) or not pseudonym or len(pseudonym) > 256:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError, KeyError):
+        raise ValueError('invalid credential deletion scope') from None
+    serializer = TypeSerializer()
+    def encode(values):
+        return {name: serializer.serialize(value) for name, value in values.items()}
+    try:
+        client.transact_write_items(TransactItems=[
+            {'ConditionCheck': {'TableName': auth_table, 'Key': encode({'pk': f'USER#{tenant}'}),
+                                'ConditionExpression': 'deletion_lock_request = :request',
+                                'ExpressionAttributeValues': encode({':request': request_id})}},
+            {'Delete': {'TableName': registry_table, 'Key': encode(key),
+                        'ConditionExpression': 'attribute_not_exists(pk) OR (tenant_id = :tenant AND credential_id = :id AND tenant_pseudonym = :pseudonym AND vault_ref = :vault)',
+                        'ExpressionAttributeValues': encode({':tenant': tenant, ':id': credential_id,
+                                                              ':pseudonym': pseudonym, ':vault': f'vault:{credential_id}'})}},
+            {'Delete': {'TableName': vault_table, 'Key': encode(key),
+                        'ConditionExpression': 'attribute_not_exists(pk) OR (credential_id = :id AND tenant_pseudonym = :pseudonym)',
+                        'ExpressionAttributeValues': encode({':id': credential_id, ':pseudonym': pseudonym})}},
+        ])
+    except client.exceptions.TransactionCanceledException as exc:
+        if any(reason.get('Code') == 'ConditionalCheckFailed' for reason in exc.response.get('CancellationReasons', [])):
+            raise CredentialDeletionConflict from exc
+        raise

@@ -1,7 +1,10 @@
 import unittest
 from unittest.mock import Mock
+from uuid import uuid4
 
-from foodtech_ai_gateway.legacy_tenant_inventory import list_partition_keys, resolve_credential_vault, scan_registry_partitions
+from foodtech_ai_gateway.legacy_tenant_inventory import (VaultLocation, delete_credential_pair,
+                                                         list_partition_keys, resolve_credential_vault,
+                                                         scan_registry_partitions)
 
 
 class TenantInventoryTests(unittest.TestCase):
@@ -69,6 +72,24 @@ class TenantInventoryTests(unittest.TestCase):
         registry.get_item.return_value['Item']['vault_ref'] = 'vault:other'
         with self.assertRaises(ValueError):
             resolve_credential_vault(registry, vault, tenant='alice', credential_id='key1')
+
+    def test_credential_pair_delete_checks_scope_and_lock_in_one_transaction(self):
+        client = Mock()
+        client.exceptions.TransactionCanceledException = type('Canceled', (Exception,), {})
+        request = str(uuid4())
+        location = VaultLocation({'pk': 'CREDENTIAL#key1', 'sk': 'META'}, 'pseudo')
+        delete_credential_pair(client, auth_table='auth', registry_table='registry', vault_table='vault',
+                               tenant='alice', request_id=request, location=location)
+        ops = client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertEqual(ops[0]['ConditionCheck']['Key']['pk'], {'S': 'USER#alice'})
+        self.assertEqual(ops[0]['ConditionCheck']['ExpressionAttributeValues'][':request'], {'S': request})
+        self.assertEqual(ops[1]['Delete']['TableName'], 'registry')
+        self.assertEqual(ops[2]['Delete']['TableName'], 'vault')
+        self.assertIn('tenant_pseudonym = :pseudonym', ops[1]['Delete']['ConditionExpression'])
+        self.assertIn('tenant_pseudonym = :pseudonym', ops[2]['Delete']['ConditionExpression'])
+        with self.assertRaises(ValueError):
+            delete_credential_pair(client, auth_table='auth', registry_table='auth', vault_table='vault',
+                                   tenant='alice', request_id=request, location=location)
 
 
 if __name__ == '__main__':
