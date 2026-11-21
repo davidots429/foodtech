@@ -81,6 +81,7 @@ class AuthIdentityStack extends Stack {
       authFlows: name === "Admin" ? { userPassword: true, userSrp: true } : undefined,
       preventUserExistenceErrors: true,
       enableTokenRevocation: true,
+      refreshTokenRotationGracePeriod: Duration.seconds(10),
       refreshTokenValidity: Duration.days(1),
       accessTokenValidity: Duration.hours(1),
       idTokenValidity: Duration.hours(1),
