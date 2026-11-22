@@ -87,3 +87,25 @@ Task에는 신원 제거 작업자의 명시적 활성화와 공개 자원 식�
 실행 요청 전달 실패는 지정한 EventBridge DLQ로 보내고, 해당 Task group의 STOPPED 이벤트에서 비정상·누락 종료 코드를 별도 지표·경보로 관찰한다. 경보의 알림 대상·실제 전달·중복/동시 실행·재시도는 배포 검증 전제다. 경보와 로그는 작업 미실행이나 관찰 경로 자체의 실패를 모두 증명하지 않으며 전체 데이터 삭제·백업 제거의 완료 증거가 아니다. 제어 항목·실행 역할·이미지 게시·프라이빗 연결·실제 합성 Task 검증과 전체 삭제 조정기 연결 전에는 예약 규칙을 활성화하지 않는다.
 
 `infra/cdk`에서 `npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentitySchedule-dev --strict -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-withdrawal-identity-cdk`로 합성하고, 저장소 루트에서 `python3 tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-withdrawal-identity-cdk/FoodtechWithdrawalIdentitySchedule-dev.template.json`으로 확인한다. TypeScript 검사·신원 제거 및 기존 재집계 계약 검사·기존 템플릿 전후 동일성 비교가 통과했다. 실제 스택 배포나 예약·수동 Task 실행은 수행하지 않았다.
+
+### 신원 제거 권한 후보의 검증
+
+2026-11-22 IAM Policy Autopilot에 신원 제거 명령·경계·계정 제어의 실제 Python 소스와 개발 계정·리전을 입력했다. 아래는 저장소 루트에서 실행할 재현 명령이다. `CDK_DEFAULT_ACCOUNT`에는 확인된 개발 계정이 필요하며 출력은 저장소 밖의 비공개 파일로 둔다. 이 명령은 AWS 정책을 업로드하지 않는다.
+
+```sh
+task_repo_root="$(pwd)"
+umask 077
+DISABLE_IAM_POLICY_AUTOPILOT_TELEMETRY=true uvx iam-policy-autopilot@latest generate-policies \
+  "$task_repo_root/apps/business-api/src/foodtech_business_api/withdrawal_identity_worker.py" \
+  "$task_repo_root/apps/business-api/src/foodtech_business_api/withdrawal_identity.py" \
+  "$task_repo_root/apps/business-api/src/foodtech_business_api/principal_enrollment.py" \
+  --region ap-southeast-2 --account "${CDK_DEFAULT_ACCOUNT:?Set the verified development account}" \
+  --service-hints dynamodb cognito-idp --pretty \
+  > /tmp/foodtech-withdrawal-identity-autopilot.json
+```
+
+생성 후보는 트랜잭션의 항목별 목적과 호출하지 않는 계정 관리 메서드를 구분하지 못해 광범위한 DynamoDB 생성·삭제 및 KMS 권한을 포함했다. 실제 IAM `SimulateCustomPolicy`에서 인증·삭제 Registry·무관한 테이블을 각각 검사해 과도한 허용을 확인했다. 이 후보는 사용하지 않는다.
+
+`tests/live/withdrawal_identity_iam_check.py --policy-file <비공개 후보 파일> --pool-id <개발 Pool ID>`는 입력 정책을 수정하지 않고 허용·거부 34개 시나리오를 검사한다. 계정·제어 항목의 필요한 읽기, 제한된 Scan과 이전 계정의 트랜잭션 갱신, Registry 읽기·조건 검사, 지정 Pool의 조회·제거가 동작하는지 확인하는 동시에 세션 읽기·임의 제어 변경·직접 갱신·키 누락·Registry 변경·다른 테이블/Pool·임의 저장 키 복호화를 거부해야 한다. 허용 전체·거부 전체·불완전한 시뮬레이션 결과도 검증 실패다. 출력에는 시나리오명·판정만 담고 정책·ARN·주체·커서는 출력하지 않는다.
+
+자동 생성 후보는 이 검사에서 22개 차단 조건을 충족하지 못해 종료 코드 1로 거부됐다. 검사는 정책 생성·수정·연결·리소스 쓰기를 하지 않았다. 이는 실행 권한 마련이 완료됐다는 결과가 아니다. 정확한 자원·속성·트랜잭션 범위로 세분화한 후보, 저장 암호화 키 접근, 실제 역할·조직 정책 및 ECS 실행 검증은 남아 있다. 검사기의 `runtime_verified`는 항상 false이며 전체 삭제 완료를 표시하지 않는다.
