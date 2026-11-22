@@ -31,6 +31,8 @@ class LoginFlow:
     state: str
     verifier: str
     expires: int
+    purpose: str = 'login'
+    started_at: int = 0
 
 
 @dataclass
@@ -63,6 +65,8 @@ class AuthStore(Protocol):
     def principal(self, subject: str) -> dict: ...
     def block_admin(self, subject: str) -> None: ...
     def suspend_user(self, subject: str) -> None: ...
+    def withdrawal_transition(self, *, subject: str, request_id: str, now: int,
+                              action: str, expected_epoch: int | None = None) -> dict: ...
 
 
 class MemoryStore:
@@ -140,6 +144,17 @@ class MemoryStore:
             current["epoch"] += 1
             current["suspended"] = True
 
+    def withdrawal_transition(self, *, subject, request_id, now, action, expected_epoch=None):
+        from .account_withdrawal import withdrawal_change
+        with self.lock:
+            current = self.principals.get(subject)
+            record = {'pk': f'USER#{subject}', **current} if current is not None else None
+            changes = withdrawal_change(record, subject=subject, request_id=request_id, now=now,
+                                        action=action, expected_epoch=expected_epoch)
+            if changes is not None:
+                self.principals[subject] = {**record, **changes}
+            return self.principals[subject].copy()
+
 
 class DynamoAuthStore:
     def __init__(self, table_name: str) -> None:
@@ -154,7 +169,8 @@ class DynamoAuthStore:
     def take_flow(self, flow_id: str) -> LoginFlow | None:
         item = self.table.delete_item(Key={"pk": f"FLOW#{flow_id}"},
                                       ReturnValues="ALL_OLD").get("Attributes")
-        return LoginFlow(**{key: item[key] for key in ("surface", "state", "verifier", "expires")}) \
+        return LoginFlow(**{key: item[key] for key in ("surface", "state", "verifier", "expires")},
+                         purpose=item.get('purpose', 'login'), started_at=int(item.get('started_at', 0))) \
             if item and int(item["expires"]) > time.time() else None
 
     def save_session(self, session_id: str, session: Session) -> None:
@@ -236,6 +252,11 @@ class DynamoAuthStore:
             ExpressionAttributeNames={"#epoch": "epoch"},
             ExpressionAttributeValues={":suspended": True, ":one": 1},
         )
+
+    def withdrawal_transition(self, *, subject, request_id, now, action, expected_epoch=None):
+        from .account_withdrawal import DynamoWithdrawalStore
+        return DynamoWithdrawalStore(table=self.table).transition(
+            subject=subject, request_id=request_id, now=now, action=action, expected_epoch=expected_epoch)
 
 
 @lru_cache(maxsize=4)

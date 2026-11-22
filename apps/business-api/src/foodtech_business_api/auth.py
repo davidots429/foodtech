@@ -104,14 +104,17 @@ async def _checked_cognito_access(settings: Settings, subject: str, surface: str
         raise HTTPException(503, "현재 계정 권한을 확인할 수 없습니다.") from exc
 
 
-async def _flow(surface: str, settings: Settings, *, signup: bool = False) -> RedirectResponse:
+async def _flow(surface: str, settings: Settings, *, signup: bool = False, purpose: str = 'login') -> RedirectResponse:
+    if purpose not in {'login', 'withdrawal'} or (purpose == 'withdrawal' and (surface != 'customer' or signup)):
+        raise HTTPException(400, '로그인 목적이 올바르지 않습니다.')
     client_id, callback, _ = settings.client(surface)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     flow_id = secrets.token_urlsafe(32)
     state = secrets.token_urlsafe(32)
+    started_at = int(time.time())
     await asyncio.to_thread(get_store().save_flow, flow_id,
-                            LoginFlow(surface, state, verifier, int(time.time() + FLOW_SECONDS)))
+                            LoginFlow(surface, state, verifier, started_at + FLOW_SECONDS, purpose, started_at))
     params = {
         "response_type": "code", "client_id": client_id, "redirect_uri": callback,
         "scope": "openid email profile aws.cognito.signin.user.admin" if surface == "customer" else "openid email profile",
@@ -121,6 +124,9 @@ async def _flow(surface: str, settings: Settings, *, signup: bool = False) -> Re
     if surface == "admin":
         params["acr_values"] = ADMIN_ACR
         params["max_age"] = "0"
+    if purpose == 'withdrawal':
+        params['prompt'] = 'login'
+        params['max_age'] = '0'
     query = urlencode(params)
     path = "/signup" if signup else "/oauth2/authorize"
     response = RedirectResponse(f"{settings.domain}{path}?{query}", status_code=303)
@@ -235,6 +241,11 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
             raise HTTPException(403, "관리자 추가 인증이 필요합니다.")
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         raise HTTPException(401, "로그인을 완료할 수 없습니다.") from exc
+    if flow.purpose == 'withdrawal':
+        from .withdrawal_api import recovery_callback
+        return await recovery_callback(request, settings, flow, identity, access)
+    if flow.purpose != 'login':
+        raise HTTPException(400, '로그인 목적이 올바르지 않습니다.')
     store = get_store()
     principal = await asyncio.to_thread(store.principal, identity["sub"])
     if principal.get("suspended") or "deletion_lock_request" in principal:

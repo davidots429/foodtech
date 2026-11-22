@@ -43,7 +43,7 @@ def _pending(record, request_id):
     return deadline
 
 
-def withdrawal_change(record, *, subject, request_id, now, action):
+def withdrawal_change(record, *, subject, request_id, now, action, expected_epoch=None):
     """Return an explicit change, or None for a retry of an existing transition.
 
     Storage must compare the observed account epoch and withdrawal fields in
@@ -53,6 +53,8 @@ def withdrawal_change(record, *, subject, request_id, now, action):
     if not isinstance(record, dict) or record.get('pk') != f'USER#{subject}':
         raise WithdrawalConflict('account is not provisioned')
     epoch = _integer(record.get('epoch'))
+    if expected_epoch is not None and epoch != _integer(expected_epoch):
+        raise WithdrawalConflict('session authority changed')
     state = record.get('withdrawal_status')
     same = record.get('withdrawal_request_id') == request_id
     if action == 'request':
@@ -92,11 +94,12 @@ class DynamoWithdrawalStore:
     def __init__(self, *, table):
         self.table = table
 
-    def transition(self, *, subject, request_id, now, action):
+    def transition(self, *, subject, request_id, now, action, expected_epoch=None):
         _identity(subject, request_id, now)
         key = {'pk': f'USER#{subject}'}
         record = self.table.get_item(Key=key, ConsistentRead=True).get('Item')
-        changes = withdrawal_change(record, subject=subject, request_id=request_id, now=now, action=action)
+        changes = withdrawal_change(record, subject=subject, request_id=request_id, now=now,
+                                    action=action, expected_epoch=expected_epoch)
         if changes is None:
             return record
         names = {'#epoch': 'epoch'}
