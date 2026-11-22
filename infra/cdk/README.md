@@ -75,3 +75,15 @@
 `provisionOpcUaBinaryCollectionTask=true`는 별도 OPC UA Binary Task를 합성한다. `collectionUaBinaryEndpoint`(`opc.tcp` 주소)와 `collectionUaBinarySecretArn`이 필요하며 비밀 JSON 필드 `client_cert_pem`, `client_key_pem`, `server_cert_der_base64`를 사용한다. 클라이언트 인증서와 개인키 일치 및 서버 인증서 DER 형식을 시작 시 검사하고, 기존 수집기가 서버 인증서의 유효기간·호스트·애플리케이션 URI를 확인한다. 이미지 게시, 네트워크·Mock 배치, 실제 Task 실행은 별도 작업이다.
 
 표준화 Worker 역할의 인증 테이블 `dynamodb:ConditionCheckItem` 권한은 제육 작업의 삭제 잠금 확인을 위한 CDK 변경안이다. 적용을 위해서는 승인된 배포 workflow와 역할 검증이 필요하며, 배포하지 않은 합성 결과를 실제 권한으로 취급하지 않는다.
+
+## 만료 신원 제거 작업자의 비활성 배포 초안
+
+`provisionWithdrawalIdentitySchedule=true`는 별도 `FoodtechWithdrawalIdentitySchedule-<stage>` 스택에 신원 제거 전용 Fargate Task와 **DISABLED** EventBridge 예약 규칙을 합성한다. `ImageUri`는 ECR의 `@sha256` 고정 이미지이고 Task 진입점은 `python -m foodtech_business_api.withdrawal_identity_worker`다. 비루트 사용자·읽기 전용 루트 파일시스템·프라이빗 서브넷·공인 IP 미할당을 사용한다. 재집계와 Task family·group·로그·실패 지표를 분리하며 기존 재집계 스택의 합성 템플릿은 변경하지 않는다.
+
+배포 입력은 기존에 검토한 `TaskRoleArn`, `ExecutionRoleArn`, `InvokeRoleArn`, `ClusterArn`, `ImageUri`, `SubnetIds`, `SecurityGroupIds`, `DeliveryDlqArn`, 실측·검토할 `IntervalMinutes` 및 `CognitoUserPoolId`다. 세 역할의 ARN이 서로 같으면 CloudFormation 규칙에서 거부한다. ARN이 다르다는 것만으로 최소 권한을 증명하지 않으며 실제 정책·신뢰 관계·PassRole 범위·계정/리전·네트워크를 별도로 검증해야 한다. 스택은 역할·사용자·개인정보 저장소를 생성하거나 기존 역할에 실행 권한을 부여하지 않는다. 같은 stage의 인증·삭제 Registry 테이블과 검증된 Cognito Pool이 준비되어야 한다.
+
+Task에는 신원 제거 작업자의 명시적 활성화와 공개 자원 식별자만 전달한다. 웹 API의 탈퇴·초기화 기능 플래그는 변경하지 않는다. 실행 시 이미 준비된 초기화 제어 항목을 읽으며 자동 생성하지 않는다. Task를 수동으로 실행하면 잠금·기한이 검증된 이전 Cognito 주체를 실제로 제거하므로, 비활성 예약 규칙만으로 수동 실행까지 차단된다고 간주하지 않는다.
+
+실행 요청 전달 실패는 지정한 EventBridge DLQ로 보내고, 해당 Task group의 STOPPED 이벤트에서 비정상·누락 종료 코드를 별도 지표·경보로 관찰한다. 경보의 알림 대상·실제 전달·중복/동시 실행·재시도는 배포 검증 전제다. 경보와 로그는 작업 미실행이나 관찰 경로 자체의 실패를 모두 증명하지 않으며 전체 데이터 삭제·백업 제거의 완료 증거가 아니다. 제어 항목·실행 역할·이미지 게시·프라이빗 연결·실제 합성 Task 검증과 전체 삭제 조정기 연결 전에는 예약 규칙을 활성화하지 않는다.
+
+`infra/cdk`에서 `npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentitySchedule-dev --strict -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-withdrawal-identity-cdk`로 합성하고, 저장소 루트에서 `python3 tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-withdrawal-identity-cdk/FoodtechWithdrawalIdentitySchedule-dev.template.json`으로 확인한다. TypeScript 검사·신원 제거 및 기존 재집계 계약 검사·기존 템플릿 전후 동일성 비교가 통과했다. 실제 스택 배포나 예약·수동 Task 실행은 수행하지 않았다.

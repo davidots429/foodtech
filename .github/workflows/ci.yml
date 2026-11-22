@@ -36,6 +36,9 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshSchedule-dev --strict -c provisionMealRefreshSchedule=true --output /tmp/foodtech-meal-schedule-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_meal_refresh_schedule.py /tmp/foodtech-meal-schedule-cdk/FoodtechMealRefreshSchedule-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentitySchedule-dev --strict -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-withdrawal-identity-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-withdrawal-identity-cdk/FoodtechWithdrawalIdentitySchedule-dev.template.json
 
   python:
     runs-on: ubuntu-latest
