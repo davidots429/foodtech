@@ -13,6 +13,7 @@ from foodtech_ai_gateway.policy import Caller, Consent, Credential, Execution, F
 from foodtech_ai_gateway.registry import DynamoRegistry, RegistryConflict, _transaction_token
 from foodtech_ai_gateway.service import GatewayService
 from foodtech_ai_gateway.ollama import OllamaResult
+from foodtech_ai_gateway.recipe_source_guard import BoundRecipeSourceGuard
 from foodtech_contracts.recommendation_guard import Evidence
 from foodtech_contracts.recommendation_output import JeyukBaseline, TonkatsuBaseline
 
@@ -189,6 +190,80 @@ class RegistryTests(unittest.TestCase):
         self.service = GatewayService(self.registry)
         self.client.calls.clear()
 
+    def test_execution_snapshot_contains_consistent_state_and_version(self):
+        snapshot = self.registry.execution_snapshot('run-1')
+        self.assertEqual(snapshot.execution.execution_id, 'run-1')
+        self.assertEqual((snapshot.state, snapshot.version), ('PENDING', 1))
+        self.assertIsNone(self.registry.execution_snapshot('unknown'))
+        self.resource.table.items[('EXEC#run-1', 'META')]['state'] = 'FAILED'
+        self.resource.table.items[('EXEC#run-1', 'META')]['version'] = 2
+        snapshot = self.registry.execution_snapshot('run-1')
+        self.assertEqual((snapshot.state, snapshot.version), ('FAILED', 2))
+
+    def test_status_snapshot_rejects_foreign_and_concurrent_changes(self):
+        snapshot, result = self.registry.execution_status_snapshot('run-1', 'tenant-a')
+        self.assertEqual(snapshot.state, 'PENDING')
+        self.assertIsNone(result)
+        original = self.registry.execution_result
+        def forbidden(_):
+            raise AssertionError('foreign tenant must not read result')
+        self.registry.execution_result = forbidden
+        self.assertIsNone(self.registry.execution_status_snapshot('run-1', 'other'))
+        def race(execution_id):
+            self.resource.table.items[('EXEC#run-1', 'META')]['version'] += 1
+            return original(execution_id)
+        self.registry.execution_result = race
+        with self.assertRaises(RegistryConflict):
+            self.registry.execution_status_snapshot('run-1', 'tenant-a')
+        self.registry.execution_result = lambda _: {'state': 'SUCCEEDED', 'response_text': 'unexpected'}
+        with self.assertRaises(RegistryConflict):
+            self.registry.execution_status_snapshot('run-1', 'tenant-a')
+
+    def test_execution_binding_versions_reject_corrupt_values(self):
+        item = self.resource.table.items[('EXEC#run-1', 'META')]
+        for name in ('job_version', 'prior_job_version', 'jeyuk_source_revision', 'prior_source_revision'):
+            for value in (Decimal('1.5'), Decimal('NaN'), '1', True, 0, -1):
+                with self.subTest(field=name, value=value):
+                    item[name] = value
+                    with self.assertRaises(ValueError):
+                        self.registry.execution_snapshot('run-1')
+            item[name] = Decimal('2')
+            self.assertEqual(getattr(self.registry.execution_snapshot('run-1').execution, name), 2)
+            item[name] = None
+
+    def test_terminal_status_requires_matching_result(self):
+        item = self.resource.table.items[('EXEC#run-1', 'META')]
+        for state in ('SUCCEEDED', 'FAILED'):
+            with self.subTest(state=state):
+                item['state'] = state
+                self.registry.execution_result = lambda _: None
+                with self.assertRaises(RegistryConflict):
+                    self.registry.execution_status_snapshot('run-1', 'tenant-a')
+                self.registry.execution_result = lambda _, state=state: {'state': state}
+                snapshot, result = self.registry.execution_status_snapshot('run-1', 'tenant-a')
+                self.assertEqual(snapshot.state, state)
+                self.assertEqual(result['state'], state)
+
+    def test_settlement_rejects_corrupt_execution_without_storing_response(self):
+        execution = self.registry.execution('run-1')
+        self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)
+        item = self.resource.table.items[('EXEC#run-1', 'META')]
+        item['feature'] = 'INVALID'
+        item['version'] += 1
+        with self.assertRaises(RegistryConflict):
+            self.registry.finish('run-1', succeeded=True, actual_cost_usd=Decimal('0'),
+                                 response_text='synthetic', expected_execution=execution)
+        self.assertIsNone(self.registry.execution_result('run-1'))
+
+    def test_settlement_rejects_untrusted_guard_before_writing(self):
+        execution = self.registry.execution('run-1')
+        before = len(self.client.calls)
+        with self.assertRaises(ValueError):
+            self.registry.finish('run-1', succeeded=True, actual_cost_usd=Decimal('0'),
+                                 response_text='synthetic', expected_execution=execution,
+                                 recipe_source_guard=SimpleNamespace())
+        self.assertEqual(len(self.client.calls), before)
+
     def recipe_execution(self):
         self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
                                          True, NOW, NOW))
@@ -266,9 +341,6 @@ class RegistryTests(unittest.TestCase):
             async def structured_chat(self, *_args):
                 self.calls += 1
                 return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
-        class Guard:
-            def __init__(self): self.values = iter([True, False])
-            def verify(self, _execution): return next(self.values)
         model = FakeOllama()
         args = dict(evidence=Evidence("COMPLETE", "PASSED", True, False),
                     baseline=JeyukBaseline("SMALL", Decimal("200"), Decimal("30"), 480, Decimal("1.8"), 60, 60, False),
@@ -278,13 +350,16 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual((unavailable.state, unavailable.error_code, model.calls), ("DENIED", "SOURCE_GUARD_UNAVAILABLE", 0))
         self.service.recipe_source_guard = SimpleNamespace(verify=lambda _execution: False)
         stale = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
-        self.assertEqual((stale.state, stale.error_code, model.calls), ("DENIED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 0))
-        self.service.recipe_source_guard = Guard()
-        changed = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
-        self.assertEqual((changed.state, changed.error_code, model.calls), ("FAILED", "RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE", 1))
-        self.assertIsNone(changed.response_text)
-        self.assertNotIn('temperature_c', str(self.registry.execution_result("recipe-jeyuk")))
-        self.assertEqual(self.registry.budget("tenant-a", "ollama").calls_remaining, 1)
+        self.assertEqual((stale.state, stale.error_code, model.calls), ("DENIED", "SOURCE_SCOPE_UNAVAILABLE", 0))
+        other_execution = Execution("other", "tenant-a", Feature.RECIPE_CORRECTION,
+                                    "synthetic-tier1", None, "SYNTHETIC", Decimal("0"))
+        def unexpected(*_args):
+            raise AssertionError('different execution must not access source')
+        self.service.recipe_source_guard = BoundRecipeSourceGuard(SimpleNamespace(verify_scoped=unexpected),
+                                                                  other_execution, ('a', 'b'), ('c', 'd'))
+        wrong_scope = asyncio.run(self.service.execute_local_recipe(caller, "recipe-jeyuk", **args))
+        self.assertEqual((wrong_scope.state, wrong_scope.error_code, model.calls),
+                         ("DENIED", "SOURCE_SCOPE_UNAVAILABLE", 0))
 
     def test_recipe_tier_and_missing_evidence_do_not_invoke_model(self):
         self.registry.create_execution(Execution("recipe-3", "tenant-a", Feature.RECIPE_CORRECTION,
@@ -301,6 +376,31 @@ class RegistryTests(unittest.TestCase):
             evidence=Evidence("UNKNOWN", "NOT_MEASURED", None, None), **args))
         self.assertEqual(missing.state, "INDETERMINATE")
         self.assertEqual(self.registry.execution_state("recipe-3"), "PENDING")
+
+    def test_bound_source_guard_with_untrusted_inner_guard_cannot_invoke_model(self):
+        self.recipe_execution()
+        execution = Execution('recipe-bound', 'tenant-a', Feature.RECIPE_CORRECTION,
+                              'synthetic-tier1', None, 'SYNTHETIC', Decimal('0'))
+        self.registry.create_execution(execution)
+        checks = []
+        class ScopedGuard:
+            def verify_scoped(self, value, jobs, sources):
+                checks.append((value, jobs, sources))
+                return True
+        jobs, sources = ('job-current', 'job-prior'), ('source-current', 'source-prior')
+        self.service.recipe_source_guard = BoundRecipeSourceGuard(ScopedGuard(), execution, jobs, sources)
+        class FakeOllama:
+            calls = 0
+            async def structured_chat(self, *_args):
+                self.calls += 1
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        model = FakeOllama()
+        result = asyncio.run(self.service.execute_local_recipe(Caller('business-api', 'tenant-a'), 'recipe-bound',
+            evidence=Evidence('COMPLETE', 'PASSED', True, False),
+            baseline=JeyukBaseline('SMALL', Decimal('200'), Decimal('30'), 480, Decimal('1.8'), 60, 60, False),
+            context={}, ollama=model))
+        self.assertEqual((result.state, result.error_code, model.calls), ('DENIED', 'SOURCE_SCOPE_UNAVAILABLE', 0))
+        self.assertEqual(checks, [])
 
     def test_general_execution_paths_cannot_bypass_recipe_output_guard(self):
         self.registry.create_execution(Execution("recipe-guard", "tenant-a", Feature.RECIPE_CORRECTION,

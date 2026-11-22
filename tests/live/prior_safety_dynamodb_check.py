@@ -56,6 +56,24 @@ async def run() -> None:
                 if (candidate["status"], candidate["candidate"]["job_id"],
                         candidate["immediately_previous_verified"]) != ("CANDIDATE", ids[0], False):
                     raise AssertionError("Unexpected prior job candidate")
+                prior_key = {"pk": keys[0], "sk": "META"}
+                await asyncio.to_thread(table.update_item, Key=prior_key,
+                    UpdateExpression="SET owner_subject = :other", ExpressionAttributeValues={":other": "synthetic-other"})
+                foreign = await client.get(f"/api/customer/cooking-jobs/{ids[1]}/prior-job-candidate")
+                foreign.raise_for_status()
+                if foreign.json()["status"] != "HISTORY_INCOMPLETE" or foreign.json()["candidate"] is not None:
+                    raise AssertionError("Mismatched prior owner was accepted")
+                await asyncio.to_thread(table.update_item, Key=prior_key,
+                    UpdateExpression="SET owner_subject = :owner", ExpressionAttributeValues={":owner": subject})
+                await asyncio.to_thread(table.update_item, Key=prior_key,
+                    UpdateExpression="SET actual_lifted_at = :invalid", ExpressionAttributeValues={":invalid": "invalid"})
+                invalid_end = await client.get(f"/api/customer/cooking-jobs/{ids[1]}/prior-job-candidate")
+                invalid_end.raise_for_status()
+                if invalid_end.json()["status"] != "UNAVAILABLE":
+                    raise AssertionError("Invalid prior end time was accepted")
+                await asyncio.to_thread(table.update_item, Key=prior_key,
+                    UpdateExpression="SET actual_lifted_at = :value",
+                    ExpressionAttributeValues={":value": "2026-01-01T00:08:00Z"})
                 result = await client.get(f"/api/customer/cooking-jobs/{ids[1]}/recommendation-evidence",
                                           params={"prior_job_id": ids[0]})
                 result.raise_for_status()

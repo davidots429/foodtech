@@ -133,13 +133,14 @@ class MemoryStore:
             return True
 
     def principal(self, subject: str) -> dict:
-        with self.lock:
-            return self.principals.get(subject, {"epoch": 0}).copy()
+        record = self.principal_record(subject)
+        return record if record is not None else {"epoch": 0}
 
     def principal_record(self, subject: str) -> dict | None:
         with self.lock:
             record = self.principals.get(subject)
             return record.copy() if record is not None else None
+
 
     def enrollment_fence(self) -> int:
         from .account_withdrawal import _integer
@@ -259,12 +260,12 @@ class DynamoAuthStore:
             raise
 
     def principal(self, subject: str) -> dict:
-        item = self.table.get_item(Key={"pk": f"USER#{subject}"},
-                                   ConsistentRead=True).get("Item")
-        return item or {"epoch": 0}
+        record = self.principal_record(subject)
+        return record if record is not None else {"epoch": 0}
 
     def principal_record(self, subject: str) -> dict | None:
-        return self.table.get_item(Key={'pk': f'USER#{subject}'}, ConsistentRead=True).get('Item')
+        return self.table.get_item(Key={"pk": f"USER#{subject}"}, ConsistentRead=True).get("Item")
+
 
     def enrollment_fence(self) -> int:
         from .principal_enrollment import DynamoPrincipalEnrollment

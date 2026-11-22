@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from foodtech_ai_gateway.policy import Execution, Feature
-from foodtech_ai_gateway.recipe_source_guard import DynamoRecipeSourceGuard
+from foodtech_ai_gateway.recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
 
 
@@ -64,6 +64,7 @@ class RecipeSourceGuardTests(unittest.TestCase):
                 self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', sk)] = {
                     'pk': f'JEYUK#{batch}', 'sk': sk, 'raw': raw, 'provenance': 'SYNTHETIC'}
             receipt = tracker.finish(cursor=revision, complete=True, explicit=True)
+            receipt.update({'pk': f'JEYUK#{batch}', 'sk': 'COLLECTION#RECEIPT#1'})
             self.resource.tables['foodtech-data-flow-dev'].items[(f'JEYUK#{batch}', 'COLLECTION#RECEIPT#1')] = receipt
 
     def test_exact_owner_job_and_source_versions_are_checked(self):
@@ -74,6 +75,68 @@ class RecipeSourceGuardTests(unittest.TestCase):
         self.assertFalse(self.guard.verify(replace(self.execution, prior_job_id=None, prior_job_version=None)))
         self.resource.tables['foodtech-data-flow-dev'].items[('JEYUK#batch-current', 'SOURCE#REVISION')]['revision'] = Decimal(31)
         self.assertFalse(self.guard.verify(self.execution))
+
+    def test_scoped_guard_rejects_changed_binding_before_foreign_source_read(self):
+        jobs = (f'SCOPE#USER#tenant-a#JOB#{self.current}', f'SCOPE#USER#tenant-a#JOB#{self.prior}')
+        sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')
+        self.assertTrue(self.guard.verify_scoped(self.execution, jobs, sources))
+        self.assertFalse(self.guard.verify_scoped(self.execution, (jobs[1], jobs[0]), sources))
+        cooking = self.resource.tables['foodtech-cooking-jobs-dev']
+        data = self.resource.tables['foodtech-data-flow-dev']
+        cooking.items[(jobs[0], 'META')]['source_binding']['batch_id'] = 'foreign-batch'
+        accessed = []
+        original_cooking, original_data = cooking.get_item, data.get_item
+        def read_cooking(*, Key, ConsistentRead):
+            accessed.append(Key['pk'])
+            return original_cooking(Key=Key, ConsistentRead=ConsistentRead)
+        def read_data(*, Key, ConsistentRead):
+            accessed.append(Key['pk'])
+            return original_data(Key=Key, ConsistentRead=ConsistentRead)
+        cooking.get_item, data.get_item = read_cooking, read_data
+        def reject_query(_):
+            raise AssertionError('unexpected source query')
+        data.get_paginator = reject_query
+        self.assertFalse(self.guard.verify_scoped(self.execution, jobs, sources))
+        self.assertNotIn('JEYUK#foreign-batch', accessed)
+
+    def test_bound_adapter_refuses_different_execution_before_reading(self):
+        jobs = (f'SCOPE#USER#tenant-a#JOB#{self.current}', f'SCOPE#USER#tenant-a#JOB#{self.prior}')
+        sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')
+        bound = BoundRecipeSourceGuard(self.guard, self.execution, jobs, sources)
+        self.assertNotIn('tenant-a', repr(bound))
+        self.assertTrue(bound.verify(self.execution))
+        def forbidden(*args, **kwargs):
+            raise AssertionError('unexpected read')
+        self.resource.tables['foodtech-cooking-jobs-dev'].get_item = forbidden
+        self.assertFalse(bound.verify(replace(self.execution, tenant_id='tenant-b')))
+        self.assertFalse(bound.verify(replace(self.execution, prior_source_revision=30)))
+        self.assertFalse(bound.verify(None))
+
+    def test_settlement_checks_bind_jobs_reverse_links_and_source_versions(self):
+        jobs = (f'SCOPE#USER#tenant-a#JOB#{self.current}', f'SCOPE#USER#tenant-a#JOB#{self.prior}')
+        sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')
+        bound = BoundRecipeSourceGuard(self.guard, self.execution, jobs, sources)
+        checks = bound.settlement_checks()
+        self.assertEqual(len(checks), 8)
+        first_job, first_reverse, first_revision = [item['ConditionCheck'] for item in checks[:3]]
+        self.assertEqual(first_job['Key']['pk'], {'S': jobs[0]})
+        self.assertEqual(first_job['ExpressionAttributeValues'][':batch'], {'S': 'batch-current'})
+        self.assertEqual(first_reverse['ExpressionAttributeValues'][':pk'], {'S': jobs[0]})
+        self.assertEqual(first_revision['ExpressionAttributeValues'][':revision'], {'N': '30'})
+        receipt_check = checks[3]['ConditionCheck']
+        self.assertEqual(receipt_check['Key']['sk'], {'S': 'COLLECTION#RECEIPT#1'})
+        self.assertEqual(receipt_check['ExpressionAttributeValues'][':v6'], {'N': '30'})
+        receipts = self.resource.tables['foodtech-data-flow-dev'].items
+        receipt = receipts.pop(('JEYUK#batch-current', 'COLLECTION#RECEIPT#1'))
+        with self.assertRaises(ValueError):
+            bound.settlement_checks()
+        receipts[('JEYUK#batch-current', 'COLLECTION#RECEIPT#1')] = receipt
+        with self.assertRaises(ValueError):
+            self.guard.settlement_checks(self.execution, jobs, (sources[0], sources[0]))
+        with self.assertRaises(ValueError):
+            BoundRecipeSourceGuard(self.guard, replace(self.execution, job_id='bad'), jobs, sources).settlement_checks()
+        with self.assertRaises(ValueError):
+            self.guard.settlement_checks(replace(self.execution, feature=Feature.GENERAL_GUIDE), jobs, sources)
 
     def test_rejects_wrong_provenance_binding_and_shared_batch(self):
         key = (f'SCOPE#USER#tenant-a#JOB#{self.prior}', 'META')

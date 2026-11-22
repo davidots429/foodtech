@@ -120,3 +120,23 @@ class PriorDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             return original(pk)
         with patch.object(self.store, "read_meta", side_effect=changing):
             self.assertEqual((await self.client.get(self.path)).status_code, 409)
+
+    async def test_foreign_owner_or_invalid_version_in_roster_is_not_a_candidate(self):
+        original = self.meta(self.failed).copy()
+        for changes in ({'owner_subject': 'other'}, {'version': 0}, {'version': True}, {'version': 2**63}):
+            with self.subTest(changes=changes):
+                self.meta(self.failed).update(changes)
+                response = await self.client.get(self.path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['status'], 'HISTORY_INCOMPLETE')
+                self.assertIsNone(response.json()['candidate'])
+                self.meta(self.failed).update(original)
+
+    async def test_invalid_or_out_of_order_prior_end_is_not_usable(self):
+        for value in ('invalid', '2026-01-01T23:59:59Z', '2026-01-04T00:00:00Z'):
+            with self.subTest(value=value):
+                self.meta(self.failed)['actual_lifted_at'] = value
+                response = await self.client.get(self.path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['status'], 'UNAVAILABLE')
+                self.assertFalse(response.json()['immediately_previous_verified'])
