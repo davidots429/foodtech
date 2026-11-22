@@ -110,6 +110,7 @@ class CredentialRegistrar:
         self.pseudonymizer = pseudonymizer
         self.client = dynamodb_client or boto3.client("dynamodb")
         self.serializer = TypeSerializer()
+        self.require_principal = os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED', 'false') == 'true'
 
     def _item(self, value: dict) -> dict:
         return {key: self.serializer.serialize(item) for key, item in value.items()}
@@ -132,11 +133,16 @@ class CredentialRegistrar:
                         "tenant_pseudonym": pseudonym, "provider": provider,
                         "state": "ACTIVE", "expires_at": None,
                         "vault_ref": f"vault:{credential_id}", "version": 1}
+            principal_condition = 'attribute_exists(pk) AND #epoch = :expected' if self.require_principal else \
+                '((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected)'
+            principal_values = {':expected': expected_epoch, ':false': False}
+            if not self.require_principal:
+                principal_values[':zero'] = 0
             self.client.transact_write_items(TransactItems=[
                 {"ConditionCheck": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{tenant_id}"}),
-                    "ConditionExpression": "((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+                    "ConditionExpression": principal_condition + " AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
                     "ExpressionAttributeNames": {"#epoch": "epoch"},
-                    "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}},
+                    "ExpressionAttributeValues": self._item(principal_values)}},
                 {"Put": {"TableName": self.writer.table.name, "Item": self._item(vault_item),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
                 {"Put": {"TableName": self.registry_table, "Item": self._item(metadata),

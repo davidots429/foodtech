@@ -97,6 +97,11 @@ class AtomicClient:
             key = self._decode(spec["Key"])
             if spec.get("TableName") == "auth-test":
                 state = self.auth_states.get(key["pk"], {})
+                if 'attribute_exists(pk)' in spec['ConditionExpression']:
+                    epoch = state.get('epoch')
+                    if key['pk'] not in self.auth_states or isinstance(epoch, bool) or \
+                            not isinstance(epoch, (int, Decimal)) or not 0 <= epoch < 2**63:
+                        raise TransactionCanceledException()
                 if state.get("suspended") or "deletion_lock_request" in state:
                     raise TransactionCanceledException()
                 continue
@@ -487,6 +492,33 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue(decision.allowed)
         self.assertEqual(self.registry.execution_state('run-1'), 'RESERVED')
         self.assertIn(('ACTIVE#tenant-a', 'EXEC#run-1'), self.resource.table.items)
+
+    def test_initialized_mode_blocks_absent_and_invalid_principals_without_creating_records(self):
+        self.registry.require_principal = True
+        for state in (None, {}, {'epoch': -1}, {'epoch': True}, {'epoch': '0'}, {'epoch': 2**63}):
+            self.client.auth_states = {} if state is None else {'USER#tenant-a': state}
+            with self.subTest(state=state), self.assertRaises(RegistryConflict):
+                self.registry.create_execution(Execution('new-run', 'tenant-a', Feature.GENERAL_GUIDE,
+                    'local-model', None, 'SYNTHETIC', Decimal('0')))
+            self.assertNotIn(('EXEC#new-run', 'META'), self.resource.table.items)
+
+    def test_initialized_reservation_rechecks_principal_after_authorization(self):
+        self.registry.require_principal = True
+        self.client.auth_states = {'USER#tenant-a': {'epoch': 0}}
+        self.client.before_commit = lambda: self.client.auth_states.clear()
+        self.assertFalse(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)
+        self.assertEqual(self.registry.execution_state('run-1'), 'PENDING')
+        self.assertEqual(self.registry.budget('tenant-a', 'ollama').calls_remaining, 1)
+        self.assertNotIn(('ACTIVE#tenant-a', 'EXEC#run-1'), self.resource.table.items)
+
+    def test_initialized_mode_allows_valid_principal_and_retains_terminal_settlement(self):
+        self.registry.require_principal = True
+        self.client.auth_states = {'USER#tenant-a': {'epoch': 0}}
+        self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)
+        self.client.auth_states.clear()
+        self.registry.finish('run-1', succeeded=False, actual_cost_usd=Decimal('0'), error_code='SYNTHETIC_FAILURE')
+        self.assertEqual(self.registry.execution_state('run-1'), 'FAILED')
+        self.assertNotIn(('ACTIVE#tenant-a', 'EXEC#run-1'), self.resource.table.items)
 
     def test_locked_tenant_cannot_create_execution_quote_or_new_limit(self):
         self.client.auth_states = {'USER#tenant-a': {'deletion_lock_request': 'synthetic'},

@@ -42,7 +42,7 @@ def main(path):
     condition = statement.get('Condition', {})
     if condition.get('ForAllValues:StringLike', {}).get('dynamodb:LeadingKeys') != ['ACTIVE#*'] or \
             condition.get('Null', {}).get('dynamodb:LeadingKeys') != 'false' or \
-            condition.get('ForAnyValue:StringEquals', {}).get('dynamodb:EnclosingOperation') != ['TransactWriteItems']:
+            condition.get('StringEquals', {}).get('dynamodb:EnclosingOperation') != 'TransactWriteItems':
         raise AssertionError('Gateway deletion conditions are incomplete')
     print('Gateway active-marker settlement policy verified')
 
