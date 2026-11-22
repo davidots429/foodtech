@@ -4,7 +4,8 @@ Scans are not snapshots or account-deletion evidence. An authenticated worker
 must stop writers and verify all other stores and indexes separately.
 """
 import re
-from uuid import UUID
+
+from .subject_identity import valid_subject
 
 from boto3.dynamodb.conditions import Attr
 
@@ -18,7 +19,7 @@ class MealResidualScan(ProfileResidualScan):
 
     def _scan(self, *, subject, limit, checkpoint):
         try:
-            if str(UUID(subject)) != subject or type(limit) is not int or not 1 <= limit <= 100:
+            if not valid_subject(subject) or type(limit) is not int or not 1 <= limit <= 100:
                 raise ValueError
         except (TypeError, ValueError, AttributeError):
             raise ValueError('invalid meal residual scope') from None

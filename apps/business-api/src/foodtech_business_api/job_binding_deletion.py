@@ -6,6 +6,8 @@ separately. This primitive does not remove source data or mark deletion complete
 import re
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 from foodtech_contracts import stream_binding_key
@@ -15,7 +17,7 @@ from .condition_profile_deletion import ProfileDeletionConflict
 
 def delete_job_binding(*, source_table, progress_store, cipher, subject, request_id, job_id):
     try:
-        if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+        if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                 not isinstance(job_id,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',job_id):
             raise ValueError
     except (ValueError, TypeError, AttributeError):

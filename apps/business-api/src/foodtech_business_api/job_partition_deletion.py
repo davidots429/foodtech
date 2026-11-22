@@ -7,6 +7,8 @@ residuals. META_ONLY is an observation, never an account-deletion receipt.
 import re
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
@@ -16,7 +18,7 @@ from .condition_profile_deletion import ProfileDeletionConflict
 
 def delete_one_job_record(*, source_table, progress_store, cipher, subject, request_id, job_id):
     try:
-        if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+        if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                 not isinstance(job_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', job_id):
             raise ValueError
     except (ValueError, TypeError, AttributeError):

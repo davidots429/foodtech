@@ -4,6 +4,7 @@ import asyncio
 import re
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
+from .subject_identity import valid_subject
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -76,7 +77,8 @@ async def decide(subject: str, application_id: str, request: Request,
     if body.decision not in {"APPROVED_FOR_DEMO", "REJECTED"}:
         raise HTTPException(400, "승인 또는 거절만 선택할 수 있습니다.")
     try:
-        UUID(subject)
+        if not valid_subject(subject):
+            raise ValueError('invalid account identity')
         UUID(application_id)
     except ValueError as exc:
         raise HTTPException(400, "신청 식별자가 올바르지 않습니다.") from exc

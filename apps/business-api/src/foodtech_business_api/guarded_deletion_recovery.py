@@ -6,6 +6,8 @@ full deletion saga, and it never returns the decrypted identifiers.
 """
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 from boto3.dynamodb.types import TypeSerializer
 
 
@@ -30,7 +32,7 @@ class GuardedDeletionRecovery:
         if not callable(action):
             raise ValueError('invalid guarded recovery action')
         try:
-            if str(UUID(authenticated_subject)) != authenticated_subject or str(UUID(request_id)) != request_id:
+            if not valid_subject(authenticated_subject) or str(UUID(request_id)) != request_id:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise ValueError('invalid guarded recovery identity') from None

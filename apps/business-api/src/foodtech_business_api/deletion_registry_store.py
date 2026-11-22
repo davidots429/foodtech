@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
@@ -38,7 +40,7 @@ class DeletionRegistryStore:
         The same ciphertext bytes and metadata must be retained for retries.
         """
         try:
-            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id:
+            if not valid_subject(subject) or str(UUID(request_id)) != request_id:
                 raise ValueError
             when = datetime.fromisoformat(requested_at.replace("Z", "+00:00"))
             if when.tzinfo is None or when.utcoffset() != timezone.utc.utcoffset(when):
@@ -60,9 +62,12 @@ class DeletionRegistryStore:
             self.client.transact_write_items(TransactItems=[
                 {"Update": {"TableName": self.auth_table, "Key": self._item(principal_key),
                             "UpdateExpression": "SET suspended = :yes, deletion_lock_request = :request ADD #epoch :one",
-                            "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(deletion_lock_request)",
-                            "ExpressionAttributeNames": {"#epoch": "epoch"},
-                            "ExpressionAttributeValues": self._item({":yes": True, ":request": request_id, ":one": 1})}},
+                            "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(deletion_lock_request) AND "
+                                "(attribute_not_exists(#withdrawal) OR "
+                                "(#withdrawal = :deleting AND withdrawal_request_id = :request))",
+                            "ExpressionAttributeNames": {"#epoch": "epoch", "#withdrawal": "withdrawal_status"},
+                            "ExpressionAttributeValues": self._item({":yes": True, ":request": request_id, ":one": 1,
+                                                                      ":deleting": "DELETING"})}},
                 {"Put": {"TableName": self.registry_table, "Item": self._item(item),
                          "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}},
             ])
@@ -89,7 +94,7 @@ class DeletionRegistryStore:
         required. This does not resume deletion or read encrypted locators.
         """
         try:
-            if str(UUID(subject)) != subject:
+            if not valid_subject(subject):
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise ValueError("invalid deletion identity") from None

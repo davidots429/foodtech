@@ -4,14 +4,18 @@ This is an internal primitive. It does not authenticate callers, resolve Vault
 records, issue scoped roles, erase data or expose a public deletion API.
 """
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
+
+from .subject_identity import valid_subject
 
 import boto3
 from boto3.dynamodb.types import TypeSerializer
 
 from .capsule_writer import CapsuleWriter
+from .account_withdrawal import GRACE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,9 @@ class VaultSnapshot:
     capsule_locator: str = field(repr=False)
     capsule_revision: int
     auth_epoch: int
+    withdrawal_request_id: str | None = field(default=None, repr=False)
+    withdrawal_requested_at: int | None = field(default=None, repr=False)
+    withdrawal_deadline: int | None = field(default=None, repr=False)
 
 
 class GuardedDeletion:
@@ -49,7 +56,7 @@ class GuardedDeletion:
         checks the lock only; it does not prove deletion or backup reconciliation.
         """
         try:
-            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or str(UUID(vault_id)) != vault_id or \
+            if not valid_subject(subject) or str(UUID(request_id)) != request_id or str(UUID(vault_id)) != vault_id or \
                     str(UUID(internal_user_id)) != internal_user_id or \
                     not isinstance(capsule_locator, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', capsule_locator):
                 raise ValueError
@@ -87,18 +94,21 @@ class GuardedDeletion:
 
     def lock_and_register(self, *, subject: str, request_id: str, snapshot: VaultSnapshot,
                           encrypted_user_id: bytes, encrypted_capsule_locator: bytes,
-                          requested_at: str, policy_version: str) -> None:
+                          requested_at: str, policy_version: str, attempt_id: str | None = None) -> None:
         """Atomically lock auth, Vault and Capsule and register encrypted tombstone.
 
         Ciphertexts must be made from the same trusted snapshot and request. All
         Vault and Capsule writers must honor their locks and advance revisions.
-        Repeat with the identical inputs and request ID for DynamoDB's bounded
-        client-token retry window. This method does not solve durable saga resume.
+        Repeat identical prepared inputs with the same attempt token. A newly
+        prepared encryption uses a new attempt ID; conditional domain locks and
+        the unique registry request still prevent a second commit for that job.
         """
         try:
             if not isinstance(snapshot, VaultSnapshot) or snapshot.authenticated_subject != subject or \
-                    str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+                    not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                     str(UUID(snapshot.vault_id)) != snapshot.vault_id:
+                raise ValueError
+            if attempt_id is not None and str(UUID(attempt_id)) != attempt_id:
                 raise ValueError
             if type(snapshot.vault_revision) is not int or not 1 <= snapshot.vault_revision < 2**63 - 1:
                 raise ValueError
@@ -116,20 +126,39 @@ class GuardedDeletion:
                                                      expected_revision=snapshot.capsule_revision)
         except (ValueError, TypeError, AttributeError):
             raise ValueError("invalid guarded deletion request") from None
+        auth_names = {'#epoch': 'epoch'}
+        auth_values = {':yes': True, ':request': request_id, ':one': 1,
+                       ':vault': snapshot.vault_id, ':expected_epoch': snapshot.auth_epoch}
+        if snapshot.withdrawal_request_id is None:
+            if snapshot.withdrawal_requested_at is not None or snapshot.withdrawal_deadline is not None:
+                raise ValueError('invalid withdrawal deletion snapshot')
+            eligibility = 'attribute_not_exists(#withdrawal) AND (attribute_not_exists(suspended) OR suspended = :no)'
+            auth_values[':no'] = False
+        else:
+            if snapshot.withdrawal_request_id != request_id or \
+                    type(snapshot.withdrawal_requested_at) is not int or snapshot.withdrawal_requested_at <= 0 or \
+                    type(snapshot.withdrawal_deadline) is not int or \
+                    snapshot.withdrawal_deadline - snapshot.withdrawal_requested_at != GRACE_SECONDS or \
+                    snapshot.withdrawal_deadline > int(time.time()) or \
+                    when.timestamp() != snapshot.withdrawal_requested_at:
+                raise ValueError('withdrawal is not due for deletion')
+            eligibility = 'suspended = :yes AND #withdrawal = :deleting AND withdrawal_request_id = :request AND ' \
+                          'withdrawal_requested_at = :withdrawal_at AND withdrawal_deadline = :deadline'
+            auth_values.update({':deleting': 'DELETING', ':withdrawal_at': snapshot.withdrawal_requested_at,
+                                ':deadline': snapshot.withdrawal_deadline})
+        auth_names['#withdrawal'] = 'withdrawal_status'
         tombstone = {"pk": "REGISTRY", "sk": f"REQ#{request_id}", "request_id": request_id,
                      "requested_at": requested_at, "completed_at": None, "status": "DELETING",
                      "encrypted_user_id": encrypted_user_id, "encrypted_capsule_locator": encrypted_capsule_locator,
                      "reconcile_until": None, "expires_at": None, "ttl_delete_after": None,
                      "policy_version": policy_version, "version": 1}
-        self.client.transact_write_items(ClientRequestToken=request_id, TransactItems=[
+        self.client.transact_write_items(ClientRequestToken=attempt_id or request_id, TransactItems=[
             {"Update": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{subject}"}),
                         "UpdateExpression": "SET suspended = :yes, deletion_lock_request = :request ADD #epoch :one",
                         "ConditionExpression": "attribute_not_exists(deletion_lock_request) AND vault_id = :vault "
-                                               "AND #epoch = :expected_epoch AND (attribute_not_exists(suspended) OR suspended = :no)",
-                        "ExpressionAttributeNames": {"#epoch": "epoch"},
-                        "ExpressionAttributeValues": self._item({":yes": True, ":no": False, ":request": request_id, ":one": 1,
-                                                                   ":vault": snapshot.vault_id,
-                                                                   ":expected_epoch": snapshot.auth_epoch})}},
+                                               "AND #epoch = :expected_epoch AND (" + eligibility + ")",
+                        "ExpressionAttributeNames": auth_names,
+                        "ExpressionAttributeValues": self._item(auth_values)}},
             {"Update": {"TableName": self.vault_table, "Key": self._item({"pk": snapshot.vault_id, "sk": "META"}),
                         "UpdateExpression": "SET #state = :locked, #revision = :next, deletion_request_id = :request",
                         "ConditionExpression": "#state = :active AND #revision = :expected AND capsule_locator = :locator "

@@ -7,6 +7,7 @@ import { CredentialEnrollment } from "./CredentialEnrollment";
 import { ExternalAiTrial } from "./ExternalAiTrial";
 import { LocalChat } from "./LocalChat";
 import { TierConversion } from "./TierConversion";
+import { AccountWithdrawal } from "./AccountWithdrawal";
 import "./style.css";
 
 type Session = { email: string | null; surface: "customer"; csrf: string; refresh_available: boolean; expires_in: number; tier: "FREE" | "DEMO_PAID" };
@@ -17,6 +18,7 @@ function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [example, setExample] = useState<Example | null>(null);
   const [loading, setLoading] = useState(true);
+  const [withdrawalFlow, setWithdrawalFlow] = useState(false);
   const [error, setError] = useState("");
   useSessionRefresh("customer", session, setError);
   const [totpSecret, setTotpSecret] = useState("");
@@ -98,6 +100,9 @@ function App() {
     <header><p className="eyebrow">Foodtech · 고객</p><h1>스마트키친 의사결정 지원</h1>
       <p>조리 데이터와 AI 권고를 운영자가 검토하는 서비스입니다.</p></header>
     {error && <p role="alert" className="error">{error}</p>}
+    {!loading && <AccountWithdrawal csrf={session?.csrf} onAccountFlow={setWithdrawalFlow} onRequested={() => {
+      setSession(null); setExample(null); setCredentialId(""); setTotpSecret(""); setTotpCode("");
+    }} />}
     {loading ? <p>로그인 상태를 확인하는 중입니다.</p> : session ? <>
       <section className="account-summary"><div><h2>계정</h2><p>{session.email ?? "고객"}님 · {session.tier === "DEMO_PAID" ? "시연용 유료 티어 · 00원" : "무료 티어"}</p>{session.tier === "DEMO_PAID" && <p>{notice}</p>}</div>
         <button onClick={logout}>로그아웃</button>
@@ -122,9 +127,9 @@ function App() {
         </>}
         {totpStatus && <p role="status">{totpStatus}</p>}
       </section>
-    </> : <section><h2>시작하기</h2><p>가입할 때 사업자등록번호나 AI API 키가 필요하지 않습니다.</p>
+    </> : !withdrawalFlow ? <section><h2>시작하기</h2><p>가입할 때 사업자등록번호나 AI API 키가 필요하지 않습니다.</p>
       <div className="actions"><a className="button" href="/api/auth/customer/signup">무료 가입</a>
-        <a className="button secondary" href="/api/auth/customer/login">로그인</a></div></section>}
+        <a className="button secondary" href="/api/auth/customer/login">로그인</a></div></section> : null}
   </main>;
 }
 

@@ -1,6 +1,7 @@
 """Observe remaining customer meal-aggregate rows without declaring deletion complete."""
 import re
-from uuid import UUID
+
+from .subject_identity import valid_subject
 
 from boto3.dynamodb.conditions import Attr
 
@@ -13,7 +14,7 @@ class MealAggregateResidualScan(ProfileResidualScan):
 
     def _scan(self, *, subject, limit, checkpoint):
         try:
-            if str(UUID(subject)) != subject or type(limit) is not int or not 1 <= limit <= 100:
+            if not valid_subject(subject) or type(limit) is not int or not 1 <= limit <= 100:
                 raise ValueError
         except (TypeError, ValueError, AttributeError):
             raise ValueError('invalid meal aggregate residual scope') from None

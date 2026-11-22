@@ -6,6 +6,8 @@ An empty listing does not prove whole-account deletion is complete.
 import re
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
@@ -15,7 +17,7 @@ from .condition_profile_deletion import ProfileDeletionConflict
 
 def clean_one_meal_listing(*, source_table, progress_store, cipher, subject, request_id):
     try:
-        if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id:
+        if not valid_subject(subject) or str(UUID(request_id)) != request_id:
             raise ValueError
     except (ValueError, TypeError, AttributeError):
         raise ValueError('invalid meal listing scope') from None

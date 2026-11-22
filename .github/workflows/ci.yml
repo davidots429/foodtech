@@ -39,6 +39,12 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCredentialVault-dev --strict -c provisionCredentialVault=true -c credentialKeyPeriod=2026-11 --output /tmp/foodtech-credential-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_gateway_policy.py /tmp/foodtech-credential-cdk/FoodtechCredentialVault-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentitySchedule-dev --strict -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-withdrawal-identity-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-withdrawal-identity-cdk/FoodtechWithdrawalIdentitySchedule-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentityAccess-dev --strict -c provisionWithdrawalIdentityAccess=true --output /tmp/foodtech-withdrawal-identity-access-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_withdrawal_identity_access.py /tmp/foodtech-withdrawal-identity-access-cdk/FoodtechWithdrawalIdentityAccess-dev.template.json
 
   python:
     runs-on: ubuntu-latest
@@ -162,4 +168,10 @@ jobs:
           docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -c 'import foodtech_business_api.combi_refresh_worker'
           status=0
           docker run --rm foodtech-ci/combi-refresh-worker:test || status=$?
+          test "$status" -eq 2
+      - name: Verify separate identity worker command and configuration guard
+        run: |
+          docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -c 'import foodtech_business_api.withdrawal_identity_worker'
+          status=0
+          docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.withdrawal_identity_worker || status=$?
           test "$status" -eq 2

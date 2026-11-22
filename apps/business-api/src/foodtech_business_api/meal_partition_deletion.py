@@ -6,6 +6,8 @@ META_ONLY is an observation, not proof of deletion or ownership of source data.
 import re
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
@@ -15,7 +17,7 @@ from .condition_profile_deletion import ProfileDeletionConflict
 
 def delete_one_meal_record(*, source_table, progress_store, cipher, subject, request_id, meal_id):
     try:
-        if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or not isinstance(meal_id, str) or \
+        if not valid_subject(subject) or str(UUID(request_id)) != request_id or not isinstance(meal_id, str) or \
                 not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', meal_id):
             raise ValueError
     except (ValueError, TypeError, AttributeError):

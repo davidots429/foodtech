@@ -5,6 +5,8 @@ residual checks are required; an empty partition is not a completion receipt.
 """
 from decimal import Decimal
 from uuid import UUID
+
+from .subject_identity import valid_subject
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
@@ -13,7 +15,7 @@ from .condition_profile_deletion import ProfileDeletionConflict
 
 def remove_job_history(*, source_table,progress_store,cipher,subject,request_id):
     try:
-        if str(UUID(subject))!=subject or str(UUID(request_id))!=request_id:raise ValueError
+        if not valid_subject(subject) or str(UUID(request_id))!=request_id:raise ValueError
     except (ValueError,TypeError,AttributeError):raise ValueError('invalid job history scope') from None
     if source_table.table_arn != getattr(cipher,'source_table_arn',None) or source_table.name in {
             progress_store.auth_table,progress_store.registry_table,progress_store.progress_table}:
