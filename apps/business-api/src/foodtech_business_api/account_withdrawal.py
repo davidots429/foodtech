@@ -7,6 +7,8 @@ deletes Cognito users, or claims that business-data erasure has completed.
 from decimal import Decimal
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 GRACE_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -24,7 +26,7 @@ def _integer(value, minimum=0):
 
 def _identity(subject, request_id, now):
     try:
-        if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+        if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                 type(now) is not int or not 0 < now < 2**63 - 1 - GRACE_SECONDS:
             raise ValueError
     except (ValueError, TypeError, AttributeError):

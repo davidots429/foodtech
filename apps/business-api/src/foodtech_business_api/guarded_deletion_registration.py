@@ -6,6 +6,8 @@ snapshot. No public API, scoped role, durable resume or deletion worker exists h
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 from .guarded_deletion import VaultSnapshot
 
 
@@ -27,7 +29,7 @@ class GuardedDeletionRegistration:
     def prepare(self, *, authenticated_subject: str, request_id: str,
                 requested_at: str, policy_version: str) -> PreparedGuardedDeletion:
         try:
-            if str(UUID(authenticated_subject)) != authenticated_subject or str(UUID(request_id)) != request_id:
+            if not valid_subject(authenticated_subject) or str(UUID(request_id)) != request_id:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise ValueError("invalid deletion identity") from None

@@ -11,6 +11,8 @@ contract; deployment permissions and rollout must enforce this separately.
 """
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 from .account_withdrawal import WithdrawalConflict, _integer
 
 FENCE_KEY = 'CONTROL#PRINCIPAL_ENROLLMENT'
@@ -22,7 +24,7 @@ class PrincipalEnrollmentConflict(Exception):
 
 def _subject(subject):
     try:
-        if str(UUID(subject)) != subject:
+        if not valid_subject(subject):
             raise ValueError
     except (ValueError, TypeError, AttributeError):
         raise ValueError('invalid account identity') from None
@@ -88,7 +90,11 @@ class DynamoPrincipalRetirement:
 
     def retire(self, *, subject, request_id, expected_epoch):
         _subject(subject)
-        _subject(request_id)
+        try:
+            if str(UUID(request_id)) != request_id:
+                raise ValueError
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError('invalid deletion request identity') from None
         expected_epoch = _integer(expected_epoch, 1)
         generation = self.enrollment.fence()
         try:

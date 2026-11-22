@@ -4,7 +4,8 @@ A scan is not a snapshot. It requires stopped writers, and cannot establish
 account deletion or discover records in other keyspaces and stores.
 """
 import re
-from uuid import UUID
+
+from .subject_identity import valid_subject
 from boto3.dynamodb.conditions import Attr
 from .legacy_profile_scan import LegacyProfilePage
 from .profile_deletion_residual import ProfileResidualScan
@@ -16,7 +17,7 @@ class JobResidualScan(ProfileResidualScan):
 
     def _scan(self, *, subject, limit, checkpoint):
         try:
-            if str(UUID(subject)) != subject or type(limit) is not int or not 1 <= limit <= 100:
+            if not valid_subject(subject) or type(limit) is not int or not 1 <= limit <= 100:
                 raise ValueError
         except (TypeError,ValueError,AttributeError):
             raise ValueError('invalid job residual scope') from None

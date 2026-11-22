@@ -103,7 +103,7 @@ class DeletionRegistryStoreTests(unittest.TestCase):
             self.store.lock_and_register(**self.request)
 
     def test_invalid_or_unencrypted_type_is_rejected_before_write(self):
-        for change in ({"subject": "not-uuid"}, {"requested_at": "2026-11-21T00:00:00"},
+        for change in ({"subject": "invalid#subject"}, {"requested_at": "2026-11-21T00:00:00"},
                        {"encrypted_user_id": "plaintext"}, {"policy_version": ""}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.store.lock_and_register(**{**self.request, **change})

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 import boto3
 from boto3.dynamodb.types import TypeSerializer
 
@@ -54,7 +56,7 @@ class GuardedDeletion:
         checks the lock only; it does not prove deletion or backup reconciliation.
         """
         try:
-            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or str(UUID(vault_id)) != vault_id or \
+            if not valid_subject(subject) or str(UUID(request_id)) != request_id or str(UUID(vault_id)) != vault_id or \
                     str(UUID(internal_user_id)) != internal_user_id or \
                     not isinstance(capsule_locator, str) or not re.fullmatch(r'[A-Za-z0-9_-]{43}', capsule_locator):
                 raise ValueError
@@ -103,7 +105,7 @@ class GuardedDeletion:
         """
         try:
             if not isinstance(snapshot, VaultSnapshot) or snapshot.authenticated_subject != subject or \
-                    str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+                    not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                     str(UUID(snapshot.vault_id)) != snapshot.vault_id:
                 raise ValueError
             if attempt_id is not None and str(UUID(attempt_id)) != attempt_id:

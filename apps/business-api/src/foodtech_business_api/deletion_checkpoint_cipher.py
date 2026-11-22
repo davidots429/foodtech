@@ -4,6 +4,8 @@ import json
 import re
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 import aws_encryption_sdk
 import boto3
 from aws_cryptographic_material_providers.mpl import AwsCryptographicMaterialProviders
@@ -32,7 +34,7 @@ class DeletionCheckpointCipher:
 
     def _context(self, subject, request_id, domain, version, state):
         try:
-            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+            if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                     not isinstance(domain, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', domain) or \
                     type(version) is not int or not 1 <= version < 2**63 or \
                     state not in {'IN_PROGRESS', 'VERIFYING', 'FAILED'}:

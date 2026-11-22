@@ -9,6 +9,8 @@ from secrets import compare_digest
 import time
 from uuid import UUID, uuid4
 
+from .subject_identity import valid_subject
+
 import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
@@ -49,7 +51,7 @@ class IdentityVault:
     @staticmethod
     def _identity(subject: str, request_id: str, epoch: int) -> None:
         try:
-            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+            if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                     type(epoch) is not int or not 0 <= epoch < 2**63 - 1:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):

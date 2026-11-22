@@ -5,7 +5,8 @@ required before any deletion can be considered complete.
 """
 import re
 from dataclasses import dataclass, field
-from uuid import UUID
+
+from .subject_identity import valid_subject
 
 from boto3.dynamodb.conditions import Attr
 
@@ -40,7 +41,7 @@ class MealAggregateDeletionInventory(ProfileDeletionInventory):
 
     def _scan(self, *, subject, limit, checkpoint):
         try:
-            if str(UUID(subject)) != subject or type(limit) is not int or not 1 <= limit <= 20:
+            if not valid_subject(subject) or type(limit) is not int or not 1 <= limit <= 20:
                 raise ValueError
         except (TypeError, ValueError, AttributeError):
             raise ValueError('invalid meal aggregate inventory scope') from None

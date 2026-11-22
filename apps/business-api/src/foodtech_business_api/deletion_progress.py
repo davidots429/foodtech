@@ -6,6 +6,8 @@ bind encrypted checkpoints to their request, domain and version before use.
 import re
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 import boto3
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
@@ -34,7 +36,7 @@ class DeletionProgressStore:
         the caller nor any deletion, and it does not hold the lock open.
         """
         try:
-            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+            if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                     not isinstance(domain, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', domain):
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
@@ -93,7 +95,7 @@ class DeletionProgressStore:
         this adapter cannot verify its content or binding.
         """
         try:
-            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+            if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                     not isinstance(domain, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', domain) or \
                     type(expected_version) is not int or not 0 <= expected_version < 2**63 - 1 or \
                     state not in {'IN_PROGRESS', 'VERIFYING', 'FAILED'} or \

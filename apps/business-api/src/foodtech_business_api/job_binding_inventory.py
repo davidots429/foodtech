@@ -5,7 +5,8 @@ Only an authenticated maintenance worker may use the returned targets.
 """
 import re
 from dataclasses import dataclass, field
-from uuid import UUID
+
+from .subject_identity import valid_subject
 
 from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
@@ -44,7 +45,7 @@ class JobBindingInventory(ProfileDeletionInventory):
 
     def _scan(self, *, subject, limit, checkpoint):
         try:
-            if str(UUID(subject)) != subject or type(limit) is not int or not 1 <= limit <= 20:
+            if not valid_subject(subject) or type(limit) is not int or not 1 <= limit <= 20:
                 raise ValueError
         except (TypeError, ValueError, AttributeError):
             raise ValueError('invalid job binding scan scope') from None

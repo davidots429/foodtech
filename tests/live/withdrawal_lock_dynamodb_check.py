@@ -4,7 +4,10 @@ No business data is erased, no production role is assumed, and Cognito is not
 changed. Synthetic request times are shifted back seven days explicitly.
 """
 import time
+import argparse
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import boto3
@@ -14,9 +17,14 @@ from foodtech_business_api.deletion_registry_cipher import DeletionRegistryCiphe
 from foodtech_business_api.guarded_deletion import GuardedDeletion
 from foodtech_business_api.identity_vault import IdentityVault, IdentityVaultConflict
 from foodtech_business_api.withdrawal_dispatch import WithdrawalDispatcher
+from foodtech_business_api.principal_enrollment import DynamoPrincipalEnrollment, FENCE_KEY
+from foodtech_business_api.withdrawal_identity import CognitoWithdrawalRelease
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--identity-release-env', type=Path)
+    options = parser.parse_args()
     session = boto3.Session(profile_name='foodtech', region_name='ap-southeast-2')
     resource = session.resource('dynamodb')
     client = session.client('dynamodb')
@@ -33,6 +41,7 @@ def main():
         raise RuntimeError('generated test identities already exist')
     created = False
     internal_id = None
+    extra_auth_keys = []
     try:
         tables['auth'].put_item(Item={**keys['auth'], 'epoch': 0}, ConditionExpression='attribute_not_exists(pk)')
         created = True
@@ -80,13 +89,45 @@ def main():
                    for name in ('vault', 'capsule'))
         assert tables['registry'].get_item(Key=keys['registry'], ConsistentRead=True)['Item']['status'] == 'DELETING'
         print('Pending rejection, changed-deadline atomic rejection, expiry dispatch and four-domain lock passed')
+        if options.identity_release_env:
+            issuer = None
+            for line in options.identity_release_env.read_text().splitlines():
+                name, separator, value = line.partition('=')
+                if separator and name.strip() == 'FOODTECH_COGNITO_ISSUER':
+                    issuer = value.strip().strip('"').rstrip('/')
+                    break
+            if not issuer or not issuer.startswith('https://cognito-idp.ap-southeast-2.amazonaws.com/'):
+                raise RuntimeError('existing development Cognito issuer configuration is required')
+            control_key = FENCE_KEY + '#' + str(uuid4())
+            if 'Item' in tables['auth'].get_item(Key={'pk': control_key}, ConsistentRead=True):
+                raise RuntimeError('generated test control already exists')
+            extra_auth_keys.append({'pk': control_key})
+            enrollment = DynamoPrincipalEnrollment(table=tables['auth'], fence_key=control_key)
+            enrollment.bootstrap()
+            cognito = session.client('cognito-idp')
+            def forbidden_delete(**kwargs):
+                raise RuntimeError('this test must never delete a Cognito user')
+            readonly_cognito = SimpleNamespace(admin_get_user=cognito.admin_get_user,
+                admin_delete_user=forbidden_delete, exceptions=cognito.exceptions)
+            release = CognitoWithdrawalRelease(auth_table=tables['auth'], registry_table=names['registry'],
+                enrollment=enrollment, cognito_client=readonly_cognito, pool_id=issuer.rsplit('/', 1)[-1])
+            assert release.release(subject=subject, request_id=request_id, expected_epoch=int(locked['epoch'])) == \
+                {'state': 'COGNITO_REMOVED', 'deletion_complete': False}
+            account = tables['auth'].get_item(Key=keys['auth'], ConsistentRead=True)['Item']
+            assert account['identity_retired_request'] == request_id and account['suspended'] is True
+            assert account['deletion_lock_request'] == request_id
+            assert tables['registry'].get_item(Key=keys['registry'], ConsistentRead=True)['Item']['status'] == 'DELETING'
+            print('Random-subject Cognito absence and conditional identity marker passed; no Cognito deletion performed')
     finally:
         if isinstance(internal_id, bytearray):
             internal_id[:] = b'\x00' * len(internal_id)
         if created:
             for name, key in keys.items():
                 tables[name].delete_item(Key=key)
+            for key in extra_auth_keys:
+                tables['auth'].delete_item(Key=key)
             assert all('Item' not in tables[name].get_item(Key=key, ConsistentRead=True) for name, key in keys.items())
+            assert all('Item' not in tables['auth'].get_item(Key=key, ConsistentRead=True) for key in extra_auth_keys)
             print('All generated synthetic items removed and absence verified')
 
 
