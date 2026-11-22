@@ -60,9 +60,12 @@ class DeletionRegistryStore:
             self.client.transact_write_items(TransactItems=[
                 {"Update": {"TableName": self.auth_table, "Key": self._item(principal_key),
                             "UpdateExpression": "SET suspended = :yes, deletion_lock_request = :request ADD #epoch :one",
-                            "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(deletion_lock_request)",
-                            "ExpressionAttributeNames": {"#epoch": "epoch"},
-                            "ExpressionAttributeValues": self._item({":yes": True, ":request": request_id, ":one": 1})}},
+                            "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(deletion_lock_request) AND "
+                                "(attribute_not_exists(#withdrawal) OR "
+                                "(#withdrawal = :deleting AND withdrawal_request_id = :request))",
+                            "ExpressionAttributeNames": {"#epoch": "epoch", "#withdrawal": "withdrawal_status"},
+                            "ExpressionAttributeValues": self._item({":yes": True, ":request": request_id, ":one": 1,
+                                                                      ":deleting": "DELETING"})}},
                 {"Put": {"TableName": self.registry_table, "Item": self._item(item),
                          "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}},
             ])

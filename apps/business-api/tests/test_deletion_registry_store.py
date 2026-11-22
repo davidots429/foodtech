@@ -24,6 +24,11 @@ class TransactionClient:
         if (update["TableName"], subject, "") not in self.items:
             raise ClientError({"Error": {"Code": "TransactionCanceledException", "Message": "missing principal"}},
                               "TransactWriteItems")
+        principal = self.items[(update["TableName"], subject, "")]
+        if 'withdrawal_status' in principal and (principal['withdrawal_status'] != {'S': 'DELETING'} or
+                principal.get('withdrawal_request_id') != update['ExpressionAttributeValues'][':request']):
+            raise ClientError({'Error': {'Code': 'TransactionCanceledException', 'Message': 'withdrawal not due'}},
+                              'TransactWriteItems')
         self.items[(update["TableName"], subject, "")] = {
             "pk": {"S": subject}, "suspended": {"BOOL": True},
             "deletion_lock_request": update["ExpressionAttributeValues"][":request"], "epoch": {"N": "1"}}
@@ -65,6 +70,20 @@ class DeletionRegistryStoreTests(unittest.TestCase):
         with self.assertRaises(DeletionRegistryConflict):
             self.store.lock_and_register(**self.request)
         self.assertEqual(self.client.items, {})
+
+    def test_withdrawal_grace_or_cancel_cannot_register_destructive_deletion(self):
+        key = ('auth', f'USER#{self.request["subject"]}', '')
+        for state in ('PENDING', 'CANCELED', 'DELETING'):
+            with self.subTest(state=state):
+                self.client.items[key]['withdrawal_status'] = {'S': state}
+                self.client.items[key]['withdrawal_request_id'] = {'S': str(uuid4())}
+                with self.assertRaises(DeletionRegistryConflict):
+                    self.store.lock_and_register(**self.request)
+                self.assertNotIn(('registry', 'REGISTRY', f'REQ#{self.request["request_id"]}'), self.client.items)
+        self.client.items[key]['withdrawal_request_id'] = {'S': self.request['request_id']}
+        self.assertTrue(self.store.lock_and_register(**self.request))
+        condition = self.client.requests[-1][0]['Update']['ConditionExpression']
+        self.assertIn('#withdrawal = :deleting AND withdrawal_request_id = :request', condition)
 
     def test_exact_retry_is_idempotent_but_different_request_or_ciphertext_conflicts(self):
         self.store.lock_and_register(**self.request)
