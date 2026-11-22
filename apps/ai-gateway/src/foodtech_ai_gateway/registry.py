@@ -52,6 +52,7 @@ class DynamoRegistry:
             raise ValueError("table name and YYYY-MM budget period are required")
         self.table_name = table_name
         self.auth_table = auth_table or os.getenv("FOODTECH_AUTH_TABLE", "")
+        self.require_principal = os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED', 'false') == 'true'
         self.period = period
         self.resource = resource or boto3.resource("dynamodb")
         self.table = self.resource.Table(table_name)
@@ -352,10 +353,19 @@ class DynamoRegistry:
     def _active_tenant_guard(self, tenant_id: str) -> dict:
         if not self.auth_table or not isinstance(tenant_id, str) or not tenant_id or len(tenant_id) > 128:
             raise RegistryConflict("tenant authentication state unavailable")
-        return {"ConditionCheck": {"TableName": self.auth_table,
+        condition = "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)"
+        values = {":false": False}
+        names = {}
+        if self.require_principal:
+            condition = 'attribute_exists(pk) AND #epoch >= :zero AND #epoch < :max AND ' + condition
+            values.update({':zero': 0, ':max': 2**63})
+            names['#epoch'] = 'epoch'
+        check = {"TableName": self.auth_table,
                 "Key": self._av({"pk": f"USER#{tenant_id}"}),
-                "ConditionExpression": "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
-                "ExpressionAttributeValues": self._av({":false": False})}}
+                "ConditionExpression": condition, "ExpressionAttributeValues": self._av(values)}
+        if names:
+            check['ExpressionAttributeNames'] = names
+        return {'ConditionCheck': check}
 
     def active_execution_keys(self, tenant_id: str, limit: int = 100, cursor: str | None = None) -> dict:
         if not isinstance(tenant_id, str) or not tenant_id or len(tenant_id) > 128 or \

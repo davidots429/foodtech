@@ -27,24 +27,42 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAuthIdentity-dev --strict -c provisionIdentity=true -c customerCallback=http://127.0.0.1:8000/api/auth/customer/callback -c adminCallback=http://127.0.0.1:8000/api/auth/admin/callback -c customerWeb=http://127.0.0.1:5173 -c adminWeb=http://127.0.0.1:5174 -c cognitoDomainPrefix=foodtech-synthetic-test --output /tmp/foodtech-identity-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_cognito_rotation.py /tmp/foodtech-identity-cdk/FoodtechAuthIdentity-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCredentialVault-dev --strict -c provisionCredentialVault=true -c credentialKeyPeriod=2026-11 --output /tmp/foodtech-credential-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_gateway_policy.py /tmp/foodtech-credential-cdk/FoodtechCredentialVault-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechPrivacyStorage-dev --strict -c provisionPrivacyStorage=true --output /tmp/foodtech-privacy-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_privacy_storage.py /tmp/foodtech-privacy-cdk/FoodtechPrivacyStorage-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiExecutionRegistry-dev --strict -c provisionAiExecutionRegistry=true --output /tmp/foodtech-ai-registry-retention-cdk > /dev/null
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_ai_registry_retention.py /tmp/foodtech-ai-registry-retention-cdk/FoodtechAiExecutionRegistry-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCookingJobs-dev --strict -c provisionCookingJobs=true --output /tmp/foodtech-cooking-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_meal_refresh_index.py /tmp/foodtech-cooking-cdk/FoodtechCookingJobs-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshSchedule-dev --strict -c provisionMealRefreshSchedule=true --output /tmp/foodtech-meal-schedule-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_meal_refresh_schedule.py /tmp/foodtech-meal-schedule-cdk/FoodtechMealRefreshSchedule-dev.template.json
-      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCredentialVault-dev --strict -c provisionCredentialVault=true -c credentialKeyPeriod=2026-11 --output /tmp/foodtech-credential-cdk
-        working-directory: infra/cdk
-      - run: python3 tests/config/check_gateway_policy.py /tmp/foodtech-credential-cdk/FoodtechCredentialVault-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentitySchedule-dev --strict -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-withdrawal-identity-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-withdrawal-identity-cdk/FoodtechWithdrawalIdentitySchedule-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentityAccess-dev --strict -c provisionWithdrawalIdentityAccess=true --output /tmp/foodtech-withdrawal-identity-access-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_withdrawal_identity_access.py /tmp/foodtech-withdrawal-identity-access-cdk/FoodtechWithdrawalIdentityAccess-dev.template.json
+      - name: Check matching principal mode in both AI tasks
+        working-directory: infra/cdk
+        run: |
+          for mode in false true; do
+            CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiServiceTasks-dev --strict \
+              -c provisionCredentialVault=true -c credentialKeyPeriod=2026-11 -c provisionAiServiceTasks=true \
+              -c registrationImageRepository=foodtech/credential-registration -c registrationImageTag=synthetic-test \
+              -c gatewayImageRepository=foodtech/ai-gateway -c gatewayImageTag=synthetic-test \
+              -c registrationTlsSecretArn=arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:synthetic-registration-aaaaaa \
+              -c gatewayTlsSecretArn=arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:synthetic-gateway-bbbbbb \
+              -c credentialHmacVersion=synthetic-v1 -c principalProvisioningEnabled="$mode" \
+              --output "/tmp/foodtech-ai-principal-$mode" > /dev/null
+            python3 ../../tests/config/check_ai_principal_mode.py "/tmp/foodtech-ai-principal-$mode/FoodtechAiServiceTasks-dev.template.json" "$mode"
+            python3 ../../tests/config/check_gateway_policy.py "/tmp/foodtech-ai-principal-$mode/FoodtechCredentialVault-dev.template.json"
+          done
 
   python:
     runs-on: ubuntu-latest

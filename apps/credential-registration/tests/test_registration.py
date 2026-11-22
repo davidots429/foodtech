@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -115,6 +116,20 @@ class RegistrationTests(unittest.TestCase):
         with self.assertRaises(RegistrationError) as caught:
             registrar.register('subject-1', 'openai', '2026-11', self.ciphertext(b'synthetic'), 0)
         self.assertEqual(caught.exception.code, 'TENANT_UNAVAILABLE')
+        self.assertEqual(bytes(writer.buffer), b'\x00' * len(writer.buffer))
+
+    def test_initialized_registration_requires_existing_principal_and_exact_epoch(self):
+        writer, dynamo = FakeWriter(), FakeDynamo()
+        with patch.dict('os.environ', {'FOODTECH_PRINCIPAL_PROVISIONING_ENABLED': 'true'}):
+            registrar = CredentialRegistrar(writer, 'registry-test', self.transfer,
+                TenantPseudonymizer('arn:aws:kms:example', 'v1', kms_client=self.kms),
+                auth_table='auth-test', dynamodb_client=dynamo)
+        registrar.register('subject-1', 'openai', '2026-11', self.ciphertext(b'synthetic'), 0)
+        guard = dynamo.items[0]['ConditionCheck']
+        self.assertIn('attribute_exists(pk)', guard['ConditionExpression'])
+        self.assertNotIn('attribute_not_exists(#epoch)', guard['ConditionExpression'])
+        self.assertNotIn(':zero', guard['ExpressionAttributeValues'])
+        self.assertEqual(guard['ExpressionAttributeValues'][':expected'], {'N': '0'})
         self.assertEqual(bytes(writer.buffer), b'\x00' * len(writer.buffer))
 
 

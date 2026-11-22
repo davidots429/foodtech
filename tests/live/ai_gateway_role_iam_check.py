@@ -33,7 +33,7 @@ def main():
                             'ContextKeyType': 'stringList'})
         if operation:
             context.append({'ContextKeyName': 'dynamodb:EnclosingOperation', 'ContextKeyValues': [operation],
-                            'ContextKeyType': 'stringList'})
+                            'ContextKeyType': 'string'})
         result = iam.simulate_principal_policy(PolicySourceArn=role, ActionNames=['dynamodb:DeleteItem'],
             ResourceArns=[arn], ContextEntries=context)['EvaluationResults'][0]
         decision = result['EvalDecision']

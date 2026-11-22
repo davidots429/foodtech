@@ -567,7 +567,7 @@ class AiExecutionRegistryStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
       timeToLiveAttribute: "expires",
-      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true, recoveryPeriodInDays: 7 },
       removalPolicy: RemovalPolicy.RETAIN,
     });
     new CfnOutput(this, "AiExecutionRegistryTableName", { value: table.tableName });
@@ -654,7 +654,7 @@ class CredentialVaultStack extends Stack {
       conditions: {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVE#*"] },
         Null: { "dynamodb:LeadingKeys": "false" },
-        "ForAnyValue:StringEquals": { "dynamodb:EnclosingOperation": ["TransactWriteItems"] },
+        StringEquals: { "dynamodb:EnclosingOperation": "TransactWriteItems" },
       },
     }));
     registry.grant(registration, "dynamodb:PutItem");
@@ -686,6 +686,10 @@ class CredentialVaultStack extends Stack {
 class AiServiceTasksStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps, vault: CredentialVaultStack) {
     super(scope, id, props);
+    const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
+    if (principalProvisioning !== "true" && principalProvisioning !== "false") {
+      throw new Error("principalProvisioningEnabled must be true or false");
+    }
     const required = (name: string): string => {
       const value = app.node.tryGetContext(name);
       if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
@@ -737,6 +741,7 @@ class AiServiceTasksStack extends Stack {
       user: "10001",
       environment: {
         FOODTECH_SERVICE: "credential-registration",
+        FOODTECH_PRINCIPAL_PROVISIONING_ENABLED: principalProvisioning,
         FOODTECH_REGISTRATION_BIND_HOST: "0.0.0.0",
         FOODTECH_STAGE: stage,
         FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
@@ -760,6 +765,7 @@ class AiServiceTasksStack extends Stack {
       user: "10001",
       environment: {
         FOODTECH_SERVICE: "ai-gateway",
+        FOODTECH_PRINCIPAL_PROVISIONING_ENABLED: principalProvisioning,
         FOODTECH_GATEWAY_BIND_HOST: "0.0.0.0",
         FOODTECH_STAGE: stage,
         FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
