@@ -3,6 +3,7 @@
 import os
 import re
 import threading
+from decimal import Decimal
 from functools import lru_cache
 from typing import Protocol
 from uuid import UUID
@@ -103,6 +104,7 @@ class DynamoTierStore:
         self.auth_table_name = os.getenv("FOODTECH_AUTH_TABLE", "")
         self.deletion_registry_table_name = os.getenv("FOODTECH_DELETION_REGISTRY_TABLE", "")
         self.auth_table = session.resource("dynamodb").Table(self.auth_table_name) if self.auth_table_name else None
+        self.require_principal = os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED', 'false') == 'true'
 
     def _item(self, item: dict) -> dict:
         return {key: self.serializer.serialize(value) for key, value in item.items()}
@@ -115,12 +117,23 @@ class DynamoTierStore:
             condition += " AND (attribute_not_exists(admin_blocked) OR admin_blocked = :false)"
         values = {":false": {"BOOL": False}}
         names = {}
+        if self.require_principal:
+            condition = 'attribute_exists(pk) AND ' + condition
         if epoch is not None:
             if type(epoch) is not int or not 0 <= epoch < 2**63:
                 raise ValueError("invalid session epoch")
-            condition += " AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected)"
+            condition += " AND #epoch = :expected" if self.require_principal else \
+                " AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected)"
             names["#epoch"] = "epoch"
-            values.update({":expected": {"N": str(epoch)}, ":zero": {"N": "0"}})
+            values[":expected"] = {"N": str(epoch)}
+            if not self.require_principal:
+                values[":zero"] = {"N": "0"}
+        elif self.require_principal:
+            # The reviewed customer's session is not present. Still require a
+            # valid initialized epoch; a missing/corrupt principal is not active.
+            condition += ' AND #epoch >= :zero AND #epoch < :max'
+            names['#epoch'] = 'epoch'
+            values.update({':zero': {'N': '0'}, ':max': {'N': str(2**63)}})
         check = {"TableName": self.auth_table_name, "Key": self._item({"pk": f"USER#{subject}"}),
                  "ConditionExpression": condition, "ExpressionAttributeValues": values}
         if names:
@@ -176,6 +189,13 @@ class DynamoTierStore:
                 principal = self.auth_table.get_item(Key={'pk': f'USER#{subject}'}, ConsistentRead=True).get('Item', {})
                 if principal.get('suspended') or 'deletion_lock_request' in principal:
                     continue
+                if self.require_principal:
+                    epoch = principal.get('epoch')
+                    if principal.get('pk') != f'USER#{subject}' or isinstance(epoch, bool) or \
+                            not isinstance(epoch, (int, Decimal)) or \
+                            (isinstance(epoch, Decimal) and not epoch.is_finite()) or \
+                            not 0 <= epoch < 2**63 or int(epoch) != epoch:
+                        continue
                 results.append(_current(current))
                 if len(results) == limit:
                     return results

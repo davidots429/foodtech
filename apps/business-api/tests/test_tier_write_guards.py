@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from boto3.dynamodb.types import TypeSerializer
@@ -16,6 +16,7 @@ class TierGuardTests(unittest.TestCase):
         self.store.serializer = TypeSerializer()
         self.store.auth_table_name = 'auth'
         self.store.deletion_registry_table_name = 'deletion-registry'
+        self.store.require_principal = False
         self.item = {'application_id': 'app', 'submitted_at': '2026-01-01',
                      'status': 'REQUESTED', 'version': 1}
 
@@ -46,6 +47,30 @@ class TierGuardTests(unittest.TestCase):
         self.store.auth_table_name = ''
         with self.assertRaises(ValueError):
             self.store.submit('customer', self.item)
+
+    def test_initialized_mode_requires_principal_and_exact_epoch_for_submit_and_reviewer(self):
+        self.store.require_principal = True
+        self.store.submit('customer', self.item, 0)
+        guard = self.store.client.transact_write_items.call_args.kwargs['TransactItems'][0]['ConditionCheck']
+        self.assertIn('attribute_exists(pk)', guard['ConditionExpression'])
+        self.assertNotIn('attribute_not_exists(#epoch)', guard['ConditionExpression'])
+        self.assertNotIn(':zero', guard['ExpressionAttributeValues'])
+        self.store.current = Mock(return_value=self.item)
+        self.store.decide('customer', 'app', 'admin', 'REJECTED', 'now', 5)
+        customer, reviewer = [op['ConditionCheck'] for op in self.store.client.transact_write_items.call_args.kwargs['TransactItems'][:2]]
+        self.assertIn('attribute_exists(pk)', customer['ConditionExpression'])
+        self.assertIn('#epoch >= :zero', customer['ConditionExpression'])
+        self.assertIn('#epoch < :max', customer['ConditionExpression'])
+        self.assertIn('attribute_exists(pk)', reviewer['ConditionExpression'])
+        self.assertIn('admin_blocked', reviewer['ConditionExpression'])
+
+    def test_initialized_mode_is_explicit_and_not_enabled_by_default(self):
+        import os
+        for enabled in ('false', 'true'):
+            with patch.dict(os.environ, {'FOODTECH_PRINCIPAL_PROVISIONING_ENABLED': enabled}), \
+                    patch('boto3.Session'):
+                store = DynamoTierStore('tier')
+                self.assertIs(store.require_principal, enabled == 'true')
 
     def test_inventory_is_scoped_key_only_and_paginated(self):
         store = MemoryTierStore()
@@ -175,6 +200,23 @@ class TierGuardTests(unittest.TestCase):
         self.store.auth_table = None
         with self.assertRaises(ValueError):
             self.store.pending()
+
+    def test_initialized_pending_hides_missing_and_corrupt_principals(self):
+        from decimal import Decimal
+        self.store.require_principal = True
+        self.store.table, self.store.auth_table = Mock(), Mock()
+        row = {'pk': 'TENANT#customer', 'sk': 'CURRENT', 'subject': 'customer',
+               'application_id': 'app', 'status': 'REQUESTED'}
+        self.store.table.query.return_value = {'Items': [row]}
+        self.store.table.get_item.return_value = {'Item': row}
+        for principal in ({}, {'pk': 'USER#customer'}, {'pk': 'USER#other', 'epoch': 0},
+                          *({'pk': 'USER#customer', 'epoch': epoch} for epoch in
+                            (True, -1, '0', Decimal('NaN'), Decimal('Infinity'), Decimal('0.5'), 2**63))):
+            with self.subTest(principal=principal):
+                self.store.auth_table.get_item.return_value = {'Item': principal}
+                self.assertEqual(self.store.pending(), [])
+        self.store.auth_table.get_item.return_value = {'Item': {'pk': 'USER#customer', 'epoch': Decimal(0)}}
+        self.assertEqual([item['subject'] for item in self.store.pending()], ['customer'])
 
 
 if __name__ == '__main__':
