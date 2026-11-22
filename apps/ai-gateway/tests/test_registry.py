@@ -200,6 +200,18 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(RegistryConflict):
             self.registry.execution_status_snapshot('run-1', 'tenant-a')
 
+    def test_execution_binding_versions_reject_corrupt_values(self):
+        item = self.resource.table.items[('EXEC#run-1', 'META')]
+        for name in ('job_version', 'prior_job_version', 'jeyuk_source_revision', 'prior_source_revision'):
+            for value in (Decimal('1.5'), Decimal('NaN'), '1', True, 0, -1):
+                with self.subTest(field=name, value=value):
+                    item[name] = value
+                    with self.assertRaises(ValueError):
+                        self.registry.execution_snapshot('run-1')
+            item[name] = Decimal('2')
+            self.assertEqual(getattr(self.registry.execution_snapshot('run-1').execution, name), 2)
+            item[name] = None
+
     def test_terminal_status_requires_matching_result(self):
         item = self.resource.table.items[('EXEC#run-1', 'META')]
         for state in ('SUCCEEDED', 'FAILED'):

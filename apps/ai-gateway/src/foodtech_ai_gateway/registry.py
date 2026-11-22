@@ -259,13 +259,14 @@ class DynamoRegistry:
     def _execution_from_item(item: dict) -> Execution:
         fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"} else item[name]
                   for name in Execution.__dataclass_fields__}
-        if fields["job_version"] is not None:
-            fields["job_version"] = int(fields["job_version"])
-        if fields["prior_job_version"] is not None:
-            fields["prior_job_version"] = int(fields["prior_job_version"])
-        for name in ("jeyuk_source_revision", "prior_source_revision"):
-            if fields[name] is not None:
-                fields[name] = int(fields[name])
+        for name in ("job_version", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"):
+            value = fields[name]
+            if value is not None:
+                if isinstance(value, bool) or not isinstance(value, (int, Decimal)) or \
+                        (isinstance(value, Decimal) and not value.is_finite()) or \
+                        value < 1 or value != int(value):
+                    raise ValueError('invalid execution binding version')
+                fields[name] = int(value)
         fields["feature"] = Feature(fields["feature"])
         return Execution(**fields)
 
