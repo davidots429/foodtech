@@ -160,3 +160,9 @@ jobs:
           status=0
           docker run --rm foodtech-ci/combi-refresh-worker:test || status=$?
           test "$status" -eq 2
+      - name: Verify separate identity worker command and configuration guard
+        run: |
+          docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -c 'import foodtech_business_api.withdrawal_identity_worker'
+          status=0
+          docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.withdrawal_identity_worker || status=$?
+          test "$status" -eq 2

@@ -445,9 +445,15 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 
 Cognito의 `sub`는 [AWS 문서](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-attributes.html)에 따라 UUID 모양을 소유권이나 유효성의 근거로 삼지 않는다. 인증 주체는 기존 프로젝트 키 경계인 1~128자의 영문·숫자·하이픈·밑줄 안에서 원래 값을 그대로 보존한다. 이메일·키 구분자·공백은 거부하고 임의의 정규화·대소문자 변경·절단을 하지 않는다. 요청·작업·내부 Vault 식별자의 UUID 규칙은 유지한다. 계정 초기화·탈퇴·Vault·삭제 발견/진행·복구에서 같은 주체 검증을 사용한다.
 
-업무 API 전체 시험 546개가 통과했다. 대체 Cognito 시험에서는 정확한 이전 주체만 제거하는 계약과 응답 유실·권한 변경을 확인했다. `tests/live/withdrawal_lock_dynamodb_check.py --identity-release-env <로컬 업무 설정 파일>`의 별도 검증은 실제 Cognito 삭제 호출을 금지한 대체 진입점으로 실행해 임의 주체의 부재 조회·조건부 제거 기록만 확인하고 생성된 합성 항목을 정리한다. 실제 일회용 주체의 제거·이메일 재사용은 아래의 전용 시험으로 검증했다. 별도 실행 역할과 예약 실행·전체 삭제 조정기에 연결하기 전에는 활성화하지 않는다.
+업무 API 전체 시험 552개가 통과했다. 대체 Cognito 시험에서는 정확한 이전 주체만 제거하는 계약과 응답 유실·권한 변경을 확인했다. `tests/live/withdrawal_lock_dynamodb_check.py --identity-release-env <로컬 업무 설정 파일>`의 별도 검증은 실제 Cognito 삭제 호출을 금지한 대체 진입점으로 실행해 임의 주체의 부재 조회·조건부 제거 기록만 확인하고 생성된 합성 항목을 정리한다. 실제 일회용 주체의 제거·이메일 재사용은 아래의 전용 시험으로 검증했다. 별도 실행 역할과 예약 실행·전체 삭제 조정기에 연결하기 전에는 활성화하지 않는다.
 
 신원 제거 전용 작업자는 `CognitoWithdrawalRelease.scan_page`로 만료·잠긴 요청을 한 페이지씩 찾고 각 후보를 같은 `release` 경계에서 다시 인가한다. 페이지 제한은 최대 100개의 평가 항목이며 빈 페이지의 후속 커서를 유지한다. 인증 테이블의 커서에는 세션 키가 들어갈 수 있어 repr에서 숨기고 신뢰된 작업자 메모리에서만 사용한다. 삭제·기록 응답이 불확실하면 복구 확인 대상으로 남기며 이전 sub의 부재를 다시 확인해 재시도한다. 페이지 종료는 전체 삭제 완료가 아니다. 이 작업자는 Vault/Capsule 복호화나 Registry 완료 권한을 필요로 하지 않는다. 페이지 처리·오래된 후보·삭제 후 응답 유실·빈 페이지·커서 검증을 대체 저장소로 확인했으며 실제 인증 테이블 전역 Scan·예약 실행·역할 배포는 수행하지 않았다.
+
+전용 실행 명령은 `python -m foodtech_business_api.withdrawal_identity_worker`다. 별도 역할에서 `FOODTECH_WITHDRAWAL_IDENTITY_WORKER_ENABLED=true`, 같은 stage의 `FOODTECH_AUTH_TABLE=foodtech-auth-sessions-<stage>`·`FOODTECH_DELETION_REGISTRY_TABLE=foodtech-deletion-registry-<stage>`, `FOODTECH_COGNITO_USER_POOL_ID=ap-southeast-2_<pool>`를 명시해야 한다. 기본적으로 비활성이고 설정 오류는 AWS 클라이언트 생성 전에 종료 코드 2로 거부한다. 실행은 현재의 초기화 제어 항목을 읽기만 하며 자동 준비·세대 초기화를 하지 않는다. 실행 역할의 단기 자격증명을 사용하고 특정 개발 프로파일이나 고객·API 자격증명을 내장하지 않는다.
+
+한 번의 순회는 `FOODTECH_WITHDRAWAL_IDENTITY_PAGE_SIZE`(기본 20, 최대 100)와 `FOODTECH_WITHDRAWAL_IDENTITY_MAX_PAGES`(기본 1000, 최대 10000)로 제한한다. 빈 중간 페이지도 계속 처리하고 커서 반복·한도 초과·조회 실패는 비정상 종료한다. 후보의 차단·불확실한 결과를 합산해 하나라도 있으면 종료 코드 1을 반환한다. 출력에는 건수와 순회 종료 여부만 포함하고 주체·요청·커서를 넣지 않는다. `scan_finished=true`나 정상 종료는 신원 제거의 해당 순회 결과이며 전체 삭제 완료가 아니다. 결과의 `deletion_complete`는 항상 false다. 중단 뒤에는 새 순회로 현재 잠금·부재를 다시 확인한다.
+
+기존 `combi-refresh-worker` 빌드 산출물에는 같은 업무 패키지가 포함되므로 별도 Task의 명령을 `python -m foodtech_business_api.withdrawal_identity_worker`로 지정해 사용할 수 있다. 명령·역할·예약 작업은 재집계 작업과 분리해야 한다. CI는 이 이미지에서 새 모듈 로드와 설정 없는 실행의 거부를 검사한다. 이 변경은 이미지를 배포하거나 작업을 실행하지 않는다. 로컬에서는 Docker가 없어 이미지 검증을 CI에 맡기며, 실제 Cognito 시험은 앞서 기재한 일회용 계정의 단건 경계에 한정한다.
 
 ### 동일 이메일의 새 주체 분리 실검증
 
