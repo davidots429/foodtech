@@ -30,6 +30,9 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCredentialVault-dev --strict -c provisionCredentialVault=true -c credentialKeyPeriod=2026-11 --output /tmp/foodtech-credential-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_gateway_policy.py /tmp/foodtech-credential-cdk/FoodtechCredentialVault-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechPrivacyStorage-dev --strict -c provisionPrivacyStorage=true --output /tmp/foodtech-privacy-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_privacy_storage.py /tmp/foodtech-privacy-cdk/FoodtechPrivacyStorage-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCookingJobs-dev --strict -c provisionCookingJobs=true --output /tmp/foodtech-cooking-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_meal_refresh_index.py /tmp/foodtech-cooking-cdk/FoodtechCookingJobs-dev.template.json
@@ -50,6 +53,7 @@ jobs:
       - run: uv run --no-sync python -m unittest discover -s apps/business-api/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/credential-registration/tests -v
+      - run: uv run --no-sync python -m unittest discover -s apps/capsule-crypto/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/collection-adapter/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/standardization-worker/tests -v
       - run: uv run --no-sync python -m unittest discover -s tests/security -v

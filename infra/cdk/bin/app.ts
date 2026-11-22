@@ -33,6 +33,48 @@ class AuthSessionsStack extends Stack {
   }
 }
 
+// Storage only: scoped identity/deletion/recovery roles and service deployment
+// must be designed and verified before any of these resources are used.
+class PrivacyStorageStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps) {
+    super(scope, id, props);
+    const key = (name: string, description: string) => new kms.Key(this, `${name}Key`, {
+      description, enableKeyRotation: true, removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const vaultKey = key("IdentityVaultStorage", "Identity Vault DynamoDB encryption");
+    const capsuleKey = key("LinkCapsuleStorage", "Link Capsule DynamoDB encryption");
+    const registryKey = key("DeletionRegistryStorage", "Deletion Registry DynamoDB encryption");
+    const progressStorageKey = key("DeletionProgressStorage", "Deletion progress DynamoDB encryption");
+    const progressEnvelopeKey = key("DeletionProgressEnvelope", "Deletion progress checkpoint envelope encryption");
+    // This key protects registry locator ciphertext, independently of table SSE.
+    // Its KMS permissions are intentionally not granted to any service here.
+    const locatorKey = key("DeletionLocator", "Deletion Registry locator envelope encryption");
+    const table = (id: string, tableName: string, encryptionKey: kms.Key, ttl?: string) =>
+      new dynamodb.Table(this, id, {
+        tableName,
+        partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+        sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+        encryptionKey,
+        pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true, recoveryPeriodInDays: 7 },
+        deletionProtection: true,
+        timeToLiveAttribute: ttl,
+        removalPolicy: RemovalPolicy.RETAIN,
+      });
+    const vault = table("IdentityVault", `foodtech-identity-vault-${stage}`, vaultKey);
+    const capsule = table("LinkCapsule", `foodtech-link-capsule-${stage}`, capsuleKey);
+    const registry = table("DeletionRegistry", `foodtech-deletion-registry-${stage}`, registryKey, "ttl_delete_after");
+    const progress = table("DeletionProgress", `foodtech-deletion-progress-${stage}`, progressStorageKey);
+    new CfnOutput(this, "IdentityVaultTableName", { value: vault.tableName });
+    new CfnOutput(this, "LinkCapsuleTableName", { value: capsule.tableName });
+    new CfnOutput(this, "DeletionRegistryTableName", { value: registry.tableName });
+    new CfnOutput(this, "DeletionLocatorKeyArn", { value: locatorKey.keyArn });
+    new CfnOutput(this, "DeletionProgressTableName", { value: progress.tableName });
+    new CfnOutput(this, "DeletionProgressEnvelopeKeyArn", { value: progressEnvelopeKey.keyArn });
+  }
+}
+
 // Opt-in key: the API execution role and deployment are configured separately.
 class AuthRefreshKeyStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps) {
@@ -855,6 +897,10 @@ class CollectionImagePublishingStack extends Stack {
 
 const sessions = new AuthSessionsStack(app, `FoodtechAuthSessions-${stage}`, { env });
 Tags.of(sessions).add("Project", "foodtech");
+if (app.node.tryGetContext("provisionPrivacyStorage") === "true") {
+  const privacy = new PrivacyStorageStack(app, `FoodtechPrivacyStorage-${stage}`, { env, terminationProtection: true });
+  Tags.of(privacy).add("Project", "foodtech");
+}
 if (app.node.tryGetContext("provisionAuthRefreshKey") === "true") {
   const refreshKey = new AuthRefreshKeyStack(app, `FoodtechAuthRefreshKey-${stage}`, { env });
   Tags.of(refreshKey).add("Project", "foodtech");
