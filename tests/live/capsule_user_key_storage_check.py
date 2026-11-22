@@ -58,13 +58,30 @@ def main():
             expected_revision=3), {"Put": {"TableName": DATA_TABLE,
             "Item": {name: serializer.serialize(value) for name, value in marker.items()},
             "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}}])
-        meta = table.get_item(Key={"pk": locator, "sk": "META"}, ConsistentRead=True)["Item"]
-        stored_key = UserKeyRecord(meta["user_key_id"], meta["pool_version"], meta["shard_id"],
-                                   meta["key_arn"], bytes(meta["encrypted_user_dek"]))
+        def change_wrapped_key(*_):
+            table.update_item(Key={"pk": locator, "sk": "META"},
+                              UpdateExpression="SET encrypted_user_dek = :changed",
+                              ConditionExpression=Attr("deletion_request_id").eq(request_id),
+                              ExpressionAttributeValues={":changed": b"synthetic-changed-key"})
+        try:
+            inventory.stage(locator, request_id, change_wrapped_key)
+        except CapsuleInventoryError:
+            pass
+        else:
+            raise AssertionError("Changed wrapped key was returned as stable")
+        table.update_item(Key={"pk": locator, "sk": "META"},
+                          UpdateExpression="SET encrypted_user_dek = :key",
+                          ConditionExpression=Attr("deletion_request_id").eq(request_id),
+                          ExpressionAttributeValues={":key": record.encrypted_dek})
         staged = []
         result = inventory.stage(locator, request_id, lambda sk, payload, metadata: staged.append((sk, payload, metadata)))
         if result.entry_count != 1 or result.revision != 4 or staged[0][0] != "ENTRY#BILLING#2026-11":
             raise AssertionError("Unexpected Capsule inventory")
+        wrapped = result.wrapped_user_key
+        if wrapped is None:
+            raise AssertionError("Stable inventory did not return wrapped key")
+        stored_key = UserKeyRecord(wrapped.user_key_id, wrapped.pool_version, wrapped.shard_id,
+                                   wrapped.key_arn, wrapped.encrypted_dek)
         _, ciphertext, metadata = staged[0]
         user_key_id = metadata.pop("user_key_id")
         stored_entry = UserEntryEnvelope(user_key_id, Envelope(**metadata, ciphertext=ciphertext))
@@ -87,7 +104,7 @@ def main():
     finally:
         remove_partition(table, locator)
         remove_partition(table, marker_pk)
-    print(json.dumps({"wrapped_user_key_storage": "verified", "capsule_entry_round_trip": "verified",
+    print(json.dumps({"wrapped_user_key_storage": "verified", "changed_wrapped_key_rejected": "verified", "capsule_entry_round_trip": "verified",
                       "partial_key_removal_rejected": "verified", "cleanup": "verified"}))
 
 
