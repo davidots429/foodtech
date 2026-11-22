@@ -56,7 +56,9 @@ async def discover(request, job_id: str) -> dict:
                 return listed_id, row
         return dict(await asyncio.gather(*(read_one(listed_id) for listed_id in roster)))
     snapshots = await read_roster()
-    if any(not row or row.get("job_id") != listed_id or type(row.get("version")) is not int
+    if any(not isinstance(row, dict) or row.get("job_id") != listed_id or
+           row.get("owner_subject") != session.subject or type(row.get("version")) is not int or
+           not 1 <= row["version"] < 2**63
            for listed_id, row in snapshots.items()):
         return {"status": "HISTORY_INCOMPLETE", "candidate": None, "immediately_previous_verified": False}
     if snapshots[job_id] != job:

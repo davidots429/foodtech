@@ -56,6 +56,15 @@ async def run() -> None:
                 if (candidate["status"], candidate["candidate"]["job_id"],
                         candidate["immediately_previous_verified"]) != ("CANDIDATE", ids[0], False):
                     raise AssertionError("Unexpected prior job candidate")
+                prior_key = {"pk": keys[0], "sk": "META"}
+                await asyncio.to_thread(table.update_item, Key=prior_key,
+                    UpdateExpression="SET owner_subject = :other", ExpressionAttributeValues={":other": "synthetic-other"})
+                foreign = await client.get(f"/api/customer/cooking-jobs/{ids[1]}/prior-job-candidate")
+                foreign.raise_for_status()
+                if foreign.json()["status"] != "HISTORY_INCOMPLETE" or foreign.json()["candidate"] is not None:
+                    raise AssertionError("Mismatched prior owner was accepted")
+                await asyncio.to_thread(table.update_item, Key=prior_key,
+                    UpdateExpression="SET owner_subject = :owner", ExpressionAttributeValues={":owner": subject})
                 result = await client.get(f"/api/customer/cooking-jobs/{ids[1]}/recommendation-evidence",
                                           params={"prior_job_id": ids[0]})
                 result.raise_for_status()

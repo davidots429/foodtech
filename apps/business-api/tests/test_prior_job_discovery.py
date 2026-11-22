@@ -120,3 +120,14 @@ class PriorDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             return original(pk)
         with patch.object(self.store, "read_meta", side_effect=changing):
             self.assertEqual((await self.client.get(self.path)).status_code, 409)
+
+    async def test_foreign_owner_or_invalid_version_in_roster_is_not_a_candidate(self):
+        original = self.meta(self.failed).copy()
+        for changes in ({'owner_subject': 'other'}, {'version': 0}, {'version': True}, {'version': 2**63}):
+            with self.subTest(changes=changes):
+                self.meta(self.failed).update(changes)
+                response = await self.client.get(self.path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['status'], 'HISTORY_INCOMPLETE')
+                self.assertIsNone(response.json()['candidate'])
+                self.meta(self.failed).update(original)
