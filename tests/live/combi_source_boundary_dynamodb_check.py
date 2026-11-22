@@ -22,7 +22,7 @@ async def scenario(store, partitions):
     subject = 'synthetic-source-boundary-' + uuid.uuid4().hex
     ids = [uuid.uuid4() for _ in range(4)]
     pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{ids[0]}'
-    partitions.extend((pk, pk + '#LIVE', pk + '#SOURCE'))
+    partitions.extend((pk, pk + '#LIVE', pk + '#SOURCE', f'SCOPE#USER#{subject}#COMBI_MEALS'))
     async def session(_request, surface):
         assert surface == 'customer'
         return Session('customer', subject, None, 'test-csrf', 9999999999, 0)
@@ -105,7 +105,7 @@ async def main():
     session = boto3.Session(profile_name='foodtech', region_name='ap-southeast-2')
     if session.client('sts').get_caller_identity()['Account'] != '573693340100':
         raise SystemExit('Unexpected AWS account')
-    store = DynamoCookingStore(TABLE)
+    store = DynamoCookingStore(TABLE, "foodtech-auth-sessions-dev")
     partitions = []
     try:
         result = await scenario(store, partitions)

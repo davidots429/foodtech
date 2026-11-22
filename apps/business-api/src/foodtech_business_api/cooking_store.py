@@ -19,6 +19,22 @@ class Conflict(Exception):
     pass
 
 
+def _profile_listing(subject: str, profile: dict) -> dict:
+    profile_id, version = profile["profile_id"], profile["profile_version"]
+    if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", value)
+           for value in (profile_id, version)):
+        raise ValueError("invalid profile reference")
+    return {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILES", "sk": f"PROFILE#{profile_id}#VERSION#{version}",
+            "profile_id": profile_id, "profile_version": version}
+
+
+def _profile_page_args(limit: int, cursor: str | None) -> None:
+    if type(limit) is not int or not 1 <= limit <= 100 or (cursor is not None and
+            (not isinstance(cursor, str) or not re.fullmatch(
+                r"PROFILE#[A-Za-z0-9][A-Za-z0-9._:-]{0,79}#VERSION#[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", cursor))):
+        raise ValueError("invalid profile inventory page")
+
+
 def _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch):
     if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
             type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63 or \
@@ -98,6 +114,34 @@ def _history_pk(job_pk: str) -> str:
     return prefix + "#JOBS"
 
 
+
+def _meal_subject(pk: str) -> str:
+    prefix, separator, meal_id = pk.rpartition("#COMBI_MEAL#")
+    if not separator or not prefix.startswith("SCOPE#USER#") or not meal_id:
+        raise ValueError("invalid scoped meal key")
+    subject = prefix.removeprefix("SCOPE#USER#")
+    if not subject:
+        raise ValueError("invalid meal owner")
+    return subject
+
+
+def _meal_listing(pk: str, records: list[dict]) -> dict:
+    subject = _meal_subject(pk)
+    meal_id = pk.rpartition('#COMBI_MEAL#')[2]
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', meal_id):
+        raise ValueError('invalid meal id')
+    meta = [row for row in records if row.get('sk') == 'META']
+    if len(meta) != 1 or meta[0].get('meal_batch_id') != meal_id:
+        raise ValueError('meal scope and metadata do not match')
+    return {'pk': f'SCOPE#USER#{subject}#COMBI_MEALS', 'sk': f'MEAL#{meal_id}', 'meal_batch_id': meal_id}
+
+
+def _meal_page_args(subject: str, limit: int, cursor: str | None) -> None:
+    if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
+            type(limit) is not int or not 1 <= limit <= 100 or (cursor is not None and
+            (not isinstance(cursor, str) or not re.fullmatch(r'MEAL#[A-Za-z0-9_-]{1,128}', cursor))):
+        raise ValueError('invalid meal inventory page')
+
 def _history_number(item: dict | None) -> int | None:
     if item is None:
         return None
@@ -117,7 +161,7 @@ def _history_relevant(event: dict | None) -> bool:
 
 
 def _evidence_snapshot_inputs(pk: str, expected_version: int, snapshot: dict,
-                              source_table: str, revision: int, receipt: dict) -> None:
+                              source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None:
     _history_pk(pk)
     if type(expected_version) is not int or expected_version < 1 or type(revision) is not int or revision < 1 or \
             not isinstance(source_table, str) or not re.fullmatch(r"foodtech-data-flow-[a-z0-9-]{1,32}", source_table):
@@ -169,14 +213,18 @@ def _api_numbers(value):
 
 
 class CookingStore(Protocol):
-    def create_condition_profile(self, subject: str, profile: dict) -> None: ...
+    def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None: ...
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None: ...
+    def list_condition_profile_refs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
+    def ensure_condition_profile_listed(self, subject: str, profile_id: str, version: str) -> None: ...
     def validation_evidence_snapshots(self, pk: str) -> list[dict]: ...
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
-                                 source_table: str, revision: int, receipt: dict) -> None: ...
+                                 source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None: ...
     def customer_restatement(self, pk: str, request_id: str) -> dict | None: ...
-    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict: ...
-    def create_meal(self, pk: str, records: list[dict]) -> None: ...
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict: ...
+    def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None: ...
+    def list_meal_refs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
+    def ensure_meal_listed(self, subject: str, meal_id: str) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
     def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict,
                             subject: str, expected_epoch: int) -> dict: ...
@@ -186,28 +234,28 @@ class CookingStore(Protocol):
     def checkpoint_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int, expected_cursor: str | None, next_cursor: str) -> None: ...
     def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int, expected_cursor: str | None = None) -> None: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
-                     step: dict, event: dict) -> None: ...
+                     step: dict, event: dict, expected_epoch: int = 0) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict], live_count: int | None = None) -> None: ...
+                           event: dict, chunks: list[dict], live_count: int | None = None, expected_epoch: int = 0) -> None: ...
     def read_meal_source_chunk(self, pk: str, index: int) -> dict | None: ...
     def read_meal_live(self, pk: str) -> dict | None: ...
     def read_meal_live_chunk(self, pk: str, start: int) -> dict | None: ...
     def read_meal_live_chunks(self, pk: str) -> list[dict]: ...
-    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None: ...
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict, expected_epoch: int = 0) -> None: ...
     def read(self, pk: str) -> tuple[dict | None, dict | None]: ...
     def read_meta(self, pk: str) -> dict | None: ...
     def process_pointer(self, pk: str) -> dict | None: ...
     def latest_process_result(self, pk: str) -> dict | None: ...
-    def create(self, pk: str, meta: dict) -> None: ...
+    def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None: ...
     def list_jobs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def history_revision(self, subject: str) -> int | None: ...
     def ensure_listed(self, pk: str, meta: dict) -> None: ...
-    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None: ...
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str, expected_epoch: int = 0) -> None: ...
     def create_recook(self, parent_pk: str, expected_parent_version: int,
-                      new_pk: str, meta: dict) -> None: ...
+                      new_pk: str, meta: dict, expected_epoch: int = 0) -> None: ...
     def commit(self, pk: str, expected_version: int, meta: dict,
                assessment: dict | None = None, pointer: dict | None = None,
-               event: dict | None = None) -> None: ...
+               event: dict | None = None, expected_epoch: int = 0) -> None: ...
     def assessments(self, pk: str) -> list[dict]: ...
     def events(self, pk: str) -> list[dict]: ...
     def assessment(self, pk: str, version: int) -> dict | None: ...
@@ -219,14 +267,14 @@ class CookingStore(Protocol):
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
-                        record: dict) -> dict: ...
+                        record: dict, expected_epoch: int | None = None) -> dict: ...
     def aggregate(self, pk: str, result_id: str) -> dict | None: ...
     def list_aggregate_results(self, pk: str, limit: int, cursor: str | None) -> dict: ...
     def aggregate_dependencies(self, job_pk: str) -> list[dict]: ...
     def list_aggregate_dependencies(self, job_pk: str, limit: int, cursor: str | None) -> dict: ...
     def current_aggregate(self, pk: str) -> dict | None: ...
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
-                       record: dict) -> dict: ...
+                       record: dict, expected_epoch: int | None = None) -> dict: ...
 
 
 class MemoryCookingStore:
@@ -237,12 +285,15 @@ class MemoryCookingStore:
         self.validation_sources: dict[tuple[str, str], dict] = {}
         self.lock = threading.RLock()
 
-    def create_condition_profile(self, subject: str, profile: dict) -> None:
+    def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None:
         key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}", f"VERSION#{profile['profile_version']}")
+        listing = _profile_listing(subject, profile)
+        list_key = (listing["pk"], listing["sk"])
         with self.lock:
-            if key in self.items:
+            if key in self.items or list_key in self.items:
                 raise Conflict
             self.items[key] = {"pk": key[0], "sk": key[1], **profile}
+            self.items[list_key] = listing
 
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None:
         key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", f"VERSION#{version}")
@@ -250,8 +301,31 @@ class MemoryCookingStore:
             value = self.items.get(key)
             return value.copy() if value else None
 
+    def list_condition_profile_refs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _profile_page_args(limit, cursor)
+        pk = f"SCOPE#USER#{subject}#CONDITION_PROFILES"
+        with self.lock:
+            rows = sorted((sk, item) for (row_pk, sk), item in self.items.items()
+                          if row_pk == pk and sk.startswith("PROFILE#") and (cursor is None or sk > cursor))
+            page = rows[:limit]
+            return {"items": [{"profile_id": item["profile_id"], "profile_version": item["profile_version"]}
+                              for _, item in page], "next_cursor": page[-1][0] if len(rows) > limit else None}
+
+    def ensure_condition_profile_listed(self, subject: str, profile_id: str, version: str) -> None:
+        listing = _profile_listing(subject, {"profile_id": profile_id, "profile_version": version})
+        source_key = (f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", f"VERSION#{version}")
+        list_key = (listing["pk"], listing["sk"])
+        with self.lock:
+            source, existing = self.items.get(source_key), self.items.get(list_key)
+            if not source or source.get("profile_id") != profile_id or source.get("profile_version") != version or \
+                    (existing is not None and (existing.get("profile_id") != profile_id or
+                                               existing.get("profile_version") != version)):
+                raise Conflict
+            if existing is None:
+                self.items[list_key] = listing
+
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
-                                 source_table: str, revision: int, receipt: dict) -> None:
+                                 source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None:
         _evidence_snapshot_inputs(pk, expected_version, snapshot, source_table, revision, receipt)
         with self.lock:
             job = self.items.get((pk, "META"))
@@ -277,7 +351,7 @@ class MemoryCookingStore:
             value = self.items.get((pk, f"RESTATEMENT#REQUEST#{request_id}"))
             return value.copy() if value else None
 
-    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict:
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict:
         key = (pk, request["sk"])
         with self.lock:
             existing = self.items.get(key)
@@ -293,12 +367,38 @@ class MemoryCookingStore:
             self.items[key] = {"pk": pk, **request}
             return self.items[key].copy()
 
-    def create_meal(self, pk: str, records: list[dict]) -> None:
+    def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None:
+        listing = _meal_listing(pk, records)
+        listing_key = (listing['pk'], listing['sk'])
         with self.lock:
-            if any((pk, row["sk"]) in self.items for row in records):
+            if listing_key in self.items or any((pk, row["sk"]) in self.items for row in records):
                 raise Conflict
             for row in records:
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
+            self.items[listing_key] = listing
+
+    def list_meal_refs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _meal_page_args(subject, limit, cursor)
+        with self.lock:
+            pk = f'SCOPE#USER#{subject}#COMBI_MEALS'
+            rows = [row for (item_pk, sk), row in sorted(self.items.items())
+                    if item_pk == pk and sk.startswith('MEAL#') and (cursor is None or sk > cursor)]
+            page = rows[:limit]
+            return {'items': [{'meal_batch_id': row['meal_batch_id']} for row in page],
+                    'next_cursor': page[-1]['sk'] if len(rows) > limit else None}
+
+    def ensure_meal_listed(self, subject: str, meal_id: str) -> None:
+        _meal_page_args(subject, 1, None)
+        pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}'
+        listing = _meal_listing(pk, [{'sk': 'META', 'meal_batch_id': meal_id}])
+        listing_key = (listing['pk'], listing['sk'])
+        with self.lock:
+            source, current = self.items.get((pk, 'META')), self.items.get(listing_key)
+            if not source or source.get('meal_batch_id') != meal_id or \
+                    (current is not None and current.get('meal_batch_id') != meal_id):
+                raise Conflict
+            if current is None:
+                self.items[listing_key] = listing
 
     def read_meal(self, pk: str) -> list[dict]:
         with self.lock:
@@ -374,7 +474,7 @@ class MemoryCookingStore:
             del self.items[(pk, 'MEAL_AGGREGATE#DIRTY')]
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
-                     step: dict, event: dict) -> None:
+                     step: dict, event: dict, expected_epoch: int = 0) -> None:
         dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         with self.lock:
             current = self.items.get((pk, "META"))
@@ -386,7 +486,7 @@ class MemoryCookingStore:
             self.items[(pk, dirty['sk'])] = {'pk': pk, **dirty}
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict], live_count: int | None = None) -> None:
+                           event: dict, chunks: list[dict], live_count: int | None = None, expected_epoch: int = 0) -> None:
         dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         source_pk = pk + "#SOURCE"
         with self.lock:
@@ -422,7 +522,7 @@ class MemoryCookingStore:
             return [row.copy() for (item_pk, sk), row in sorted(self.items.items())
                     if item_pk == pk + "#LIVE" and sk.startswith("CHUNK#")]
 
-    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None:
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict, expected_epoch: int = 0) -> None:
         with self.lock:
             meal = self.items.get((pk, "META"))
             current = self.items.get((pk + "#LIVE", "META"))
@@ -467,7 +567,7 @@ class MemoryCookingStore:
         with self.lock:
             return _history_number(self.items.get((f"SCOPE#USER#{subject}#JOBS", "HISTORY#REVISION")))
 
-    def create(self, pk: str, meta: dict) -> None:
+    def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None:
         with self.lock:
             listing = _job_list_item(pk, meta)
             list_key = (listing["pk"], listing["sk"])
@@ -492,14 +592,16 @@ class MemoryCookingStore:
     def ensure_listed(self, pk: str, meta: dict) -> None:
         with self.lock:
             listing = _job_list_item(pk, meta)
-            if (pk, "META") not in self.items:
+            source = self.items.get((pk, "META"))
+            if not source or any(source.get(field) != meta.get(field) for field in
+                                 ("owner_subject", "job_id", "created_at")):
                 raise Conflict
             key = (listing["pk"], listing["sk"])
             if key not in self.items:
                 self._advance_history(pk)
                 self.items[key] = listing
 
-    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str, expected_epoch: int = 0) -> None:
         with self.lock:
             current = self.items.get((pk, "META"))
             if not current or current["version"] != expected_version or (stream_pk, "BINDING") in self.items:
@@ -510,7 +612,9 @@ class MemoryCookingStore:
                                                    "job_id": meta["job_id"]}
 
     def create_recook(self, parent_pk: str, expected_parent_version: int,
-                      new_pk: str, meta: dict) -> None:
+                      new_pk: str, meta: dict, expected_epoch: int = 0) -> None:
+        if _history_pk(parent_pk) != _history_pk(new_pk):
+            raise ValueError('recook owner mismatch')
         with self.lock:
             parent = self.items.get((parent_pk, "META"))
             listing = _job_list_item(new_pk, meta)
@@ -524,7 +628,7 @@ class MemoryCookingStore:
 
     def commit(self, pk: str, expected_version: int, meta: dict,
                assessment: dict | None = None, pointer: dict | None = None,
-               event: dict | None = None) -> None:
+               event: dict | None = None, expected_epoch: int = 0) -> None:
         with self.lock:
             current = self.items.get((pk, "META"))
             if not current or current["version"] != expected_version:
@@ -603,7 +707,7 @@ class MemoryCookingStore:
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
-                        record: dict) -> dict:
+                        record: dict, expected_epoch: int | None = None) -> dict:
         with self.lock:
             key = (candidate_pk, f"COMPARISON#{record['comparison_id']}")
             for pk, meta, pointer in ((baseline_pk, baseline_meta, baseline_pointer),
@@ -675,7 +779,7 @@ class MemoryCookingStore:
             return pointer.copy() if pointer else None
 
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
-                       record: dict) -> dict:
+                       record: dict, expected_epoch: int | None = None) -> dict:
         with self.lock:
             for job_pk, meta, pointer, process_pointer in snapshots:
                 current_meta = self.items.get((job_pk, "META"))
@@ -707,22 +811,84 @@ class MemoryCookingStore:
 
 
 class DynamoCookingStore:
-    def __init__(self, table_name: str) -> None:
+    def __init__(self, table_name: str, auth_table_name: str | None = None) -> None:
         import boto3
 
         session = boto3.Session(region_name="ap-southeast-2")
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
-        self.auth_table_name = os.getenv('FOODTECH_AUTH_TABLE', '')
+        self.auth_table_name = auth_table_name or os.getenv("FOODTECH_AUTH_TABLE", "")
 
-    def create_condition_profile(self, subject: str, profile: dict) -> None:
+    def _owner_guard(self, subject: str, expected_epoch: int) -> dict:
+        if not getattr(self, 'auth_table_name', '') or type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63:
+            raise ValueError('authentication table and valid epoch are required')
+        return {"ConditionCheck": {"TableName": self.auth_table_name,
+                    "Key": self._item({"pk": f"USER#{subject}"}),
+                    "ConditionExpression": "attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) "
+                        "AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+                    "ExpressionAttributeNames": {"#epoch": "epoch"},
+                    "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}}
+
+    def _derived_owner_guard(self, subject: str, expected_epoch: int | None) -> dict:
+        if expected_epoch is not None:
+            return self._owner_guard(subject, expected_epoch)
+        if not getattr(self, 'auth_table_name', ''):
+            raise ValueError('authentication table is required')
+        return {"ConditionCheck": {"TableName": self.auth_table_name, "Key": self._item({"pk": f"USER#{subject}"}),
+            "ConditionExpression": "attribute_exists(pk) AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
+            "ExpressionAttributeValues": self._item({":false": False})}}
+
+    def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None:
+        guard = self._owner_guard(subject, expected_epoch)
         item = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}",
                 "sk": f"VERSION#{profile['profile_version']}", **profile}
+        listing = _profile_listing(subject, profile)
         try:
-            self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
-        except self.client.exceptions.ConditionalCheckFailedException as exc:
-            raise Conflict from exc
+            self.client.transact_write_items(TransactItems=[
+                guard,
+                {"Put": {"TableName": self.table.name, "Item": self._item(item),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+                {"Put": {"TableName": self.table.name, "Item": self._item(listing),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
+            raise
+
+    def list_condition_profile_refs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _profile_page_args(limit, cursor)
+        pk = f"SCOPE#USER#{subject}#CONDITION_PROFILES"
+        args = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with("PROFILE#"),
+                "ConsistentRead": True, "Limit": limit}
+        if cursor is not None:
+            args["ExclusiveStartKey"] = {"pk": pk, "sk": cursor}
+        page = self.table.query(**args)
+        return {"items": [{"profile_id": item["profile_id"], "profile_version": item["profile_version"]}
+                          for item in page.get("Items", [])],
+                "next_cursor": page.get("LastEvaluatedKey", {}).get("sk")}
+
+    def ensure_condition_profile_listed(self, subject: str, profile_id: str, version: str) -> None:
+        listing = _profile_listing(subject, {"profile_id": profile_id, "profile_version": version})
+        source_key = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", "sk": f"VERSION#{version}"}
+        list_key = {"pk": listing["pk"], "sk": listing["sk"]}
+        values = self._item({":id": profile_id, ":version": version})
+        try:
+            self.client.transact_write_items(TransactItems=[
+                self._derived_owner_guard(subject, None),
+                {"ConditionCheck": {"TableName": self.table.name, "Key": self._item(source_key),
+                    "ConditionExpression": "profile_id = :id AND profile_version = :version",
+                    "ExpressionAttributeValues": values}},
+                {"Update": {"TableName": self.table.name, "Key": self._item(list_key),
+                    "UpdateExpression": "SET profile_id = :id, profile_version = :version",
+                    "ConditionExpression": "attribute_not_exists(pk) OR (profile_id = :id AND profile_version = :version)",
+                    "ExpressionAttributeValues": values}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
+            raise
 
     def condition_profile(self, subject: str, profile_id: str, version: str) -> dict | None:
         key = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile_id}", "sk": f"VERSION#{version}"}
@@ -734,7 +900,7 @@ class DynamoCookingStore:
                                    ConsistentRead=True).get("Item")
         return _api_numbers(item)
 
-    def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict:
+    def create_customer_restatement(self, pk: str, expected_version: int, request: dict, expected_epoch: int = 0) -> dict:
         def existing_or_conflict():
             value = self.customer_restatement(pk, request["request_id"])
             if not value or any(value.get(field) != request.get(field) for field in
@@ -744,8 +910,11 @@ class DynamoCookingStore:
 
         if self.customer_restatement(pk, request["request_id"]):
             return existing_or_conflict()
+        subject = _history_pk(pk).removeprefix("SCOPE#USER#").removesuffix("#JOBS")
+        guard = self._owner_guard(subject, expected_epoch)
         try:
             self._history_transact([
+                guard,
                 {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
                     "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
                     "ExpressionAttributeValues": self._item({":v": expected_version})}},
@@ -754,22 +923,61 @@ class DynamoCookingStore:
                 self._history_update(pk),
             ])
         except self.client.exceptions.TransactionCanceledException as exc:
-            if any(reason.get("Code") == "ConditionalCheckFailed" for reason in
-                   exc.response.get("CancellationReasons", [])):
+            reasons = exc.response.get("CancellationReasons", [])
+            codes = [reason.get("Code") for reason in reasons]
+            if len(codes) == 4 and codes[2] == "ConditionalCheckFailed" and all(
+                    code in (None, "None") for index, code in enumerate(codes) if index != 2):
                 return existing_or_conflict()
+            if _is_transaction_contention(exc):
+                raise Conflict from exc
             raise
         return {"pk": pk, **request}
 
-    def create_meal(self, pk: str, records: list[dict]) -> None:
-        operations = [{"Put": {"TableName": self.table.name,
+    def create_meal(self, pk: str, records: list[dict], expected_epoch: int = 0) -> None:
+        listing = _meal_listing(pk, records)
+        operations = [self._owner_guard(_meal_subject(pk), expected_epoch)] + [{"Put": {"TableName": self.table.name,
                                 "Item": self._item({"pk": pk, **row}),
                                 "ConditionExpression": "attribute_not_exists(pk)"}}
                       for row in records]
+        operations.append({'Put': {'TableName': self.table.name, 'Item': self._item(listing),
+                                    'ConditionExpression': 'attribute_not_exists(pk)'}})
         try:
             self.client.transact_write_items(TransactItems=operations)
         except self.client.exceptions.TransactionCanceledException as exc:
             if any(reason.get("Code") == "ConditionalCheckFailed"
                    for reason in exc.response.get("CancellationReasons", [])):
+                raise Conflict from exc
+            raise
+
+    def list_meal_refs(self, subject: str, limit: int, cursor: str | None) -> dict:
+        _meal_page_args(subject, limit, cursor)
+        pk = f'SCOPE#USER#{subject}#COMBI_MEALS'
+        args = {'KeyConditionExpression': Key('pk').eq(pk) & Key('sk').begins_with('MEAL#'),
+                'ConsistentRead': True, 'Limit': limit}
+        if cursor is not None:
+            args['ExclusiveStartKey'] = {'pk': pk, 'sk': cursor}
+        page = self.table.query(**args)
+        return {'items': [{'meal_batch_id': item['meal_batch_id']} for item in page.get('Items', [])],
+                'next_cursor': page.get('LastEvaluatedKey', {}).get('sk')}
+
+    def ensure_meal_listed(self, subject: str, meal_id: str) -> None:
+        _meal_page_args(subject, 1, None)
+        pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}'
+        listing = _meal_listing(pk, [{'sk': 'META', 'meal_batch_id': meal_id}])
+        values = self._item({':id': meal_id})
+        try:
+            self.client.transact_write_items(TransactItems=[
+                self._derived_owner_guard(subject, None),
+                {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'META'}),
+                                    'ConditionExpression': 'meal_batch_id = :id', 'ExpressionAttributeValues': values}},
+                {'Update': {'TableName': self.table.name,
+                            'Key': self._item({'pk': listing['pk'], 'sk': listing['sk']}),
+                            'UpdateExpression': 'SET meal_batch_id = :id',
+                            'ConditionExpression': 'attribute_not_exists(pk) OR meal_batch_id = :id',
+                            'ExpressionAttributeValues': values}},
+            ])
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
@@ -920,9 +1128,10 @@ class DynamoCookingStore:
             raise
 
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
-                     step: dict, event: dict) -> None:
+                     step: dict, event: dict, expected_epoch: int = 0) -> None:
         dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         operations = [
+            self._owner_guard(_meal_subject(pk), expected_epoch),
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected",
                      "ExpressionAttributeNames": {"#v": "version"},
@@ -942,9 +1151,10 @@ class DynamoCookingStore:
             raise
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
-                           event: dict, chunks: list[dict], live_count: int | None = None) -> None:
+                           event: dict, chunks: list[dict], live_count: int | None = None, expected_epoch: int = 0) -> None:
         dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         operations = [
+            self._owner_guard(_meal_subject(pk), expected_epoch),
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected", "ExpressionAttributeNames": {"#v": "version"},
                      "ExpressionAttributeValues": {":expected": {"N": str(expected_version)}}}},
@@ -997,7 +1207,7 @@ class DynamoCookingStore:
             if not start_key:
                 return _api_numbers(items)
 
-    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict) -> None:
+    def append_meal_live(self, pk: str, expected: int, state: dict, chunk: dict, expected_epoch: int = 0) -> None:
         condition = "attribute_not_exists(pk)" if expected == 0 else "#count = :expected"
         live_put = {"TableName": self.table.name, "Item": self._item({"pk": pk + "#LIVE", **state}),
                     "ConditionExpression": condition}
@@ -1005,6 +1215,7 @@ class DynamoCookingStore:
             live_put["ExpressionAttributeNames"] = {"#count": "count"}
             live_put["ExpressionAttributeValues"] = {":expected": {"N": str(expected)}}
         operations = [
+            self._owner_guard(_meal_subject(pk), expected_epoch),
             {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
                                 "ConditionExpression": "attribute_exists(pk) AND attribute_not_exists(#source)",
                                 "ExpressionAttributeNames": {"#source": "source"}}},
@@ -1078,12 +1289,14 @@ class DynamoCookingStore:
             "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}}
 
     def save_validation_evidence(self, pk: str, expected_version: int, snapshot: dict,
-                                 source_table: str, revision: int, receipt: dict) -> None:
+                                 source_table: str, revision: int, receipt: dict, expected_epoch: int = 0) -> None:
         _evidence_snapshot_inputs(pk, expected_version, snapshot, source_table, revision, receipt)
         stream_pk = receipt["pk"]
         profile = snapshot["condition_profile_reference"]
         owner_prefix = _history_pk(pk).removesuffix("#JOBS")
+        subject = owner_prefix.removeprefix("SCOPE#USER#")
         operations = [
+            self._owner_guard(subject, expected_epoch),
             {"ConditionCheck": {"TableName": self.table.name, "Key": self._item({"pk": pk, "sk": "META"}),
                                 "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
                                 "ExpressionAttributeValues": {":v": {"N": str(expected_version)}}}},
@@ -1134,10 +1347,12 @@ class DynamoCookingStore:
                                    ConsistentRead=True).get("Item")
         return _history_number(item)
 
-    def create(self, pk: str, meta: dict) -> None:
+    def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None:
         listing = _job_list_item(pk, meta)
+        guard = self._owner_guard(meta['owner_subject'], expected_epoch)
         try:
             self._history_transact([
+                guard,
                 {"Put": {"TableName": self.table.name,
                          "Item": self._item({"pk": pk, "sk": "META", **meta}),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
@@ -1165,23 +1380,34 @@ class DynamoCookingStore:
         listing = _job_list_item(pk, meta)
         try:
             self._history_transact([
+                self._derived_owner_guard(meta["owner_subject"], None),
+                {"ConditionCheck": {"TableName": self.table.name,
+                    "Key": self._item({"pk": pk, "sk": "META"}),
+                    "ConditionExpression": "owner_subject = :owner AND job_id = :id AND created_at = :created",
+                    "ExpressionAttributeValues": self._item({":owner": meta["owner_subject"],
+                        ":id": meta["job_id"], ":created": meta["created_at"]})}},
                 {"Put": {"TableName": self.table.name, "Item": self._item(listing),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
                 self._history_update(pk),
             ])
         except self.client.exceptions.TransactionCanceledException as exc:
             reasons = exc.response.get("CancellationReasons", [])
-            if reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
+            if len(reasons) == 4 and reasons[2].get("Code") == "ConditionalCheckFailed" and \
+                    all(reason.get("Code") in (None, "None") for i, reason in enumerate(reasons) if i != 2):
                 existing = self.table.get_item(Key={"pk": listing["pk"], "sk": listing["sk"]},
                                                ConsistentRead=True).get("Item")
-                if existing and existing.get("job_id") == meta["job_id"]:
+                if existing and all(existing.get(field) == listing.get(field) for field in ("job_id", "created_at")):
                     return
             if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
-    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str) -> None:
+    def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str, expected_epoch: int = 0) -> None:
+        owner = _history_pk(pk).removeprefix('SCOPE#USER#').removesuffix('#JOBS')
+        if not owner or ('owner_subject' in meta and meta['owner_subject'] != owner):
+            raise ValueError('job owner mismatch')
         operations = [
+            self._owner_guard(owner, expected_epoch),
             {"Put": {"TableName": self.table.name,
                      "Item": self._item({"pk": pk, "sk": "META", **meta}),
                      "ConditionExpression": "#version = :expected",
@@ -1201,9 +1427,12 @@ class DynamoCookingStore:
             raise
 
     def create_recook(self, parent_pk: str, expected_parent_version: int,
-                      new_pk: str, meta: dict) -> None:
+                      new_pk: str, meta: dict, expected_epoch: int = 0) -> None:
+        if _history_pk(parent_pk) != _history_pk(new_pk):
+            raise ValueError('recook owner mismatch')
         listing = _job_list_item(new_pk, meta)
         operations = [
+            self._owner_guard(meta['owner_subject'], expected_epoch),
             {"ConditionCheck": {
                 "TableName": self.table.name, "Key": self._item({"pk": parent_pk, "sk": "META"}),
                 "ConditionExpression": "#version = :expected",
@@ -1226,8 +1455,11 @@ class DynamoCookingStore:
 
     def commit(self, pk: str, expected_version: int, meta: dict,
                assessment: dict | None = None, pointer: dict | None = None,
-               event: dict | None = None) -> None:
-        operations = [{"Put": {
+               event: dict | None = None, expected_epoch: int = 0) -> None:
+        owner = _history_pk(pk).removeprefix('SCOPE#USER#').removesuffix('#JOBS')
+        if not owner or ('owner_subject' in meta and meta['owner_subject'] != owner):
+            raise ValueError('job owner mismatch')
+        operations = [self._owner_guard(owner, expected_epoch), {"Put": {
             "TableName": self.table.name,
             "Item": self._item({"pk": pk, "sk": "META", **meta}),
             "ConditionExpression": "#version = :expected",
@@ -1355,8 +1587,14 @@ class DynamoCookingStore:
     def save_comparison(self, baseline_pk: str, candidate_pk: str,
                         baseline_meta: dict, candidate_meta: dict,
                         baseline_pointer: dict, candidate_pointer: dict,
-                        record: dict) -> dict:
-        operations = []
+                        record: dict, expected_epoch: int | None = None) -> dict:
+        history_pk = _history_pk(candidate_pk)
+        if _history_pk(baseline_pk) != history_pk:
+            raise ValueError('comparison owner mismatch')
+        subject = history_pk.removeprefix('SCOPE#USER#').removesuffix('#JOBS')
+        if not subject:
+            raise ValueError('invalid comparison owner')
+        operations = [self._derived_owner_guard(subject, expected_epoch)]
         for pk, meta, pointer in ((baseline_pk, baseline_meta, baseline_pointer),
                                   (candidate_pk, candidate_meta, candidate_pointer)):
             operations.extend([
@@ -1483,8 +1721,14 @@ class DynamoCookingStore:
         return _api_numbers(item)
 
     def save_aggregate(self, pk: str, snapshots: list[tuple[str, dict, dict | None, dict | None]],
-                       record: dict) -> dict:
-        operations = []
+                       record: dict, expected_epoch: int | None = None) -> dict:
+        prefix, separator, group_id = pk.rpartition('#AGGREGATE#')
+        if not separator or not group_id or not prefix.startswith('SCOPE#USER#') or not snapshots:
+            raise ValueError('invalid aggregate owner scope')
+        subject = prefix.removeprefix('SCOPE#USER#')
+        if not subject or any(_history_pk(job_pk) != prefix + '#JOBS' for job_pk, *_ in snapshots):
+            raise ValueError('aggregate owner mismatch')
+        operations = [self._derived_owner_guard(subject, expected_epoch)]
         for job_pk, meta, pointer, process_pointer in snapshots:
             operations.append({"ConditionCheck": {
                 "TableName": self.table.name, "Key": self._item({"pk": job_pk, "sk": "META"}),
@@ -1585,9 +1829,9 @@ class DynamoCookingStore:
 
 
 @lru_cache(maxsize=4)
-def _store(table_name: str) -> CookingStore:
-    return DynamoCookingStore(table_name) if table_name else MemoryCookingStore()
+def _store(table_name: str, auth_table_name: str = '') -> CookingStore:
+    return DynamoCookingStore(table_name, auth_table_name) if table_name else MemoryCookingStore()
 
 
 def get_cooking_store() -> CookingStore:
-    return _store(os.getenv("FOODTECH_COOKING_TABLE", ""))
+    return _store(os.getenv("FOODTECH_COOKING_TABLE", ""), os.getenv("FOODTECH_AUTH_TABLE", ""))

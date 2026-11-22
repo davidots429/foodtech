@@ -102,7 +102,7 @@ def _jeyuk_feed_safety_current(job: dict) -> bool:
     return job.get("menu") != "JEYUK" or job.get("jeyuk_feed_safety_aligned") is True
 
 
-async def _commit(store, pk: str, previous: dict, meta: dict,
+async def _commit(session, store, pk: str, previous: dict, meta: dict,
                   assessment: dict | None = None, pointer: dict | None = None,
                   event: dict | None = None):
     if event is not None:
@@ -110,7 +110,7 @@ async def _commit(store, pk: str, previous: dict, meta: dict,
         if reason:
             event = {**event, "validation_change_reason": reason}
     try:
-        await _store_call(store, store.commit, pk, int(previous["version"]), meta, assessment, pointer, event)
+        await _store_call(store, store.commit, pk, int(previous["version"]), meta, assessment, pointer, event, session.epoch)
     except Conflict as exc:
         raise _conflict() from exc
     from .assessment_aggregate import refresh_dependents as refresh_aggregates
@@ -420,7 +420,7 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "process_time_status": "NOT_MEASURED",
     }
     try:
-        await _store_call(store, store.create, _pk(session.subject, job_id), meta)
+        await _store_call(store, store.create, _pk(session.subject, job_id), meta, session.epoch)
     except Conflict as exc:
         raise _conflict() from exc
     return meta
@@ -473,7 +473,7 @@ async def record_tonkatsu_batch(job_id: str, request: Request, body: TonkatsuBat
     event = {"sk": f"EVENT#TONKATSU_BATCH#{version:012d}", "domain": "TONKATSU_BATCH",
              "trigger": "TONKATSU_BATCH_RECORDED", "batch": value,
              "actor_subject": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(session, store, pk, old, meta, event=event)
     return meta
 
 
@@ -513,13 +513,13 @@ async def record_tonkatsu_initial_context(job_id: str, request: Request, body: T
     event = {"sk": f"EVENT#TONKATSU_INITIAL_CONTEXT#{version:012d}", "domain": "TONKATSU_INITIAL_CONTEXT",
              "trigger": "TONKATSU_INITIAL_CONTEXT_RECORDED", "context": value,
              "actor_subject": session.subject, "occurred_at": timestamp}
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(session, store, pk, old, meta, event=event)
     return meta
 
 
 @router.post("/{job_id}/source-binding")
 async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dict:
-    _, store, pk, old, _ = await _read(request, job_id, write=True)
+    session, store, pk, old, _ = await _read(request, job_id, write=True)
     if int(old["version"]) != body.expected_version:
         raise _conflict()
     if old["status"] not in {"PENDING", "READY"} or old.get("source_binding"):
@@ -536,7 +536,7 @@ async def bind_source(job_id: str, request: Request, body: SourceBinding) -> dic
                                        "batch_id": body.batch_id},
             "version": old["version"] + 1, "updated_at": _now()}
     try:
-        await _store_call(store, store.bind_stream, pk, int(old["version"]), meta, stream_pk)
+        await _store_call(store, store.bind_stream, pk, int(old["version"]), meta, stream_pk, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "이 수집 배치는 이미 연결되었거나 작업이 변경되었습니다.") from exc
     return meta
@@ -548,7 +548,7 @@ async def create_condition_profile(request: Request, body: ConditionProfileReque
     profile = {**body.model_dump(mode="json"), "provenance": "SYNTHETIC", "status": "DECLARED_UNVERIFIED",
                "created_at": _now(), "created_by": session.subject}
     try:
-        await _store_call(store, store.create_condition_profile, session.subject, profile)
+        await _store_call(store, store.create_condition_profile, session.subject, profile, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "이미 기록된 공정조건 버전입니다. 다른 버전으로 기록해 주세요.") from exc
     return profile
@@ -608,7 +608,7 @@ async def record_jeyuk_validation_context(job_id: str, request: Request,
         changes = compare_jeyuk_context(old["validation_context"], context)
         event["change_reasons"] = list(changes.reasons)
         event["unknown_fields"] = list(changes.unknown_fields)
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(session, store, pk, old, meta, event=event)
     return meta
 
 
@@ -784,7 +784,7 @@ async def capture_validation_evidence(job_id: str, request: Request, body: Evide
                 "checks": evidence["checks"], "recorded_at": _now(), "recorded_by": session.subject}
     try:
         await _store_call(store, store.save_validation_evidence, pk, body.expected_version, snapshot,
-                          os.getenv("FOODTECH_DATA_TABLE", ""), evidence["source_revision"], receipt)
+                          os.getenv("FOODTECH_DATA_TABLE", ""), evidence["source_revision"], receipt, session.epoch)
     except Conflict as exc:
         raise HTTPException(409, "작업 또는 원천 증거가 변경되었습니다. 다시 조회해 주세요.") from exc
     except ValueError as exc:
@@ -846,7 +846,7 @@ async def recommendation_evidence(job_id: str, request: Request, response: Respo
 @router.post("/{job_id}/process-restatements", status_code=202)
 async def request_process_restatement(job_id: str, request: Request, body: CustomerRestatementRequest) -> dict:
     from .restatement_queue import send, source_revision
-    _, store, pk, job, _ = await _read(request, job_id, write=True)
+    session, store, pk, job, _ = await _read(request, job_id, write=True)
     request_id = str(body.request_id)
     existing = await _store_call(store, store.customer_restatement, pk, request_id)
     if existing:
@@ -881,7 +881,7 @@ async def request_process_restatement(job_id: str, request: Request, body: Custo
                   "job_version_at_detection": body.expected_version, "provenance": "SYNTHETIC",
                   "requested_at": _now()}
         try:
-            existing = await _store_call(store, store.create_customer_restatement, pk, body.expected_version, record)
+            existing = await _store_call(store, store.create_customer_restatement, pk, body.expected_version, record, session.epoch)
         except Conflict as exc:
             raise _conflict() from exc
     if existing["status"] == "PENDING":
@@ -1020,7 +1020,7 @@ async def transition(job_id: str, request: Request, body: Transition) -> dict:
              "actual_cooking_seconds": cooking_seconds,
              "process_time_status": time_status if body.event == "COOKING_COMPLETED" else None,
              "thickness_time_rule_version": RULE_VERSION if body.event == "COOKING_COMPLETED" else None}
-    await _commit(store, pk, old, meta, pointer=new_pointer, event=event)
+    await _commit(session, store, pk, old, meta, pointer=new_pointer, event=event)
     return meta
 
 
@@ -1112,7 +1112,7 @@ async def record_jeyuk_feed(job_id: str, ingredient: Literal["meat", "vegetable"
              "trigger": "FEED_REVISED" if previous else "FEED_RECORDED", "ingredient": key,
              "previous": previous, "feed": current, "reason": body.reason.strip() if body.reason else None,
              "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta,
+    await _commit(session, store, pk, old, meta,
                   pointer=_blocked_pointer(pointer, "JEYUK_FEED_CHANGED"),
                   event=event)
     return meta
@@ -1150,7 +1150,7 @@ async def record_jeyuk_discharge(job_id: str, request: Request, body: JeyukDisch
              "trigger": "DISCHARGE_REVISED" if previous else "DISCHARGE_COMPLETED", "previous": previous,
              "discharge": current, "reason": body.reason.strip() if body.reason else None,
              "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, event=event)
+    await _commit(session, store, pk, old, meta, event=event)
     return meta
 
 
@@ -1222,7 +1222,7 @@ async def safety_event(job_id: str, request: Request, body: SafetyEvent) -> dict
              "partial_observations": body.partial_observations if body.event == "SUSPECTED" else {},
              "evaluation_status": meta["evaluation_status"],
              "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{body.event}"), event=event)
+    await _commit(session, store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{body.event}"), event=event)
     return meta
 
 
@@ -1286,7 +1286,7 @@ async def core_check(job_id: str, request: Request, body: CoreCheck) -> dict:
              "probes": meta["core_check"], "mock_evidence": meta["core_check_mock_evidence"],
              "reheat_segment_id": reheat["segment_id"] if reheat else None,
              "actor": session.subject, "occurred_at": _now()}
-    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
+    await _commit(session, store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
     return meta
 
 
@@ -1327,7 +1327,7 @@ async def tonkatsu_reheat(job_id: str, request: Request, body: TonkatsuReheat) -
     event = {"sk": f"EVENT#SAFETY#{int(meta['safety_version']):012d}", "domain": "SAFETY_STATUS",
              "trigger": "TONKATSU_REHEATED", "from_status": "FAILED", "to_status": "INCOMPLETE",
              "segment": segment, "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, "SAFETY_RECHECK_REQUIRED"), event=event)
+    await _commit(session, store, pk, old, meta, pointer=_blocked_pointer(pointer, "SAFETY_RECHECK_REQUIRED"), event=event)
     return meta
 
 
@@ -1401,7 +1401,7 @@ async def jeyuk_discharge_check(job_id: str, request: Request, body: JeyukDischa
              "manual_status": manual_status, "auto_safety_status": auto_status,
              "feed_safety_aligned": feed_alignment,
              "kind": body.kind, "samples": evidence, "actor": session.subject, "occurred_at": now}
-    await _commit(store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
+    await _commit(session, store, pk, old, meta, pointer=_blocked_pointer(pointer, f"SAFETY_{status}"), event=event)
     return meta
 
 
@@ -1487,7 +1487,7 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
                    "safety_version": old["safety_version"]}
     meta = {**old, "version": old["version"] + 1, "updated_at": _now(),
             "evaluation_status": "COMPLETED"}
-    await _commit(store, pk, old, meta, assessment, new_pointer)
+    await _commit(session, store, pk, old, meta, assessment, new_pointer)
     return assessment
 
 
@@ -1537,7 +1537,7 @@ async def recook(job_id: str, request: Request, body: Recook) -> dict:
             "process_time_status": "NOT_MEASURED"}
     try:
         await _store_call(store, store.create_recook, parent_pk, body.expected_version,
-                          _pk(session.subject, new_id), meta)
+                          _pk(session.subject, new_id), meta, session.epoch)
     except Conflict as exc:
         raise _conflict() from exc
     return meta

@@ -44,6 +44,8 @@ class FakeClient:
     def transact_write_items(self, *, TransactItems):
         self.calls += 1
         for write in TransactItems:
+            if 'ConditionCheck' in write:
+                continue
             if "Update" in write:
                 key = {name: self.deserializer.deserialize(value) for name, value in write["Update"]["Key"].items()}
                 item_key = (key["pk"], key["sk"])
@@ -55,6 +57,40 @@ class FakeClient:
 
 
 class ProcessBridgeTests(unittest.TestCase):
+    def test_locked_owner_blocks_current_and_late_request_without_writes(self):
+        class Locked(Exception):
+            def __init__(self, count):
+                self.response = {'CancellationReasons': [{'Code': 'None'}] * (count - 1) +
+                                 [{'Code': 'ConditionalCheckFailed'}]}
+        class LockedClient(FakeClient):
+            def __init__(self, table):
+                super().__init__(table)
+                self.exceptions.TransactionCanceledException = Locked
+            def transact_write_items(self, *, TransactItems):
+                self.calls += 1
+                self.assert_guard = TransactItems[-1]['ConditionCheck']
+                raise Locked(len(TransactItems))
+        binding = {'source_id': 'synthetic-rest', 'device_id': 'mockprofile-100-a-001', 'batch_id': 'lock'}
+        stream_pk = stream_binding_key(**binding)
+        job_pk = 'SCOPE#USER#customer-1#JOB#locked'
+        table = FakeTable({(stream_pk, 'BINDING'): {'job_pk': job_pk},
+            (job_pk, 'META'): {'pk': job_pk, 'sk': 'META', 'owner_subject': 'customer-1', 'job_id': 'locked',
+                'source_binding': binding, 'status': 'RUNNING', 'version': 1,
+                'process_thickness_status': 'IN_RANGE', 'process_time_status': 'NORMAL',
+                'process_assessment_status': 'INSUFFICIENT_DATA'}})
+        bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.table, bridge.client, bridge.serializer, bridge.auth_table_name = table, LockedClient(table), TypeSerializer(), 'auth'
+        assessment = {'pk': 'EVENT#locked', 'ingestion_event_id': 'locked', 'dedup_status': 'UNIQUE',
+            'quality_status': 'VALID', 'finding_codes': [], 'normalized': {**binding, 'sequence_number': 1,
+                'device_status': 'RUNNING', 'event_time': '2026-11-02T00:00:00Z',
+                'CHAMBER_TEMPERATURE': {'value': '170', 'unit': '°C'}}}
+        for findings in ([], ['LATE_AFTER_GAP']):
+            with self.subTest(findings=findings), self.assertRaisesRegex(RuntimeError, 'deletion-locked'):
+                bridge.apply({**assessment, 'finding_codes': findings})
+        self.assertEqual(table.items[(job_pk, 'META')]['version'], 1)
+        self.assertEqual(set(table.items), {(stream_pk, 'BINDING'), (job_pk, 'META')})
+        self.assertEqual(bridge.client.assert_guard['TableName'], 'auth')
+
     def test_history_contention_retries_from_new_revision(self):
         binding = {"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001", "batch_id": "race"}
         stream_pk = stream_binding_key(**binding)
@@ -83,6 +119,7 @@ class ProcessBridgeTests(unittest.TestCase):
                 super().transact_write_items(TransactItems=TransactItems)
 
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table, bridge.client, bridge.serializer = table, ContendedClient(table), TypeSerializer()
         assessment = {"pk": "EVENT#race", "ingestion_event_id": "race", "dedup_status": "UNIQUE",
             "quality_status": "VALID", "finding_codes": [], "normalized": {**binding,
@@ -104,6 +141,7 @@ class ProcessBridgeTests(unittest.TestCase):
                 "process_assessment_status": "INSUFFICIENT_DATA"},
         })
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
         for index, seconds in enumerate((0, 10, 15), 1):
             assessment = {"pk": f"EVENT#{index}", "ingestion_event_id": str(index),
@@ -129,6 +167,7 @@ class ProcessBridgeTests(unittest.TestCase):
                 "process_assessment": {"rule_version": "tonkatsu-temperature-v1", "status": "NORMAL",
                     "data_gap": False, "last_event_time": "2026-11-02T00:00:00Z"}}})
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
         bridge.apply({"pk": "EVENT#next", "ingestion_event_id": "next", "dedup_status": "UNIQUE",
             "quality_status": "VALID", "finding_codes": [], "normalized": {**binding,
@@ -152,6 +191,7 @@ class ProcessBridgeTests(unittest.TestCase):
         }
         table = FakeTable(items)
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table = table
         bridge.client = FakeClient(table)
         bridge.serializer = TypeSerializer()
@@ -179,6 +219,7 @@ class ProcessBridgeTests(unittest.TestCase):
     def test_unbound_event_has_no_job_effect(self):
         table = FakeTable({})
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table = table
         bridge.client = FakeClient(table)
         bridge.serializer = TypeSerializer()
@@ -202,6 +243,7 @@ class ProcessBridgeTests(unittest.TestCase):
                                 "process_assessment_status": "INSUFFICIENT_DATA"},
         })
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
         result = bridge.apply({
             "pk": "EVENT#held", "ingestion_event_id": "held", "dedup_status": "UNIQUE",
@@ -225,6 +267,7 @@ class ProcessBridgeTests(unittest.TestCase):
                                 "process_assessment_status": "WARNING"},
         })
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
         result = bridge.apply({
             "pk": "EVENT#normal", "ingestion_event_id": "normal", "dedup_status": "UNIQUE",
@@ -246,6 +289,7 @@ class ProcessBridgeTests(unittest.TestCase):
                 "process_assessment_status": "WARNING", "process_temperature_status": "NORMAL"}
         table = FakeTable({(stream_pk, "BINDING"): {"job_pk": job_pk}, (job_pk, "META"): meta})
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
         late = {"pk": "EVENT#late-1", "sk": "ASSESSMENT#v1", "source_pk": stream_pk,
                 "ingestion_event_id": "late-1", "dedup_status": "UNIQUE",
@@ -277,6 +321,7 @@ class ProcessBridgeTests(unittest.TestCase):
                 "status": "COMPLETED", "version": 8, "process_assessment_status": "WARNING"}
         table = FakeTable({(stream_pk, "BINDING"): {"job_pk": job_pk}, (job_pk, "META"): meta})
         bridge = DynamoProcessBridge.__new__(DynamoProcessBridge)
+        bridge.auth_table_name = 'auth-table'
         bridge.table, bridge.client, bridge.serializer = table, FakeClient(table), TypeSerializer()
         calls = []
         def derive(pk, event):

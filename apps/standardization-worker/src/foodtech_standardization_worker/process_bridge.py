@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import os
 
 import boto3
 from boto3.dynamodb.types import TypeSerializer
@@ -15,6 +16,9 @@ from .process_restatement import DynamoProcessRestatement
 class DynamoProcessBridge:
     def __init__(self, table_name: str, region: str = "ap-southeast-2",
                  data_table_name: str | None = None):
+        self.auth_table_name = os.getenv('FOODTECH_AUTH_TABLE', '')
+        if not self.auth_table_name:
+            raise ValueError('authentication table is required for the process bridge')
         session = boto3.Session(region_name=region)
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
@@ -24,6 +28,19 @@ class DynamoProcessBridge:
 
     def _item(self, value: dict) -> dict:
         return {key: self.serializer.serialize(item) for key, item in value.items()}
+
+    def _owner_guard(self, job_pk: str, job: dict) -> dict:
+        prefix, separator, job_id = job_pk.rpartition('#JOB#')
+        if not separator or not prefix.startswith('SCOPE#USER#') or not job_id:
+            raise ValueError('invalid scoped job key')
+        owner = prefix.removeprefix('SCOPE#USER#')
+        if not owner or ('owner_subject' in job and job['owner_subject'] != owner) or \
+                ('job_id' in job and job['job_id'] != job_id) or not getattr(self, 'auth_table_name', ''):
+            raise ValueError('invalid job owner or authentication table')
+        return {'ConditionCheck': {'TableName': self.auth_table_name, 'Key': self._item({'pk': f'USER#{owner}'}),
+                'ConditionExpression': '(attribute_not_exists(suspended) OR suspended = :false) '
+                                       'AND attribute_not_exists(deletion_lock_request)',
+                'ExpressionAttributeValues': self._item({':false': False})}}
 
     def apply(self, assessment: dict) -> str:
         normalized = assessment.get("normalized")
@@ -129,6 +146,7 @@ class DynamoProcessBridge:
                 if history is not None:
                     put["ExpressionAttributeValues"] = {":prior": {"N": str(int(revision))}}
                 operations.append({"Put": put})
+            operations.append(self._owner_guard(job_pk, old))
             try:
                 self.client.transact_write_items(TransactItems=operations)
                 return self._refresh_restatement_if_needed(job_pk, assessment) or overall_status
@@ -136,6 +154,8 @@ class DynamoProcessBridge:
                 if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
                     return self._refresh_restatement_if_needed(job_pk, assessment) or "REPLAYED"
                 reasons = exc.response.get("CancellationReasons", [])
+                if len(reasons) == len(operations) and reasons[-1].get('Code') == 'ConditionalCheckFailed':
+                    raise RuntimeError('owner is suspended or deletion-locked; retry after reconciliation') from exc
                 codes = {reason.get("Code") for reason in reasons}
                 retryable = (reasons and codes <= {None, "None", "TransactionConflict", "ConditionalCheckFailed"} and
                              ("TransactionConflict" in codes or reasons[0].get("Code") == "ConditionalCheckFailed" or
@@ -193,7 +213,7 @@ class DynamoProcessBridge:
                    "event_time": normalized["event_time"], "requested_at": requested_at,
                    "provenance": "SYNTHETIC"}
         try:
-            self.client.transact_write_items(TransactItems=[
+            operations = [
                 {"Put": {"TableName": self.table.name, "Item": self._item(request),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
                 {"Update": {"TableName": self.table.name,
@@ -201,9 +221,14 @@ class DynamoProcessBridge:
                             "UpdateExpression": "ADD revision :one",
                             "ConditionExpression": "attribute_not_exists(revision) OR revision < :max",
                             "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}},
-            ])
+                self._owner_guard(job_pk, old),
+            ]
+            self.client.transact_write_items(TransactItems=operations)
             return "RESTATEMENT_PENDING"
-        except self.client.exceptions.TransactionCanceledException:
+        except self.client.exceptions.TransactionCanceledException as exc:
+            reasons = exc.response.get('CancellationReasons', [])
+            if len(reasons) == len(operations) and reasons[-1].get('Code') == 'ConditionalCheckFailed':
+                raise RuntimeError('owner is suspended or deletion-locked; retry after reconciliation') from exc
             if self.table.get_item(Key=key, ConsistentRead=True).get("Item"):
                 return "RESTATEMENT_ALREADY_PENDING"
             raise

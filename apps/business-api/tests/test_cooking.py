@@ -816,7 +816,7 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
         pk = cooking._pk(self.subject, job["job_id"])
         original_commit = self.store.commit
 
-        def worker_wins_commit(item_pk, expected_version, meta, assessment=None, pointer=None, event=None):
+        def worker_wins_commit(item_pk, expected_version, meta, assessment=None, pointer=None, event=None, expected_epoch=0):
             if event and event.get("trigger") == "COOKING_COMPLETED":
                 worker_meta = {**self.store.items[(pk, "META")],
                                "version": expected_version + 1,
@@ -825,7 +825,7 @@ class CookingTests(unittest.IsolatedAsyncioTestCase):
                 original_commit(pk, expected_version, worker_meta,
                                 event={"sk": "EVENT#PROCESS#concurrent", "domain": "PROCESS_ASSESSMENT",
                                        "trigger": "PROCESS_SAMPLE_ASSESSED", "occurred_at": cooking._now()})
-            return original_commit(item_pk, expected_version, meta, assessment, pointer, event)
+            return original_commit(item_pk, expected_version, meta, assessment, pointer, event, expected_epoch)
 
         path = f"/api/customer/cooking-jobs/{job['job_id']}"
         with patch.object(self.store, "commit", side_effect=worker_wins_commit):
@@ -917,6 +917,7 @@ class DynamoTransactionContractTests(unittest.TestCase):
         calls = []
         store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-table")
+        store.auth_table_name = "auth-table"
         store.serializer = TypeSerializer()
         store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
         meta = {"owner_subject": "one", "job_id": "job", "created_at": "2026-11-15T00:00:00Z",
@@ -924,31 +925,38 @@ class DynamoTransactionContractTests(unittest.TestCase):
         job_pk = "SCOPE#USER#one#JOB#job"
         store.create(job_pk, meta)
         writes = calls[0]["TransactItems"]
-        self.assertEqual(len(writes), 3)
-        self.assertEqual(writes[2]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
-        self.assertEqual(writes[1]["Put"]["Item"]["pk"]["S"], "SCOPE#USER#one#JOBS")
-        self.assertEqual(writes[1]["Put"]["Item"]["sk"]["S"],
+        self.assertEqual(len(writes), 4)
+        self.assertEqual(writes[0]["ConditionCheck"]["TableName"], "auth-table")
+        self.assertIn("deletion_lock_request", writes[0]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual(writes[3]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
+        self.assertEqual(writes[2]["Put"]["Item"]["pk"]["S"], "SCOPE#USER#one#JOBS")
+        self.assertEqual(writes[2]["Put"]["Item"]["sk"]["S"],
                          "CREATED#2026-11-15T00:00:00Z#job")
         store.create_recook(job_pk, 3, "SCOPE#USER#one#JOB#recook",
                             {**meta, "job_id": "recook", "source_job_id": "job"})
-        self.assertEqual(len(calls[1]["TransactItems"]), 4)
-        self.assertEqual(calls[1]["TransactItems"][3]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
-        self.assertEqual(calls[1]["TransactItems"][2]["Put"]["Item"]["source_job_id"]["S"], "job")
+        self.assertEqual(len(calls[1]["TransactItems"]), 5)
+        self.assertEqual(calls[1]["TransactItems"][0]["ConditionCheck"]["TableName"], "auth-table")
+        self.assertEqual(calls[1]["TransactItems"][4]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
+        self.assertEqual(calls[1]["TransactItems"][3]["Put"]["Item"]["source_job_id"]["S"], "job")
+        with self.assertRaises(ValueError):
+            store.create_recook(job_pk, 3, "SCOPE#USER#other#JOB#recook", {**meta, "job_id": "recook"})
 
     def test_source_binding_and_job_version_share_transaction(self):
         calls = []
         store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-table")
+        store.auth_table_name = "auth-table"
         store.serializer = TypeSerializer()
         store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
         stream_pk = stream_binding_key("synthetic-rest", "mockprofile-100-a-001", "batch-a-001")
         store.bind_stream("SCOPE#USER#one#JOB#job", 2, {"job_id": "job", "version": 3}, stream_pk)
         writes = calls[0]["TransactItems"]
-        self.assertEqual(len(writes), 3)
-        self.assertEqual(writes[0]["Put"]["ConditionExpression"], "#version = :expected")
-        self.assertEqual(writes[1]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
-        self.assertEqual(writes[1]["Put"]["Item"]["pk"], {"S": stream_pk})
-        self.assertEqual(writes[2]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
+        self.assertEqual(len(writes), 4)
+        self.assertEqual(writes[0]["ConditionCheck"]["TableName"], "auth-table")
+        self.assertEqual(writes[1]["Put"]["ConditionExpression"], "#version = :expected")
+        self.assertEqual(writes[2]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
+        self.assertEqual(writes[2]["Put"]["Item"]["pk"], {"S": stream_pk})
+        self.assertEqual(writes[3]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
 
     def test_dynamodb_numeric_fields_match_local_api_types(self):
         rows = iter([
@@ -967,6 +975,7 @@ class DynamoTransactionContractTests(unittest.TestCase):
         calls = []
         store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-table")
+        store.auth_table_name = "auth-table"
         store.serializer = TypeSerializer()
         store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
         store.commit("SCOPE#USER#one#JOB#job", 4, {"version": 5},
@@ -974,22 +983,24 @@ class DynamoTransactionContractTests(unittest.TestCase):
                      {"version": 1, "usable": True})
         self.assertEqual(len(calls), 1)
         writes = calls[0]["TransactItems"]
-        self.assertEqual(len(writes), 3)
-        self.assertEqual(writes[0]["Put"]["ConditionExpression"], "#version = :expected")
-        self.assertEqual(writes[1]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
-        self.assertEqual(writes[2]["Put"]["Item"]["sk"], {"S": "ASSESSMENT#CURRENT"})
+        self.assertEqual(len(writes), 4)
+        self.assertEqual(writes[0]["ConditionCheck"]["TableName"], "auth-table")
+        self.assertEqual(writes[1]["Put"]["ConditionExpression"], "#version = :expected")
+        self.assertEqual(writes[2]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
+        self.assertEqual(writes[3]["Put"]["Item"]["sk"], {"S": "ASSESSMENT#CURRENT"})
 
     def test_safety_state_and_immutable_event_share_transaction(self):
         calls = []
         store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-table")
+        store.auth_table_name = "auth-table"
         store.serializer = TypeSerializer()
         store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
-        store.commit("job", 3, {"version": 4, "safety_status": "SUSPECTED"},
+        store.commit("SCOPE#USER#one#JOB#job", 3, {"version": 4, "safety_status": "SUSPECTED"},
                      event={"sk": "EVENT#SAFETY#000000000001", "occurred_at": "2026-11-02T00:00:00Z"})
         writes = calls[0]["TransactItems"]
-        self.assertEqual(len(writes), 2)
-        self.assertEqual(writes[1]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
+        self.assertEqual(len(writes), 3)
+        self.assertEqual(writes[2]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
 
 
 if __name__ == "__main__":

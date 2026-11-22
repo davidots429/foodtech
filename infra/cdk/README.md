@@ -73,3 +73,5 @@
 `provisionOpcUaJsonCollectionTask=true`는 프로젝트 전용 HTTPS Browse/Read 수집 Task를 합성한다. 이미지 설정 외에 `collectionUaJsonBaseUrl`(HTTPS origin), `collectionUaJsonSecretArn`이 필요하며 비밀 JSON 필드 `client_id`, `client_secret`, `ca_pem`을 사용한다.
 
 `provisionOpcUaBinaryCollectionTask=true`는 별도 OPC UA Binary Task를 합성한다. `collectionUaBinaryEndpoint`(`opc.tcp` 주소)와 `collectionUaBinarySecretArn`이 필요하며 비밀 JSON 필드 `client_cert_pem`, `client_key_pem`, `server_cert_der_base64`를 사용한다. 클라이언트 인증서와 개인키 일치 및 서버 인증서 DER 형식을 시작 시 검사하고, 기존 수집기가 서버 인증서의 유효기간·호스트·애플리케이션 URI를 확인한다. 이미지 게시, 네트워크·Mock 배치, 실제 Task 실행은 별도 작업이다.
+
+표준화 Worker 역할의 인증 테이블 `dynamodb:ConditionCheckItem` 권한은 제육 작업의 삭제 잠금 확인을 위한 CDK 변경안이다. 적용을 위해서는 승인된 배포 workflow와 역할 검증이 필요하며, 배포하지 않은 합성 결과를 실제 권한으로 취급하지 않는다.

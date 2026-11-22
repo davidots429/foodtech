@@ -407,6 +407,10 @@ class MinimalDataFlowStack extends Stack {
       this, "CookingJobsForWorker", `foodtech-cooking-jobs-${stage}`,
     );
     cookingTable.grant(workerRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
+    const authTable = dynamodb.Table.fromTableName(
+      this, "AuthSessionsForWorker", `foodtech-auth-sessions-${stage}`,
+    );
+    authTable.grant(workerRole, "dynamodb:ConditionCheckItem");
     ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
     quarantine.grant(workerRole, "sqs:SendMessage");
     new CfnOutput(this, "IngestionDlqBucketName", { value: ingestionDlq.bucketName });

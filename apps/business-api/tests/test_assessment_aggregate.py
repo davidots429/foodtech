@@ -435,33 +435,35 @@ class AggregateTransactionContractTests(unittest.TestCase):
     def test_dynamo_write_checks_all_selected_job_snapshots(self):
         store = object.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-cooking")
+        store.auth_table_name = "auth-table"
         store.client = MagicMock()
         store.serializer = TypeSerializer()
         meta = {"version": 3, "safety_version": 1, "status": "COMPLETED",
                 "safety_status": "PASSED", "evaluation_blocked": False}
         pointer = {"version": 1, "usable": True, "safety_version": 1}
-        store.save_aggregate("aggregate", [("job-1", meta, pointer, None), ("job-2", meta, None, None)],
+        store.save_aggregate("SCOPE#USER#owner#AGGREGATE#group", [("SCOPE#USER#owner#JOB#job-1", meta, pointer, None), ("SCOPE#USER#owner#JOB#job-2", meta, None, None)],
                              {"group_id": "g" * 64, "selection": {},
                               "result_id": "a" * 64, "sample_count": 1, "created_at": "2026-11-14T00:00:00Z"})
         operations = store.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(operations), 10)
-        self.assertEqual(sum("ConditionCheck" in operation for operation in operations), 6)
+        self.assertEqual(len(operations), 11)
+        self.assertEqual(sum("ConditionCheck" in operation for operation in operations), 7)
         self.assertEqual(sum("Put" in operation for operation in operations), 4)
-        self.assertIn("attribute_not_exists(pk)", operations[5]["ConditionCheck"]["ConditionExpression"])
-        self.assertEqual(operations[3]["Put"]["Item"]["sk"]["S"], "AGGREGATE#DEP#" + "g" * 64)
+        self.assertIn("attribute_not_exists(pk)", operations[6]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual(operations[4]["Put"]["Item"]["sk"]["S"], "AGGREGATE#DEP#" + "g" * 64)
 
     def test_dynamo_write_checks_process_result_pointer_version_and_key(self):
         store = object.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-cooking")
+        store.auth_table_name = "auth-table"
         store.client = MagicMock()
         store.serializer = TypeSerializer()
         meta = {"version": 3, "safety_version": 1, "status": "COMPLETED",
                 "safety_status": "PASSED", "evaluation_blocked": False}
         process = {"version": 2, "result_sk": "RESTATEMENT#RESULT#synthetic"}
-        store.save_aggregate("aggregate", [("job-1", meta, None, process)],
+        store.save_aggregate("SCOPE#USER#owner#AGGREGATE#group", [("SCOPE#USER#owner#JOB#job-1", meta, None, process)],
                              {"group_id": "g" * 64, "selection": {},
                               "result_id": "a" * 64, "sample_count": 0, "created_at": "2026-11-14T00:00:00Z"})
-        check = store.client.transact_write_items.call_args.kwargs["TransactItems"][2]["ConditionCheck"]
+        check = store.client.transact_write_items.call_args.kwargs["TransactItems"][3]["ConditionCheck"]
         self.assertEqual(check["ConditionExpression"], "#v = :v AND result_sk = :result")
         self.assertEqual(check["ExpressionAttributeValues"][":v"]["N"], "2")
         self.assertEqual(check["ExpressionAttributeValues"][":result"]["S"], process["result_sk"])
@@ -473,6 +475,7 @@ class AggregateTransactionContractTests(unittest.TestCase):
 
         store = object.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-cooking")
+        store.auth_table_name = "auth-table"
         store.client = MagicMock()
         store.client.exceptions.TransactionCanceledException = Canceled
         store.serializer = TypeSerializer()
@@ -481,22 +484,22 @@ class AggregateTransactionContractTests(unittest.TestCase):
         pointer = {"version": 1, "usable": True, "safety_version": 1}
         record = {"group_id": "g" * 64, "selection": {}, "result_id": "a" * 64,
                   "created_at": "2026-11-14T00:00:00Z"}
-        snapshots = [("job-1", meta, pointer, None)]
+        snapshots = [("SCOPE#USER#owner#JOB#job-1", meta, pointer, None)]
         with patch.object(store, "aggregate", return_value=record):
             initial_cancellation = Canceled(
-                ["None", "None", "None", "None", "None", "ConditionalCheckFailed"])
+                ["None", "None", "None", "None", "None", "None", "ConditionalCheckFailed"])
             store.client.transact_write_items.side_effect = [initial_cancellation, None]
-            self.assertEqual(store.save_aggregate("aggregate", snapshots, record), record)
+            self.assertEqual(store.save_aggregate("SCOPE#USER#owner#AGGREGATE#group", snapshots, record), record)
             self.assertEqual(store.client.transact_write_items.call_count, 2)
             repair = store.client.transact_write_items.call_args.kwargs["TransactItems"]
-            self.assertEqual(len(repair), 6)
+            self.assertEqual(len(repair), 7)
             self.assertEqual(repair[-2]["ConditionCheck"]["Key"]["sk"]["S"], "RESULT#" + "a" * 64)
             self.assertIn("if_not_exists", repair[-1]["Update"]["UpdateExpression"])
             store.client.transact_write_items.side_effect = Canceled(
-                ["ConditionalCheckFailed", "None", "None", "None", "None", "ConditionalCheckFailed"])
+                ["ConditionalCheckFailed", "None", "None", "None", "None", "None", "ConditionalCheckFailed"])
             with self.assertRaises(Conflict):
-                store.save_aggregate("aggregate", snapshots, record)
+                store.save_aggregate("SCOPE#USER#owner#AGGREGATE#group", snapshots, record)
             store.client.transact_write_items.side_effect = [initial_cancellation,
-                Canceled(["ConditionalCheckFailed", "None", "None", "None", "None", "None"])]
+                Canceled(["ConditionalCheckFailed", "None", "None", "None", "None", "None", "None"])]
             with self.assertRaises(Conflict):
-                store.save_aggregate("aggregate", snapshots, record)
+                store.save_aggregate("SCOPE#USER#owner#AGGREGATE#group", snapshots, record)

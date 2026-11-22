@@ -35,7 +35,7 @@ TABLE = "foodtech-cooking-jobs-dev"
 
 async def collector_child(subject, meal_id, device_id, base, cert):
     """Run the collector in a fresh process with a synthetic local API session."""
-    store = DynamoCookingStore(TABLE)
+    store = DynamoCookingStore(TABLE, "foodtech-auth-sessions-dev")
     async def session(_request, surface):
         assert surface == "customer"
         return Session("customer", subject, None, "validation-csrf", 9999999999, 0)
@@ -92,7 +92,7 @@ async def scenario(store, partitions, *, reassess=False, realtime=False, resume=
     subject = "synthetic-combi-mock-" + uuid.uuid4().hex
     ids = [uuid.uuid4() for _ in range(4)]
     pk = f"SCOPE#USER#{subject}#COMBI_MEAL#{ids[0]}"
-    partitions.extend((pk, pk + "#LIVE", pk + "#SOURCE"))
+    partitions.extend((pk, pk + "#LIVE", pk + "#SOURCE", f"SCOPE#USER#{subject}#COMBI_MEALS"))
 
     async def session(_request, surface):
         assert surface == "customer"
@@ -299,7 +299,7 @@ async def main(*, reassess=False, realtime=False, resume=False, restart=False):
     session = boto3.Session(profile_name="foodtech", region_name="ap-southeast-2")
     if session.client("sts").get_caller_identity()["Account"] != "573693340100":
         raise SystemExit("Unexpected AWS account")
-    store = DynamoCookingStore(TABLE)
+    store = DynamoCookingStore(TABLE, "foodtech-auth-sessions-dev")
     partitions = []
     try:
         result = await scenario(store, partitions, reassess=reassess, realtime=realtime, resume=resume, restart=restart)

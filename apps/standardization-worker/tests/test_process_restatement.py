@@ -168,6 +168,7 @@ class ProcessRestatementTests(unittest.TestCase):
             {"Item": {"EVENT#preload": preload, "EVENT#first": first, "EVENT#late": late,
                       "EVENT#after-terminal": after_terminal}[kwargs["Key"]["pk"]]})
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.auth_table_name = 'auth-table'
         processor.cooking, processor.data, processor.client = cooking, data, Mock()
         processor.serializer = TypeSerializer()
         processor._refresh_dependents = Mock()
@@ -183,9 +184,17 @@ class ProcessRestatementTests(unittest.TestCase):
                    "record_count": 4, "raw_sha256": [hashlib.sha256(row["raw"].encode()).hexdigest() for row in raws]}
         processor._stream_sources = lambda _pk: raws
         processor._collection_receipts = lambda _pk: [receipt]
+        class Locked(Exception):
+            response = {'CancellationReasons': [{'Code': 'None'}] * 6 + [{'Code': 'ConditionalCheckFailed'}]}
+        processor.client.exceptions.TransactionCanceledException = Locked
+        processor.client.transact_write_items.side_effect = Locked()
+        with self.assertRaisesRegex(RuntimeError, 'deletion-locked'):
+            processor.process("SCOPE#USER#owner#JOB#1", "late")
+        processor._refresh_dependents.assert_not_called()
+        processor.client.transact_write_items.side_effect = None
         self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", "late"), "DERIVED")
         operations = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(operations), 6)
+        self.assertEqual(len(operations), 7)
         self.assertEqual(operations[0]["ConditionCheck"]["Key"]["sk"]["S"], "META")
         self.assertEqual(operations[1]["Put"]["Item"]["status"]["S"], "DERIVED_ONLY")
         self.assertEqual(operations[1]["Put"]["Item"]["source_raw_count"]["N"], "4")
@@ -239,6 +248,7 @@ class ProcessRestatementTests(unittest.TestCase):
 
     def test_completed_request_retries_aggregate_refresh(self):
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.auth_table_name = 'auth-table'
         processor.cooking = Mock()
         processor.cooking.get_item.return_value = {"Item": {"status": "COMPLETED"}}
         processor._refresh_dependents = Mock()
@@ -254,6 +264,7 @@ class ProcessRestatementTests(unittest.TestCase):
                    "reason": "CUSTOMER_REFRESH", "request_id": request_id, "source_stream_pk": source_pk,
                    "job_version_at_detection": job["version"]}
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.auth_table_name = 'auth-table'
         processor.cooking, processor.data, processor.client = Mock(), Mock(), Mock()
         processor.cooking.name, processor.data.name = "cooking", "data"
         processor.serializer = TypeSerializer()
@@ -272,11 +283,13 @@ class ProcessRestatementTests(unittest.TestCase):
         request["job_version_at_detection"] = job["version"] - 1
         processor.client.transact_write_items.reset_mock()
         self.assertEqual(processor.process("SCOPE#USER#owner#JOB#1", request_id), "REQUEST_STALE")
-        processor.client.transact_write_items.assert_not_called()
-        self.assertEqual(processor.cooking.update_item.call_args.kwargs["ExpressionAttributeValues"][":stale"], "STALE")
+        stale_ops = processor.client.transact_write_items.call_args.kwargs["TransactItems"]
+        self.assertEqual(stale_ops[0]["Update"]["ExpressionAttributeValues"][":stale"], {"S": "STALE"})
+        self.assertEqual(stale_ops[1]["ConditionCheck"]["TableName"], "auth-table")
 
     def test_refresh_dependents_uses_business_aggregate_refresh(self):
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.auth_table_name = 'auth-table'
         processor.cooking = Mock()
         processor.cooking.name = "cooking-dev"
         job_pk = "SCOPE#USER#customer-1#JOB#aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -297,6 +310,7 @@ class ProcessRestatementTests(unittest.TestCase):
         data.get_item.side_effect = lambda **kwargs: (
             {"Item": late} if kwargs["Key"]["pk"] == late["pk"] else {})
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.auth_table_name = 'auth-table'
         processor.cooking, processor.data, processor.client = cooking, data, client
         processor._query = lambda _pk, prefix: [request] if prefix.startswith("RESTATEMENT") else []
         processor._stream_sources = lambda _pk: [
@@ -308,6 +322,7 @@ class ProcessRestatementTests(unittest.TestCase):
 
     def test_followup_detection_compares_immutable_result_sources(self):
         processor = DynamoProcessRestatement.__new__(DynamoProcessRestatement)
+        processor.auth_table_name = 'auth-table'
         processor.cooking = Mock()
         pointer = {"result_sk": "RESTATEMENT#RESULT#prior"}
         result = {"status": "DERIVED_ONLY",
