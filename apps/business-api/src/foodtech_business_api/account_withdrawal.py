@@ -43,6 +43,21 @@ def _pending(record, request_id):
     return deadline
 
 
+def deleting_withdrawal(record, *, request_id, now):
+    """Validate an expired withdrawal before an internal worker locks its data."""
+    if not isinstance(record, dict) or record.get('withdrawal_status') != 'DELETING' or \
+            record.get('withdrawal_request_id') != request_id or record.get('suspended') is not True or \
+            'deletion_lock_request' in record:
+        raise WithdrawalConflict('withdrawal is not ready for deletion')
+    requested = _integer(record.get('withdrawal_requested_at'), 1)
+    deadline = _integer(record.get('withdrawal_deadline'), 1)
+    epoch, withdrawal_epoch = _integer(record.get('epoch'), 1), _integer(record.get('withdrawal_epoch'), 1)
+    if type(now) is not int or deadline - requested != GRACE_SECONDS or now < deadline or \
+            epoch <= withdrawal_epoch:
+        raise WithdrawalConflict('withdrawal grace period has not expired')
+    return requested, deadline
+
+
 def withdrawal_change(record, *, subject, request_id, now, action, expected_epoch=None):
     """Return an explicit change, or None for a retry of an existing transition.
 
