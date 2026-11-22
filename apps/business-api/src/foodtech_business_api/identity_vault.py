@@ -152,5 +152,12 @@ class IdentityVault:
                     raw.get("revision") != {"N": str(snapshot.vault_revision)} or \
                     raw.get("capsule_locator") != {"S": prepared.locator}:
                 raise IdentityVaultConflict("identity linkage does not match the prepared request")
+            later, later_id = self.resolve_deletion(authenticated_subject=authenticated_subject,
+                                                    expected_epoch=prepared.expected_epoch)
+            try:
+                if later != snapshot or not compare_digest(internal_id, later_id):
+                    raise IdentityVaultConflict("identity linkage changed during verification")
+            finally:
+                later_id[:] = b"\x00" * len(later_id)
         finally:
             internal_id[:] = b"\x00" * len(internal_id)
