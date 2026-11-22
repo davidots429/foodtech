@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 
 type Pending = { status: "PENDING"; cancel_before: number; csrf?: string };
 
-export function AccountWithdrawal({ csrf, onRequested }: { csrf?: string; onRequested: () => void }) {
+export function AccountWithdrawal({ csrf, onRequested, onAccountFlow }: {
+  csrf?: string; onRequested: () => void; onAccountFlow: (active: boolean) => void;
+}) {
   const [enabled, setEnabled] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -11,6 +13,8 @@ export function AccountWithdrawal({ csrf, onRequested }: { csrf?: string; onRequ
   const [canceled, setCanceled] = useState(false);
   const active = useRef(false);
   const requestId = useRef(crypto.randomUUID());
+
+  useEffect(() => { onAccountFlow(pending !== null || canceled); }, [pending, canceled, onAccountFlow]);
 
   useEffect(() => {
     let stopped = false;

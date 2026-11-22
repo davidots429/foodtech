@@ -418,3 +418,5 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 탈퇴 요청·취소 API와 고객 화면은 `FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED=true`에서만 제공한다. 기본값은 비활성이며 계정 초기화·Cognito 수명주기·삭제 작업자·실제 역할 검증 전에는 배포 활성화하지 않는다. 요청은 고객 세션·CSRF·명시적 확인과 같은 계정 epoch를 요구한다. 취소 로그인은 기존 고객 callback의 서버 보관 purpose와 PKCE state에 결합하고 `prompt=login`, `max_age=0`을 요청한다. callback은 서명 검증된 ID 토큰의 `auth_time`이 해당 흐름 시작 이후인지 확인한다. 공급자가 새 인증을 확인해 주지 않으면 취소 세션을 발급하지 않는다. [Cognito 재인증 매개변수](https://docs.aws.amazon.com/cognito/latest/developerguide/authorization-endpoint.html)를 참고한다.
 
 취소 전용 서버 세션은 최대 5분이고 일반 고객·관리자 세션으로 사용할 수 없다. 취소는 해당 세션의 CSRF와 현재 계정 상태를 다시 확인하며 성공 후 세션을 제거하고 일반 로그인을 요구한다. 모의 Cognito 응답·메모리 공유 저장소를 사용하는 API 시험에서 기존 세션 차단, 취소 전용 범위, 오래된 인증·다른 계정·기한 만료·관리자 정지 거부와 CSRF를 확인했다. 실제 Cognito 재인증·이메일 해제·재가입 및 배포 환경의 권한 검증은 아직 수행하지 않았다.
+
+`tests/live/withdrawal_browser_harness.py`는 실제 업무 API와 빌드된 고객 UI를 로컬 루프백에서 띄우며, Cognito·계정 저장을 명시적인 합성 대체 객체로 실행한다. 외부 공급자·AWS 호출은 수행하지 않는다. 합성 본인 인증 화면을 거쳐 탈퇴 요청 → 일반 서비스 화면 제거 → 취소 전용 화면 → 취소 후 재로그인 안내를 브라우저에서 확인했다. 대기·취소 화면에 일반 가입 안내가 중복 표시되는 문제도 수정했다. 이 결과는 실제 Cognito 본인 인증이나 공개 배포 검증이 아니다.
