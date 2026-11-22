@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import paho.mqtt.client as mqtt
 from collection_entrypoint_support import injected_ca
@@ -121,8 +122,17 @@ class MqttMockTests(unittest.TestCase):
                     collect(host, port, str(cert), "test-user", "test-secret",
                             "foodtech-collector-integration", FailingIngestor(), count=3, timeout_seconds=20)
                 ingestor = Ingestor()
-                self.assertEqual(collect(host, port, str(cert), "test-user", "test-secret",
-                                         "foodtech-collector-integration", ingestor, count=3, timeout_seconds=20), 3)
+                original_connect = mqtt.Client.connect
+                attempts = []
+                def reset_once(client, *args, **kwargs):
+                    attempts.append(1)
+                    if len(attempts) == 1:
+                        raise ConnectionResetError('synthetic initial reset')
+                    return original_connect(client, *args, **kwargs)
+                with patch.object(mqtt.Client, 'connect', reset_once):
+                    self.assertEqual(collect(host, port, str(cert), "test-user", "test-secret",
+                                             "foodtech-collector-integration", ingestor, count=3, timeout_seconds=20), 3)
+                self.assertEqual(len(attempts), 2)
                 self.assertEqual(len(ingestor.records), 3)
                 self.assertTrue(all('"synthetic-mqtt"' in raw for raw in ingestor.records))
                 self.assertEqual([json.loads(raw)["sequenceNumber"] for raw in ingestor.records], [1, 2, 3])
