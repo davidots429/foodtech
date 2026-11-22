@@ -13,6 +13,7 @@ from foodtech_business_api.account_withdrawal import DynamoWithdrawalStore, GRAC
 from foodtech_business_api.deletion_registry_cipher import DeletionRegistryCipher
 from foodtech_business_api.guarded_deletion import GuardedDeletion
 from foodtech_business_api.identity_vault import IdentityVault, IdentityVaultConflict
+from foodtech_business_api.withdrawal_dispatch import WithdrawalDispatcher
 
 
 def main():
@@ -50,8 +51,8 @@ def main():
             expected_epoch=int(expired['epoch']), withdrawal_request_id=request_id)
         output = session.client('cloudformation').describe_stacks(StackName='FoodtechCredentialVault-dev')['Stacks'][0]['Outputs']
         key_arn = next(item['OutputValue'] for item in output if item['OutputKey'] == 'CredentialStorageKeyArn')
-        encrypted = DeletionRegistryCipher(key_arn, 'dev', kms_client=session.client('kms')).seal(
-            request_id, internal_id, bytearray(snapshot.capsule_locator.encode('ascii')))
+        cipher = DeletionRegistryCipher(key_arn, 'dev', kms_client=session.client('kms'))
+        encrypted = cipher.seal(request_id, internal_id, bytearray(snapshot.capsule_locator.encode('ascii')))
         lock = GuardedDeletion(auth_table=names['auth'], vault_table=names['vault'], capsule_table=names['capsule'],
             registry_table=names['registry'], approved_purposes=frozenset({'BILLING'}), client=client)
         args = dict(subject=subject, request_id=request_id, snapshot=snapshot,
@@ -70,13 +71,15 @@ def main():
             raise AssertionError('changed schedule must reject the lock transaction')
         tables['auth'].update_item(Key=keys['auth'], UpdateExpression='SET withdrawal_deadline = :restored',
             ExpressionAttributeValues={':restored': snapshot.withdrawal_deadline})
-        lock.lock_and_register(**args)
+        dispatcher = WithdrawalDispatcher(auth_table=tables['auth'], identity=identity, cipher=cipher, deletion=lock)
+        assert dispatcher.step(subject=subject, request_id=request_id) == {'state': 'LOCKED'}
+        assert dispatcher.step(subject=subject, request_id=request_id) == {'state': 'RECOVERY_REQUIRED'}
         locked = tables['auth'].get_item(Key=keys['auth'], ConsistentRead=True)['Item']
         assert locked['suspended'] is True and locked['deletion_lock_request'] == request_id
         assert all(tables[name].get_item(Key=keys[name], ConsistentRead=True)['Item']['state'] == 'DELETION_LOCKED'
                    for name in ('vault', 'capsule'))
         assert tables['registry'].get_item(Key=keys['registry'], ConsistentRead=True)['Item']['status'] == 'DELETING'
-        print('Pending rejection, changed-deadline atomic rejection, and expired four-domain lock passed')
+        print('Pending rejection, changed-deadline atomic rejection, expiry dispatch and four-domain lock passed')
     finally:
         if isinstance(internal_id, bytearray):
             internal_id[:] = b'\x00' * len(internal_id)

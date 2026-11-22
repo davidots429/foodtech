@@ -92,18 +92,21 @@ class GuardedDeletion:
 
     def lock_and_register(self, *, subject: str, request_id: str, snapshot: VaultSnapshot,
                           encrypted_user_id: bytes, encrypted_capsule_locator: bytes,
-                          requested_at: str, policy_version: str) -> None:
+                          requested_at: str, policy_version: str, attempt_id: str | None = None) -> None:
         """Atomically lock auth, Vault and Capsule and register encrypted tombstone.
 
         Ciphertexts must be made from the same trusted snapshot and request. All
         Vault and Capsule writers must honor their locks and advance revisions.
-        Repeat with the identical inputs and request ID for DynamoDB's bounded
-        client-token retry window. This method does not solve durable saga resume.
+        Repeat identical prepared inputs with the same attempt token. A newly
+        prepared encryption uses a new attempt ID; conditional domain locks and
+        the unique registry request still prevent a second commit for that job.
         """
         try:
             if not isinstance(snapshot, VaultSnapshot) or snapshot.authenticated_subject != subject or \
                     str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
                     str(UUID(snapshot.vault_id)) != snapshot.vault_id:
+                raise ValueError
+            if attempt_id is not None and str(UUID(attempt_id)) != attempt_id:
                 raise ValueError
             if type(snapshot.vault_revision) is not int or not 1 <= snapshot.vault_revision < 2**63 - 1:
                 raise ValueError
@@ -147,7 +150,7 @@ class GuardedDeletion:
                      "encrypted_user_id": encrypted_user_id, "encrypted_capsule_locator": encrypted_capsule_locator,
                      "reconcile_until": None, "expires_at": None, "ttl_delete_after": None,
                      "policy_version": policy_version, "version": 1}
-        self.client.transact_write_items(ClientRequestToken=request_id, TransactItems=[
+        self.client.transact_write_items(ClientRequestToken=attempt_id or request_id, TransactItems=[
             {"Update": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{subject}"}),
                         "UpdateExpression": "SET suspended = :yes, deletion_lock_request = :request ADD #epoch :one",
                         "ConditionExpression": "attribute_not_exists(deletion_lock_request) AND vault_id = :vault "

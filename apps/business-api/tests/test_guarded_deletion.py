@@ -114,6 +114,14 @@ class GuardedDeletionTests(unittest.TestCase):
             GuardedDeletion(auth_table="same", registry_table="registry", vault_table="same", capsule_table="capsule",
                             approved_purposes=frozenset({"BILLING"}), client=self.client)
 
+    def test_new_preparation_uses_separate_attempt_token_for_same_deletion_request(self):
+        attempt = str(uuid4())
+        self.store.lock_and_register(**self.arguments, attempt_id=attempt)
+        self.assertEqual(self.client.requests[-1]['ClientRequestToken'], attempt)
+        self.assertEqual(self.client.requests[-1]['TransactItems'][-1]['Put']['Item']['request_id'], {'S': self.request_id})
+        with self.assertRaises(ValueError):
+            self.store.lock_and_register(**self.arguments, attempt_id='invalid')
+
     def test_botocore_accepts_four_item_transaction(self):
         client = boto3.client("dynamodb", region_name="ap-southeast-2", aws_access_key_id="synthetic",
                               aws_secret_access_key="synthetic")
