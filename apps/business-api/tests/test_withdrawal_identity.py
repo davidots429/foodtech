@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from botocore.exceptions import ReadTimeoutError
 
-from foodtech_business_api.withdrawal_identity import CognitoWithdrawalRelease, WithdrawalIdentityConflict
+from foodtech_business_api.withdrawal_identity import CognitoWithdrawalRelease, WithdrawalIdentityConflict, IdentityReleaseCursor
 
 
 class NotFound(Exception):
@@ -108,6 +108,63 @@ class WithdrawalIdentityTests(unittest.TestCase):
         self.cognito.admin_get_user = changed
         with self.assertRaises(WithdrawalIdentityConflict):
             self.release()
+        self.assertEqual((self.deletes, self.writes), ([], []))
+
+    def test_scan_processes_bounded_candidates_and_retains_empty_page_cursor(self):
+        token = 'SESSION#synthetic-secret'
+        self.table.scan = lambda **kwargs: {'Items': [], 'LastEvaluatedKey': {'pk': token}}
+        page = self.worker.scan_page(limit=2)
+        self.assertEqual(page['results'], [])
+        self.assertNotIn(token, repr(page))
+        scans = []
+        def scan(**kwargs):
+            scans.append(kwargs)
+            return {'Items': [{'pk': self.account['pk'], 'withdrawal_request_id': self.request, 'epoch': 4}]}
+        self.table.scan = scan
+        result = self.worker.scan_page(limit=2, cursor=page['next_cursor'])
+        self.assertEqual(result, {'results': [{'state': 'COGNITO_REMOVED', 'deletion_complete': False}], 'next_cursor': None})
+        self.assertEqual(scans[0]['Limit'], 2)
+        self.assertEqual(scans[0]['ExclusiveStartKey'], {'pk': token})
+        self.assertTrue(scans[0]['ConsistentRead'])
+        self.assertEqual(len(self.deletes), 1)
+
+    def test_scan_reauthorizes_stale_or_corrupt_candidates_before_delete(self):
+        self.account['withdrawal_status'] = 'CANCELED'
+        self.table.scan = lambda **kwargs: {'Items': [
+            {'pk': self.account['pk'], 'withdrawal_request_id': self.request, 'epoch': 4},
+            {'pk': 'SESSION#synthetic-secret', 'withdrawal_request_id': self.request, 'epoch': 4},
+            {'pk': self.account['pk'], 'withdrawal_request_id': self.request}]}
+        page = self.worker.scan_page()
+        self.assertEqual(page['results'], [{'state': 'BLOCKED', 'deletion_complete': False}] * 3)
+        self.assertEqual((self.deletes, self.writes), ([], []))
+
+    def test_scan_delete_timeout_retries_absence_without_deleting_new_identity(self):
+        self.table.scan = lambda **kwargs: {'Items': [
+            {'pk': self.account['pk'], 'withdrawal_request_id': self.request, 'epoch': 4}]}
+        self.timeout = True
+        page = self.worker.scan_page()
+        self.assertEqual(page['results'], [{'state': 'RECONCILIATION_REQUIRED', 'deletion_complete': False}])
+        self.assertEqual(self.writes, [])
+        self.timeout = False
+        self.assertEqual(self.worker.scan_page()['results'][0]['state'], 'COGNITO_REMOVED')
+        self.assertEqual(len(self.deletes), 1)
+
+    def test_scan_failure_and_invalid_continuation_do_not_report_completion(self):
+        calls = []
+        def failed(**kwargs):
+            calls.append(kwargs)
+            raise ReadTimeoutError(endpoint_url='https://synthetic.invalid')
+        self.table.scan = failed
+        for limit in (True, 0, 101):
+            with self.assertRaises(ValueError):
+                self.worker.scan_page(limit=limit)
+        for cursor in (IdentityReleaseCursor('other-auth', {'pk': 'USER#opaque'}),
+                       IdentityReleaseCursor('auth', {'pk': ''}), {'pk': 'USER#opaque'}):
+            with self.assertRaises(ValueError):
+                self.worker.scan_page(cursor=cursor)
+        self.assertEqual(calls, [])
+        with self.assertRaises(ReadTimeoutError):
+            self.worker.scan_page()
         self.assertEqual((self.deletes, self.writes), ([], []))
 
 

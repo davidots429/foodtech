@@ -6,8 +6,11 @@ data erasure and fenced retirement. It never reports complete account erasure.
 """
 import re
 import time
+from dataclasses import dataclass, field
 from uuid import UUID
+from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import Binary
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .account_withdrawal import GRACE_SECONDS, WithdrawalConflict, _integer
 from .subject_identity import valid_subject
@@ -15,6 +18,14 @@ from .subject_identity import valid_subject
 
 class WithdrawalIdentityConflict(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class IdentityReleaseCursor:
+    # Auth scan keys may contain session tokens. Trusted worker memory only:
+    # never log, serialize, persist or expose this cursor through HTTP.
+    table_name: str = field(repr=False)
+    key: dict = field(repr=False)
 
 
 class CognitoWithdrawalRelease:
@@ -109,3 +120,44 @@ class CognitoWithdrawalRelease:
                 'ExpressionAttributeValues': {':deleting': 'DELETING', ':request': request_id}}},
         ])
         return {'state': 'COGNITO_REMOVED', 'deletion_complete': False}
+
+    def scan_page(self, *, limit=20, cursor=None):
+        """One bounded worker pass over locked identities, without data erasure.
+
+        A separate narrowly authorized identity worker runs this stage; it does
+        not need Vault/Capsule plaintext or permission to mark Registry complete.
+        Each candidate is reauthorized transactionally by release(), so scan
+        observations alone never authorize Cognito deletion. Restart from the
+        beginning after process loss; per-account markers make retries safe.
+        """
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError('invalid identity release page size')
+        args = {'Limit': limit, 'ConsistentRead': True,
+            'ProjectionExpression': 'pk, withdrawal_request_id, #epoch',
+            'ExpressionAttributeNames': {'#epoch': 'epoch'},
+            'FilterExpression': Attr('pk').begins_with('USER#') & Attr('withdrawal_status').eq('DELETING') &
+                Attr('suspended').eq(True) & Attr('withdrawal_deadline').lte(int(self.clock())) &
+                Attr('deletion_lock_request').exists() & Attr('identity_retired_request').not_exists()}
+        if cursor is not None:
+            if not isinstance(cursor, IdentityReleaseCursor) or cursor.table_name != self.auth_table.name or \
+                    not isinstance(cursor.key, dict) or set(cursor.key) != {'pk'} or \
+                    not isinstance(cursor.key['pk'], str) or not 1 <= len(cursor.key['pk']) <= 2048:
+                raise ValueError('invalid identity release continuation')
+            args['ExclusiveStartKey'] = dict(cursor.key)
+        # Discovery failure propagates without manufacturing an end cursor.
+        page = self.auth_table.scan(**args)
+        results = []
+        for item in page.get('Items', []):
+            try:
+                if not isinstance(item, dict) or not isinstance(item.get('pk'), str) or not item['pk'].startswith('USER#'):
+                    raise ValueError('invalid identity release candidate')
+                results.append(self.release(subject=item['pk'].removeprefix('USER#'),
+                    request_id=item['withdrawal_request_id'], expected_epoch=item['epoch']))
+            except (KeyError, ValueError, WithdrawalConflict, WithdrawalIdentityConflict):
+                results.append({'state': 'BLOCKED', 'deletion_complete': False})
+            except (BotoCoreError, ClientError):
+                # Delete or marker update may have committed. Re-read and retry
+                # the exact old subject; never assume completion after timeout.
+                results.append({'state': 'RECONCILIATION_REQUIRED', 'deletion_complete': False})
+        key = page.get('LastEvaluatedKey')
+        return {'results': results, 'next_cursor': IdentityReleaseCursor(self.auth_table.name, dict(key)) if key else None}
