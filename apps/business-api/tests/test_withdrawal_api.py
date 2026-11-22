@@ -10,6 +10,7 @@ import httpx
 from foodtech_business_api import auth, withdrawal_api
 from foodtech_business_api.auth_store import MemoryStore, Session
 from foodtech_business_api.main import app
+from foodtech_business_api.principal_enrollment import PrincipalEnrollmentConflict
 from test_auth import ENV
 
 
@@ -20,7 +21,8 @@ class WithdrawalApiTests(unittest.IsolatedAsyncioTestCase):
         self.store.principals[self.subject] = {'epoch': 0}
         self.store.save_session('existing', Session('customer', self.subject, 'synthetic@example.invalid',
                                                   'original-csrf', int(time.time()) + 300, 0))
-        self.environment = patch.dict(os.environ, {**ENV, 'FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED': 'true'})
+        self.environment = patch.dict(os.environ, {**ENV, 'FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED': 'true',
+                                                   'FOODTECH_PRINCIPAL_PROVISIONING_ENABLED': 'true'})
         self.environment.start()
         self.patches = [patch.object(auth, 'get_store', return_value=self.store),
                         patch.object(withdrawal_api, 'get_store', return_value=self.store),
@@ -114,13 +116,18 @@ class WithdrawalApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request_withdrawal()).status_code, 409)
         self.assertNotIn('withdrawal_status', self.store.principal(self.subject))
 
+    async def test_missing_enrollment_control_prevents_new_withdrawal(self):
+        with patch.object(self.store, 'enrollment_fence', side_effect=PrincipalEnrollmentConflict('unavailable')):
+            self.assertEqual((await self.request_withdrawal()).status_code, 503)
+        self.assertNotIn('withdrawal_status', self.store.principal(self.subject))
+
     async def test_disabled_flow_and_missing_principal_fail_closed(self):
         with patch.dict(os.environ, {'FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED': 'false'}):
             self.assertEqual((await self.client.get('/api/customer/withdrawal/options')).json(), {'enabled': False})
             self.assertEqual((await self.client.get('/api/customer/withdrawal/login')).status_code, 404)
             self.assertEqual((await self.request_withdrawal()).status_code, 404)
         self.store.principals.clear()
-        self.assertEqual((await self.request_withdrawal()).status_code, 409)
+        self.assertEqual((await self.request_withdrawal()).status_code, 401)
         self.assertEqual(self.store.principals, {})
 
 

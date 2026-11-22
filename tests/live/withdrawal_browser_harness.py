@@ -42,6 +42,7 @@ def main():
         'FOODTECH_ADMIN_CALLBACK': origin + '/api/auth/admin/callback',
         'FOODTECH_CUSTOMER_WEB': origin, 'FOODTECH_ADMIN_WEB': origin,
         'FOODTECH_SECURE_COOKIES': 'false', 'FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED': 'true',
+        'FOODTECH_PRINCIPAL_PROVISIONING_ENABLED': 'true',
         'FOODTECH_AUTH_REFRESH_KEY_ARN': '', 'FOODTECH_COOKING_TABLE': '', 'FOODTECH_TIER_TABLE': '',
     }
     original_flow = auth._flow

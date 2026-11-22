@@ -8,17 +8,20 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
+from botocore.exceptions import BotoCoreError, ClientError
 
 from . import auth
 from .account_withdrawal import WithdrawalConflict, _pending, _integer
 from .auth_store import Session, get_store
+from .principal_enrollment import PrincipalEnrollmentConflict
 
 router = APIRouter(prefix='/api/customer/withdrawal')
 RECOVERY_SECONDS = 300
 
 
 def _enabled():
-    if os.getenv('FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED') != 'true':
+    if os.getenv('FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED') != 'true' or \
+            os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED') != 'true':
         raise HTTPException(404)
 
 
@@ -45,7 +48,8 @@ def _recoverable(principal, *, now):
 
 @router.get('/options')
 async def options():
-    return _response({'enabled': os.getenv('FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED') == 'true'})
+    return _response({'enabled': os.getenv('FOODTECH_ACCOUNT_WITHDRAWAL_ENABLED') == 'true' and
+                      os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED') == 'true'})
 
 
 @router.get('/login')
@@ -119,6 +123,10 @@ async def request_withdrawal(request: Request, body: WithdrawalRequest):
     if not body.confirmed:
         raise HTTPException(422, '탈퇴 안내를 확인해야 합니다.')
     store = get_store()
+    try:
+        await asyncio.to_thread(store.enrollment_fence)
+    except (PrincipalEnrollmentConflict, WithdrawalConflict, BotoCoreError, ClientError):
+        raise HTTPException(503, '계정 삭제 경합을 보호하는 저장소가 준비되지 않았습니다.') from None
     try:
         state = await asyncio.to_thread(store.withdrawal_transition, subject=session.subject,
             request_id=str(body.request_id), now=int(time.time()), action='request', expected_epoch=session.epoch)

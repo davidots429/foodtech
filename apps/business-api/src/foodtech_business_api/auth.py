@@ -84,7 +84,8 @@ def _cognito_access(settings: Settings, subject: str, surface: str) -> bool:
     pool_id = settings.issuer.rsplit("/", 1)[-1]
     try:
         user = client.admin_get_user(UserPoolId=pool_id, Username=subject)
-        if not user.get("Enabled", False) or user.get("UserStatus") != "CONFIRMED":
+        attributes = {item['Name']: item.get('Value') for item in user.get('UserAttributes', []) if 'Name' in item}
+        if not user.get("Enabled", False) or user.get("UserStatus") != "CONFIRMED" or attributes.get('sub') != subject:
             return False
         if surface == "admin":
             pages = client.get_paginator("admin_list_groups_for_user").paginate(
@@ -102,6 +103,37 @@ async def _checked_cognito_access(settings: Settings, subject: str, surface: str
         return await asyncio.to_thread(_cognito_access, settings, subject, surface)
     except (BotoCoreError, ClientError) as exc:
         raise HTTPException(503, "현재 계정 권한을 확인할 수 없습니다.") from exc
+
+
+async def _login_principal(settings, store, subject, surface):
+    from .account_withdrawal import WithdrawalConflict, _integer
+    from .principal_enrollment import PrincipalEnrollmentConflict
+    provision = os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED') == 'true'
+    try:
+        principal = await asyncio.to_thread(store.principal_record if provision else store.principal, subject)
+        def check(record):
+            if not isinstance(record, dict) or record.get('suspended', False) is not False or 'deletion_lock_request' in record or \
+                    (surface == 'admin' and record.get('admin_blocked')):
+                raise HTTPException(403, '이용이 중단되었거나 권한이 회수된 계정입니다.')
+            if provision:
+                _integer(record.get('epoch'))
+        if principal is not None:
+            check(principal)
+        elif not provision:
+            check(None)
+        # Read the generation before the uncached external identity check. An
+        # old check cannot recreate a principal removed by fenced retirement.
+        generation = await asyncio.to_thread(store.enrollment_fence) if principal is None and provision else None
+        if not await _checked_cognito_access(settings, subject, surface):
+            raise HTTPException(403, '현재 계정 권한을 확인할 수 없습니다.')
+        if principal is None:
+            principal = await asyncio.to_thread(store.enroll_principal, subject, generation)
+        check(principal)
+        return principal
+    except (PrincipalEnrollmentConflict, WithdrawalConflict):
+        raise HTTPException(409, '계정 초기화 상태가 변경되었거나 준비되지 않았습니다. 다시 인증해 주세요.') from None
+    except (BotoCoreError, ClientError):
+        raise HTTPException(503, '계정 상태 저장소를 확인하지 못했습니다.') from None
 
 
 async def _flow(surface: str, settings: Settings, *, signup: bool = False, purpose: str = 'login') -> RedirectResponse:
@@ -247,13 +279,7 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
     if flow.purpose != 'login':
         raise HTTPException(400, '로그인 목적이 올바르지 않습니다.')
     store = get_store()
-    principal = await asyncio.to_thread(store.principal, identity["sub"])
-    if principal.get("suspended") or "deletion_lock_request" in principal:
-        raise HTTPException(403, "이용이 중단된 계정입니다.")
-    if surface == "admin" and principal.get("admin_blocked"):
-        raise HTTPException(403, "관리자 권한이 회수되었습니다.")
-    if not await _checked_cognito_access(settings, identity["sub"], surface):
-        raise HTTPException(403, "현재 계정 권한을 확인할 수 없습니다.")
+    principal = await _login_principal(settings, store, identity['sub'], surface)
     old_session_id = request.cookies.get(SESSION_COOKIE, "")
     if old_session_id:
         await asyncio.to_thread(store.delete_session, old_session_id)
@@ -335,11 +361,7 @@ async def admin_totp(request: Request, body: dict) -> Response:
     if identity["sub"] != access["sub"] or "foodtech-admin" not in access.get("cognito:groups", []):
         raise HTTPException(403, "관리자 권한이 없습니다.")
     store = get_store()
-    principal = await asyncio.to_thread(store.principal, identity["sub"])
-    if principal.get("suspended") or "deletion_lock_request" in principal or principal.get("admin_blocked"):
-        raise HTTPException(403, "관리자 권한이 회수되었습니다.")
-    if not await _checked_cognito_access(settings, identity["sub"], "admin"):
-        raise HTTPException(403, "현재 계정 권한을 확인할 수 없습니다.")
+    principal = await _login_principal(settings, store, identity['sub'], 'admin')
     old_session_id = request.cookies.get(SESSION_COOKIE, "")
     if old_session_id:
         await asyncio.to_thread(store.delete_session, old_session_id)
@@ -370,7 +392,20 @@ async def _session(request: Request, surface: str, *, allow_expired_access: bool
         raise HTTPException(401, "로그인이 필요합니다.")
     if not allow_expired_access and session.access_expires is not None and session.access_expires <= time.time():
         raise HTTPException(401, "세션 갱신이 필요합니다.")
-    principal = await asyncio.to_thread(store.principal, session.subject)
+    principal = await asyncio.to_thread(store.principal_record if
+        os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED') == 'true' else store.principal, session.subject)
+    if principal is None:
+        await asyncio.to_thread(store.delete_session, session_id)
+        raise HTTPException(401, '계정 상태가 없거나 삭제되었습니다.')
+    if os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED') == 'true':
+        from .account_withdrawal import WithdrawalConflict, _integer
+        try:
+            _integer(principal.get('epoch'))
+            if principal.get('suspended', False) is not False:
+                raise WithdrawalConflict('account is not active')
+        except WithdrawalConflict:
+            await asyncio.to_thread(store.delete_session, session_id)
+            raise HTTPException(401, '계정 상태가 유효하지 않거나 이용이 중단되었습니다.') from None
     if (int(principal.get("epoch", 0)) != session.epoch or principal.get("suspended")
             or "deletion_lock_request" in principal
             or (surface == "admin" and principal.get("admin_blocked"))):

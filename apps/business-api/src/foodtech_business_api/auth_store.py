@@ -63,6 +63,9 @@ class AuthStore(Protocol):
     def finish_refresh(self, session_id: str, lease: str, expected_version: int, now: int,
                        access_token: str, ciphertext: bytes, expires: int) -> bool: ...
     def principal(self, subject: str) -> dict: ...
+    def principal_record(self, subject: str) -> dict | None: ...
+    def enrollment_fence(self) -> int: ...
+    def enroll_principal(self, subject: str, generation: int) -> dict: ...
     def block_admin(self, subject: str) -> None: ...
     def suspend_user(self, subject: str) -> None: ...
     def withdrawal_transition(self, *, subject: str, request_id: str, now: int,
@@ -77,6 +80,7 @@ class MemoryStore:
         self.sessions: dict[str, Session] = {}
         self.principals: dict[str, dict] = {}
         self.lock = threading.RLock()
+        self.enrollment_generation = 0
 
     def save_flow(self, flow_id: str, flow: LoginFlow) -> None:
         with self.lock:
@@ -131,6 +135,28 @@ class MemoryStore:
     def principal(self, subject: str) -> dict:
         with self.lock:
             return self.principals.get(subject, {"epoch": 0}).copy()
+
+    def principal_record(self, subject: str) -> dict | None:
+        with self.lock:
+            record = self.principals.get(subject)
+            return record.copy() if record is not None else None
+
+    def enrollment_fence(self) -> int:
+        from .account_withdrawal import _integer
+        with self.lock:
+            return _integer(self.enrollment_generation)
+
+    def enroll_principal(self, subject: str, generation: int) -> dict:
+        from .principal_enrollment import PrincipalEnrollmentConflict, _subject
+        from .account_withdrawal import _integer
+        _subject(subject)
+        generation = _integer(generation)
+        with self.lock:
+            if generation != self.enrollment_generation or subject in self.principals:
+                raise PrincipalEnrollmentConflict('account or enrollment generation changed')
+            record = {'pk': f'USER#{subject}', 'epoch': 0, 'suspended': False}
+            self.principals[subject] = record
+            return record.copy()
 
     def block_admin(self, subject: str) -> None:
         with self.lock:
@@ -236,6 +262,17 @@ class DynamoAuthStore:
         item = self.table.get_item(Key={"pk": f"USER#{subject}"},
                                    ConsistentRead=True).get("Item")
         return item or {"epoch": 0}
+
+    def principal_record(self, subject: str) -> dict | None:
+        return self.table.get_item(Key={'pk': f'USER#{subject}'}, ConsistentRead=True).get('Item')
+
+    def enrollment_fence(self) -> int:
+        from .principal_enrollment import DynamoPrincipalEnrollment
+        return DynamoPrincipalEnrollment(table=self.table).fence()
+
+    def enroll_principal(self, subject: str, generation: int) -> dict:
+        from .principal_enrollment import DynamoPrincipalEnrollment
+        return DynamoPrincipalEnrollment(table=self.table).enroll(subject=subject, expected_generation=generation)
 
     def block_admin(self, subject: str) -> None:
         self.table.update_item(
