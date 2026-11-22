@@ -53,7 +53,13 @@ def main() -> None:
         raise AssertionError("Worker role policy inventory changed; review all policies before simulation")
     policy = iam.get_role_policy(RoleName=role_name, PolicyName=inline[0])["PolicyDocument"]
     custom = {"PolicyInputList": [json.dumps(policy)]}
-    principal = {"PolicySourceArn": role_arn}
+    # An SCP can evaluate aws:RequestedRegion. The policy simulator does not
+    # populate this request context automatically; omitting it produced an
+    # explicit deny for this account that did not represent a regional request.
+    principal = {"PolicySourceArn": role_arn, "ContextEntries": [{
+        "ContextKeyName": "aws:RequestedRegion", "ContextKeyValues": [REGION],
+        "ContextKeyType": "string",
+    }]}
     data = f"arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/foodtech-data-flow-dev"
     cooking = f"arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/foodtech-cooking-jobs-dev"
     table_actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem",
