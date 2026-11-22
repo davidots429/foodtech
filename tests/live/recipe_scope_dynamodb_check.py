@@ -36,7 +36,8 @@ def main():
     auth = DynamoAuthStore.__new__(DynamoAuthStore)
     auth.table = resource.Table('foodtech-auth-sessions-dev')
     registry = DynamoRegistry('foodtech-ai-execution-registry-dev', '2026-11', resource=resource,
-                              client=aws.client('dynamodb'))
+                              client=aws.client('dynamodb'), auth_table=auth.table.name)
+    registry.require_principal = True
     jobs = DynamoCookingStore('foodtech-cooking-jobs-dev')
     session_id, execution_id, current, prior = (str(uuid4()) for _ in range(4))
     subject = 'scope-test-' + uuid4().hex
@@ -49,6 +50,10 @@ def main():
     try:
         auth.save_session(session_id, session)
         created.append((auth.table, {'pk': f'SESSION#{session_id}'}, Attr('csrf').eq('synthetic-csrf')))
+        principal_key = {'pk': f'USER#{subject}'}
+        auth.table.put_item(Item={**principal_key, 'epoch': 0, 'test_marker': 'synthetic'},
+                            ConditionExpression=Attr('pk').not_exists())
+        created.append((auth.table, principal_key, Attr('test_marker').eq('synthetic')))
         registry.create_execution(execution)
         created.append((registry.table, {'pk': f'EXEC#{execution_id}', 'sk': 'META'}, Attr('tenant_id').eq(subject)))
         for identifier, version in ((current, 2), (prior, 1)):
@@ -85,20 +90,27 @@ def main():
             (b'cookie', f'{auth_module.SESSION_COOKIE}={session_id}'.encode())]})
         def scope_read():
             return authenticated_recipe_scope(request, execution_id, registry.execution_snapshot, jobs.read_meta)
+        auth.table.delete_item(Key=principal_key, ConditionExpression=Attr('test_marker').eq('synthetic'))
         with patch.object(auth_module, 'get_store', return_value=auth), \
              patch('foodtech_business_api.recipe_scope.get_store', return_value=auth), \
              patch.object(auth_module.Settings, 'from_env', return_value=SimpleNamespace()), \
              patch.object(auth_module, '_cognito_access', return_value=True):
             try:
                 asyncio.run(scope_read())
-            except RecipeScopeDenied:
-                pass
+            except HTTPException as error:
+                if error.status_code != 401:
+                    raise
+                if auth.read_session(session_id) is not None:
+                    raise AssertionError('missing principal session was retained')
             else:
                 raise AssertionError('missing principal accepted')
             principal_key = {'pk': f'USER#{subject}'}
             auth.table.put_item(Item={**principal_key, 'epoch': 0, 'test_marker': 'synthetic'},
                                 ConditionExpression=Attr('pk').not_exists())
             created.append((auth.table, principal_key, Attr('test_marker').eq('synthetic')))
+            # Missing-principal access revoked the old session. Model a fresh
+            # synthetic login after explicit account initialization.
+            auth.save_session(session_id, session)
             authenticated = asyncio.run(scope_read())
             assert authenticated.owner == subject
             assert asyncio.run(revalidate_recipe_scope(request, authenticated, registry.execution_snapshot,

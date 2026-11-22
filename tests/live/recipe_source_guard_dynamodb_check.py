@@ -58,7 +58,8 @@ def main():
         auth_store.save_session(session_id, synthetic_session)
         created.append((auth_store.table, {'pk': f'SESSION#{session_id}'}))
         registry = DynamoRegistry('foodtech-ai-execution-registry-dev', '2026-11', resource=resource,
-                                  client=session.client('dynamodb'))
+                                  client=session.client('dynamodb'), auth_table=auth_store.table.name)
+        registry.require_principal = True
         registry.create_execution(execution)
         created.append((registry.table, {'pk': f'EXEC#{execution.execution_id}', 'sk': 'META'}))
         for job, version, batch, revision in zip((current, prior), (7, 3), source_ids, (3, 2)):
@@ -189,6 +190,9 @@ def main():
             ExpressionAttributeNames={'#state': 'state', '#version': 'version'},
             ExpressionAttributeValues={':reserved': 'RESERVED', ':provider': 'ollama', ':one': 1},
             ConditionExpression=Attr('tenant_id').eq(owner))
+        active_key = {'pk': f'ACTIVE#{owner}', 'sk': f'EXEC#{execution.execution_id}'}
+        registry.table.put_item(Item=active_key, ConditionExpression=Attr('pk').not_exists())
+        created.append((registry.table, active_key))
         try:
             registry.finish(execution.execution_id, succeeded=True, actual_cost_usd=Decimal('0'),
                             response_text='synthetic', expected_execution=execution, recipe_source_guard=bound)
@@ -199,6 +203,8 @@ def main():
         if registry.table.get_item(Key=result_key, ConsistentRead=True).get('Item') or \
                 registry.table.get_item(Key=execution_key, ConsistentRead=True)['Item']['state'] != 'RESERVED':
             raise AssertionError('failed source condition partially committed settlement')
+        if not registry.table.get_item(Key=active_key, ConsistentRead=True).get('Item'):
+            raise AssertionError('failed source condition removed active execution marker')
         for scope, identifier in (('TENANT', owner), ('PROVIDER', 'ollama'), ('PROJECT', 'GLOBAL')):
             key = {'pk': f'LIMIT#{registry._limit_id(scope, identifier)}', 'sk': 'META'}
             if int(registry.table.get_item(Key=key, ConsistentRead=True)['Item']['version']) != 1:
@@ -210,6 +216,8 @@ def main():
         if registry.table.get_item(Key=execution_key, ConsistentRead=True)['Item']['state'] != 'SUCCEEDED' or \
                 not registry.table.get_item(Key=result_key, ConsistentRead=True).get('Item'):
             raise AssertionError('valid source settlement did not commit')
+        if registry.table.get_item(Key=active_key, ConsistentRead=True).get('Item'):
+            raise AssertionError('valid settlement retained active execution marker')
         model_id = 'synthetic-tier1-' + suffix
         now = datetime.now(timezone.utc)
         registry.create_model(Model(model_id, 'ollama', Tier.TIER_1, 'ACTIVE', True, True, now, now))
@@ -223,6 +231,7 @@ def main():
             registry.create_execution(next_execution)
             created.append((registry.table, {'pk': f'EXEC#{next_execution.execution_id}', 'sk': 'META'}))
             created.append((registry.table, {'pk': f'EXEC#{next_execution.execution_id}', 'sk': 'RESULT'}))
+            created.append((registry.table, {'pk': f'ACTIVE#{owner}', 'sk': f'EXEC#{next_execution.execution_id}'}))
             next_guard = BoundRecipeSourceGuard(guard, next_execution, scoped.job_partitions, scoped.source_partitions)
             return next_execution, next_guard
         def invoke(service, next_execution):
