@@ -6,6 +6,7 @@ requires-python = "==3.12.*"
 members = [
     "foodtech-ai-gateway",
     "foodtech-business-api",
+    "foodtech-capsule-crypto",
     "foodtech-collection-adapter",
     "foodtech-contracts",
     "foodtech-credential-registration",
@@ -517,6 +518,21 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
     { name = "uvicorn", specifier = ">=0.35,<1" },
+]
+
+[[package]]
+name = "foodtech-capsule-crypto"
+version = "0.0.0"
+source = { editable = "apps/capsule-crypto" }
+dependencies = [
+    { name = "aws-encryption-sdk", extra = ["mpl"] },
+    { name = "boto3" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aws-encryption-sdk", extras = ["mpl"], specifier = "==4.0.7" },
+    { name = "boto3", specifier = ">=1.40,<2" },
 ]
 
 [[package]]
