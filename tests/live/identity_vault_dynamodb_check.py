@@ -82,6 +82,25 @@ def main():
             raise AssertionError("Losing identity creation left an orphan")
         vault_service.commit(authenticated_subject=subject, prepared=winner)
         vault_service.verify_committed(authenticated_subject=subject, prepared=winner)
+        original_resolve = vault_service.resolve_deletion
+        reads = []
+        def lock_before_second_read(**kwargs):
+            reads.append(1)
+            if len(reads) == 2:
+                auth.update_item(Key=auth_key,
+                    UpdateExpression='SET suspended = :yes, deletion_lock_request = :request',
+                    ExpressionAttributeValues={':yes': True, ':request': str(uuid.uuid4())})
+            return original_resolve(**kwargs)
+        vault_service.resolve_deletion = lock_before_second_read
+        try:
+            vault_service.verify_committed(authenticated_subject=subject, prepared=winner)
+        except IdentityVaultConflict:
+            pass
+        else:
+            raise AssertionError('identity verification accepted a concurrent deletion lock')
+        finally:
+            vault_service.resolve_deletion = original_resolve
+        auth.update_item(Key=auth_key, UpdateExpression='REMOVE suspended, deletion_lock_request')
         restarted = IdentityVault(auth_table=AUTH, vault_table=VAULT, capsule_table=CAPSULE,
                                   approved_purposes=frozenset({"BILLING"}), client=client)
         recovered, recovered_id = restarted.resolve_deletion(authenticated_subject=subject, expected_epoch=0)

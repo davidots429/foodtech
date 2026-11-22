@@ -1,4 +1,5 @@
 import unittest
+import ssl
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -6,6 +7,54 @@ from foodtech_collection_adapter import mqtt as collector
 
 
 class MqttReconnectTests(unittest.TestCase):
+    def test_initial_reset_retries_before_accepting_messages(self):
+        class Client:
+            def __init__(self): self.attempts = 0; self.closed = False
+            def username_pw_set(self, *args): pass
+            def tls_set_context(self, *args): pass
+            def connect(self, *args, **kwargs):
+                self.attempts += 1
+                if self.attempts == 1: raise ConnectionResetError('reset')
+                return 0
+            def disconnect(self): self.closed = True
+            def loop(self, timeout):
+                self.on_message(self, None, SimpleNamespace(mid=1, payload=b'fixture', dup=False))
+                return collector.mqtt.MQTT_ERR_SUCCESS
+        client = Client()
+        with patch.object(collector.mqtt, 'Client', return_value=client), \
+             patch.object(collector.ssl, 'create_default_context', return_value=object()), \
+             patch.object(collector, 'accept_message', return_value=None), \
+             patch.object(collector.time, 'sleep'):
+            self.assertEqual(collector.collect('localhost', 8883, 'ca', 'user', 'password',
+                'foodtech-collector-test', object(), count=1, timeout_seconds=5), 1)
+        self.assertEqual(client.attempts, 2)
+        self.assertTrue(client.closed)
+
+    def test_initial_failure_deadline_and_tls_verification_are_not_bypassed(self):
+        clock = [0.0]
+        class Client:
+            def __init__(self, error): self.error = error; self.attempts = 0; self.closed = False
+            def username_pw_set(self, *args): pass
+            def tls_set_context(self, *args): pass
+            def connect(self, *args, **kwargs): self.attempts += 1; raise self.error
+            def disconnect(self): self.closed = True
+        def sleep(seconds): clock[0] += seconds
+        for error, expected in ((ConnectionRefusedError('offline'), TimeoutError),
+                                (ssl.SSLCertVerificationError('bad certificate'), ssl.SSLCertVerificationError)):
+            clock[0] = 0
+            client = Client(error)
+            with self.subTest(error=type(error).__name__), \
+                 patch.object(collector.mqtt, 'Client', return_value=client), \
+                 patch.object(collector.ssl, 'create_default_context', return_value=object()), \
+                 patch.object(collector.time, 'monotonic', side_effect=lambda: clock[0]), \
+                 patch.object(collector.time, 'sleep', side_effect=sleep):
+                with self.assertRaises(expected):
+                    collector.collect('localhost', 8883, 'ca', 'user', 'password',
+                        'foodtech-collector-test', object(), count=1, timeout_seconds=1)
+            self.assertTrue(client.closed)
+            if isinstance(error, ssl.SSLError): self.assertEqual(client.attempts, 1)
+            else: self.assertGreater(client.attempts, 1)
+
     def test_known_qos_retransmission_is_persisted_but_does_not_complete_collection(self):
         class Client:
             def __init__(self, *args, **kwargs): self.index = 0
@@ -88,3 +137,23 @@ class MqttReconnectTests(unittest.TestCase):
                 collector.collect("localhost", 8883, "ca", "user", "password", "foodtech-collector-test",
                                   object(), count=1, timeout_seconds=5)
         self.assertEqual(client.reconnects, 1)
+
+    def test_certificate_failure_after_disconnect_is_not_retried(self):
+        class Client:
+            def __init__(self): self.reconnects = 0; self.closed = False
+            def username_pw_set(self, *args): pass
+            def tls_set_context(self, *args): pass
+            def connect(self, *args, **kwargs): return 0
+            def disconnect(self): self.closed = True
+            def loop(self, timeout): return collector.mqtt.MQTT_ERR_CONN_LOST
+            def reconnect(self):
+                self.reconnects += 1
+                raise ssl.SSLCertVerificationError('bad certificate')
+        client = Client()
+        with patch.object(collector.mqtt, 'Client', return_value=client), \
+             patch.object(collector.ssl, 'create_default_context', return_value=object()):
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                collector.collect('localhost', 8883, 'ca', 'user', 'password',
+                    'foodtech-collector-test', object(), count=1, timeout_seconds=5)
+        self.assertEqual(client.reconnects, 1)
+        self.assertTrue(client.closed)
