@@ -26,7 +26,8 @@ def main():
              ('direct_delete', ['ACTIVE#synthetic'], None, False)]
     results = {}
     for name, keys, operation, expected in cases:
-        context = []
+        context = [{'ContextKeyName': 'aws:RequestedRegion',
+                    'ContextKeyValues': ['ap-southeast-2'], 'ContextKeyType': 'string'}]
         if keys:
             context.append({'ContextKeyName': 'dynamodb:LeadingKeys', 'ContextKeyValues': keys,
                             'ContextKeyType': 'stringList'})

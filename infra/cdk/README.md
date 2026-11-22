@@ -80,6 +80,6 @@ Gateway Task의 인증 테이블 조건 검사 권한과 `FOODTECH_AUTH_TABLE` �
 
 Gateway의 실행 정산은 레지스트리의 `ACTIVE#` 진행 표식을 같은 트랜잭션에서 삭제한다. 이를 위한 `DeleteItem` 권한은 해당 파티션 접두사와 `TransactWriteItems`로 제한하며, 개발 계정의 정책 시뮬레이션에서 허용 및 다른 키·단건 삭제 거부를 확인했다. 실제 배포와 실행 역할 검증은 남았다.
 
-2026-11-22 기존 배포 Gateway 역할에 대해 활성 표식 삭제를 시뮬레이션한 결과 `explicitDeny`, `AllowedByOrganizations=false`였다. 위 정책 변경은 아직 배포되지 않았고 정책 시뮬레이션은 실제 Task 실행이 아니다. 조직 정책을 확인한 뒤 배포된 역할과 실제 정산 트랜잭션을 다시 검증해야 한다.
+2026-11-22 기존 배포 Gateway 역할에 대해 활성 표식 삭제를 시뮬레이션한 결과 `explicitDeny`, `AllowedByOrganizations=false`였으나 요청 리전 조건이 빠져 있었다. 따라서 이 결과만으로 실제 조직 정책 차단을 단정할 수 없다. 위 정책 변경은 아직 배포되지 않았고 정책 시뮬레이션은 실제 Task 실행이 아니다. 리전을 포함한 재검증과 실제 정산 트랜잭션 검증이 필요하다.
 
-재확인은 `AWS_PROFILE=foodtech .venv/bin/python tests/live/ai_gateway_role_iam_check.py`를 사용한다. 조직 정책이 모든 사례를 거부하는 동안에는 거부 결과만으로 역할 정책의 제한이 올바르다고 판단할 수 없다.
+재확인은 `AWS_PROFILE=foodtech .venv/bin/python tests/live/ai_gateway_role_iam_check.py`를 사용한다. 시뮬레이션에 실제 요청 리전과 필요한 DynamoDB 조건을 전달하며 결과는 실제 실행을 대체하지 않는다.
