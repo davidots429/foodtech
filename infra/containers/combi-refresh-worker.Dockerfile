@@ -5,6 +5,7 @@ COPY pyproject.toml uv.lock ./
 COPY apps/ai-gateway apps/ai-gateway
 COPY apps/credential-registration apps/credential-registration
 COPY apps/business-api apps/business-api
+COPY apps/capsule-crypto apps/capsule-crypto
 COPY apps/collection-adapter apps/collection-adapter
 COPY apps/standardization-worker apps/standardization-worker
 COPY packages/contracts packages/contracts
