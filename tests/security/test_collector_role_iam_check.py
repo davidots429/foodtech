@@ -33,10 +33,14 @@ class CollectorRoleSimulationTests(unittest.TestCase):
         result = module.simulate(iam, {'PolicySourceArn': 'role'}, 'dynamodb:DeleteItem', 'table', 'STREAM#test')
         self.assertEqual(result, {'decision': 'explicitDeny', 'organizations_allowed': False})
         self.assertEqual(iam.calls[0][0], 'simulate_principal_policy')
-        self.assertEqual(iam.calls[0][1]['ContextEntries'][0]['ContextKeyValues'], ['STREAM#test'])
+        context = {item['ContextKeyName']: item for item in iam.calls[0][1]['ContextEntries']}
+        self.assertEqual(context['dynamodb:LeadingKeys']['ContextKeyValues'], ['STREAM#test'])
+        self.assertEqual(context['aws:RequestedRegion']['ContextKeyValues'], [module.REGION])
         module.simulate(iam, {'PolicyInputList': ['policy']}, 'dynamodb:DeleteItem', 'table', None)
         self.assertEqual(iam.calls[1][0], 'simulate_custom_policy')
-        self.assertEqual(iam.calls[1][1]['ContextEntries'], [])
+        self.assertEqual(iam.calls[1][1]['ContextEntries'], [
+            {'ContextKeyName': 'aws:RequestedRegion', 'ContextKeyValues': [module.REGION],
+             'ContextKeyType': 'string'}])
 
     def test_scenarios_include_restricted_resource_and_missing_key(self):
         cases = {case[0]: case for case in module.scenarios('synthetic-bucket')}
