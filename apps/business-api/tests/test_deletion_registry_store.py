@@ -21,6 +21,9 @@ class TransactionClient:
         update, put = TransactItems[0]["Update"], TransactItems[1]["Put"]
         subject = update["Key"]["pk"]["S"]
         item = put["Item"]
+        if (update["TableName"], subject, "") not in self.items:
+            raise ClientError({"Error": {"Code": "TransactionCanceledException", "Message": "missing principal"}},
+                              "TransactWriteItems")
         self.items[(update["TableName"], subject, "")] = {
             "pk": {"S": subject}, "suspended": {"BOOL": True},
             "deletion_lock_request": update["ExpressionAttributeValues"][":request"], "epoch": {"N": "1"}}
@@ -40,12 +43,15 @@ class DeletionRegistryStoreTests(unittest.TestCase):
         self.request = {"subject": str(uuid4()), "request_id": str(uuid4()),
                         "encrypted_user_id": b"encrypted-user", "encrypted_capsule_locator": b"encrypted-capsule",
                         "requested_at": "2026-11-21T00:00:00Z", "policy_version": "v1"}
+        self.client.items[("auth", f'USER#{self.request["subject"]}', "")] = {
+            "pk": {"S": f'USER#{self.request["subject"]}'}, "epoch": {"N": "0"}}
 
     def test_lock_and_encrypted_tombstone_are_one_conditional_transaction(self):
         self.assertTrue(self.store.lock_and_register(**self.request))
         transaction = self.client.requests[0]
         update, put = transaction[0]["Update"], transaction[1]["Put"]
         self.assertIn("attribute_not_exists(deletion_lock_request)", update["ConditionExpression"])
+        self.assertIn("attribute_exists(pk)", update["ConditionExpression"])
         self.assertIn("suspended = :yes", update["UpdateExpression"])
         self.assertIn("ADD #epoch :one", update["UpdateExpression"])
         self.assertEqual(put["Item"]["pk"], {"S": "REGISTRY"})
@@ -53,6 +59,12 @@ class DeletionRegistryStoreTests(unittest.TestCase):
         self.assertEqual(put["Item"]["encrypted_user_id"], {"B": b"encrypted-user"})
         self.assertNotIn("pseudonym_digest", put["Item"])
         self.assertNotIn("subject", put["Item"])
+
+    def test_missing_principal_cannot_be_recreated_by_deletion_registration(self):
+        self.client.items.clear()
+        with self.assertRaises(DeletionRegistryConflict):
+            self.store.lock_and_register(**self.request)
+        self.assertEqual(self.client.items, {})
 
     def test_exact_retry_is_idempotent_but_different_request_or_ciphertext_conflicts(self):
         self.store.lock_and_register(**self.request)
