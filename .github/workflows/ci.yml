@@ -33,6 +33,9 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechPrivacyStorage-dev --strict -c provisionPrivacyStorage=true --output /tmp/foodtech-privacy-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_privacy_storage.py /tmp/foodtech-privacy-cdk/FoodtechPrivacyStorage-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiExecutionRegistry-dev --strict -c provisionAiExecutionRegistry=true --output /tmp/foodtech-ai-registry-retention-cdk > /dev/null
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_ai_registry_retention.py /tmp/foodtech-ai-registry-retention-cdk/FoodtechAiExecutionRegistry-dev.template.json
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCookingJobs-dev --strict -c provisionCookingJobs=true --output /tmp/foodtech-cooking-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_meal_refresh_index.py /tmp/foodtech-cooking-cdk/FoodtechCookingJobs-dev.template.json

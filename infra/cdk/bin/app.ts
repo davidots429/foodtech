@@ -542,7 +542,7 @@ class AiExecutionRegistryStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
       timeToLiveAttribute: "expires",
-      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true, recoveryPeriodInDays: 7 },
       removalPolicy: RemovalPolicy.RETAIN,
     });
     new CfnOutput(this, "AiExecutionRegistryTableName", { value: table.tableName });
