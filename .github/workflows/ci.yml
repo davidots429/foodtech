@@ -30,6 +30,12 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCredentialVault-dev --strict -c provisionCredentialVault=true -c credentialKeyPeriod=2026-11 --output /tmp/foodtech-credential-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_gateway_policy.py /tmp/foodtech-credential-cdk/FoodtechCredentialVault-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCookingJobs-dev --strict -c provisionCookingJobs=true --output /tmp/foodtech-cooking-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_meal_refresh_index.py /tmp/foodtech-cooking-cdk/FoodtechCookingJobs-dev.template.json
+      - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshSchedule-dev --strict -c provisionMealRefreshSchedule=true --output /tmp/foodtech-meal-schedule-cdk
+        working-directory: infra/cdk
+      - run: python3 tests/config/check_meal_refresh_schedule.py /tmp/foodtech-meal-schedule-cdk/FoodtechMealRefreshSchedule-dev.template.json
 
   python:
     runs-on: ubuntu-latest
@@ -134,3 +140,22 @@ jobs:
       - name: Verify OPC UA Binary collection entrypoint
         run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=opcua-binary foodtech-ci/collection-adapter:test --help
 
+
+  combi-refresh-worker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/containers/combi-refresh-worker.Dockerfile
+          push: false
+          load: true
+          tags: foodtech-ci/combi-refresh-worker:test
+      - name: Verify worker imports and explicit configuration guard
+        run: |
+          docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -c 'import foodtech_business_api.combi_refresh_worker'
+          status=0
+          docker run --rm foodtech-ci/combi-refresh-worker:test || status=$?
+          test "$status" -eq 2

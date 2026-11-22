@@ -1,6 +1,7 @@
 """Atomic cooking job revisions and append-only assessments."""
 
 import os
+import hashlib
 import random
 import re
 import threading
@@ -8,6 +9,7 @@ import time
 from decimal import Decimal
 from functools import lru_cache
 from typing import Protocol
+from uuid import UUID
 
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
@@ -15,6 +17,63 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 class Conflict(Exception):
     pass
+
+
+def _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch):
+    if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
+            type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63 or \
+            not isinstance(record, dict) or not isinstance(record.get('group_id'), str) or \
+            not re.fullmatch(r'[a-f0-9]{64}', record['group_id']) or \
+            pk != f"SCOPE#USER#{subject}#MEAL_AGGREGATE#{record['group_id']}" or \
+            not isinstance(snapshots, list) or not 1 <= len(snapshots) <= 20:
+        raise ValueError('invalid meal aggregate scope')
+    prefix = f'SCOPE#USER#{subject}#COMBI_MEAL#'
+    seen = set()
+    try:
+        for meal_pk, version in snapshots:
+            if not isinstance(meal_pk, str) or not meal_pk.startswith(prefix) or meal_pk in seen or \
+                    str(UUID(meal_pk[len(prefix):])) != meal_pk[len(prefix):] or \
+                    type(version) is not int or version < 1:
+                raise ValueError
+            seen.add(meal_pk)
+    except (TypeError, ValueError, AttributeError):
+        raise ValueError('invalid meal aggregate owner or version') from None
+
+
+def _meal_aggregate_dirty(pk, expected_version, meta):
+    if type(expected_version) is not int or expected_version < 1 or not isinstance(meta, dict) or \
+            type(meta.get('version')) is not int or meta['version'] != expected_version + 1:
+        raise ValueError('invalid meal revision for aggregate refresh')
+    return {'sk': 'MEAL_AGGREGATE#DIRTY', 'version': meta['version'], 'state': 'PENDING',
+            'aggregate_refresh_shard': meal_aggregate_shard(pk)}
+
+
+def meal_aggregate_shard(pk: str) -> str:
+    if not isinstance(pk, str) or not pk:
+        raise ValueError('invalid meal partition')
+    shard = hashlib.sha256(pk.encode('utf-8')).digest()[0] % 16
+    return f'PENDING#{shard:02x}'
+
+
+def _meal_dirty_scope(pk, version, subject, expected_epoch):
+    if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject) or \
+            type(version) is not int or version < 1 or type(expected_epoch) is not int or \
+            not 0 <= expected_epoch < 2**63 or not isinstance(pk, str):
+        raise ValueError('invalid meal refresh scope')
+    prefix = f'SCOPE#USER#{subject}#COMBI_MEAL#'
+    try:
+        if not pk.startswith(prefix) or str(UUID(pk[len(prefix):])) != pk[len(prefix):]:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('invalid meal refresh owner') from None
+
+
+def _meal_cursor_scope(cursor: str | None, next_cursor: str | None = None) -> None:
+    if cursor is not None and (not isinstance(cursor, str) or not re.fullmatch(r'[a-f0-9]{64}', cursor)):
+        raise ValueError('invalid meal refresh cursor')
+    if next_cursor is not None and (not isinstance(next_cursor, str) or not re.fullmatch(r'[a-f0-9]{64}', next_cursor)
+                                    or (cursor is not None and next_cursor <= cursor)):
+        raise ValueError('invalid next meal refresh cursor')
 
 
 def _job_list_item(pk: str, meta: dict) -> dict:
@@ -119,6 +178,13 @@ class CookingStore(Protocol):
     def create_customer_restatement(self, pk: str, expected_version: int, request: dict) -> dict: ...
     def create_meal(self, pk: str, records: list[dict]) -> None: ...
     def read_meal(self, pk: str) -> list[dict]: ...
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict,
+                            subject: str, expected_epoch: int) -> dict: ...
+    def list_meal_aggregate_groups(self, subject: str, limit: int, cursor: str | None) -> dict: ...
+    def list_meal_aggregate_dependencies(self, pk: str, limit: int, cursor: str | None) -> dict: ...
+    def read_meal_aggregate_dirty(self, pk: str) -> dict | None: ...
+    def checkpoint_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int, expected_cursor: str | None, next_cursor: str) -> None: ...
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int, expected_cursor: str | None = None) -> None: ...
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None: ...
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
@@ -238,8 +304,78 @@ class MemoryCookingStore:
         with self.lock:
             return [item.copy() for (item_pk, _), item in sorted(self.items.items()) if item_pk == pk]
 
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict,
+                            subject: str, expected_epoch: int) -> dict:
+        _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch)
+        with self.lock:
+            for meal_pk, version in snapshots:
+                meta = self.items.get((meal_pk, 'META'))
+                if not meta or meta.get('version') != version:
+                    raise Conflict
+            key = (pk, f"RESULT#{record['result_id']}")
+            current = self.items.get(key)
+            if current is not None:
+                if current.get('selection') != record['selection'] or current.get('references') != record['references']:
+                    raise Conflict
+            else:
+                self.items[key] = {'sk': key[1], **record}
+            index_pk, index_sk = f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS', f"GROUP#{record['group_id']}"
+            self.items[(index_pk, index_sk)] = {'pk': index_pk, 'sk': index_sk,
+                'group_id': record['group_id'], 'selection': record['selection']}
+            for meal_pk, _ in snapshots:
+                dependency_sk = f"MEAL_AGGREGATE#DEP#{record['group_id']}"
+                self.items[(meal_pk, dependency_sk)] = {'pk': meal_pk, 'sk': dependency_sk,
+                    'group_id': record['group_id'], 'selection': record['selection']}
+            return self.items[key].copy()
+
+    def list_meal_aggregate_groups(self, subject: str, limit: int, cursor: str | None) -> dict:
+        pk = f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS'
+        with self.lock:
+            rows = [item.copy() for (item_pk, sk), item in sorted(self.items.items())
+                    if item_pk == pk and sk.startswith('GROUP#') and (cursor is None or sk > f'GROUP#{cursor}')]
+            page = rows[:limit]
+            return {'items': page, 'next_cursor': page[-1]['group_id'] if len(rows) > limit else None}
+
+    def list_meal_aggregate_dependencies(self, pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = 'MEAL_AGGREGATE#DEP#'
+        with self.lock:
+            rows = [item.copy() for (item_pk, sk), item in sorted(self.items.items())
+                    if item_pk == pk and sk.startswith(prefix) and (cursor is None or sk > prefix + cursor)]
+            page = rows[:limit]
+            return {'items': page, 'next_cursor': page[-1]['group_id'] if len(rows) > limit else None}
+
+    def read_meal_aggregate_dirty(self, pk: str) -> dict | None:
+        with self.lock:
+            row = self.items.get((pk, 'MEAL_AGGREGATE#DIRTY'))
+            return row.copy() if row else None
+
+    def checkpoint_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                        expected_cursor: str | None, next_cursor: str) -> None:
+        _meal_dirty_scope(pk, version, subject, expected_epoch)
+        if next_cursor is None:
+            raise ValueError('next meal refresh cursor is required')
+        _meal_cursor_scope(expected_cursor, next_cursor)
+        with self.lock:
+            meta, dirty = self.items.get((pk, 'META')), self.items.get((pk, 'MEAL_AGGREGATE#DIRTY'))
+            if not meta or meta.get('version') != version or not dirty or dirty.get('version') != version or \
+                    dirty.get('state') != 'PENDING' or dirty.get('cursor') != expected_cursor:
+                raise Conflict
+            dirty['cursor'] = next_cursor
+
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                         expected_cursor: str | None = None) -> None:
+        _meal_dirty_scope(pk, version, subject, expected_epoch)
+        _meal_cursor_scope(expected_cursor)
+        with self.lock:
+            meta, dirty = self.items.get((pk, 'META')), self.items.get((pk, 'MEAL_AGGREGATE#DIRTY'))
+            if not meta or meta.get('version') != version or not dirty or dirty.get('version') != version or \
+                    dirty.get('state') != 'PENDING' or dirty.get('cursor') != expected_cursor:
+                raise Conflict
+            del self.items[(pk, 'MEAL_AGGREGATE#DIRTY')]
+
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:
+        dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         with self.lock:
             current = self.items.get((pk, "META"))
             if (not current or current["version"] != expected_version or
@@ -247,9 +383,11 @@ class MemoryCookingStore:
                 raise Conflict
             for row in (meta, step, event):
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
+            self.items[(pk, dirty['sk'])] = {'pk': pk, **dirty}
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
                            event: dict, chunks: list[dict], live_count: int | None = None) -> None:
+        dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         source_pk = pk + "#SOURCE"
         with self.lock:
             current = self.items.get((pk, "META"))
@@ -260,6 +398,7 @@ class MemoryCookingStore:
                 raise Conflict
             self.items[(pk, "META")] = {"pk": pk, **meta}
             self.items[(pk, event["sk"])] = {"pk": pk, **event}
+            self.items[(pk, dirty['sk'])] = {'pk': pk, **dirty}
             for row in chunks:
                 self.items[(source_pk, row["sk"])] = {"pk": source_pk, **row}
 
@@ -575,6 +714,7 @@ class DynamoCookingStore:
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
+        self.auth_table_name = os.getenv('FOODTECH_AUTH_TABLE', '')
 
     def create_condition_profile(self, subject: str, profile: dict) -> None:
         item = {"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILE#{profile['profile_id']}",
@@ -646,8 +786,142 @@ class DynamoCookingStore:
             if not start:
                 return _api_numbers(rows)
 
+    def save_meal_aggregate(self, pk: str, snapshots: list[tuple[str, int]], record: dict,
+                            subject: str, expected_epoch: int) -> dict:
+        _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch)
+        if not self.auth_table_name or self.auth_table_name == self.table.name:
+            raise ValueError('separate authentication table is required')
+        operations = [{'ConditionCheck': {'TableName': self.auth_table_name,
+            'Key': self._item({'pk': f'USER#{subject}'}),
+            'ConditionExpression': 'attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR '
+                '#epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) '
+                'AND attribute_not_exists(deletion_lock_request)',
+            'ExpressionAttributeNames': {'#epoch': 'epoch'},
+            'ExpressionAttributeValues': self._item({':expected': expected_epoch, ':zero': 0, ':false': False})}}]
+        operations += [
+            {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': meal_pk, 'sk': 'META'}),
+                'ConditionExpression': '#version = :version', 'ExpressionAttributeNames': {'#version': 'version'},
+                'ExpressionAttributeValues': self._item({':version': version})}}
+            for meal_pk, version in snapshots
+        ]
+        for meal_pk, _ in snapshots:
+            dependency = {'pk': meal_pk, 'sk': f"MEAL_AGGREGATE#DEP#{record['group_id']}",
+                          'group_id': record['group_id'], 'selection': record['selection']}
+            operations.append({'Put': {'TableName': self.table.name, 'Item': self._item(dependency)}})
+        index = {'pk': f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS', 'sk': f"GROUP#{record['group_id']}",
+                 'group_id': record['group_id'], 'selection': record['selection']}
+        operations.append({'Put': {'TableName': self.table.name, 'Item': self._item(index)}})
+        operations.append({'Put': {'TableName': self.table.name,
+            'Item': self._item({'pk': pk, 'sk': f"RESULT#{record['result_id']}", **record}),
+            'ConditionExpression': 'attribute_not_exists(pk)'}})
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if _only_result_already_exists(exc, len(operations)):
+                existing = self.aggregate(pk, record['result_id'])
+                if existing and existing.get('selection') == record['selection'] and \
+                        existing.get('references') == record['references']:
+                    repair = [*operations[:-1], {'ConditionCheck': {'TableName': self.table.name,
+                        'Key': self._item({'pk': pk, 'sk': f"RESULT#{record['result_id']}"}),
+                        'ConditionExpression': 'attribute_exists(pk)'}}]
+                    try:
+                        self.client.transact_write_items(TransactItems=repair)
+                    except self.client.exceptions.TransactionCanceledException as repair_exc:
+                        if any(reason.get('Code') == 'ConditionalCheckFailed'
+                               for reason in repair_exc.response.get('CancellationReasons', [])):
+                            raise Conflict from repair_exc
+                        raise
+                    return existing
+            if any(reason.get('Code') == 'ConditionalCheckFailed'
+                   for reason in exc.response.get('CancellationReasons', [])):
+                raise Conflict from exc
+            raise
+        return {'sk': f"RESULT#{record['result_id']}", **record}
+
+    def list_meal_aggregate_groups(self, subject: str, limit: int, cursor: str | None) -> dict:
+        pk = f'SCOPE#USER#{subject}#MEAL_AGGREGATE_GROUPS'
+        args = {'KeyConditionExpression': Key('pk').eq(pk) & Key('sk').begins_with('GROUP#'),
+                'ConsistentRead': True, 'Limit': limit + 1}
+        if cursor:
+            args['ExclusiveStartKey'] = {'pk': pk, 'sk': f'GROUP#{cursor}'}
+        page = self.table.query(**args)
+        rows = page.get('Items', [])
+        shown = rows[:limit]
+        has_more = len(rows) > limit or bool(page.get('LastEvaluatedKey'))
+        return {'items': [_api_numbers(row) for row in shown],
+                'next_cursor': shown[-1]['group_id'] if shown and has_more else None}
+
+    def list_meal_aggregate_dependencies(self, pk: str, limit: int, cursor: str | None) -> dict:
+        prefix = 'MEAL_AGGREGATE#DEP#'
+        args = {'KeyConditionExpression': Key('pk').eq(pk) & Key('sk').begins_with(prefix),
+                'ConsistentRead': True, 'Limit': limit + 1}
+        if cursor:
+            args['ExclusiveStartKey'] = {'pk': pk, 'sk': prefix + cursor}
+        page = self.table.query(**args)
+        rows = page.get('Items', [])
+        shown = rows[:limit]
+        has_more = len(rows) > limit or bool(page.get('LastEvaluatedKey'))
+        return {'items': [_api_numbers(row) for row in shown],
+                'next_cursor': shown[-1]['group_id'] if shown and has_more else None}
+
+    def read_meal_aggregate_dirty(self, pk: str) -> dict | None:
+        row = self.table.get_item(Key={'pk': pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}, ConsistentRead=True).get('Item')
+        return _api_numbers(row)
+
+    def checkpoint_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                        expected_cursor: str | None, next_cursor: str) -> None:
+        if next_cursor is None:
+            raise ValueError('next meal refresh cursor is required')
+        _meal_cursor_scope(expected_cursor, next_cursor)
+        self._change_meal_aggregate_dirty(pk, version, subject, expected_epoch, expected_cursor, next_cursor)
+
+    def acknowledge_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                         expected_cursor: str | None = None) -> None:
+        _meal_cursor_scope(expected_cursor)
+        self._change_meal_aggregate_dirty(pk, version, subject, expected_epoch, expected_cursor, None)
+
+    def _change_meal_aggregate_dirty(self, pk: str, version: int, subject: str, expected_epoch: int,
+                                     expected_cursor: str | None, next_cursor: str | None) -> None:
+        _meal_dirty_scope(pk, version, subject, expected_epoch)
+        names = {'#version': 'version', '#state': 'state', '#cursor': 'cursor'}
+        values = {':version': version, ':pending': 'PENDING'}
+        condition = '#version = :version AND #state = :pending AND '
+        if expected_cursor is None:
+            condition += 'attribute_not_exists(#cursor)'
+        else:
+            condition += '#cursor = :cursor'
+            values[':cursor'] = expected_cursor
+        mutation = {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'MEAL_AGGREGATE#DIRTY'}),
+                    'ConditionExpression': condition, 'ExpressionAttributeNames': names}
+        if next_cursor is not None:
+            values[':next'] = next_cursor
+            mutation['UpdateExpression'] = 'SET #cursor = :next'
+        mutation['ExpressionAttributeValues'] = self._item(values)
+        operation = {'Update' if next_cursor is not None else 'Delete': mutation}
+        if not self.auth_table_name or self.auth_table_name == self.table.name:
+            raise ValueError('separate authentication table is required')
+        operations = [
+            {'ConditionCheck': {'TableName': self.auth_table_name, 'Key': self._item({'pk': f'USER#{subject}'}),
+                'ConditionExpression': 'attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR '
+                    '#epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) '
+                    'AND attribute_not_exists(deletion_lock_request)',
+                'ExpressionAttributeNames': {'#epoch': 'epoch'},
+                'ExpressionAttributeValues': self._item({':expected': expected_epoch, ':zero': 0, ':false': False})}},
+            {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'META'}),
+                'ConditionExpression': '#version = :version', 'ExpressionAttributeNames': {'#version': 'version'},
+                'ExpressionAttributeValues': self._item({':version': version})}},
+            operation,
+        ]
+        try:
+            self.client.transact_write_items(TransactItems=operations)
+        except self.client.exceptions.TransactionCanceledException as exc:
+            if any(reason.get('Code') == 'ConditionalCheckFailed' for reason in exc.response.get('CancellationReasons', [])):
+                raise Conflict from exc
+            raise
+
     def advance_meal(self, pk: str, expected_version: int, meta: dict,
                      step: dict, event: dict) -> None:
+        dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         operations = [
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected",
@@ -657,6 +931,7 @@ class DynamoCookingStore:
                      "ConditionExpression": "attribute_exists(pk)"}},
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **event}),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **dirty})}},
         ]
         try:
             self.client.transact_write_items(TransactItems=operations)
@@ -668,12 +943,14 @@ class DynamoCookingStore:
 
     def attach_meal_source(self, pk: str, expected_version: int, meta: dict,
                            event: dict, chunks: list[dict], live_count: int | None = None) -> None:
+        dirty = _meal_aggregate_dirty(pk, expected_version, meta)
         operations = [
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **meta}),
                      "ConditionExpression": "#v = :expected", "ExpressionAttributeNames": {"#v": "version"},
                      "ExpressionAttributeValues": {":expected": {"N": str(expected_version)}}}},
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **event}),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
+            {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **dirty})}},
         ]
         live_check = {"TableName": self.table.name, "Key": self._item({"pk": pk + "#LIVE", "sk": "META"}),
                       "ConditionExpression": "attribute_not_exists(pk)" if live_count is None else "#count = :expected"}

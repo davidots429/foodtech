@@ -50,7 +50,7 @@
 
 `FoodtechMinimalDataFlow-dev`에는 표준화 Worker용 ECS Task Role도 정의한다. 이 역할은 수집 테이블에 `GetItem`·`Query`·`PutItem`·`ConditionCheckItem`, 조리작업 테이블에 `GetItem`·`Query`·`PutItem`·`ConditionCheckItem`, Ordered 큐에 `ReceiveMessage`·`DeleteMessage`, Standardization DLQ에 `SendMessage`만 허용한다. 수집 테이블의 `Query`는 늦은 이벤트 파생 계산에서 같은 배치의 원본 목록을 조회하는 데 필요하고, 조리작업 테이블의 `Query`는 기존 공정 사건과 완료된 요청 조회에 필요하다. 신뢰 정책은 같은 계정·리전의 ECS Task로 제한한다. 역할 ARN은 `StandardizationWorkerTaskRoleArn` 출력으로 제공한다. 역할 생성만으로 Worker가 배포되거나 실행되지는 않으며, 후속 Task Definition의 `taskRole`에 연결해야 한다. 이 역할은 컨테이너 이미지 다운로드와 로그 전송에 쓰는 ECS Task Execution Role과 별개다. 2026-11-14 승인된 일회성 로컬 CDK 배포로 최초 역할·정책·출력을 생성했다. 이후 추가한 수집 테이블 `Query`는 별도 배포가 필요하다.
 
-`AWS_PROFILE=foodtech .venv/bin/python tests/live/worker_role_iam_check.py`로 배포된 역할의 두 테이블과 두 큐에 대한 ID 기반 정책 및 실제 주체 시뮬레이션을 분리해 확인한다. 2026-11-14 역할 인라인 정책 자체는 기대한 허용 10건·거부 4건과 일치했지만, 실제 역할을 대상으로 한 시뮬레이션은 허용 10건 모두 `OrganizationsDecisionDetail.AllowedByOrganizations=false`로 판정했다. 이 계정에서는 적용된 SCP 목록을 조회할 권한도 없어 정확한 정책 조건은 확인하지 못했다. 시뮬레이터 결과는 실제 AWS API 호출이 아니므로 ECS Task 실행 권한을 검증 완료로 표시하지 않는다. 조직 관리 범위의 정책 확인과 실제 Task Definition 연결·실행 검증이 남아 있다.
+`AWS_PROFILE=foodtech .venv/bin/python tests/live/worker_role_iam_check.py`로 배포된 역할의 두 테이블과 두 큐에 대한 ID 기반 정책 및 실제 주체 시뮬레이션을 분리해 확인한다. 2026-11-14 실행에서는 요청 리전 조건을 전달하지 않아 필요한 권한 10건이 조직 정책에 의해 차단된 것으로 평가됐다. 2026-11-22 실제 요청 리전 `ap-southeast-2`을 지정해 재검증한 결과, 배포된 역할의 필요 권한 10건은 허용되고 제한 대상 4건은 거부되었으며 조직 정책 차단은 관찰되지 않았다. 이 결과는 현재 배포된 정책을 대상으로 한 시뮬레이션으로, 아직 배포되지 않은 수집 테이블 `Query` 권한이나 실제 ECS Task의 AWS API 호출을 검증하지 않는다. 후속 배포와 Task Definition 연결·실행 검증이 남아 있다.
 
 
 수집 격리 버킷은 `FoodtechMinimalDataFlow-dev`에 S3 관리형 암호화·공개 차단·TLS 강제·RETAIN으로 정의하고 `IngestionDlqBucketName`으로 출력한다. 이 정의는 아직 배포되지 않았다.
