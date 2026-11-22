@@ -25,8 +25,11 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
         self.execution = self.source.execution
         resource = MemoryResource()
         client = AtomicClient(resource.table)
+        self.client = client
+        client.auth_states['USER#tenant-a'] = {'pk': 'USER#tenant-a', 'epoch': 0}
         self.registry = DynamoRegistry('synthetic', '2026-11', resource=resource,
-                                       client=client, local_models={'model'})
+                                       client=client, local_models={'model'}, auth_table='auth-test')
+        self.registry.require_principal = True
         now = datetime.now(timezone.utc)
         self.registry.create_model(Model('model', 'ollama', Tier.TIER_1, 'ACTIVE', True, True, now, now))
         self.registry.create_execution(self.execution)
@@ -40,7 +43,7 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
         original_transact = client.transact_write_items
         def transact(*, TransactItems, ClientRequestToken):
             source_checks = [item for item in TransactItems if 'ConditionCheck' in item and
-                             item['ConditionCheck']['TableName'] != self.registry.table_name]
+                             item['ConditionCheck']['TableName'] not in (self.registry.table_name, 'auth-test')]
             if source_checks:
                 if len(source_checks) != 8 or not self.guard.verify(self.execution):
                     raise TransactionCanceledException()
@@ -62,6 +65,17 @@ class BoundRecipeIntegrationTests(unittest.TestCase):
         result = self.invoke(Model())
         self.assertEqual(result.state, 'SUCCEEDED')
         self.assertIn('NEEDS_REVIEW', result.response_text)
+        self.assertNotIn(('ACTIVE#tenant-a', 'EXEC#exec'), self.registry.table.items)
+
+    def test_missing_principal_blocks_bound_request_before_model_call(self):
+        self.client.auth_states.pop('USER#tenant-a')
+        class Model:
+            async def structured_chat(self, *_):
+                raise AssertionError('model must not be called for missing principal')
+        result = self.invoke(Model())
+        self.assertNotEqual(result.state, 'SUCCEEDED')
+        self.assertEqual(self.registry.execution_state('exec'), 'PENDING')
+        self.assertNotIn(('ACTIVE#tenant-a', 'EXEC#exec'), self.registry.table.items)
 
     def test_blocking_settlement_reads_run_outside_event_loop_thread(self):
         main_thread = threading.get_ident()
