@@ -445,4 +445,12 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 
 Cognito의 `sub`는 [AWS 문서](https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-attributes.html)에 따라 UUID 모양을 소유권이나 유효성의 근거로 삼지 않는다. 인증 주체는 기존 프로젝트 키 경계인 1~128자의 영문·숫자·하이픈·밑줄 안에서 원래 값을 그대로 보존한다. 이메일·키 구분자·공백은 거부하고 임의의 정규화·대소문자 변경·절단을 하지 않는다. 요청·작업·내부 Vault 식별자의 UUID 규칙은 유지한다. 계정 초기화·탈퇴·Vault·삭제 발견/진행·복구에서 같은 주체 검증을 사용한다.
 
-업무 API 전체 시험 542개가 통과했다. Cognito 제거 자체는 대체 공급자로만 시험했으며, 실제 개발 검증은 임의 주체의 부재 조회와 조건부 제거 기록에 한정했다. `tests/live/withdrawal_lock_dynamodb_check.py --identity-release-env <로컬 업무 설정 파일>`은 실제 Cognito 삭제 호출을 금지한 대체 진입점으로 실행하고 생성된 모든 합성 항목을 정리한다. 사용자 생성·변경·삭제나 동일 이메일 재가입은 수행하지 않았다. 별도 실행 역할과 예약 실행·전체 삭제 조정기에 연결하기 전에는 활성화하지 않는다.
+업무 API 전체 시험 542개가 통과했다. 대체 Cognito 시험에서는 정확한 이전 주체만 제거하는 계약과 응답 유실·권한 변경을 확인했다. `tests/live/withdrawal_lock_dynamodb_check.py --identity-release-env <로컬 업무 설정 파일>`의 별도 검증은 실제 Cognito 삭제 호출을 금지한 대체 진입점으로 실행해 임의 주체의 부재 조회·조건부 제거 기록만 확인하고 생성된 합성 항목을 정리한다. 실제 일회용 주체의 제거·이메일 재사용은 아래의 전용 시험으로 검증했다. 별도 실행 역할과 예약 실행·전체 삭제 조정기에 연결하기 전에는 활성화하지 않는다.
+
+### 동일 이메일의 새 주체 분리 실검증
+
+2026-11-22 `tests/live/withdrawal_cognito_rejoin_check.py --business-env <로컬 업무 설정 파일> --allow-disposable-cognito-users`를 기존 개발 Cognito·DynamoDB·KMS에서 실행했다. 이 실행의 고유한 `example.invalid` 이메일만 사용했고 `MessageAction=SUPPRESS`, `ForceAliasCreation=False`로 발송과 다른 계정의 별칭 이전을 금지했다. 비밀번호는 실행 메모리에서만 생성했으며 실제 고객 계정과 Pool·App Client 설정은 변경하지 않았다. Lambda trigger가 있는 Pool은 시험을 거부한다. 계정 확정은 명시적인 관리자 합성 fixture 설정이며 고객의 이메일 소유 확인을 증명하지 않는다. [AWS의 발송 억제·별칭 정책](https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminCreateUser.html)을 따른다.
+
+합성 요청 시각을 168시간 이상 과거로 이동한 뒤 실제 만료 dispatch·네 저장소 잠금 → 이전 sub의 Cognito 제거·부재 확인 → 같은 이메일 및 생성 Username으로 새 계정 생성 → 새 sub의 초기 상태 생성을 확인했다. 이전 삭제를 다시 실행해도 새 Cognito 주체가 유지됐고 이전 인증 상태·삭제 잠금·Registry의 `DELETING`은 보존됐다. 새 계정에는 이전 권한·동의·Vault 연결이 없는 초기 상태만 생성됐다. 종료 시 이 실행에서 생성한 Cognito 주체와 DynamoDB 항목을 모두 제거하고 부재를 확인했다.
+
+이 실검증은 앞선 부재 조회 전용 시험과 별도이며, 실제 고객 가입·이메일 인증·OAuth 재인증·7일 실시간 경과·전체 업무 자료 삭제·백업 잔존 상한·배포 실행 역할을 검증하지 않는다. 예약 작업자와 전체 삭제 조정기에 자동 연결하지 않았고 기능 플래그는 계속 기본 비활성이다. Registry를 완료로 만들거나 작성자 중지 검사를 우회하지 않았다.
