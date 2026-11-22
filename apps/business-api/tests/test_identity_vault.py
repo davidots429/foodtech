@@ -92,7 +92,7 @@ class IdentityVaultTests(unittest.TestCase):
 
     def test_lost_response_verification_checks_the_exact_link_and_owner(self):
         principal, vault, capsule = self.items()
-        self.client.responses = [principal, vault, capsule, principal, vault]
+        self.client.responses = [principal, vault, capsule, principal, vault, principal, vault, capsule, principal]
         self.assertIsNone(self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared))
         self.client.responses = [principal, vault, capsule, principal, vault]
         with self.assertRaises(IdentityVaultConflict):
@@ -105,6 +105,17 @@ class IdentityVaultTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.vault.verify_committed(authenticated_subject=str(uuid4()), prepared=self.prepared)
         self.client.responses = [{**principal, "deletion_lock_request": {"S": str(uuid4())}}]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared)
+
+    def test_lost_response_verification_rechecks_lock_after_vault_read(self):
+        principal, vault, capsule = self.items()
+        locked = {**principal, 'deletion_lock_request': {'S': str(uuid4())}, 'suspended': {'BOOL': True}}
+        self.client.responses = [principal, vault, capsule, principal, vault, locked]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared)
+        self.client.responses = [principal, vault, capsule, principal, vault, principal,
+                                 {**vault, 'revision': {'N': '2'}}, capsule, principal]
         with self.assertRaises(IdentityVaultConflict):
             self.vault.verify_committed(authenticated_subject=self.subject, prepared=self.prepared)
 
