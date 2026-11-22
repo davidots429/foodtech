@@ -32,8 +32,11 @@ def scenarios(bucket):
 
 
 def simulate(iam, simulation, action, resource, key):
-    context = ([{'ContextKeyName': 'dynamodb:LeadingKeys', 'ContextKeyValues': [key],
-                 'ContextKeyType': 'stringList'}] if key else [])
+    context = [{'ContextKeyName': 'aws:RequestedRegion', 'ContextKeyValues': [REGION],
+                'ContextKeyType': 'string'}]
+    if key:
+        context.append({'ContextKeyName': 'dynamodb:LeadingKeys', 'ContextKeyValues': [key],
+                        'ContextKeyType': 'stringList'})
     operation = 'simulate_principal_policy' if 'PolicySourceArn' in simulation else 'simulate_custom_policy'
     pages = iam.get_paginator(operation).paginate(**simulation, ActionNames=[action], ResourceArns=[resource],
         ContextEntries=context, PaginationConfig={'PageSize': 100})
