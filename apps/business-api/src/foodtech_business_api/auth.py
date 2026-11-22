@@ -237,7 +237,7 @@ async def callback(surface: str, request: Request, code: str = "", state: str = 
         raise HTTPException(401, "로그인을 완료할 수 없습니다.") from exc
     store = get_store()
     principal = await asyncio.to_thread(store.principal, identity["sub"])
-    if principal.get("suspended"):
+    if principal.get("suspended") or "deletion_lock_request" in principal:
         raise HTTPException(403, "이용이 중단된 계정입니다.")
     if surface == "admin" and principal.get("admin_blocked"):
         raise HTTPException(403, "관리자 권한이 회수되었습니다.")
@@ -325,7 +325,7 @@ async def admin_totp(request: Request, body: dict) -> Response:
         raise HTTPException(403, "관리자 권한이 없습니다.")
     store = get_store()
     principal = await asyncio.to_thread(store.principal, identity["sub"])
-    if principal.get("suspended") or principal.get("admin_blocked"):
+    if principal.get("suspended") or "deletion_lock_request" in principal or principal.get("admin_blocked"):
         raise HTTPException(403, "관리자 권한이 회수되었습니다.")
     if not await _checked_cognito_access(settings, identity["sub"], "admin"):
         raise HTTPException(403, "현재 계정 권한을 확인할 수 없습니다.")
@@ -361,6 +361,7 @@ async def _session(request: Request, surface: str, *, allow_expired_access: bool
         raise HTTPException(401, "세션 갱신이 필요합니다.")
     principal = await asyncio.to_thread(store.principal, session.subject)
     if (int(principal.get("epoch", 0)) != session.epoch or principal.get("suspended")
+            or "deletion_lock_request" in principal
             or (surface == "admin" and principal.get("admin_blocked"))):
         await asyncio.to_thread(store.delete_session, session_id)
         raise HTTPException(401, "세션 권한이 회수되었습니다.")
@@ -401,6 +402,7 @@ async def refresh_session(surface: str, request: Request) -> Response:
             raise ValueError("invalid refreshed principal")
         principal = await asyncio.to_thread(store.principal, session.subject)
         if int(principal.get("epoch", 0)) != session.epoch or principal.get("suspended") or \
+                "deletion_lock_request" in principal or \
                 (surface == "admin" and principal.get("admin_blocked")) or \
                 not await _checked_cognito_access(settings, session.subject, surface):
             await asyncio.to_thread(store.delete_session, session_id)
