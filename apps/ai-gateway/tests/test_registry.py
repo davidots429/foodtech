@@ -200,6 +200,19 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(RegistryConflict):
             self.registry.execution_status_snapshot('run-1', 'tenant-a')
 
+    def test_terminal_status_requires_matching_result(self):
+        item = self.resource.table.items[('EXEC#run-1', 'META')]
+        for state in ('SUCCEEDED', 'FAILED'):
+            with self.subTest(state=state):
+                item['state'] = state
+                self.registry.execution_result = lambda _: None
+                with self.assertRaises(RegistryConflict):
+                    self.registry.execution_status_snapshot('run-1', 'tenant-a')
+                self.registry.execution_result = lambda _, state=state: {'state': state}
+                snapshot, result = self.registry.execution_status_snapshot('run-1', 'tenant-a')
+                self.assertEqual(snapshot.state, state)
+                self.assertEqual(result['state'], state)
+
     def test_settlement_rejects_corrupt_execution_without_storing_response(self):
         execution = self.registry.execution('run-1')
         self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)

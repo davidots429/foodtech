@@ -305,8 +305,9 @@ class DynamoRegistry:
         second = self.execution_snapshot(execution_id)
         if second != first:
             raise RegistryConflict('execution changed during status lookup')
-        if result is not None and (first.state not in {'SUCCEEDED', 'FAILED'} or
-                                   result.get('state') != first.state):
+        terminal = first.state in {'SUCCEEDED', 'FAILED'}
+        if (terminal and result is None) or (result is not None and
+                (not terminal or result.get('state') != first.state)):
             raise RegistryConflict('execution result and state disagree')
         return first, result
 
