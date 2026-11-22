@@ -39,6 +39,7 @@ def main(path):
     rules = [r['Properties'] for r in resources if r['Type'] == 'AWS::Events::Rule']
     schedule, = [r for r in rules if 'ScheduleExpression' in r]
     assert schedule['State'] == 'DISABLED'
+    assert schedule['Name'] == 'foodtech-withdrawal-identity-dev'
     target, = schedule['Targets']
     assert target['Id'] == 'IdentityRelease' and target['RoleArn'] == {'Ref': 'InvokeRoleArn'}
     assert target['DeadLetterConfig'] == {'Arn': {'Ref': 'DeliveryDlqArn'}}

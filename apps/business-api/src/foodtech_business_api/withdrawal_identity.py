@@ -132,7 +132,7 @@ class CognitoWithdrawalRelease:
         """
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('invalid identity release page size')
-        args = {'Limit': limit, 'ConsistentRead': True,
+        args = {'Limit': limit, 'ConsistentRead': True, 'Select': 'SPECIFIC_ATTRIBUTES',
             'ProjectionExpression': 'pk, withdrawal_request_id, #epoch',
             'ExpressionAttributeNames': {'#epoch': 'epoch'},
             'FilterExpression': Attr('pk').begins_with('USER#') & Attr('withdrawal_status').eq('DELETING') &

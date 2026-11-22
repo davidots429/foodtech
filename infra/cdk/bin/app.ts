@@ -13,6 +13,7 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
+import { WithdrawalIdentityAccessStack } from "./withdrawal-identity-access.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
@@ -494,6 +495,7 @@ class MaintenanceScheduleStack extends Stack {
           "awslogs-region": this.region, "awslogs-stream-prefix": "worker" } } }],
     });
     const rule = new events.CfnRule(this, "Schedule", { state: "DISABLED",
+      ...(identityRelease ? { name: `foodtech-withdrawal-identity-${stage}` } : {}),
       description: identityRelease ? "Disabled until withdrawal identity IAM, enrollment and rollout safeguards are verified" : "Disabled until meal refresh deployment and deletion safeguards are verified",
       scheduleExpression: Token.asString(Fn.conditionIf(oneMinute.logicalId, "rate(1 minute)", `rate(${interval.valueAsString} minutes)`)),
       targets: [{ id: identityRelease ? "IdentityRelease" : "MealRefresh", arn: cluster.valueAsString, roleArn: invokeRole.valueAsString,
@@ -936,6 +938,10 @@ if (app.node.tryGetContext("provisionMealRefreshSchedule") === "true") {
 if (app.node.tryGetContext("provisionWithdrawalIdentitySchedule") === "true") {
   const identityRelease = new MaintenanceScheduleStack(app, `FoodtechWithdrawalIdentitySchedule-${stage}`, { env }, "withdrawal-identity");
   Tags.of(identityRelease).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionWithdrawalIdentityAccess") === "true") {
+  const identityAccess = new WithdrawalIdentityAccessStack(app, `FoodtechWithdrawalIdentityAccess-${stage}`, { env }, stage);
+  Tags.of(identityAccess).add("Project", "foodtech");
 }
 if (app.node.tryGetContext("provisionTierRequests") === "true") {
   const tierRequests = new TierRequestsStack(app, `FoodtechTierRequests-${stage}`, { env });

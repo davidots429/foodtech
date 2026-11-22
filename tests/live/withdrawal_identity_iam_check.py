@@ -34,7 +34,12 @@ def policy_inputs(document):
     return [json.dumps(value) for value in documents]
 
 
-def scenarios(account, stage, pool_id):
+MARKER_ATTRIBUTES = ['pk', 'identity_retired_request', 'identity_retired_at', 'deletion_lock_request',
+                     'suspended', 'epoch', 'withdrawal_request_id', 'withdrawal_status',
+                     'withdrawal_requested_at', 'withdrawal_deadline']
+
+
+def scenarios(account, stage, pool_id, registry_storage_key_arn=None):
     if not re.fullmatch(r'[0-9]{12}', account) or not re.fullmatch(r'[a-z0-9-]{1,32}', stage) or \
             not re.fullmatch(r'ap-southeast-2_[A-Za-z0-9]+', pool_id):
         raise ValueError('invalid development resource scope')
@@ -54,16 +59,18 @@ def scenarios(account, stage, pool_id):
         checks.append({'name': name, 'action': action, 'resource': resource, 'expected_allow': allow, 'context': context})
     add('read_principal', 'dynamodb:GetItem', auth, True, key='USER#synthetic', transaction='TransactGetItems')
     add('read_enrollment_control', 'dynamodb:GetItem', auth, True, key='CONTROL#PRINCIPAL_ENROLLMENT')
-    add('read_session_denied', 'dynamodb:GetItem', auth, False, key='SESSION#synthetic')
+    add('read_session_denied', 'dynamodb:GetItem', auth, False, key='SESSION#synthetic', transaction='TransactGetItems')
     add('missing_read_key_denied', 'dynamodb:GetItem', auth, False, transaction='TransactGetItems')
     add('scan_projection', 'dynamodb:Scan', auth, True,
         attributes=['pk', 'withdrawal_request_id', 'epoch'], select='SPECIFIC_ATTRIBUTES')
-    add('scan_all_attributes_denied', 'dynamodb:Scan', auth, False, select='ALL_ATTRIBUTES')
-    add('mark_old_principal', 'dynamodb:UpdateItem', auth, True, key='USER#synthetic', transaction='TransactWriteItems')
-    add('direct_principal_update_denied', 'dynamodb:UpdateItem', auth, False, key='USER#synthetic')
-    add('missing_update_key_denied', 'dynamodb:UpdateItem', auth, False, transaction='TransactWriteItems')
+    add('scan_all_attributes_denied', 'dynamodb:Scan', auth, False, select='ALL_ATTRIBUTES',
+        attributes=['pk', 'withdrawal_request_id', 'epoch'])
+    add('mark_old_principal', 'dynamodb:UpdateItem', auth, True, key='USER#synthetic', transaction='TransactWriteItems',
+        attributes=MARKER_ATTRIBUTES)
+    add('direct_principal_update_denied', 'dynamodb:UpdateItem', auth, False, key='USER#synthetic', attributes=MARKER_ATTRIBUTES)
+    add('missing_update_key_denied', 'dynamodb:UpdateItem', auth, False, transaction='TransactWriteItems', attributes=MARKER_ATTRIBUTES)
     for key, label in (('CONTROL#PRINCIPAL_ENROLLMENT', 'control'), ('SESSION#synthetic', 'session')):
-        add(label + '_update_denied', 'dynamodb:UpdateItem', auth, False, key=key, transaction='TransactWriteItems')
+        add(label + '_update_denied', 'dynamodb:UpdateItem', auth, False, key=key, transaction='TransactWriteItems', attributes=MARKER_ATTRIBUTES)
     for action in ('PutItem', 'DeleteItem'):
         add('auth_' + action + '_denied', 'dynamodb:' + action, auth, False,
             key='USER#synthetic', transaction='TransactWriteItems')
@@ -73,7 +80,16 @@ def scenarios(account, stage, pool_id):
         add('registry_' + action + '_denied', 'dynamodb:' + action, registry, False,
             key='REGISTRY', transaction='TransactWriteItems')
     for action in ('GetItem', 'PutItem', 'DeleteItem', 'UpdateItem', 'Scan', 'ConditionCheckItem'):
-        add('unrelated_' + action + '_denied', 'dynamodb:' + action, unrelated, False, key='USER#synthetic')
+        # Keep the allowed operation's other context valid, so rejection proves
+        # resource isolation rather than an unrelated missing-context denial.
+        if action == 'Scan':
+            add('unrelated_' + action + '_denied', 'dynamodb:' + action, unrelated, False,
+                attributes=['pk', 'withdrawal_request_id', 'epoch'], select='SPECIFIC_ATTRIBUTES')
+        else:
+            add('unrelated_' + action + '_denied', 'dynamodb:' + action, unrelated, False,
+                key='REGISTRY' if action == 'ConditionCheckItem' else 'USER#synthetic',
+                transaction='TransactGetItems' if action == 'GetItem' else 'TransactWriteItems',
+                attributes=MARKER_ATTRIBUTES if action == 'UpdateItem' else None)
     other_pool = f'arn:aws:cognito-idp:{REGION}:{account}:userpool/ap-southeast-2_SyntheticOtherPool'
     if other_pool == pool:
         other_pool += 'Different'
@@ -87,6 +103,30 @@ def scenarios(account, stage, pool_id):
     add('arbitrary_storage_decrypt_denied', 'kms:Decrypt', arbitrary_key, False)
     checks[-1]['context'].append({'ContextKeyName': 'kms:ViaService',
                                  'ContextKeyValues': [f'dynamodb.{REGION}.amazonaws.com'], 'ContextKeyType': 'string'})
+    for name, value in (('tableName', f'foodtech-deletion-registry-{stage}'), ('subscriberId', account)):
+        checks[-1]['context'].append({'ContextKeyName': 'kms:EncryptionContext:aws:dynamodb:' + name,
+                                     'ContextKeyValues': [value], 'ContextKeyType': 'string'})
+    add('marker_without_attributes_denied', 'dynamodb:UpdateItem', auth, False, key='USER#synthetic', transaction='TransactWriteItems')
+    add('marker_unrelated_attributes_denied', 'dynamodb:UpdateItem', auth, False, key='USER#synthetic',
+        transaction='TransactWriteItems', attributes=MARKER_ATTRIBUTES + ['admin_blocked'])
+    add('scan_session_attributes_denied', 'dynamodb:Scan', auth, False,
+        select='SPECIFIC_ATTRIBUTES', attributes=['pk', 'refresh_ciphertext'])
+    if registry_storage_key_arn:
+        if not re.fullmatch(rf'arn:aws:kms:{REGION}:{account}:key/[a-f0-9-]{{36}}', registry_storage_key_arn):
+            raise ValueError('explicit matching-account registry storage key required')
+        def storage(name, *, via=True, table=None, subscriber=None, allow=False):
+            add(name, 'kms:Decrypt', registry_storage_key_arn, allow)
+            if via:
+                checks[-1]['context'].append({'ContextKeyName': 'kms:ViaService',
+                    'ContextKeyValues': [f'dynamodb.{REGION}.amazonaws.com'], 'ContextKeyType': 'string'})
+            for key, value in (('tableName', table or f'foodtech-deletion-registry-{stage}'),
+                               ('subscriberId', subscriber or account)):
+                checks[-1]['context'].append({'ContextKeyName': 'kms:EncryptionContext:aws:dynamodb:' + key,
+                    'ContextKeyValues': [value], 'ContextKeyType': 'string'})
+        storage('registry_storage_decrypt', allow=True)
+        storage('registry_key_direct_decrypt_denied', via=False)
+        storage('registry_key_wrong_table_denied', table='foodtech-unrelated-synthetic')
+        storage('registry_key_wrong_subscriber_denied', subscriber='000000000000')
     return checks
 
 
@@ -111,12 +151,13 @@ def main():
     parser.add_argument('--policy-file', type=Path, required=True)
     parser.add_argument('--pool-id', required=True)
     parser.add_argument('--stage', default='dev')
+    parser.add_argument('--registry-storage-key-arn')
     args = parser.parse_args()
     try:
         policies = policy_inputs(json.loads(args.policy_file.read_text()))
         session = boto3.Session(profile_name='foodtech', region_name=REGION)
         account = session.client('sts').get_caller_identity()['Account']
-        result = verify(session.client('iam'), policies, scenarios(account, args.stage, args.pool_id))
+        result = verify(session.client('iam'), policies, scenarios(account, args.stage, args.pool_id, args.registry_storage_key_arn))
     except Exception:
         print('Identity policy verification failed; no policy was applied.')
         return 1
