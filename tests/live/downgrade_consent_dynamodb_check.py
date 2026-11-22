@@ -34,9 +34,12 @@ def main():
     comparison = uuid4().hex + uuid4().hex
     period = "2097-11"
     registry = DynamoRegistry(TABLE, period, resource=session.resource("dynamodb"),
-                              client=session.client("dynamodb"), local_models={target, source})
+                              client=session.client("dynamodb"), local_models={target, source}, auth_table="foodtech-auth-sessions-dev")
     keys = []
     def mark(kind, ident): keys.append({"pk": f"{kind}#{ident}", "sk": "META"})
+    auth = session.resource("dynamodb").Table("foodtech-auth-sessions-dev")
+    auth_key = {"pk": f"USER#{tenant}"}
+    auth.put_item(Item=auth_key, ConditionExpression="attribute_not_exists(pk)")
     try:
         now = datetime.now(timezone.utc)
         registry.create_model(Model(source, "ollama", Tier.TIER_1, "INACTIVE", True, True, now, now))
@@ -123,6 +126,7 @@ def main():
                 del app.state.mtls_listener
                 del app.state.gateway_service
     finally:
+        auth.delete_item(Key=auth_key)
         for key in reversed(keys): table.delete_item(Key=key)
         if any(table.get_item(Key=key, ConsistentRead=True).get("Item") for key in keys):
             raise RuntimeError("Test records remain")

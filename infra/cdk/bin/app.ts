@@ -616,12 +616,26 @@ class CredentialVaultStack extends Stack {
     this.transferKey = transferKey;
     this.hmacKey = hmacKey;
     table.grant(registration, "dynamodb:PutItem");
+    const authForRegistration = dynamodb.Table.fromTableName(
+      this, "AuthSessionsForCredentialRegistration", `foodtech-auth-sessions-${stage}`,
+    );
+    authForRegistration.grant(registration, "dynamodb:ConditionCheckItem");
+    authForRegistration.grant(gateway, "dynamodb:ConditionCheckItem");
     table.grant(gateway, "dynamodb:GetItem");
     const registry = dynamodb.Table.fromTableName(
       this, "ExecutionRegistryForGateway", `foodtech-ai-execution-registry-${stage}`,
     );
     registry.grant(gateway, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
       "dynamodb:ConditionCheckItem");
+    gateway.addToPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:DeleteItem"],
+      resources: [registry.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVE#*"] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+        "ForAnyValue:StringEquals": { "dynamodb:EnclosingOperation": ["TransactWriteItems"] },
+      },
+    }));
     registry.grant(registration, "dynamodb:PutItem");
     const restrictContext = (grant: iam.Grant) => {
       for (const statement of [...grant.principalStatements, ...grant.resourceStatements]) {
@@ -706,6 +720,7 @@ class AiServiceTasksStack extends Stack {
         FOODTECH_STAGE: stage,
         FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
         FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
+        FOODTECH_AUTH_TABLE: `foodtech-auth-sessions-${stage}`,
         FOODTECH_CREDENTIAL_STORAGE_KEY_ARN: vault.storageKey.keyArn,
         FOODTECH_CREDENTIAL_TRANSFER_KEY_ARN: vault.transferKey.keyArn,
         FOODTECH_CREDENTIAL_TRANSFER_KEY_VERSION: required("credentialKeyPeriod"),
@@ -727,6 +742,7 @@ class AiServiceTasksStack extends Stack {
         FOODTECH_GATEWAY_BIND_HOST: "0.0.0.0",
         FOODTECH_STAGE: stage,
         FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
+        FOODTECH_AUTH_TABLE: `foodtech-auth-sessions-${stage}`,
         FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
         FOODTECH_CREDENTIAL_KMS_KEY_ARNS: vault.storageKey.keyArn,
         FOODTECH_EXTERNAL_EXECUTION_ENABLED: "false",

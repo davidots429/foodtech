@@ -123,9 +123,10 @@ async def main() -> None:
     tenant = f"synthetic-ai-validation-{run_id}"
     period = datetime.now(timezone.utc).strftime("%Y-%m")
     registry = DynamoRegistry(TABLE, period, resource=dynamodb,
-                              client=session.client("dynamodb"), local_models={MODEL})
+                              client=session.client("dynamodb"), local_models={MODEL}, auth_table="foodtech-auth-sessions-dev")
     keys: list[dict[str, str]] = []
     for execution_id in expected_ids:
+        keys.append({"pk": f"ACTIVE#{tenant}", "sk": f"EXEC#{execution_id}"})
         keys.extend((item_key("EXEC", execution_id),
                      item_key("EXEC", execution_id, "RESULT")))
     temp = tempfile.TemporaryDirectory(prefix="foodtech-ai-live-")
@@ -133,6 +134,10 @@ async def main() -> None:
     gateway_task: asyncio.Task | None = None
     gateway_server: uvicorn.Server | None = None
     gateway_listener: socket.socket | None = None
+    auth = dynamodb.Table("foodtech-auth-sessions-dev")
+    auth_key = {"pk": f"USER#{tenant}"}
+    if auth.get_item(Key=auth_key, ConsistentRead=True).get("Item"):
+        raise RuntimeError("synthetic principal already exists")
     try:
         def created(kind: str, identifier: str) -> None:
             keys.append(item_key(kind, identifier))
@@ -185,6 +190,7 @@ async def main() -> None:
             config = {
                 "AWS_DEFAULT_REGION": REGION,
                 "FOODTECH_AI_REGISTRY_TABLE": TABLE,
+                "FOODTECH_AUTH_TABLE": "foodtech-auth-sessions-dev",
                 "FOODTECH_OLLAMA_URL": ollama_url,
                 "FOODTECH_GATEWAY_URL": f"https://127.0.0.1:{port}",
                 "FOODTECH_GATEWAY_CA": ca,
@@ -204,6 +210,7 @@ async def main() -> None:
                     success_id = success_body["execution_id"]
                     assert success_id == expected_ids[0]
                     assert success_body["state"] == "SUCCEEDED" and success_body["response_text"]
+                    assert not auth.get_item(Key=auth_key, ConsistentRead=True).get("Item")
                     assert registry.execution_state(success_id) == "SUCCEEDED"
                     assert registry.execution_result(success_id)["response_text"] == success_body["response_text"]
                     assert registry.budget(tenant, "ollama").calls_remaining == 1

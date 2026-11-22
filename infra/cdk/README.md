@@ -75,3 +75,11 @@
 `provisionOpcUaBinaryCollectionTask=true`는 별도 OPC UA Binary Task를 합성한다. `collectionUaBinaryEndpoint`(`opc.tcp` 주소)와 `collectionUaBinarySecretArn`이 필요하며 비밀 JSON 필드 `client_cert_pem`, `client_key_pem`, `server_cert_der_base64`를 사용한다. 클라이언트 인증서와 개인키 일치 및 서버 인증서 DER 형식을 시작 시 검사하고, 기존 수집기가 서버 인증서의 유효기간·호스트·애플리케이션 URI를 확인한다. 이미지 게시, 네트워크·Mock 배치, 실제 Task 실행은 별도 작업이다.
 
 표준화 Worker 역할의 인증 테이블 `dynamodb:ConditionCheckItem` 권한은 제육 작업의 삭제 잠금 확인을 위한 CDK 변경안이다. 적용을 위해서는 승인된 배포 workflow와 역할 검증이 필요하며, 배포하지 않은 합성 결과를 실제 권한으로 취급하지 않는다.
+자격증명 등록 Task의 인증 테이블 조건 검사 권한과 `FOODTECH_AUTH_TABLE` 설정은 삭제 중 신규 자격증명 생성을 막기 위한 변경안이다. 합성 결과이며 배포 및 실제 Task 역할 검증은 별도로 수행한다.
+Gateway Task의 인증 테이블 조건 검사 권한과 `FOODTECH_AUTH_TABLE` 설정은 삭제 중 새 AI 호출 예약을 막기 위한 변경안이다. 합성 결과이며 배포와 실제 역할 검증은 별도로 수행한다.
+
+Gateway의 실행 정산은 레지스트리의 `ACTIVE#` 진행 표식을 같은 트랜잭션에서 삭제한다. 이를 위한 `DeleteItem` 권한은 해당 파티션 접두사와 `TransactWriteItems`로 제한하며, 개발 계정의 정책 시뮬레이션에서 허용 및 다른 키·단건 삭제 거부를 확인했다. 실제 배포와 실행 역할 검증은 남았다.
+
+2026-11-22 기존 배포 Gateway 역할에 대해 활성 표식 삭제를 시뮬레이션한 결과 `explicitDeny`, `AllowedByOrganizations=false`였다. 위 정책 변경은 아직 배포되지 않았고 정책 시뮬레이션은 실제 Task 실행이 아니다. 조직 정책을 확인한 뒤 배포된 역할과 실제 정산 트랜잭션을 다시 검증해야 한다.
+
+재확인은 `AWS_PROFILE=foodtech .venv/bin/python tests/live/ai_gateway_role_iam_check.py`를 사용한다. 조직 정책이 모든 사례를 거부하는 동안에는 거부 결과만으로 역할 정책의 제한이 올바르다고 판단할 수 없다.

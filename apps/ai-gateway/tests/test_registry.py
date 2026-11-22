@@ -68,6 +68,8 @@ class AtomicClient:
         self.decoder = TypeDeserializer()
         self.before_commit = None
         self.calls = []
+        self.auth_states = {f'USER#{name}': {} for name in
+                            ('tenant-a', 'customer-1', 'customer-a', 'new-customer')}
 
     def _decode(self, values):
         return {name: self.decoder.deserialize(value) for name, value in values.items()}
@@ -80,7 +82,11 @@ class AtomicClient:
         self.calls.append(TransactItems)
         updates = []
         puts = []
+        deletes = []
         for action in TransactItems:
+            if "Delete" in action:
+                deletes.append(self._decode(action["Delete"]["Key"]))
+                continue
             if "Put" in action:
                 value = self._decode(action["Put"]["Item"])
                 if (value["pk"], value["sk"]) in self.table.items:
@@ -89,6 +95,11 @@ class AtomicClient:
                 continue
             spec = action.get("Update") or action["ConditionCheck"]
             key = self._decode(spec["Key"])
+            if spec.get("TableName") == "auth-test":
+                state = self.auth_states.get(key["pk"], {})
+                if state.get("suspended") or "deletion_lock_request" in state:
+                    raise TransactionCanceledException()
+                continue
             if spec.get("ConditionExpression") == "attribute_not_exists(pk)":
                 if (key["pk"], key["sk"]) in self.table.items:
                     raise TransactionCanceledException()
@@ -153,6 +164,8 @@ class AtomicClient:
                     item["calls_remaining"] -= 1
         for value in puts:
             self.table.items[(value["pk"], value["sk"])] = value
+        for value in deletes:
+            self.table.items.pop((value["pk"], value["sk"]), None)
 
 
 class RegistryTests(unittest.TestCase):
@@ -160,7 +173,7 @@ class RegistryTests(unittest.TestCase):
         self.resource = MemoryResource()
         self.client = AtomicClient(self.resource.table)
         self.registry = DynamoRegistry("registry-test", "2026-11", resource=self.resource,
-                                       client=self.client, local_models={"local-model"})
+                                       client=self.client, auth_table="auth-test", local_models={"local-model"})
         self.registry.create_model(Model("local-model", "ollama", Tier.TIER_3, "ACTIVE", True,
                                          True, NOW, NOW))
         self.registry.create_execution(Execution("run-1", "tenant-a", Feature.GENERAL_GUIDE,
@@ -169,6 +182,7 @@ class RegistryTests(unittest.TestCase):
         self.registry.create_limit("PROVIDER", "ollama", Decimal("1"))
         self.registry.create_limit("PROJECT", "GLOBAL", Decimal("1"))
         self.service = GatewayService(self.registry)
+        self.client.calls.clear()
 
     def recipe_execution(self):
         self.registry.create_model(Model("synthetic-tier1", "ollama", Tier.TIER_1, "ACTIVE", True,
@@ -455,7 +469,63 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(self.registry.execution_state("run-2"), "RESERVED")
         checked = [item["ConditionCheck"] for item in self.client.calls[-1]
                    if "ConditionCheck" in item]
-        self.assertEqual(len(checked), 3)
+        self.assertEqual(len(checked), 4)
+
+    def test_reservation_rejects_lock_acquired_during_authorization(self):
+        self.client.before_commit = lambda: setattr(self.client, 'auth_states', {
+            'USER#tenant-a': {'deletion_lock_request': 'synthetic'}})
+        decision = self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1')
+        self.assertFalse(decision.allowed)
+        self.assertEqual(self.registry.execution_state('run-1'), 'PENDING')
+        self.assertEqual(self.registry.budget('tenant-a', 'ollama').calls_remaining, 1)
+
+    def test_missing_principal_state_allows_normal_new_work_and_reservation(self):
+        self.client.auth_states = {}
+        self.registry.create_execution(Execution('new-run', 'tenant-a', Feature.GENERAL_GUIDE,
+            'local-model', None, 'SYNTHETIC', Decimal('0')))
+        decision = self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1')
+        self.assertTrue(decision.allowed)
+        self.assertEqual(self.registry.execution_state('run-1'), 'RESERVED')
+        self.assertIn(('ACTIVE#tenant-a', 'EXEC#run-1'), self.resource.table.items)
+
+    def test_locked_tenant_cannot_create_execution_quote_or_new_limit(self):
+        self.client.auth_states = {'USER#tenant-a': {'deletion_lock_request': 'synthetic'},
+                                   'USER#other-locked': {'deletion_lock_request': 'synthetic'}}
+        execution = Execution('new-run', 'tenant-a', Feature.GENERAL_GUIDE, 'local-model', None,
+                              'SYNTHETIC', Decimal('0'))
+        with self.assertRaises(RegistryConflict):
+            self.registry.create_execution(execution)
+        with self.assertRaises(RegistryConflict):
+            self.registry.create_quote('new-quote', {'tenant_id': 'tenant-a'})
+        with self.assertRaises(RegistryConflict):
+            self.registry.ensure_trial_tenant_limit('other-locked', Decimal('0'), 1)
+        self.assertNotIn(('EXEC#new-run', 'META'), self.resource.table.items)
+        self.assertNotIn(('QUOTE#new-quote', 'META'), self.resource.table.items)
+
+    def test_local_retry_rejects_deletion_lock(self):
+        self.recipe_execution()
+        self.client.auth_states = {'USER#tenant-a': {'suspended': True}}
+        decision = self.service.prepare_local_recipe_retry(Caller('business-api', 'tenant-a'), 'recipe-1', 2)
+        self.assertFalse(decision.allowed)
+        self.assertNotIn(('EXEC#recipe-1', 'CALL#2'), self.resource.table.items)
+
+    def test_active_marker_survives_lock_until_settlement(self):
+        self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)
+        marker = ('ACTIVE#tenant-a', 'EXEC#run-1')
+        self.assertIn(marker, self.resource.table.items)
+        self.client.auth_states = {'USER#tenant-a': {'deletion_lock_request': 'synthetic'}}
+        self.registry.finish('run-1', succeeded=True, actual_cost_usd=Decimal('0.1'), response_text='synthetic')
+        self.assertNotIn(marker, self.resource.table.items)
+        self.assertEqual(self.registry.execution_state('run-1'), 'SUCCEEDED')
+
+    def test_active_marker_remains_if_settlement_fails(self):
+        self.assertTrue(self.service.prepare(Caller('business-api', 'tenant-a'), 'run-1').allowed)
+        marker = ('ACTIVE#tenant-a', 'EXEC#run-1')
+        self.client.before_commit = lambda: self.resource.table.items[
+            ('LIMIT#2026-11#TENANT#tenant-a', 'META')].update(version=999)
+        with self.assertRaises(RegistryConflict):
+            self.registry.finish('run-1', succeeded=True, actual_cost_usd=Decimal('0.1'), response_text='synthetic')
+        self.assertIn(marker, self.resource.table.items)
 
 
 if __name__ == "__main__":
