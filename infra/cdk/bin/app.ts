@@ -1,4 +1,4 @@
-import { App, ArnFormat, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, StackProps, Tags, Token } from "aws-cdk-lib";
+import { App, ArnFormat, CfnCondition, CfnOutput, CfnParameter, CfnRule, Duration, Fn, RemovalPolicy, Stack, StackProps, Tags, Token } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as codebuild from "aws-cdk-lib/aws-codebuild";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
@@ -13,6 +13,7 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
+import { WithdrawalIdentityAccessStack } from "./withdrawal-identity-access.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
@@ -407,6 +408,10 @@ class MinimalDataFlowStack extends Stack {
       this, "CookingJobsForWorker", `foodtech-cooking-jobs-${stage}`,
     );
     cookingTable.grant(workerRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:ConditionCheckItem");
+    const authTable = dynamodb.Table.fromTableName(
+      this, "AuthSessionsForWorker", `foodtech-auth-sessions-${stage}`,
+    );
+    authTable.grant(workerRole, "dynamodb:ConditionCheckItem");
     ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
     quarantine.grant(workerRole, "sqs:SendMessage");
     new CfnOutput(this, "IngestionDlqBucketName", { value: ingestionDlq.bucketName });
@@ -440,15 +445,27 @@ class CookingJobsStack extends Stack {
 }
 
 // Disabled until the caller has validated IAM, networking, backfill and deletion-writer coordination.
-class MealRefreshScheduleStack extends Stack {
-  constructor(scope: Construct, id: string, props: StackProps) {
+class MaintenanceScheduleStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps, workload: "meal-refresh" | "withdrawal-identity" = "meal-refresh") {
     super(scope, id, props);
+    const identityRelease = workload === "withdrawal-identity";
     const arnPattern = "^arn:[a-z0-9-]+:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$";
     const param = (name: string, pattern: string, description: string): CfnParameter =>
       new CfnParameter(this, name, { type: "String", allowedPattern: pattern, description });
     const taskRole = param("TaskRoleArn", arnPattern, "Existing reviewed least-privilege task role ARN");
     const executionRole = param("ExecutionRoleArn", arnPattern, "Existing ECS task execution role ARN");
     const invokeRole = param("InvokeRoleArn", arnPattern, "Existing EventBridge ECS invocation role ARN");
+    if (identityRelease) {
+      new CfnRule(this, "SeparateIdentityWorkerRoles", { assertions: [{
+        assert: Fn.conditionAnd(
+          Fn.conditionNot(Fn.conditionEquals(taskRole.valueAsString, executionRole.valueAsString)),
+          Fn.conditionNot(Fn.conditionEquals(taskRole.valueAsString, invokeRole.valueAsString)),
+          Fn.conditionNot(Fn.conditionEquals(executionRole.valueAsString, invokeRole.valueAsString))),
+        assertDescription: "Identity worker, ECS execution and invocation roles must be distinct",
+      }] });
+    }
+    const pool = identityRelease ? param("CognitoUserPoolId", "^ap-southeast-2_[A-Za-z0-9]+$",
+      "Existing reviewed development Cognito Pool for expired identity removal") : undefined;
     const cluster = param("ClusterArn", "^arn:[a-z0-9-]+:ecs:[a-z0-9-]+:[0-9]{12}:cluster/[A-Za-z0-9_-]+$", "Existing ECS cluster ARN");
     const image = param("ImageUri", "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com\\/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$", "Immutable ECR image URI with sha256 digest");
     const subnets = new CfnParameter(this, "SubnetIds", { type: "List<AWS::EC2::Subnet::Id>", description: "Private subnets with required AWS endpoints" });
@@ -457,53 +474,61 @@ class MealRefreshScheduleStack extends Stack {
     const interval = param("IntervalMinutes", "^([1-9]|[1-9][0-9]|[1-9][0-9]{2}|1[0-3][0-9]{2}|14[0-3][0-9]|1440)$",
       "Validated sweep interval in whole minutes, from 1 to 1440");
     const oneMinute = new CfnCondition(this, "OneMinute", { expression: Fn.conditionEquals(interval.valueAsString, "1") });
-    const logGroup = new logs.LogGroup(this, "WorkerLogs", { logGroupName: `/foodtech/${stage}/meal-refresh`,
+    const logGroup = new logs.LogGroup(this, "WorkerLogs", { logGroupName: `/foodtech/${stage}/${workload}`,
       retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN });
     const task = new ecs.CfnTaskDefinition(this, "WorkerTask", {
-      family: `foodtech-meal-refresh-${stage}`, requiresCompatibilities: ["FARGATE"], networkMode: "awsvpc",
+      family: `foodtech-${workload}-${stage}`, requiresCompatibilities: ["FARGATE"], networkMode: "awsvpc",
       cpu: "256", memory: "512", taskRoleArn: taskRole.valueAsString, executionRoleArn: executionRole.valueAsString,
       runtimePlatform: { operatingSystemFamily: "LINUX", cpuArchitecture: "X86_64" },
       containerDefinitions: [{ name: "worker", image: image.valueAsString, essential: true, user: "10001:10001",
-        readonlyRootFilesystem: true, environment: [
+        readonlyRootFilesystem: true,
+        ...(identityRelease ? { entryPoint: ["python", "-m", "foodtech_business_api.withdrawal_identity_worker"] } : {}),
+        environment: identityRelease ? [
+          { name: "FOODTECH_WITHDRAWAL_IDENTITY_WORKER_ENABLED", value: "true" },
+          { name: "FOODTECH_AUTH_TABLE", value: `foodtech-auth-sessions-${stage}` },
+          { name: "FOODTECH_DELETION_REGISTRY_TABLE", value: `foodtech-deletion-registry-${stage}` },
+          { name: "FOODTECH_COGNITO_USER_POOL_ID", value: pool!.valueAsString },
+        ] : [
           { name: "FOODTECH_COOKING_TABLE", value: `foodtech-cooking-jobs-${stage}` },
           { name: "FOODTECH_AUTH_TABLE", value: `foodtech-auth-sessions-${stage}` },
         ], logConfiguration: { logDriver: "awslogs", options: { "awslogs-group": logGroup.logGroupName,
           "awslogs-region": this.region, "awslogs-stream-prefix": "worker" } } }],
     });
     const rule = new events.CfnRule(this, "Schedule", { state: "DISABLED",
-      description: "Disabled until meal refresh deployment and deletion safeguards are verified",
+      ...(identityRelease ? { name: `foodtech-withdrawal-identity-${stage}` } : {}),
+      description: identityRelease ? "Disabled until withdrawal identity IAM, enrollment and rollout safeguards are verified" : "Disabled until meal refresh deployment and deletion safeguards are verified",
       scheduleExpression: Token.asString(Fn.conditionIf(oneMinute.logicalId, "rate(1 minute)", `rate(${interval.valueAsString} minutes)`)),
-      targets: [{ id: "MealRefresh", arn: cluster.valueAsString, roleArn: invokeRole.valueAsString,
+      targets: [{ id: identityRelease ? "IdentityRelease" : "MealRefresh", arn: cluster.valueAsString, roleArn: invokeRole.valueAsString,
         deadLetterConfig: { arn: queue.valueAsString }, retryPolicy: { maximumEventAgeInSeconds: 3600, maximumRetryAttempts: 3 },
         ecsParameters: { launchType: "FARGATE", taskCount: 1, taskDefinitionArn: task.ref,
-          group: `foodtech-meal-refresh-${stage}`, networkConfiguration: { awsVpcConfiguration: { assignPublicIp: "DISABLED",
+          group: `foodtech-${workload}-${stage}`, networkConfiguration: { awsVpcConfiguration: { assignPublicIp: "DISABLED",
             subnets: subnets.valueAsList, securityGroups: groups.valueAsList } } } }],
     });
     // Delivery failures and container exit failures are separate signals.
     const eventsLog = new logs.LogGroup(this, "StoppedEventsLog", {
-      logGroupName: `/aws/events/foodtech/${stage}/meal-refresh-stopped`,
+      logGroupName: `/aws/events/foodtech/${stage}/${workload}-stopped`,
       retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN,
     });
     const stoppedLogArn = this.formatArn({ service: "logs", resource: "log-group",
       resourceName: eventsLog.logGroupName, arnFormat: ArnFormat.COLON_RESOURCE_NAME });
     const logPolicy = new logs.CfnResourcePolicy(this, "StoppedEventsLogPolicy", {
-      policyName: `foodtech-meal-refresh-events-${stage}`,
+      policyName: `foodtech-${workload}-events-${stage}`,
       policyDocument: this.toJsonString({ Version: "2012-10-17", Statement: [{ Effect: "Allow",
         Principal: { Service: ["events.amazonaws.com", "delivery.logs.amazonaws.com"] },
         Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: `${stoppedLogArn}:*` }] }),
     });
     const stoppedRule = new events.CfnRule(this, "StoppedTasks", { eventPattern: {
       source: ["aws.ecs"], "detail-type": ["ECS Task State Change"],
-      detail: { clusterArn: [cluster.valueAsString], group: [`foodtech-meal-refresh-${stage}`], lastStatus: ["STOPPED"] },
+      detail: { clusterArn: [cluster.valueAsString], group: [`foodtech-${workload}-${stage}`], lastStatus: ["STOPPED"] },
     }, targets: [{ id: "StoppedLog", arn: stoppedLogArn }] });
     stoppedRule.addResourceDependency(logPolicy);
     const failedMetric = new logs.MetricFilter(this, "FailedTaskMetric", { logGroup: eventsLog,
-      metricNamespace: "Foodtech/MealRefresh", metricName: `TaskFailed-${stage}`, metricValue: "1",
+      metricNamespace: identityRelease ? "Foodtech/WithdrawalIdentity" : "Foodtech/MealRefresh", metricName: `TaskFailed-${stage}`, metricValue: "1",
       filterPattern: logs.FilterPattern.literal("{ ($.detail.containers[0].exitCode != 0) || ($.detail.containers[0].exitCode NOT EXISTS) }") });
     const alarm = new cloudwatch.Alarm(this, "FailedTaskAlarm", { metric: failedMetric.metric({
       statistic: "Sum", period: Duration.minutes(5) }), threshold: 1, evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      alarmDescription: "Meal refresh ECS task stopped with nonzero or unavailable container exit code" });
+      alarmDescription: identityRelease ? "Withdrawal identity ECS task stopped with nonzero or unavailable container exit code" : "Meal refresh ECS task stopped with nonzero or unavailable container exit code" });
     new CfnOutput(this, "TaskDefinitionArn", { value: task.ref });
     new CfnOutput(this, "DisabledScheduleArn", { value: rule.attrArn });
     new CfnOutput(this, "FailedTaskAlarmName", { value: alarm.alarmName });
@@ -542,7 +567,7 @@ class AiExecutionRegistryStack extends Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
       timeToLiveAttribute: "expires",
-      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true, recoveryPeriodInDays: 7 },
       removalPolicy: RemovalPolicy.RETAIN,
     });
     new CfnOutput(this, "AiExecutionRegistryTableName", { value: table.tableName });
@@ -612,12 +637,26 @@ class CredentialVaultStack extends Stack {
     this.transferKey = transferKey;
     this.hmacKey = hmacKey;
     table.grant(registration, "dynamodb:PutItem");
+    const authForRegistration = dynamodb.Table.fromTableName(
+      this, "AuthSessionsForCredentialRegistration", `foodtech-auth-sessions-${stage}`,
+    );
+    authForRegistration.grant(registration, "dynamodb:ConditionCheckItem");
+    authForRegistration.grant(gateway, "dynamodb:ConditionCheckItem");
     table.grant(gateway, "dynamodb:GetItem");
     const registry = dynamodb.Table.fromTableName(
       this, "ExecutionRegistryForGateway", `foodtech-ai-execution-registry-${stage}`,
     );
     registry.grant(gateway, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
       "dynamodb:ConditionCheckItem");
+    gateway.addToPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:DeleteItem"],
+      resources: [registry.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ACTIVE#*"] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+        StringEquals: { "dynamodb:EnclosingOperation": "TransactWriteItems" },
+      },
+    }));
     registry.grant(registration, "dynamodb:PutItem");
     const restrictContext = (grant: iam.Grant) => {
       for (const statement of [...grant.principalStatements, ...grant.resourceStatements]) {
@@ -647,6 +686,10 @@ class CredentialVaultStack extends Stack {
 class AiServiceTasksStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps, vault: CredentialVaultStack) {
     super(scope, id, props);
+    const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
+    if (principalProvisioning !== "true" && principalProvisioning !== "false") {
+      throw new Error("principalProvisioningEnabled must be true or false");
+    }
     const required = (name: string): string => {
       const value = app.node.tryGetContext(name);
       if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
@@ -698,10 +741,12 @@ class AiServiceTasksStack extends Stack {
       user: "10001",
       environment: {
         FOODTECH_SERVICE: "credential-registration",
+        FOODTECH_PRINCIPAL_PROVISIONING_ENABLED: principalProvisioning,
         FOODTECH_REGISTRATION_BIND_HOST: "0.0.0.0",
         FOODTECH_STAGE: stage,
         FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
         FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
+        FOODTECH_AUTH_TABLE: `foodtech-auth-sessions-${stage}`,
         FOODTECH_CREDENTIAL_STORAGE_KEY_ARN: vault.storageKey.keyArn,
         FOODTECH_CREDENTIAL_TRANSFER_KEY_ARN: vault.transferKey.keyArn,
         FOODTECH_CREDENTIAL_TRANSFER_KEY_VERSION: required("credentialKeyPeriod"),
@@ -720,9 +765,11 @@ class AiServiceTasksStack extends Stack {
       user: "10001",
       environment: {
         FOODTECH_SERVICE: "ai-gateway",
+        FOODTECH_PRINCIPAL_PROVISIONING_ENABLED: principalProvisioning,
         FOODTECH_GATEWAY_BIND_HOST: "0.0.0.0",
         FOODTECH_STAGE: stage,
         FOODTECH_AI_REGISTRY_TABLE: `foodtech-ai-execution-registry-${stage}`,
+        FOODTECH_AUTH_TABLE: `foodtech-auth-sessions-${stage}`,
         FOODTECH_CREDENTIAL_VAULT_TABLE: vault.vaultTable.tableName,
         FOODTECH_CREDENTIAL_KMS_KEY_ARNS: vault.storageKey.keyArn,
         FOODTECH_EXTERNAL_EXECUTION_ENABLED: "false",
@@ -907,8 +954,16 @@ if (app.node.tryGetContext("provisionCookingJobs") === "true") {
   Tags.of(cookingJobs).add("Project", "foodtech");
 }
 if (app.node.tryGetContext("provisionMealRefreshSchedule") === "true") {
-  const mealRefresh = new MealRefreshScheduleStack(app, `FoodtechMealRefreshSchedule-${stage}`, { env });
+  const mealRefresh = new MaintenanceScheduleStack(app, `FoodtechMealRefreshSchedule-${stage}`, { env });
   Tags.of(mealRefresh).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionWithdrawalIdentitySchedule") === "true") {
+  const identityRelease = new MaintenanceScheduleStack(app, `FoodtechWithdrawalIdentitySchedule-${stage}`, { env }, "withdrawal-identity");
+  Tags.of(identityRelease).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionWithdrawalIdentityAccess") === "true") {
+  const identityAccess = new WithdrawalIdentityAccessStack(app, `FoodtechWithdrawalIdentityAccess-${stage}`, { env }, stage);
+  Tags.of(identityAccess).add("Project", "foodtech");
 }
 if (app.node.tryGetContext("provisionTierRequests") === "true") {
   const tierRequests = new TierRequestsStack(app, `FoodtechTierRequests-${stage}`, { env });

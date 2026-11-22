@@ -1,4 +1,6 @@
 import unittest
+import time
+from datetime import datetime, timezone
 from dataclasses import replace
 from uuid import uuid4
 
@@ -48,6 +50,29 @@ class GuardedDeletionTests(unittest.TestCase):
         self.assertEqual(registry["Put"]["Item"]["encrypted_user_id"], {"B": b"encrypted-id"})
         self.assertNotIn("subject", registry["Put"]["Item"])
 
+    def test_expired_withdrawal_is_bound_to_request_time_and_epoch(self):
+        requested = int(time.time()) - 604801
+        snapshot = replace(self.snapshot, auth_epoch=2, withdrawal_request_id=self.request_id,
+                           withdrawal_requested_at=requested, withdrawal_deadline=requested + 604800)
+        args = {**self.arguments, 'snapshot': snapshot,
+                'requested_at': datetime.fromtimestamp(requested, timezone.utc).isoformat()}
+        self.store.lock_and_register(**args)
+        update = self.client.requests[-1]['TransactItems'][0]['Update']
+        self.assertIn('suspended = :yes AND #withdrawal = :deleting', update['ConditionExpression'])
+        self.assertIn('withdrawal_request_id = :request', update['ConditionExpression'])
+        self.assertEqual(update['ExpressionAttributeValues'][':deadline'], {'N': str(requested + 604800)})
+        self.assertEqual(update['ExpressionAttributeValues'][':expected_epoch'], {'N': '2'})
+        self.client.requests.clear()
+        for invalid in (replace(snapshot, withdrawal_request_id=str(uuid4())),
+                        replace(snapshot, withdrawal_deadline=int(time.time()) + 100),
+                        replace(snapshot, withdrawal_requested_at=True)):
+            with self.subTest(snapshot=invalid), self.assertRaises(ValueError):
+                self.store.lock_and_register(**{**args, 'snapshot': invalid})
+        self.assertEqual(self.client.requests, [])
+        self.store.lock_and_register(**self.arguments)
+        self.assertIn('attribute_not_exists(#withdrawal)',
+                      self.client.requests[-1]['TransactItems'][0]['Update']['ConditionExpression'])
+
     def test_owner_mismatch_and_invalid_snapshot_fail_before_any_write(self):
         for snapshot in (replace(self.snapshot, authenticated_subject=str(uuid4())),
                          replace(self.snapshot, vault_revision=0),
@@ -88,6 +113,14 @@ class GuardedDeletionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GuardedDeletion(auth_table="same", registry_table="registry", vault_table="same", capsule_table="capsule",
                             approved_purposes=frozenset({"BILLING"}), client=self.client)
+
+    def test_new_preparation_uses_separate_attempt_token_for_same_deletion_request(self):
+        attempt = str(uuid4())
+        self.store.lock_and_register(**self.arguments, attempt_id=attempt)
+        self.assertEqual(self.client.requests[-1]['ClientRequestToken'], attempt)
+        self.assertEqual(self.client.requests[-1]['TransactItems'][-1]['Put']['Item']['request_id'], {'S': self.request_id})
+        with self.assertRaises(ValueError):
+            self.store.lock_and_register(**self.arguments, attempt_id='invalid')
 
     def test_botocore_accepts_four_item_transaction(self):
         client = boto3.client("dynamodb", region_name="ap-southeast-2", aws_access_key_id="synthetic",

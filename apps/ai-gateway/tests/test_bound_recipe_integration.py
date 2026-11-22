@@ -1,0 +1,183 @@
+"""Internal Gateway flow using the real source guard and synthetic records."""
+import asyncio
+import threading
+import unittest
+from datetime import datetime, timezone
+from decimal import Decimal
+from botocore.exceptions import ReadTimeoutError
+
+from foodtech_ai_gateway.ollama import OllamaResult
+from foodtech_ai_gateway.policy import Caller, Model, Tier
+from foodtech_ai_gateway.recipe_source_guard import BoundRecipeSourceGuard
+from foodtech_ai_gateway.registry import DynamoRegistry
+from foodtech_ai_gateway.service import GatewayService
+from foodtech_contracts.recommendation_guard import Evidence
+from foodtech_contracts.recommendation_output import JeyukBaseline
+
+import test_recipe_source_guard as source_fixture
+from test_registry import AtomicClient, MemoryResource, TransactionCanceledException
+
+
+class BoundRecipeIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.source = source_fixture.RecipeSourceGuardTests(methodName='runTest')
+        self.source.setUp()
+        self.execution = self.source.execution
+        resource = MemoryResource()
+        client = AtomicClient(resource.table)
+        self.client = client
+        client.auth_states['USER#tenant-a'] = {'pk': 'USER#tenant-a', 'epoch': 0}
+        self.registry = DynamoRegistry('synthetic', '2026-11', resource=resource,
+                                       client=client, local_models={'model'}, auth_table='auth-test')
+        self.registry.require_principal = True
+        now = datetime.now(timezone.utc)
+        self.registry.create_model(Model('model', 'ollama', Tier.TIER_1, 'ACTIVE', True, True, now, now))
+        self.registry.create_execution(self.execution)
+        self.registry.create_limit('TENANT', 'tenant-a', Decimal('1'), calls_remaining=1)
+        self.registry.create_limit('PROVIDER', 'ollama', Decimal('1'))
+        self.registry.create_limit('PROJECT', 'GLOBAL', Decimal('1'))
+        jobs = (f'SCOPE#USER#tenant-a#JOB#{self.source.current}',
+                f'SCOPE#USER#tenant-a#JOB#{self.source.prior}')
+        self.guard = BoundRecipeSourceGuard(self.source.guard, self.execution, jobs,
+                                           ('JEYUK#batch-current', 'JEYUK#batch-prior'))
+        original_transact = client.transact_write_items
+        def transact(*, TransactItems, ClientRequestToken):
+            source_checks = [item for item in TransactItems if 'ConditionCheck' in item and
+                             item['ConditionCheck']['TableName'] not in (self.registry.table_name, 'auth-test')]
+            if source_checks:
+                if len(source_checks) != 8 or not self.guard.verify(self.execution):
+                    raise TransactionCanceledException()
+                TransactItems = [item for item in TransactItems if item not in source_checks]
+            return original_transact(TransactItems=TransactItems, ClientRequestToken=ClientRequestToken)
+        client.transact_write_items = transact
+        self.service = GatewayService(self.registry, recipe_source_guard=self.guard)
+
+    def invoke(self, model):
+        return asyncio.run(self.service.execute_local_recipe(Caller('business-api', 'tenant-a'), 'exec',
+            evidence=Evidence('COMPLETE', 'PASSED', True, False),
+            baseline=JeyukBaseline('SMALL', Decimal('200'), Decimal('30'), 480, Decimal('1.8'), 60, 60, False),
+            context={}, ollama=model))
+
+    def test_unchanged_source_allows_internal_candidate(self):
+        class Model:
+            async def structured_chat(self, *_):
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        result = self.invoke(Model())
+        self.assertEqual(result.state, 'SUCCEEDED')
+        self.assertIn('NEEDS_REVIEW', result.response_text)
+        self.assertNotIn(('ACTIVE#tenant-a', 'EXEC#exec'), self.registry.table.items)
+
+    def test_missing_principal_blocks_bound_request_before_model_call(self):
+        self.client.auth_states.pop('USER#tenant-a')
+        class Model:
+            async def structured_chat(self, *_):
+                raise AssertionError('model must not be called for missing principal')
+        result = self.invoke(Model())
+        self.assertNotEqual(result.state, 'SUCCEEDED')
+        self.assertEqual(self.registry.execution_state('exec'), 'PENDING')
+        self.assertNotIn(('ACTIVE#tenant-a', 'EXEC#exec'), self.registry.table.items)
+
+    def test_blocking_settlement_reads_run_outside_event_loop_thread(self):
+        main_thread = threading.get_ident()
+        threads = []
+        original_checks = self.source.guard.settlement_checks
+        original_finish = self.registry.finish
+        def record_checks(*args, **kwargs):
+            threads.append(('checks', threading.get_ident()))
+            return original_checks(*args, **kwargs)
+        def record_finish(*args, **kwargs):
+            threads.append(('finish', threading.get_ident()))
+            return original_finish(*args, **kwargs)
+        self.source.guard.settlement_checks = record_checks
+        self.registry.finish = record_finish
+        class Model:
+            async def structured_chat(self, *_):
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        self.assertEqual(self.invoke(Model()).state, 'SUCCEEDED')
+        self.assertTrue(any(name == 'checks' for name, _ in threads))
+        self.assertTrue(any(name == 'finish' for name, _ in threads))
+        self.assertTrue(all(thread != main_thread for _, thread in threads))
+
+    def test_source_change_during_model_call_discards_candidate(self):
+        source = self.source.resource.tables['foodtech-data-flow-dev']
+        class Model:
+            async def structured_chat(self, *_):
+                source.items[('JEYUK#batch-current', 'RAW#000001')]['raw'] += ' '
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        result = self.invoke(Model())
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE'))
+        self.assertIsNone(result.response_text)
+        self.assertNotIn('temperature_c', str(self.registry.execution_result('exec')))
+
+    def test_uncertain_settlement_does_not_retry_or_return_candidate(self):
+        for committed in (False, True):
+            with self.subTest(committed=committed):
+                self.setUp()
+                original = self.registry.finish
+                attempts = []
+                def timeout(*args, **kwargs):
+                    attempts.append(kwargs['succeeded'])
+                    if committed:
+                        original(*args, **kwargs)
+                    raise ReadTimeoutError(endpoint_url='https://example.invalid', error='timeout')
+                self.registry.finish = timeout
+                class Model:
+                    async def structured_chat(self, *_):
+                        return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+                result = self.invoke(Model())
+                self.assertEqual((result.state, result.error_code, result.response_text),
+                                 ('INDETERMINATE', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED', None))
+                self.assertEqual(attempts, [True])
+                self.assertEqual(self.registry.execution_state('exec'), 'SUCCEEDED' if committed else 'RESERVED')
+
+    def test_execution_change_during_model_call_cannot_store_candidate(self):
+        table = self.registry.table
+        class Model:
+            async def structured_chat(self, *_):
+                execution = table.items[('EXEC#exec', 'META')]
+                execution['prior_source_revision'] += 1
+                execution['version'] += 1
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        result = self.invoke(Model())
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED'))
+        self.assertIsNone(result.response_text)
+        self.assertIsNone(self.registry.execution_result('exec'))
+        self.assertEqual(self.registry.execution_state('exec'), 'RESERVED')
+
+    def test_execution_change_immediately_before_settlement_is_rejected(self):
+        original_finish = self.registry.finish
+        def racing_finish(*args, **kwargs):
+            execution = self.registry.table.items[('EXEC#exec', 'META')]
+            execution['prior_source_revision'] += 1
+            execution['version'] += 1
+            return original_finish(*args, **kwargs)
+        self.registry.finish = racing_finish
+        class Model:
+            async def structured_chat(self, *_):
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        result = self.invoke(Model())
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'SETTLEMENT_CONFLICT_RECONCILIATION_REQUIRED'))
+        self.assertIsNone(result.response_text)
+        self.assertIsNone(self.registry.execution_result('exec'))
+
+    def test_source_revision_change_immediately_before_settlement_is_rejected(self):
+        original_finish = self.registry.finish
+        def racing_finish(*args, **kwargs):
+            if kwargs['succeeded']:
+                source = self.source.resource.tables['foodtech-data-flow-dev']
+                source.items[('JEYUK#batch-prior', 'SOURCE#REVISION')]['revision'] += 1
+            return original_finish(*args, **kwargs)
+        self.registry.finish = racing_finish
+        class Model:
+            async def structured_chat(self, *_):
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,"vegetable_interval_seconds":60,"sauce_interval_seconds":60}', 1, 1)
+        result = self.invoke(Model())
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'RECIPE_SETTLEMENT_CONFLICT'))
+        self.assertIsNone(result.response_text)
+        self.assertEqual(self.registry.execution_result('exec')['error_code'], 'RECIPE_SETTLEMENT_CONFLICT')
+        self.assertEqual(self.registry.execution_state('exec'), 'FAILED')
+        self.assertEqual(self.registry.budget('tenant-a', 'ollama').calls_remaining, 0)
+
+
+if __name__ == '__main__':
+    unittest.main()

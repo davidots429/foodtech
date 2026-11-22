@@ -11,9 +11,9 @@ class FakeRegistration:
         "key_version": "2026-11", "algorithm": "RSA-OAEP-SHA-256",
         "public_key_spki_base64": "synthetic-public-key", "expires_at": "future"})
 
-    def register(self, tenant_id, provider, key_version, ciphertext):
-        assert (tenant_id, provider, key_version, ciphertext) == (
-            "subject-1", "openai", "2026-11", "synthetic-ciphertext")
+    def register(self, tenant_id, provider, key_version, ciphertext, expected_epoch):
+        assert (tenant_id, provider, key_version, ciphertext, expected_epoch) == (
+            "subject-1", "openai", "2026-11", "synthetic-ciphertext", 2)
         return "new-credential-id"
 
 
@@ -21,7 +21,7 @@ class InternalApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_mtls_listener_required_before_public_key_or_registration(self):
         app.state.credential_registrar = FakeRegistration()
         app.state.mtls_listener = False
-        body = {"tenant_id": "subject-1", "provider": "openai", "key_version": "2026-11",
+        body = {"tenant_id": "subject-1", "expected_epoch": 2, "provider": "openai", "key_version": "2026-11",
                 "ciphertext_base64": "synthetic-ciphertext"}
         try:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),

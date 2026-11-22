@@ -7,6 +7,8 @@ only after the resolver, IAM, durable recovery and all writers are verified.
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from .subject_identity import valid_subject
+
 
 @dataclass(frozen=True)
 class PreparedDeletion:
@@ -26,7 +28,7 @@ class DeletionRegistration:
                 requested_at: str, policy_version: str) -> PreparedDeletion:
         """Resolve internal ID and Capsule from the authenticated owner server-side."""
         try:
-            if str(UUID(authenticated_subject)) != authenticated_subject or str(UUID(request_id)) != request_id:
+            if not valid_subject(authenticated_subject) or str(UUID(request_id)) != request_id:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise ValueError("invalid deletion identity") from None

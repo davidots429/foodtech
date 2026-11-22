@@ -59,7 +59,7 @@ class RegistrationTests(unittest.TestCase):
             self.registration.prepare(authenticated_subject=self.subject, request_id=self.request_id,
                                       requested_at="2026-11-21T00:00:00Z", policy_version="v1")
         with self.assertRaisesRegex(ValueError, "invalid deletion identity"):
-            self.registration.prepare(authenticated_subject="bad", request_id=self.request_id,
+            self.registration.prepare(authenticated_subject="bad#subject", request_id=self.request_id,
                                       requested_at="2026-11-21T00:00:00Z", policy_version="v1")
         self.assertEqual(self.store.calls, [])
         self.assertEqual(self.cipher.inputs, [])

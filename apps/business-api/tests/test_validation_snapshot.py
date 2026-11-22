@@ -99,6 +99,7 @@ class DynamoSnapshotShapeTests(unittest.TestCase):
         store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="foodtech-cooking-jobs-dev")
         store.serializer = TypeSerializer()
+        store.auth_table_name = "test-auth"
         store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
         receipt = {"pk": "JEYUK#batch", "sk": "COLLECTION#RECEIPT#test",
                    "record_count": 2, "ordered_raw_sha256": "a" * 64}
@@ -106,14 +107,17 @@ class DynamoSnapshotShapeTests(unittest.TestCase):
                     "job_version": 3, "source_revision": 2, "source_receipt_reference": receipt,
                     "condition_profile_reference": {"profile_id": "p1", "profile_version": "v1", "equipment_profile": "jeyuk-small", "heating_setpoint_celsius": "200", "target_rpm": "30"}}
         store.save_validation_evidence("SCOPE#USER#owner#JOB#job", 3, snapshot,
-                                       "foodtech-data-flow-dev", 2, receipt)
+                                       "foodtech-data-flow-dev", 2, receipt, 3)
         operations = calls[0]["TransactItems"]
         shape = get_session().get_service_model("dynamodb").operation_model("TransactWriteItems").input_shape
         validate_parameters(calls[0], shape)
-        self.assertEqual(len(operations), 5)
-        self.assertEqual([list(item)[0] for item in operations], ["ConditionCheck"] * 4 + ["Put"])
-        self.assertEqual(operations[3]["ConditionCheck"]["Key"]["pk"], {"S": "SCOPE#USER#owner#CONDITION_PROFILE#p1"})
-        self.assertEqual(operations[2]["ConditionCheck"]["ExpressionAttributeValues"][":hash"], {"S": "a" * 64})
+        self.assertEqual(operations[0]["ConditionCheck"]["TableName"], "test-auth")
+        self.assertEqual(operations[0]["ConditionCheck"]["ExpressionAttributeValues"][":expected"], {"N": "3"})
+        self.assertIn("deletion_lock_request", operations[0]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual(len(operations), 6)
+        self.assertEqual([list(item)[0] for item in operations], ["ConditionCheck"] * 5 + ["Put"])
+        self.assertEqual(operations[4]["ConditionCheck"]["Key"]["pk"], {"S": "SCOPE#USER#owner#CONDITION_PROFILE#p1"})
+        self.assertEqual(operations[3]["ConditionCheck"]["ExpressionAttributeValues"][":hash"], {"S": "a" * 64})
 
 
 if __name__ == "__main__": unittest.main()

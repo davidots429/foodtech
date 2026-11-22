@@ -9,6 +9,7 @@ from .comparison import router as comparison_router
 from .assessment_aggregate import router as assessment_aggregate_router
 from .combi_meal import router as combi_meal_router
 from .combi_quality_aggregate import router as combi_quality_aggregate_router
+from .withdrawal_api import router as withdrawal_router
 
 app = FastAPI(title="Foodtech Business API")
 app.include_router(auth_router)
@@ -20,4 +21,5 @@ app.include_router(comparison_router)
 app.include_router(assessment_aggregate_router)
 app.include_router(combi_meal_router)
 app.include_router(combi_quality_aggregate_router)
+app.include_router(withdrawal_router)
 

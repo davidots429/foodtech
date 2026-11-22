@@ -22,7 +22,7 @@ class DowngradeFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.resource = MemoryResource()
         self.client = AtomicClient(self.resource.table)
-        self.registry = DynamoRegistry("test", "2026-11", resource=self.resource, client=self.client,
+        self.registry = DynamoRegistry("test", "2026-11", resource=self.resource, client=self.client, auth_table="auth-test",
                                        local_models={"llama3.1:8b", "tier-one"})
         now = datetime.now(timezone.utc)
         self.registry.create_model(Model("llama3.1:8b", "ollama", Tier.TIER_3, "ACTIVE", True, True, now, now))

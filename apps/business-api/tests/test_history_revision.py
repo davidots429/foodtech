@@ -42,14 +42,47 @@ class HistoryRevisionTests(unittest.TestCase):
         store.ensure_listed("SCOPE#USER#owner#JOB#two", meta("two"))
         self.assertEqual(store.history_revision("owner"), 6)
 
+    def test_listing_reconciliation_checks_owner_and_original_job_atomically(self):
+        calls = []; store = DynamoCookingStore.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name="cooking"); store.serializer = TypeSerializer()
+        store.auth_table_name = "auth"
+        store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
+        store.ensure_listed("SCOPE#USER#owner#JOB#one", meta())
+        ops = calls[0]["TransactItems"]
+        self.assertIn("deletion_lock_request", ops[0]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual(ops[1]["ConditionCheck"]["Key"]["sk"], {"S": "META"})
+        self.assertIn("created_at = :created", ops[1]["ConditionCheck"]["ConditionExpression"])
+        self.assertIn("Put", ops[2]); self.assertIn("Update", ops[3])
+
+    def test_listing_conflict_does_not_hide_a_failed_lock(self):
+        class Cancelled(Exception):
+            def __init__(self):
+                self.response = {"CancellationReasons":[{"Code":"ConditionalCheckFailed"}, {"Code":"None"},
+                                                          {"Code":"ConditionalCheckFailed"}, {"Code":"None"}]}
+        class Client:
+            exceptions = SimpleNamespace(TransactionCanceledException=Cancelled)
+            def transact_write_items(self, **_kwargs): raise Cancelled()
+        store = DynamoCookingStore.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name="cooking"); store.serializer = TypeSerializer()
+        store.auth_table_name = "auth"; store.client = Client()
+        with self.assertRaises(Conflict):
+            store.ensure_listed("SCOPE#USER#owner#JOB#one", meta())
+
+    def test_memory_listing_rejects_mismatched_source(self):
+        store = MemoryCookingStore(); pk = "SCOPE#USER#owner#JOB#one"
+        store.create(pk, meta())
+        with self.assertRaises(Conflict):
+            store.ensure_listed(pk, {**meta(), "created_at":"2026-02-01T00:00:00Z"})
+
     def test_start_and_history_revision_share_dynamo_transaction(self):
         calls = []; store = DynamoCookingStore.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test"); store.serializer = TypeSerializer()
+        store.auth_table_name = "auth-table"
         store.client = SimpleNamespace(transact_write_items=lambda **kwargs: calls.append(kwargs))
         store.commit("SCOPE#USER#owner#JOB#one", 1, {"version": 2},
                      event={"sk": "EVENT#start", "trigger": "COOKING_STARTED"})
         ops = calls[0]["TransactItems"]
-        self.assertEqual(len(ops), 3)
+        self.assertEqual(len(ops), 4)
         self.assertEqual(ops[-1]["Update"]["Key"], {"pk": {"S": "SCOPE#USER#owner#JOBS"},
                                                      "sk": {"S": "HISTORY#REVISION"}})
         self.assertIn("attribute_not_exists", ops[-1]["Update"]["ConditionExpression"])

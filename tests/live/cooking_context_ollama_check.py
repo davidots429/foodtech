@@ -132,13 +132,14 @@ async def main() -> None:
     if any(table.get_item(Key=key, ConsistentRead=True).get("Item") for key in shared_keys):
         raise SystemExit("Shared model or limits already exist; refusing to alter or remove them")
     registry = DynamoRegistry(TABLE, period, resource=dynamodb,
-                              client=session.client("dynamodb"), local_models={MODEL})
+                              client=session.client("dynamodb"), local_models={MODEL}, auth_table="foodtech-auth-sessions-dev")
     cooking_table = "foodtech-cooking-jobs-dev"
     cooking_store = DynamoCookingStore(cooking_table)
     job_id = str(uuid4())
     cooking_partitions = [business_cooking._pk(tenant, job_id), f"SCOPE#USER#{tenant}#JOBS"]
     keys: list[dict[str, str]] = []
     for execution_id in expected_ids:
+        keys.append({"pk": f"ACTIVE#{tenant}", "sk": f"EXEC#{execution_id}"})
         keys.extend((item_key("EXEC", execution_id),
                      item_key("EXEC", execution_id, "RESULT")))
     temp = tempfile.TemporaryDirectory(prefix="foodtech-ai-live-")
@@ -146,7 +147,11 @@ async def main() -> None:
     gateway_task: asyncio.Task | None = None
     gateway_server: uvicorn.Server | None = None
     gateway_listener: socket.socket | None = None
+    auth = dynamodb.Table("foodtech-auth-sessions-dev")
+    auth_key, auth_created = {"pk": f"USER#{tenant}"}, False
     try:
+        auth.put_item(Item=auth_key, ConditionExpression="attribute_not_exists(pk)")
+        auth_created = True
         def created(kind: str, identifier: str) -> None:
             keys.append(item_key(kind, identifier))
 
@@ -210,6 +215,7 @@ async def main() -> None:
             config = {
                 "AWS_DEFAULT_REGION": REGION,
                 "FOODTECH_AI_REGISTRY_TABLE": TABLE,
+                "FOODTECH_AUTH_TABLE": "foodtech-auth-sessions-dev",
                 "FOODTECH_OLLAMA_URL": ollama_url,
                 "FOODTECH_GATEWAY_URL": f"https://127.0.0.1:{port}",
                 "FOODTECH_GATEWAY_CA": ca,
@@ -287,6 +293,8 @@ async def main() -> None:
                 try:
                     remove_and_verify(cooking_store.table, cooking_partitions)
                 finally:
+                    if auth_created:
+                        auth.delete_item(Key=auth_key)
                     temp.cleanup()
 
 

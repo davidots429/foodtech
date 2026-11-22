@@ -1,4 +1,6 @@
 import unittest
+import copy
+import time
 from dataclasses import replace
 from uuid import uuid4
 
@@ -136,6 +138,31 @@ class IdentityVaultTests(unittest.TestCase):
             stubber.add_response("transact_write_items", {}, {"ClientRequestToken": self.request_id, "TransactItems": ANY})
             vault.commit(authenticated_subject=self.subject, prepared=self.prepared)
             stubber.assert_no_pending_responses()
+
+
+    def test_due_withdrawal_resolves_only_the_matching_expired_request(self):
+        principal, vault, capsule = self.items()
+        requested = int(time.time()) - 604801
+        principal.update({'epoch': {'N': '2'}, 'suspended': {'BOOL': True},
+            'withdrawal_status': {'S': 'DELETING'}, 'withdrawal_request_id': {'S': self.request_id},
+            'withdrawal_requested_at': {'N': str(requested)},
+            'withdrawal_deadline': {'N': str(requested + 604800)}, 'withdrawal_epoch': {'N': '1'}})
+        self.client.responses = [principal, vault, capsule, copy.deepcopy(principal)]
+        snapshot, internal_id = self.vault.resolve_deletion(authenticated_subject=self.subject,
+            expected_epoch=2, withdrawal_request_id=self.request_id)
+        self.assertEqual(snapshot.withdrawal_request_id, self.request_id)
+        self.assertEqual(snapshot.withdrawal_deadline, requested + 604800)
+        internal_id[:] = b'\x00' * len(internal_id)
+        for changes in ({'withdrawal_status': {'S': 'PENDING'}}, {'withdrawal_status': {'S': 'CANCELED'}},
+                        {'withdrawal_request_id': {'S': str(uuid4())}},
+                        {'withdrawal_deadline': {'N': str(int(time.time()) + 100)}}):
+            self.client.responses = [{**principal, **changes}]
+            with self.subTest(changes=changes), self.assertRaises(IdentityVaultConflict):
+                self.vault.resolve_deletion(authenticated_subject=self.subject,
+                    expected_epoch=2, withdrawal_request_id=self.request_id)
+        self.client.responses = [principal]
+        with self.assertRaises(IdentityVaultConflict):
+            self.vault.resolve_deletion(authenticated_subject=self.subject, expected_epoch=2)
 
 
 if __name__ == "__main__":

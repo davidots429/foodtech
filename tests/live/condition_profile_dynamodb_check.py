@@ -15,7 +15,7 @@ def main():
     session = boto3.Session(profile_name="foodtech", region_name=REGION)
     if session.client("sts").get_caller_identity()["Account"] != ACCOUNT:
         raise SystemExit("Unexpected AWS account")
-    store = DynamoCookingStore(TABLE)
+    store = DynamoCookingStore(TABLE, 'foodtech-auth-sessions-dev')
     subject = f"synthetic-profile-{uuid4().hex}"
     profile = {"profile_id": "synthetic-small", "profile_version": "v1", "equipment_profile": "jeyuk-small",
                "heating_setpoint_celsius": "200", "target_rpm": "30", "provenance": "SYNTHETIC",
@@ -35,6 +35,8 @@ def main():
         print("Synthetic profile immutability and customer scope verified")
     finally:
         store.table.delete_item(Key={"pk": pk, "sk": "VERSION#v1"})
+        store.table.delete_item(Key={"pk": f"SCOPE#USER#{subject}#CONDITION_PROFILES",
+                                     "sk": f"PROFILE#{profile['profile_id']}#VERSION#v1"})
         if store.table.query(KeyConditionExpression=Key("pk").eq(pk), ConsistentRead=True)["Items"]:
             raise RuntimeError("synthetic profile cleanup failed")
         print("Synthetic profile cleanup verified")

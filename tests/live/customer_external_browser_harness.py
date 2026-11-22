@@ -126,7 +126,9 @@ class SyntheticRegistrar:
                 "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
 
     def register(self, tenant_id: str, provider: str, key_version: str,
-                 ciphertext_base64: str) -> str:
+                 ciphertext_base64: str, expected_epoch: int) -> str:
+        if expected_epoch != 0:
+            raise ValueError("synthetic epoch rejected")
         if tenant_id != TENANT or provider != "openai" or key_version != "synthetic-v1":
             raise ValueError("synthetic registration contract rejected")
         plaintext = self.private.decrypt(base64.b64decode(ciphertext_base64, validate=True),
@@ -181,24 +183,24 @@ async def start_server(app, listener: socket.socket, *, cert: str | None = None,
     raise TimeoutError("test service did not start")
 
 
-async def wait_for_web() -> None:
+async def wait_for_web(web_url: str) -> None:
     async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
         for _ in range(100):
             try:
-                response = await client.get("http://127.0.0.1:5173/")
+                response = await client.get(f"{web_url}/")
                 if response.status_code == 200:
                     return
-            except httpx.ConnectError:
+            except httpx.TransportError:
                 pass
             await asyncio.sleep(0.1)
     raise TimeoutError("customer web did not start")
 
 
-async def smoke_test(created: dict[str, str]) -> dict:
-    async with httpx.AsyncClient(base_url="http://127.0.0.1:5173", timeout=90,
+async def smoke_test(created: dict[str, str], web_url: str) -> dict:
+    async with httpx.AsyncClient(base_url=web_url, timeout=90,
                                  trust_env=False) as client:
         account = await client.get("/api/customer/me")
-        assert account.status_code == 200 and account.json()["csrf"] == CSRF
+        assert account.status_code == 200 and account.json()["csrf"] == CSRF, f"customer account HTTP {account.status_code}"
         descriptor_response = await client.get("/api/customer/credentials/transfer-key")
         assert descriptor_response.status_code == 200
         descriptor = descriptor_response.json()
@@ -244,13 +246,13 @@ def aws_backends():
     kms = session.client("kms")
     period = datetime.now(timezone.utc).strftime("%Y-%m")
     registry = DynamoRegistry(REGISTRY_TABLE, period, resource=resource,
-                              client=session.client("dynamodb"))
+                              client=session.client("dynamodb"), auth_table="foodtech-auth-sessions-dev")
     registrar = CredentialRegistrar(
         CredentialWriter(VAULT_TABLE, "dev", keys["CredentialStorageKeyArn"],
                          resource=resource, kms_client=kms), REGISTRY_TABLE,
         TransferKey(keys["CredentialTransferKeyArn"], period, kms_client=kms),
         TenantPseudonymizer(keys["CredentialPseudonymKeyArn"], "v1", kms_client=kms),
-        dynamodb_client=session.client("dynamodb"))
+        auth_table="foodtech-auth-sessions-dev", dynamodb_client=session.client("dynamodb"))
     vault = DynamoCredentialVault(VAULT_TABLE, "dev", {keys["CredentialStorageKeyArn"]},
                                   resource=resource, kms_client=kms)
     return registry, registrar, vault, resource
@@ -258,6 +260,9 @@ def aws_backends():
 
 def cleanup_aws(resource, period: str, created: dict[str, str]) -> None:
     registry_table, vault_table = resource.Table(REGISTRY_TABLE), resource.Table(VAULT_TABLE)
+    execution_id = created.get("execution_id")
+    if execution_id:
+        registry_table.delete_item(Key={"pk": f"ACTIVE#{TENANT}", "sk": f"EXEC#{execution_id}"})
     credential_id = created.get("credential_id")
     if credential_id:
         key = {"pk": f"CREDENTIAL#{credential_id}", "sk": "META"}
@@ -286,7 +291,7 @@ async def main(*, smoke_only: bool, aws: bool) -> None:
         registry_resource = MemoryResource()
         registry = DynamoRegistry("synthetic-browser-registry", period,
                                   resource=registry_resource,
-                                  client=AtomicClient(registry_resource.table))
+                                  client=AtomicClient(registry_resource.table), auth_table="auth-test")
         secrets: dict[str, bytes] = {}
         registrar = SyntheticRegistrar(registry, secrets)
         vault = SyntheticVault(secrets)
@@ -323,15 +328,20 @@ async def main(*, smoke_only: bool, aws: bool) -> None:
             if surface != "customer":
                 raise ValueError("synthetic harness permits customer only")
             return SimpleNamespace(subject=TENANT, csrf=CSRF, surface="customer",
-                                   email="synthetic@example.invalid")
+                                   email="synthetic@example.invalid", epoch=0, refresh_ciphertext=None,
+                                   access_expires=None, expires=9999999999)
 
-        config = {"FOODTECH_EXTERNAL_EXECUTION_ENABLED": "true",
+        config = {"FOODTECH_EXTERNAL_EXECUTION_ENABLED": "true", "FOODTECH_SECURE_COOKIES": "false",
                   "FOODTECH_GATEWAY_URL": f"https://127.0.0.1:{gateway_port}",
                   "FOODTECH_GATEWAY_CA": ca,
                   "FOODTECH_REGISTRATION_URL": f"https://127.0.0.1:{registration_port}",
                   "FOODTECH_REGISTRATION_CA": ca,
                   "FOODTECH_BUSINESS_CLIENT_CERT": client_cert,
                   "FOODTECH_BUSINESS_CLIENT_KEY": client_key}
+        web_listener = free_listener()
+        web_port = web_listener.getsockname()[1]
+        web_listener.close()
+        web_url = f"http://127.0.0.1:{web_port}"
         with patch.dict(os.environ, config), \
              patch.object(business_auth, "_session", side_effect=synthetic_session), \
              patch.object(business_ai, "_session", side_effect=synthetic_session), \
@@ -344,14 +354,14 @@ async def main(*, smoke_only: bool, aws: bool) -> None:
             with (Path(temp.name) / "vite.log").open("wb") as log:
                 vite = subprocess.Popen(
                     ["npm", "run", "dev", "--workspace=@foodtech/customer-web", "--",
-                     "--host", "127.0.0.1"], cwd=ROOT, stdout=log, stderr=log,
+                     "--host", "127.0.0.1", "--port", str(web_port), "--strictPort"], cwd=ROOT, stdout=log, stderr=log,
                     env={**os.environ, "FOODTECH_API_PROXY_TARGET":
                          f"http://127.0.0.1:{business_port}"})
-                await wait_for_web()
+                await wait_for_web(web_url)
                 # AWS SDK calls are synchronous inside the service handlers. Keep
                 # the test client on its own loop so they do not stall its timeout.
-                result = await asyncio.to_thread(lambda: asyncio.run(smoke_test(created)))
-                print(json.dumps({"url": "http://127.0.0.1:5173/",
+                result = await asyncio.to_thread(lambda: asyncio.run(smoke_test(created, web_url)))
+                print(json.dumps({"url": web_url + "/",
                                   "synthetic_key": DUMMY_KEY, "aws_backends": aws,
                                   "smoke": result},
                                  ensure_ascii=False), flush=True)

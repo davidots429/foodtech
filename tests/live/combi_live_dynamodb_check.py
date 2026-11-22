@@ -63,7 +63,7 @@ async def run_scenario(store, subject, created_partitions):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
             ids = [uuid.uuid4() for _ in range(4)]
             pk = f"SCOPE#USER#{subject}#COMBI_MEAL#{ids[0]}"
-            created_partitions.extend((pk, pk + "#LIVE", pk + "#SOURCE"))
+            created_partitions.extend((pk, pk + "#LIVE", pk + "#SOURCE", f"SCOPE#USER#{subject}#COMBI_MEALS"))
             with patch.object(combi_meal, "uuid4", side_effect=ids):
                 response = await client.post("/api/customer/combi-meals", headers=headers, json={
                 "equipment_size": "MEDIUM_FIXED_RACK_10", "rack_count": 1, "pan_count": 10,
@@ -171,7 +171,7 @@ async def main():
     session = boto3.Session(profile_name="foodtech", region_name=REGION)
     if session.client("sts").get_caller_identity()["Account"] != ACCOUNT:
         raise SystemExit("Unexpected AWS account")
-    store = DynamoCookingStore(TABLE)
+    store = DynamoCookingStore(TABLE, "foodtech-auth-sessions-dev")
     partitions = []
     try:
         result = await run_scenario(store, "synthetic-combi-live-" + uuid.uuid4().hex, partitions)

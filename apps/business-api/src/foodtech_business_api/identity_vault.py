@@ -6,13 +6,17 @@ writer policy or durable provisioning recovery is provided by this component.
 from dataclasses import dataclass, field
 from decimal import Decimal
 from secrets import compare_digest
+import time
 from uuid import UUID, uuid4
+
+from .subject_identity import valid_subject
 
 import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 from .capsule_writer import CapsuleWriter
 from .guarded_deletion import VaultSnapshot
+from .account_withdrawal import WithdrawalConflict, deleting_withdrawal
 
 
 class IdentityVaultConflict(Exception):
@@ -47,7 +51,7 @@ class IdentityVault:
     @staticmethod
     def _identity(subject: str, request_id: str, epoch: int) -> None:
         try:
-            if str(UUID(subject)) != subject or str(UUID(request_id)) != request_id or \
+            if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
                     type(epoch) is not int or not 0 <= epoch < 2**63 - 1:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
@@ -88,22 +92,29 @@ class IdentityVault:
             prepared.capsule_action,
         ])
 
-    def resolve_deletion(self, *, authenticated_subject: str, expected_epoch: int) -> tuple[VaultSnapshot, bytearray]:
+    def resolve_deletion(self, *, authenticated_subject: str, expected_epoch: int,
+                         withdrawal_request_id: str | None = None) -> tuple[VaultSnapshot, bytearray]:
         """Resolve only one authenticated owner; reject changes or inaccessible records.
 
         The caller must verify the session, use a role scoped to that owner, and
         ensure every identity/Capsule writer respects locks and revisions.
         """
         self._identity(authenticated_subject, str(UUID(int=0)), expected_epoch)
+        if withdrawal_request_id is not None:
+            self._identity(authenticated_subject, withdrawal_request_id, expected_epoch)
         auth_key = self._item({"pk": f"USER#{authenticated_subject}"})
         def get(table, key):
             raw = self.client.get_item(TableName=table, Key=self._item(key), ConsistentRead=True).get("Item")
             return {name: self.deserializer.deserialize(value) for name, value in raw.items()} if raw else None
         def valid_principal(value):
-            return value and ("suspended" not in value or value["suspended"] is False) and \
-                "deletion_lock_request" not in value and \
-                isinstance(value.get("epoch"), Decimal) and value["epoch"].is_finite() and \
-                value["epoch"] == expected_epoch and isinstance(value.get("vault_id"), str)
+            if not value or "deletion_lock_request" in value or \
+                    not isinstance(value.get("epoch"), Decimal) or not value["epoch"].is_finite() or \
+                    value["epoch"] != expected_epoch or not isinstance(value.get("vault_id"), str):
+                return False
+            if withdrawal_request_id is not None:
+                deleting_withdrawal(value, request_id=withdrawal_request_id, now=int(time.time()))
+                return True
+            return 'withdrawal_status' not in value and ("suspended" not in value or value["suspended"] is False)
         try:
             first_raw = self.client.get_item(TableName=self.auth_table, Key=auth_key, ConsistentRead=True).get("Item")
             first = {name: self.deserializer.deserialize(value) for name, value in first_raw.items()} if first_raw else None
@@ -125,11 +136,14 @@ class IdentityVault:
                     raise ValueError
             last_raw = self.client.get_item(TableName=self.auth_table, Key=auth_key, ConsistentRead=True).get("Item")
             last = {name: self.deserializer.deserialize(value) for name, value in last_raw.items()} if last_raw else None
-            if not valid_principal(last) or last["vault_id"] != first["vault_id"]:
+            if not valid_principal(last) or last != first:
                 raise ValueError
             return (VaultSnapshot(authenticated_subject, first["vault_id"], int(vault["revision"]), locator,
-                                  int(capsule["revision"]), expected_epoch), bytearray(vault["internal_user_id"].encode("utf-8")))
-        except (TypeError, ValueError, AttributeError, KeyError, ArithmeticError):
+                                  int(capsule["revision"]), expected_epoch, withdrawal_request_id,
+                                  int(first['withdrawal_requested_at']) if withdrawal_request_id else None,
+                                  int(first['withdrawal_deadline']) if withdrawal_request_id else None),
+                    bytearray(vault["internal_user_id"].encode("utf-8")))
+        except (TypeError, ValueError, AttributeError, KeyError, ArithmeticError, WithdrawalConflict):
             raise IdentityVaultConflict("identity linkage is unavailable or changed") from None
 
     def verify_committed(self, *, authenticated_subject: str, prepared: PreparedIdentity) -> None:

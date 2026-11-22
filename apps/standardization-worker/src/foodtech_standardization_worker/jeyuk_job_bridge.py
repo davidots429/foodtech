@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import os
 
 import boto3
 from boto3.dynamodb.types import TypeSerializer
@@ -12,6 +13,9 @@ from foodtech_contracts.validation_changes import recorded_safety_change
 
 class DynamoJeyukJobBridge:
     def __init__(self, table_name: str, region: str = "ap-southeast-2"):
+        self.auth_table_name = os.getenv('FOODTECH_AUTH_TABLE', '')
+        if not self.auth_table_name:
+            raise ValueError('authentication table is required for the Jeyuk job bridge')
         session = boto3.Session(region_name=region)
         self.table = session.resource("dynamodb").Table(table_name)
         self.client = session.client("dynamodb")
@@ -109,6 +113,13 @@ class DynamoJeyukJobBridge:
                 if history is not None:
                     put["ExpressionAttributeValues"] = {":prior": {"N": str(int(revision))}}
                 operations.append({"Put": put})
+            if not getattr(self, 'auth_table_name', ''):
+                raise ValueError('authentication table is required for the Jeyuk job bridge')
+            operations.append({"ConditionCheck": {"TableName": self.auth_table_name,
+                "Key": self._item({"pk": f"USER#{owner}"}),
+                "ConditionExpression": "(attribute_not_exists(suspended) OR suspended = :false) "
+                                       "AND attribute_not_exists(deletion_lock_request)",
+                "ExpressionAttributeValues": self._item({":false": False})}})
             try:
                 self.client.transact_write_items(TransactItems=operations)
                 return process_status
@@ -116,6 +127,8 @@ class DynamoJeyukJobBridge:
                 if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
                     return "REPLAYED"
                 reasons = exc.response.get("CancellationReasons", [])
+                if len(reasons) == len(operations) and reasons[-1].get("Code") == "ConditionalCheckFailed":
+                    raise RuntimeError('owner is suspended or deletion-locked; retry after reconciliation') from exc
                 codes = {reason.get("Code") for reason in reasons}
                 retryable = (reasons and codes <= {None, "None", "TransactionConflict", "ConditionalCheckFailed"} and
                              ("TransactionConflict" in codes or reasons[0].get("Code") == "ConditionalCheckFailed" or

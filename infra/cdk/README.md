@@ -16,6 +16,8 @@
 
 `-c provisionCredentialVault=true -c provisionAiServiceTasks=true`는 별도 `FoodtechAiServiceTasks-dev` 스택에 자격증명 등록기와 AI Gateway의 Fargate Task Definition을 만든다. 각 Task는 기존 Vault 스택의 **서로 다른** 업무 역할을 사용한다. 실행 역할은 해당 ECR 이미지와 Secrets Manager TLS 자료를 읽고 CloudWatch Logs에 기록한다. 등록기는 Vault 쓰기와 KMS 전송·저장·가명화 권한, Gateway는 Vault 읽기와 저장 키 복호화 권한을 유지한다. 외부 공급자 실행은 기본 비활성이다.
 
+`-c principalProvisioningEnabled=true`는 두 Task에 같은 `FOODTECH_PRINCIPAL_PROVISIONING_ENABLED=true`를 전달한다. 기본값은 false이며 `true`/`false` 이외의 값은 합성에서 거부한다. 업무 API의 PR #229 초기화·최종 제거 계약과 함께 준비해 모든 관련 프로세스를 같은 모드로 재시작한 뒤 적용해야 한다. CI는 두 모드의 합성 결과에서 등록기·Gateway의 일치 및 외부 공급자 실행의 비활성을 확인한다. 이 설정은 실제 배포나 계정 초기화 제어 항목 생성을 수행하지 않는다.
+
 필수 CDK context: `credentialKeyPeriod`, `credentialHmacVersion`, `registrationImageRepository`, `registrationImageTag`, `gatewayImageRepository`, `gatewayImageTag`, `registrationTlsSecretArn`, `gatewayTlsSecretArn`. 이미지 태그는 `latest`를 허용하지 않는다. TLS Secret 두 개는 각각 JSON 키 `server_cert_pem`, `server_key_pem`, `business_ca_pem`을 가져야 한다. 인증서 개인키와 CA는 저장소와 Task Definition의 일반 환경변수에 넣지 않는다. ECS 실행 역할이 Secret 값을 주입하고 컨테이너 시작기가 권한 `0600`의 임시 파일로 작성한다. 이미지 빌드는 `infra/containers/ai-service.Dockerfile`에 `FOODTECH_PACKAGE=foodtech-credential-registration` 또는 `foodtech-ai-gateway`를 전달한다. CI는 두 이미지를 빌드만 하며 게시하지 않는다.
 
 두 Task의 리스너는 컨테이너 안에서 `0.0.0.0`에 결합한다. 실제 실행 전에 업무 API가 두 서비스에만 접근할 수 있는 **사설 서브넷·보안 그룹**, 서비스 DNS와 일치하는 서버 인증서 SAN, 업무 API 전용 클라이언트 인증서를 마련해야 한다. 현재 Task Definition은 ECS Service, Cluster, 네트워크, 이미지 게시, TLS Secret 생성, 업무 API 주소 설정을 만들지 않는다. 따라서 합성 성공만으로 종단간 배포가 완료된 것은 아니다. Gateway의 Ollama 기본 주소도 같은 Task의 loopback이다. 서버 GPU·Ollama 배치가 결정되기 전에는 로컬 모델 호출을 배포 검증 결과로 간주하지 않는다.
@@ -28,7 +30,7 @@
 
 자격증명 등록 경로를 위해 같은 개발 스택에 RSA-4096 전송 KMS 키와 HMAC-256 가명 KMS 키를 추가했다. 등록 역할에는 전송 키 `GetPublicKey`·`Decrypt(RSAES_OAEP_SHA_256)`, 가명 키 `GenerateMac`, AI 레지스트리 `PutItem`을 추가했다. 기존 Vault·저장 KMS 키·Gateway 역할은 교체하지 않았다. 두 새 키의 ARN은 스택 출력에 있으며 저장 키와 마찬가지로 `RETAIN`이다. 임시 Fargate Task에 등록 역할을 부여한 실제 요청에서 새 KMS 권한과 Vault·AI 레지스트리 원자적 기록이 성공했고 Vault `GetItem`은 거부됐다. 시험 데이터와 Task 리소스는 정리했다. 실제 서비스 Task 배포는 후속이다.
 
-`-c provisionAiExecutionRegistry=true`는 별도 `FoodtechAiExecutionRegistry-dev` 스택을 합성한다. DynamoDB On-demand 테이블 `foodtech-ai-execution-registry-dev`는 실행·모델·자격증명 메타데이터·동의·월별 한도를 저장한다. `pk=EXEC#<실행 ID>, sk=META`로 Gateway가 실행 ID를 직접 조회한다. AWS 관리형 저장 암호화, 시점 복구, 결과 항목의 `expires` TTL과 `RETAIN` 제거 정책을 적용한다. TTL은 비동기 물리 삭제이므로 90일 Hard Delete의 최종 보장은 별도 삭제 작업이 필요하다. 키 원문·암호문은 이 테이블에 저장하지 않는다. 2026-11-07에 개발 계정 `ap-southeast-2`에 이 스택을 배포했다. Gateway 실행 역할은 아직 배포되지 않았으며, 로컬 검증은 개발자 AWS 세션으로 수행했다.
+`-c provisionAiExecutionRegistry=true`는 별도 `FoodtechAiExecutionRegistry-dev` 스택을 합성한다. DynamoDB On-demand 테이블 `foodtech-ai-execution-registry-dev`는 실행·모델·자격증명 메타데이터·동의·월별 한도를 저장한다. `pk=EXEC#<실행 ID>, sk=META`로 Gateway가 실행 ID를 직접 조회한다. AWS 관리형 저장 암호화, 7일 시점 복구, 결과 항목의 `expires` TTL과 `RETAIN` 제거 정책을 적용한다. TTL은 비동기 물리 삭제이므로 90일 Hard Delete의 최종 보장은 별도 삭제 작업이 필요하다. 키 원문·암호문은 이 테이블에 저장하지 않는다. 2026-11-07에 개발 계정 `ap-southeast-2`에 이 스택을 배포했다. Gateway 실행 역할은 아직 배포되지 않았으며, 로컬 검증은 개발자 AWS 세션으로 수행했다. 2026-11-22 읽기 전용 점검에서 실제 PITR 기간이 기본값 35일인 것을 확인하여 코드에 7일을 명시했다. 준비한 CloudFormation 변경 세트는 이 속성만 수정하며 테이블 교체는 없다. 사용자 승인 후 해당 변경 세트 실행이 UPDATE_COMPLETE로 종료되었고 DescribeContinuousBackups에서 실제 RecoveryPeriodInDays=7을 확인했다. 이 확인은 해당 개발 테이블의 PITR 설정에 한정되며 전체 삭제·복원 후 재삭제 검증을 대신하지 않는다.
 
 `FoodtechAuthSessions-dev`는 만료 시각(`expires`)이 있는 인증 흐름·세션과 관리자 권한 회수 상태를 저장하는 DynamoDB 테이블을 만든다. 앱은 `FOODTECH_AUTH_TABLE=foodtech-auth-sessions-dev`로 연결한다. TTL은 물리 삭제용이며 애플리케이션이 만료를 직접 검사한다.
 
@@ -73,3 +75,72 @@
 `provisionOpcUaJsonCollectionTask=true`는 프로젝트 전용 HTTPS Browse/Read 수집 Task를 합성한다. 이미지 설정 외에 `collectionUaJsonBaseUrl`(HTTPS origin), `collectionUaJsonSecretArn`이 필요하며 비밀 JSON 필드 `client_id`, `client_secret`, `ca_pem`을 사용한다.
 
 `provisionOpcUaBinaryCollectionTask=true`는 별도 OPC UA Binary Task를 합성한다. `collectionUaBinaryEndpoint`(`opc.tcp` 주소)와 `collectionUaBinarySecretArn`이 필요하며 비밀 JSON 필드 `client_cert_pem`, `client_key_pem`, `server_cert_der_base64`를 사용한다. 클라이언트 인증서와 개인키 일치 및 서버 인증서 DER 형식을 시작 시 검사하고, 기존 수집기가 서버 인증서의 유효기간·호스트·애플리케이션 URI를 확인한다. 이미지 게시, 네트워크·Mock 배치, 실제 Task 실행은 별도 작업이다.
+
+표준화 Worker 역할의 인증 테이블 `dynamodb:ConditionCheckItem` 권한은 제육 작업의 삭제 잠금 확인을 위한 CDK 변경안이다. 적용을 위해서는 승인된 배포 workflow와 역할 검증이 필요하며, 배포하지 않은 합성 결과를 실제 권한으로 취급하지 않는다.
+자격증명 등록 Task의 인증 테이블 조건 검사 권한과 `FOODTECH_AUTH_TABLE` 설정은 삭제 중 신규 자격증명 생성을 막기 위한 변경안이다. 합성 결과이며 배포 및 실제 Task 역할 검증은 별도로 수행한다.
+Gateway Task의 인증 테이블 조건 검사 권한과 `FOODTECH_AUTH_TABLE` 설정은 삭제 중 새 AI 호출 예약을 막기 위한 변경안이다. 합성 결과이며 배포와 실제 역할 검증은 별도로 수행한다.
+
+Gateway의 실행 정산은 레지스트리의 `ACTIVE#` 진행 표식을 같은 트랜잭션에서 삭제한다. 이를 위한 `DeleteItem` 권한은 해당 파티션 접두사와 `TransactWriteItems`로 제한하며, 개발 계정의 정책 시뮬레이션에서 허용 및 다른 키·단건 삭제 거부를 확인했다. 실제 배포와 실행 역할 검증은 남았다.
+
+2026-11-22 기존 배포 Gateway 역할에 대해 활성 표식 삭제를 시뮬레이션한 결과 `explicitDeny`, `AllowedByOrganizations=false`였으나 요청 리전 조건이 빠져 있었다. 따라서 이 결과만으로 실제 조직 정책 차단을 단정할 수 없다. 위 정책 변경은 아직 배포되지 않았고 정책 시뮬레이션은 실제 Task 실행이 아니다. 리전을 포함한 재검증과 실제 정산 트랜잭션 검증이 필요하다.
+
+재확인은 `AWS_PROFILE=foodtech .venv/bin/python tests/live/ai_gateway_role_iam_check.py`를 사용한다. 시뮬레이션에 실제 요청 리전과 필요한 DynamoDB 조건을 전달하며 결과는 실제 실행을 대체하지 않는다.
+
+2026-11-22 리전 조건을 포함한 기존 배포 역할 재검증에서는 네 사례 모두 조직 정책 허용으로 평가됐다. 필요한 활성 표식의 트랜잭션 삭제는 역할 정책에서 `implicitDeny`였고 다른 파티션·키 없음·단건 삭제도 거부됐다. 필요한 역할 정책 변경은 미배포 상태이므로 배포 후 권한 및 실제 Task 정산을 검증해야 한다.
+
+## 만료 신원 제거 작업자의 비활성 배포 초안
+
+`provisionWithdrawalIdentitySchedule=true`는 별도 `FoodtechWithdrawalIdentitySchedule-<stage>` 스택에 신원 제거 전용 Fargate Task와 **DISABLED** EventBridge 예약 규칙을 합성한다. `ImageUri`는 ECR의 `@sha256` 고정 이미지이고 Task 진입점은 `python -m foodtech_business_api.withdrawal_identity_worker`다. 비루트 사용자·읽기 전용 루트 파일시스템·프라이빗 서브넷·공인 IP 미할당을 사용한다. 재집계와 Task family·group·로그·실패 지표를 분리하며 기존 재집계 스택의 합성 템플릿은 변경하지 않는다.
+
+예약 스택의 배포 입력은 검토한 `TaskRoleArn`, `ExecutionRoleArn`, `InvokeRoleArn`, `ClusterArn`, `ImageUri`, `SubnetIds`, `SecurityGroupIds`, `DeliveryDlqArn`, 실측·검토할 `IntervalMinutes` 및 `CognitoUserPoolId`다. 세 역할의 ARN이 서로 같으면 CloudFormation 규칙에서 거부한다. ARN이 다르다는 것만으로 최소 권한을 증명하지 않으며 실제 정책·신뢰 관계·PassRole 범위·계정/리전·네트워크를 별도로 검증해야 한다. 예약 스택은 역할·사용자·개인정보 저장소를 생성하거나 기존 역할에 실행 권한을 부여하지 않는다. 별도의 역할 정의 초안은 아래 Access 스택으로 제공한다. 같은 stage의 인증·삭제 Registry 테이블과 검증된 Cognito Pool이 준비되어야 한다.
+
+Task에는 신원 제거 작업자의 명시적 활성화와 공개 자원 식별자만 전달한다. 웹 API의 탈퇴·초기화 기능 플래그는 변경하지 않는다. 실행 시 이미 준비된 초기화 제어 항목을 읽으며 자동 생성하지 않는다. Task를 수동으로 실행하면 잠금·기한이 검증된 이전 Cognito 주체를 실제로 제거하므로, 비활성 예약 규칙만으로 수동 실행까지 차단된다고 간주하지 않는다.
+
+실행 요청 전달 실패는 지정한 EventBridge DLQ로 보내고, 해당 Task group의 STOPPED 이벤트에서 비정상·누락 종료 코드를 별도 지표·경보로 관찰한다. 경보의 알림 대상·실제 전달·중복/동시 실행·재시도는 배포 검증 전제다. 경보와 로그는 작업 미실행이나 관찰 경로 자체의 실패를 모두 증명하지 않으며 전체 데이터 삭제·백업 제거의 완료 증거가 아니다. 제어 항목·실행 역할·이미지 게시·프라이빗 연결·실제 합성 Task 검증과 전체 삭제 조정기 연결 전에는 예약 규칙을 활성화하지 않는다.
+
+`infra/cdk`에서 `npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentitySchedule-dev --strict -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-withdrawal-identity-cdk`로 합성하고, 저장소 루트에서 `python3 tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-withdrawal-identity-cdk/FoodtechWithdrawalIdentitySchedule-dev.template.json`으로 확인한다. TypeScript 검사·신원 제거 및 기존 재집계 계약 검사·기존 템플릿 전후 동일성 비교가 통과했다. 실제 스택 배포나 예약·수동 Task 실행은 수행하지 않았다.
+
+### 신원 제거 권한 후보의 검증
+
+2026-11-22 IAM Policy Autopilot에 신원 제거 명령·경계·계정 제어의 실제 Python 소스와 개발 계정·리전을 입력했다. 아래는 저장소 루트에서 실행할 재현 명령이다. `CDK_DEFAULT_ACCOUNT`에는 확인된 개발 계정이 필요하며 출력은 저장소 밖의 비공개 파일로 둔다. 이 명령은 AWS 정책을 업로드하지 않는다.
+
+```sh
+task_repo_root="$(pwd)"
+umask 077
+DISABLE_IAM_POLICY_AUTOPILOT_TELEMETRY=true uvx iam-policy-autopilot@latest generate-policies \
+  "$task_repo_root/apps/business-api/src/foodtech_business_api/withdrawal_identity_worker.py" \
+  "$task_repo_root/apps/business-api/src/foodtech_business_api/withdrawal_identity.py" \
+  "$task_repo_root/apps/business-api/src/foodtech_business_api/principal_enrollment.py" \
+  --region ap-southeast-2 --account "${CDK_DEFAULT_ACCOUNT:?Set the verified development account}" \
+  --service-hints dynamodb cognito-idp --pretty \
+  > /tmp/foodtech-withdrawal-identity-autopilot.json
+```
+
+생성 후보는 트랜잭션의 항목별 목적과 호출하지 않는 계정 관리 메서드를 구분하지 못해 광범위한 DynamoDB 생성·삭제 및 KMS 권한을 포함했다. 실제 IAM `SimulateCustomPolicy`에서 인증·삭제 Registry·무관한 테이블을 각각 검사해 과도한 허용을 확인했다. 이 후보는 사용하지 않는다.
+
+`tests/live/withdrawal_identity_iam_check.py --policy-file <비공개 후보 파일> --pool-id <개발 Pool ID>`는 입력 정책을 수정하지 않고 허용·거부 시나리오를 검사한다. 계정·제어 항목의 필요한 읽기, 제한된 Scan과 이전 계정의 트랜잭션 갱신, Registry 읽기·조건 검사, 지정 Pool의 조회·제거가 동작하는지 확인하는 동시에 세션 읽기·임의 제어 변경·직접 갱신·키 누락·Registry 변경·다른 테이블/Pool·임의 저장 키 복호화를 거부해야 한다. 허용 전체·거부 전체·불완전한 시뮬레이션 결과도 검증 실패다. 출력에는 시나리오명·판정만 담고 정책·ARN·주체·커서는 출력하지 않는다. 현재 속성 제한까지 포함해 37개를 검사하며 `--registry-storage-key-arn`을 지정하면 저장 키의 서비스·테이블·계정 문맥을 포함한 41개를 검사한다.
+
+자동 생성 후보는 최초 34개 검사에서 22개 차단 조건을 충족하지 못해 종료 코드 1로 거부됐다. 검사는 정책 생성·수정·연결·리소스 쓰기를 하지 않았다. 검사기의 `runtime_verified`는 항상 false이며 전체 삭제 완료를 표시하지 않는다.
+
+### 승인된 권한 세분화 초안
+
+2026-11-22 사용자 승인에 따라 자동 생성 후보를 실제 호출 계약에 맞춰 세분화했다. `provisionWithdrawalIdentityAccess=true`는 별도 `FoodtechWithdrawalIdentityAccess-<stage>` 스택에 아래 세 역할을 정의한다. 합성에는 확인된 `CDK_DEFAULT_ACCOUNT`가 필요하고, `CognitoUserPoolId`, `RegistryStorageKeyArn`, `ImageRepositoryArn`, `ClusterArn`은 기본값 없는 입력이다. 키·저장소·클러스터 ARN은 같은 계정·`ap-southeast-2` 범위로 제한한다. 실제 역할 생성·정책 적용은 수행하지 않았다.
+
+| 역할 | 허용 범위 |
+| --- | --- |
+| 작업 역할 | `USER#`의 트랜잭션 조회·제한된 갱신, 초기화 제어 항목의 조회, 속성을 지정한 탈퇴 메타데이터 Scan, Registry의 조회·조건 검사, 지정 Pool의 사용자 조회·제거, 지정 Registry SSE 키의 DynamoDB 문맥 복호화 |
+| ECS 실행 역할 | 기존 지정 ECR 저장소의 이미지 읽기와 작업자 로그 기록. ECR 인증 토큰만 API 특성상 리소스 `*`를 사용하며 리전을 제한 |
+| 예약 호출 역할 | 지정 클러스터에서 신원 제거 Task family 실행과 그 Task/실행 역할만 ECS로 PassRole |
+
+작업 역할은 계정/Registry 생성·삭제, Registry 변경, 초기화 제어 항목 변경, 세션 읽기와 locator 봉투 복호화를 허용하지 않는다. Scan은 `SPECIFIC_ATTRIBUTES`와 허용 속성을 함께 요구하며, 코드도 Select를 명시한다. 갱신은 트랜잭션·`USER#` 키·참조 속성 범위를 요구한다. `ForAllValues` 조건에는 해당 문맥 키의 `Null=false` 검사를 함께 둔다. 조건식이 참인지, 요청·기한·sub가 실제로 일치하는지는 신뢰된 작업자 코드가 검증하며 IAM만으로 이를 증명하지 않는다. 갱신 허용 속성에는 조건식에서 읽는 상태 필드도 포함되므로 IAM을 '표식 필드만 쓰도록 강제하는 장치'로 해석하지 않는다.
+
+AWS 공개 Service Authorization Reference와 [DynamoDB 항목별 트랜잭션 인가](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html)를 확인했다. 트랜잭션 후보의 모든 동작을 모든 테이블에 부여하지 않고 실제 항목별 호출로 나눈다. `ConditionCheckItem`은 `EnclosingOperation` 조건 키를 지원하지 않으므로 해당 조건을 사용하지 않으며 정확한 테이블·`REGISTRY` 키·리전을 검사한다. 저장 키 복호화는 [DynamoDB의 테이블명·계정 암호화 문맥](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/encryption.usagenotes.html)을 요구한다. ECR pull-through 생성·복제와 ECS 태그 생성은 현재 이미지 읽기·태그 없는 실행 경로에 포함하지 않는다.
+
+Task/실행 역할의 신뢰는 ECS 서비스와 같은 계정·리전의 SourceArn으로 제한한다. ECS Task 신뢰의 [클러스터 단위 SourceArn 제한 미지원](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html)을 반영해 문서가 요구하는 ECS ARN 범위를 사용한다. 예약 호출 역할은 고정한 비활성 예약 규칙 ARN만 신뢰하며 RunTask에서 별도로 클러스터를 대조한다. 이 역할은 전체 삭제 조정기·계정 최종 제거 역할이 아니다.
+
+합성 후 `python3 tests/config/check_withdrawal_identity_access.py <Access 템플릿> --review-output /tmp/foodtech-identity-policy-review`로 정책을 변경하지 않은 채 CloudFormation 참조만 합성 값에 결합해 비공개 검토 파일을 만들 수 있다. 이 출력의 Pool·키·저장소·클러스터는 명시적 합성 바인딩이며 배포된 자원을 나타내지 않는다. `tests/live/withdrawal_identity_access_iam_check.py --review-dir /tmp/foodtech-identity-policy-review`는 이 후보를 실제 IAM 시뮬레이터로 검사한다.
+
+실제 정책 시뮬레이터에서 작업 역할 41개·실행 역할 17개·호출 역할 12개, 총 70개가 통과했다. IAM Access Analyzer `ValidatePolicy`도 세 후보 모두 지적 사항 0개였다. TypeScript·역할/예약 템플릿 계약 검사도 통과했다. CI의 Access 스택 합성은 가상 계정 번호를 사용해 실제 계정에 결합한 원문 정책을 공개 로그에 출력하지 않는다. 정책 시뮬레이션은 실제 역할·SCP/RCP·키 정책·이미지/네트워크·ECS 실행을 증명하지 않는다. 검증된 실제 자원 바인딩과 명시적 배포 절차를 마련한 뒤 실제 역할의 허용·거부 및 서비스 호출을 확인해야 한다. 예약 규칙은 계속 비활성이며 전체 삭제 완료 증거는 별도다.
+`dynamodb:EnclosingOperation`은 문자열 문맥 키이므로 단일 값 `StringEquals`로 제한하고 시뮬레이션에도 `string`으로 전달한다. 배열용 `ForAnyValue`를 사용하지 않는다. 수정 후보의 실제 IAM 시뮬레이션 6건에서 활성 표식 트랜잭션 삭제만 허용하고 다른 파티션·키 누락·직접 삭제·혼합 키·다른 연산은 거부했다. 합성·시뮬레이션은 실제 역할에 정책을 적용하거나 실제 ECS 정산을 검증한 결과가 아니다.
+
+2026-11-22 리전 조건을 포함한 기존 배포 역할 재검증에서는 네 사례 모두 조직 정책 허용으로 평가됐다. 필요한 활성 표식의 트랜잭션 삭제는 역할 정책에서 `implicitDeny`였고 다른 파티션·키 없음·단건 삭제도 거부됐다. 필요한 역할 정책 변경은 미배포 상태이므로 배포 후 권한 및 실제 Task 정산을 검증해야 한다.

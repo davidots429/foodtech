@@ -31,6 +31,8 @@ class LoginFlow:
     state: str
     verifier: str
     expires: int
+    purpose: str = 'login'
+    started_at: int = 0
 
 
 @dataclass
@@ -61,8 +63,13 @@ class AuthStore(Protocol):
     def finish_refresh(self, session_id: str, lease: str, expected_version: int, now: int,
                        access_token: str, ciphertext: bytes, expires: int) -> bool: ...
     def principal(self, subject: str) -> dict: ...
+    def principal_record(self, subject: str) -> dict | None: ...
+    def enrollment_fence(self) -> int: ...
+    def enroll_principal(self, subject: str, generation: int) -> dict: ...
     def block_admin(self, subject: str) -> None: ...
     def suspend_user(self, subject: str) -> None: ...
+    def withdrawal_transition(self, *, subject: str, request_id: str, now: int,
+                              action: str, expected_epoch: int | None = None) -> dict: ...
 
 
 class MemoryStore:
@@ -73,6 +80,7 @@ class MemoryStore:
         self.sessions: dict[str, Session] = {}
         self.principals: dict[str, dict] = {}
         self.lock = threading.RLock()
+        self.enrollment_generation = 0
 
     def save_flow(self, flow_id: str, flow: LoginFlow) -> None:
         with self.lock:
@@ -125,8 +133,31 @@ class MemoryStore:
             return True
 
     def principal(self, subject: str) -> dict:
+        record = self.principal_record(subject)
+        return record if record is not None else {"epoch": 0}
+
+    def principal_record(self, subject: str) -> dict | None:
         with self.lock:
-            return self.principals.get(subject, {"epoch": 0}).copy()
+            record = self.principals.get(subject)
+            return record.copy() if record is not None else None
+
+
+    def enrollment_fence(self) -> int:
+        from .account_withdrawal import _integer
+        with self.lock:
+            return _integer(self.enrollment_generation)
+
+    def enroll_principal(self, subject: str, generation: int) -> dict:
+        from .principal_enrollment import PrincipalEnrollmentConflict, _subject
+        from .account_withdrawal import _integer
+        _subject(subject)
+        generation = _integer(generation)
+        with self.lock:
+            if generation != self.enrollment_generation or subject in self.principals:
+                raise PrincipalEnrollmentConflict('account or enrollment generation changed')
+            record = {'pk': f'USER#{subject}', 'epoch': 0, 'suspended': False}
+            self.principals[subject] = record
+            return record.copy()
 
     def block_admin(self, subject: str) -> None:
         with self.lock:
@@ -139,6 +170,17 @@ class MemoryStore:
             current = self.principals.setdefault(subject, {"epoch": 0})
             current["epoch"] += 1
             current["suspended"] = True
+
+    def withdrawal_transition(self, *, subject, request_id, now, action, expected_epoch=None):
+        from .account_withdrawal import withdrawal_change
+        with self.lock:
+            current = self.principals.get(subject)
+            record = {'pk': f'USER#{subject}', **current} if current is not None else None
+            changes = withdrawal_change(record, subject=subject, request_id=request_id, now=now,
+                                        action=action, expected_epoch=expected_epoch)
+            if changes is not None:
+                self.principals[subject] = {**record, **changes}
+            return self.principals[subject].copy()
 
 
 class DynamoAuthStore:
@@ -154,7 +196,8 @@ class DynamoAuthStore:
     def take_flow(self, flow_id: str) -> LoginFlow | None:
         item = self.table.delete_item(Key={"pk": f"FLOW#{flow_id}"},
                                       ReturnValues="ALL_OLD").get("Attributes")
-        return LoginFlow(**{key: item[key] for key in ("surface", "state", "verifier", "expires")}) \
+        return LoginFlow(**{key: item[key] for key in ("surface", "state", "verifier", "expires")},
+                         purpose=item.get('purpose', 'login'), started_at=int(item.get('started_at', 0))) \
             if item and int(item["expires"]) > time.time() else None
 
     def save_session(self, session_id: str, session: Session) -> None:
@@ -217,9 +260,20 @@ class DynamoAuthStore:
             raise
 
     def principal(self, subject: str) -> dict:
-        item = self.table.get_item(Key={"pk": f"USER#{subject}"},
-                                   ConsistentRead=True).get("Item")
-        return item or {"epoch": 0}
+        record = self.principal_record(subject)
+        return record if record is not None else {"epoch": 0}
+
+    def principal_record(self, subject: str) -> dict | None:
+        return self.table.get_item(Key={"pk": f"USER#{subject}"}, ConsistentRead=True).get("Item")
+
+
+    def enrollment_fence(self) -> int:
+        from .principal_enrollment import DynamoPrincipalEnrollment
+        return DynamoPrincipalEnrollment(table=self.table).fence()
+
+    def enroll_principal(self, subject: str, generation: int) -> dict:
+        from .principal_enrollment import DynamoPrincipalEnrollment
+        return DynamoPrincipalEnrollment(table=self.table).enroll(subject=subject, expected_generation=generation)
 
     def block_admin(self, subject: str) -> None:
         self.table.update_item(
@@ -236,6 +290,11 @@ class DynamoAuthStore:
             ExpressionAttributeNames={"#epoch": "epoch"},
             ExpressionAttributeValues={":suspended": True, ":one": 1},
         )
+
+    def withdrawal_transition(self, *, subject, request_id, now, action, expected_epoch=None):
+        from .account_withdrawal import DynamoWithdrawalStore
+        return DynamoWithdrawalStore(table=self.table).transition(
+            subject=subject, request_id=request_id, now=now, action=action, expected_epoch=expected_epoch)
 
 
 @lru_cache(maxsize=4)

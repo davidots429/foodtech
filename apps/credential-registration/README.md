@@ -16,3 +16,7 @@
 
 같은 날 새 전송·가명 키를 개발 스택에 추가했다. [합성 등록 검증](../../tests/live/credential_registration_check.py)은 공개키로 암호화한 더미 키의 KMS 전송 복호화, HMAC 가명화, Vault·레지스트리 동시 저장, Gateway 복호화를 통과했다. `AWS_PROFILE=foodtech uv run --no-sync python tests/live/credential_registration_check.py`로 재실행할 수 있다. 새 등록 역할을 임시 Fargate Task에 연결한 시험에서도 전송 키 공개키 조회·복호화, 가명 키 MAC 생성, 두 테이블의 원자적 기록이 성공했고 Vault 읽기는 거부됐다. 합성 시험 항목과 임시 Task 리소스는 정리했다. 2026-11-08 고객 브라우저의 등록 클릭부터 외부 실행까지는 [로컬 합성 하네스](../../tests/live/customer_external_browser_harness.py)에서 확인했다. 같은 하네스의 `--aws --smoke-only` 모드에서는 실제 KMS·DynamoDB를 결합한 HTTP/mTLS 경로가 통과했고 시험 후 두 테이블은 각각 0건이었다. 두 모드 모두 고객 인증과 외부 공급자 응답은 합성 대역이므로 실제 Cognito 결합, 등록 지연과 실제 서비스 Task 배포는 별도 검증 대상이다. 전송·HMAC·저장 KMS 키는 계속 유지되며 비용이 발생할 수 있다.
 
+
+자격증명 등록은 업무 API가 인증한 고객의 세션 epoch를 내부 mTLS 요청으로 전달받아 인증 테이블의 epoch·정지·삭제 잠금을 금고 및 레지스트리 저장과 같은 트랜잭션에서 확인한다. `FOODTECH_AUTH_TABLE`과 인증 테이블 `dynamodb:ConditionCheckItem` 권한이 필요하며, 개발 합성 시험에서 잠금·이전 epoch 거부와 정상 원자 저장을 확인했다. 역할·Task 변경은 CDK 합성만 했으며 실제 배포와 실행 역할 검증은 남았다.
+계정 초기화 모드 `FOODTECH_PRINCIPAL_PROVISIONING_ENABLED=true`에서는 상태 항목의 존재와 정확한 세션 epoch를 요구하고 부재를 0으로 허용하지 않는다. 기본값은 false이며 PR #229의 초기화 계약·업무 API·Gateway와 함께 적용하고 프로세스를 재시작해야 한다. 개발 DynamoDB의 합성 fixture에서 계정 부재와 전송 복호화 이후 계정이 제거된 경쟁을 금고·레지스트리 동시 쓰기에서 거부하고 버퍼 정리를 확인했다. 이 시험은 실제 키나 KMS를 사용하지 않았으며 실행 역할·고객 인증·실제 외부 공급자 검증을 대신하지 않는다. 등록기 시험 12개가 통과했다.
+잠금 또는 세션 버전 조건 충돌은 민감한 내부 내용을 노출하지 않는 계정 상태 충돌로 전달하며 평문 버퍼를 정리한다. 개발 KMS를 사용한 합성 RSA 전송·저장·복호화 시험도 통과했다.

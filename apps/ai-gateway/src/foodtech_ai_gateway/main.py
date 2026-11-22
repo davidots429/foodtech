@@ -1,15 +1,17 @@
+import asyncio
 import os
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from typing import Literal
 
 from .ollama import OllamaClient
 from .policy import Caller, Execution, Feature, Tier, UNCONFIGURED_TIER1
-from .registry import DynamoRegistry
+from .registry import DynamoRegistry, RegistryConflict
 from .service import GatewayService
 from .provider import LiteLLMProvider
 from .vault import DynamoCredentialVault
@@ -17,6 +19,12 @@ from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 from .downgrade_flow import DowngradeFlow, DowngradeError
 
 app = FastAPI(title="Foodtech AI Gateway")
+
+
+@app.exception_handler(RegistryConflict)
+async def registry_conflict(_request: Request, _error: RegistryConflict) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": "EXECUTION_CONFLICT"},
+                        headers={"Cache-Control": "no-store"})
 
 
 class StrictBody(BaseModel):
@@ -300,12 +308,14 @@ async def external_confirm(request: Request, quote_id: str, body: ExternalConfir
 async def execution_status(request: Request, execution_id: str, tenant_id: str) -> dict:
     _internal(request)
     service = _service(request)
-    execution = service.registry.execution(execution_id)
-    if not execution or execution.tenant_id != tenant_id:
+    try:
+        snapshot = await asyncio.to_thread(service.registry.execution_status_snapshot, execution_id, tenant_id)
+    except RegistryConflict:
+        raise HTTPException(409, "EXECUTION_STATUS_CHANGED") from None
+    if snapshot is None:
         raise HTTPException(404, "EXECUTION_NOT_FOUND")
-    state = service.registry.execution_state(execution_id)
-    result = service.registry.execution_result(execution_id)
-    return {"execution_id": execution_id, "state": state,
+    execution, result = snapshot
+    return {"execution_id": execution_id, "state": execution.state,
             "response_text": result.get("response_text") if result else None,
             "error_code": result.get("error_code") if result else None,
             "actual_cost_usd": str(result["actual_cost_usd"]) if result else None,

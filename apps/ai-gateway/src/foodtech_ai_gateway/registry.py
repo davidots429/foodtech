@@ -4,6 +4,7 @@ The table contains metadata only. Credential secret material belongs to the
 separate encrypted credential vault and is never accepted here.
 """
 
+import os
 from dataclasses import asdict
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -14,10 +15,11 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import boto3
-from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.conditions import Attr, Key
 from boto3.dynamodb.types import TypeSerializer
 
-from .policy import Budget, Consent, Credential, Execution, Feature, Model, Tier, UNCONFIGURED_TIER1
+from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, Model, Tier, UNCONFIGURED_TIER1
+from .recipe_source_guard import BoundRecipeSourceGuard
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -45,11 +47,13 @@ class RegistryConflict(Exception):
 
 class DynamoRegistry:
     def __init__(self, table_name: str, period: str, *, resource: Any = None,
-                 client: Any = None, local_models: set[str] | None = None):
+                 client: Any = None, local_models: set[str] | None = None, auth_table: str | None = None):
         if not table_name or len(period) != 7 or period[4] != "-" or not period[:4].isdigit() or \
                 not period[5:].isdigit() or not 1 <= int(period[5:]) <= 12:
             raise ValueError("table name and YYYY-MM budget period are required")
         self.table_name = table_name
+        self.auth_table = auth_table or os.getenv("FOODTECH_AUTH_TABLE", "")
+        self.require_principal = os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED', 'false') == 'true'
         self.period = period
         self.resource = resource or boto3.resource("dynamodb")
         self.table = self.resource.Table(table_name)
@@ -86,13 +90,24 @@ class DynamoRegistry:
         item = {**_key(kind, identifier), **fields, "version": 1}
         self.table.put_item(Item=item, ConditionExpression=Attr("pk").not_exists())
 
+    def _put_tenant_new(self, kind: str, identifier: str, fields: dict[str, Any], tenant: str) -> None:
+        item = {**_key(kind, identifier), **fields, "version": 1}
+        try:
+            self.client.transact_write_items(TransactItems=[
+                self._active_tenant_guard(tenant),
+                {"Put": {"TableName": self.table_name, "Item": self._av(item),
+                         "ConditionExpression": "attribute_not_exists(pk)"}},
+            ], ClientRequestToken=str(uuid4()))
+        except self.client.exceptions.TransactionCanceledException as error:
+            raise RegistryConflict("tenant unavailable or record already exists") from error
+
     def create_execution(self, value: Execution) -> None:
         if value.estimated_cost_usd < 0:
             raise ValueError("estimated cost must be nonnegative")
         fields = asdict(value)
         fields["feature"] = value.feature.value
         fields["state"] = "PENDING"
-        self._put_new("EXEC", value.execution_id, fields)
+        self._put_tenant_new("EXEC", value.execution_id, fields, value.tenant_id)
 
     def create_model(self, value: Model) -> None:
         if value.model_id == UNCONFIGURED_TIER1:
@@ -109,17 +124,17 @@ class DynamoRegistry:
         fields = asdict(value)
         fields["expires_at"] = _iso(value.expires_at)
         fields["vault_ref"] = vault_ref
-        self._put_new("CREDENTIAL", value.credential_id, fields)
+        self._put_tenant_new("CREDENTIAL", value.credential_id, fields, value.tenant_id)
 
     def create_consent(self, value: Consent) -> None:
         if not value.consented_at.tzinfo:
             raise ValueError("consent time must have a timezone")
         fields = asdict(value)
         fields["consented_at"] = _iso(value.consented_at)
-        self._put_new("CONSENT", value.consent_id, fields)
+        self._put_tenant_new("CONSENT", value.consent_id, fields, value.tenant_id)
 
     def create_quote(self, quote_id: str, fields: dict[str, Any]) -> None:
-        self._put_new("QUOTE", quote_id, {**fields, "state": "OPEN"})
+        self._put_tenant_new("QUOTE", quote_id, {**fields, "state": "OPEN"}, fields.get("tenant_id"))
 
     def quote(self, quote_id: str) -> dict[str, Any] | None:
         return self._get("QUOTE", quote_id)
@@ -143,7 +158,7 @@ class DynamoRegistry:
         execution_fields["feature"] = execution.feature.value
         execution_fields["state"] = "PENDING"
         now = int(datetime.now(timezone.utc).timestamp())
-        items = [{"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
+        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
                   "UpdateExpression": "SET #s = :used, #v = #v + :one",
                   "ConditionExpression": "#s = :open AND #v = :v AND expires > :now AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
@@ -196,7 +211,7 @@ class DynamoRegistry:
         execution_fields = asdict(execution)
         execution_fields["feature"] = execution.feature.value
         execution_fields["state"] = "PENDING"
-        items = [{"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
+        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
                   "UpdateExpression": "SET #s = :used, #v = #v + :one",
                   "ConditionExpression": "#s = :open AND #v = :v AND expires > :now AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
@@ -232,7 +247,10 @@ class DynamoRegistry:
         fields: dict[str, Any] = {"remaining_usd": remaining_usd, "period": self.period}
         if calls_remaining is not None:
             fields["calls_remaining"] = calls_remaining
-        self._put_new("LIMIT", f"{self.period}#{scope}#{identifier}", fields)
+        if scope == "TENANT":
+            self._put_tenant_new("LIMIT", f"{self.period}#{scope}#{identifier}", fields, identifier)
+        else:
+            self._put_new("LIMIT", f"{self.period}#{scope}#{identifier}", fields)
 
     def ensure_trial_tenant_limit(self, tenant_id: str, remaining_usd: Decimal, calls: int) -> None:
         """Create an absent monthly tenant limit once; never refill or overwrite it."""
@@ -241,28 +259,47 @@ class DynamoRegistry:
             raise ValueError("invalid free-trial limit")
         identifier = f"{self.period}#TENANT#{tenant_id}"
         try:
-            self._put_new("LIMIT", identifier, {"remaining_usd": remaining_usd, "period": self.period,
-                                               "calls_remaining": calls, "origin": "FREE_TRIAL"})
-        except self.client.exceptions.ConditionalCheckFailedException:
-            # A concurrent request or administrator already created the limit.
-            # Preserve its current balances and version, including an exhausted limit.
-            return
+            self._put_tenant_new("LIMIT", identifier, {"remaining_usd": remaining_usd, "period": self.period,
+                                                      "calls_remaining": calls, "origin": "FREE_TRIAL"}, tenant_id)
+        except RegistryConflict:
+            # Only an already-present limit may be treated as an idempotent replay.
+            if self._get("LIMIT", identifier) is None:
+                raise
 
     def execution(self, execution_id: str) -> Execution | None:
         item = self._get("EXEC", execution_id)
         if not item:
             return None
+        return self._execution_from_item(item)
+
+    @staticmethod
+    def _execution_from_item(item: dict) -> Execution:
         fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"} else item[name]
                   for name in Execution.__dataclass_fields__}
-        if fields["job_version"] is not None:
-            fields["job_version"] = int(fields["job_version"])
-        if fields["prior_job_version"] is not None:
-            fields["prior_job_version"] = int(fields["prior_job_version"])
-        for name in ("jeyuk_source_revision", "prior_source_revision"):
-            if fields[name] is not None:
-                fields[name] = int(fields[name])
+        for name in ("job_version", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"):
+            value = fields[name]
+            if value is not None:
+                if isinstance(value, bool) or not isinstance(value, (int, Decimal)) or \
+                        (isinstance(value, Decimal) and not value.is_finite()) or \
+                        value < 1 or value != int(value):
+                    raise ValueError('invalid execution binding version')
+                fields[name] = int(value)
         fields["feature"] = Feature(fields["feature"])
         return Execution(**fields)
+
+    def execution_snapshot(self, execution_id: str) -> ExecutionSnapshot | None:
+        """Read execution, state and version from the same consistent item."""
+        item = self._get("EXEC", execution_id)
+        if not item:
+            return None
+        version = item.get('version')
+        if isinstance(version, bool) or not isinstance(version, (int, Decimal)) or \
+                not Decimal(version).is_finite() or not 1 <= version < 2**63 or version != int(version):
+            raise ValueError('invalid execution version')
+        state = item.get('state')
+        if not isinstance(state, str):
+            raise ValueError('invalid execution state')
+        return ExecutionSnapshot(self._execution_from_item(item), state, int(version))
 
     def execution_state(self, execution_id: str) -> str | None:
         item = self._get("EXEC", execution_id)
@@ -276,6 +313,21 @@ class DynamoRegistry:
         if item and item.get("expires", 0) <= int(datetime.now(timezone.utc).timestamp()):
             return None
         return item
+
+    def execution_status_snapshot(self, execution_id: str, tenant_id: str):
+        """Return a stable owner-bound status; fail closed on concurrent changes."""
+        first = self.execution_snapshot(execution_id)
+        if first is None or first.execution.tenant_id != tenant_id:
+            return None
+        result = self.execution_result(execution_id)
+        second = self.execution_snapshot(execution_id)
+        if second != first:
+            raise RegistryConflict('execution changed during status lookup')
+        terminal = first.state in {'SUCCEEDED', 'FAILED'}
+        if (terminal and result is None) or (result is not None and
+                (not terminal or result.get('state') != first.state)):
+            raise RegistryConflict('execution result and state disagree')
+        return first, result
 
     def model(self, model_id: str) -> Model | None:
         item = self._get("MODEL", model_id)
@@ -333,6 +385,45 @@ class DynamoRegistry:
                 "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
                 "ExpressionAttributeValues": self._av({":v": version})}}
 
+    def _active_tenant_guard(self, tenant_id: str) -> dict:
+        if not self.auth_table or not isinstance(tenant_id, str) or not tenant_id or len(tenant_id) > 128:
+            raise RegistryConflict("tenant authentication state unavailable")
+        condition = "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)"
+        values = {":false": False}
+        names = {}
+        if self.require_principal:
+            condition = 'attribute_exists(pk) AND #epoch >= :zero AND #epoch < :max AND ' + condition
+            values.update({':zero': 0, ':max': 2**63})
+            names['#epoch'] = 'epoch'
+        check = {"TableName": self.auth_table,
+                "Key": self._av({"pk": f"USER#{tenant_id}"}),
+                "ConditionExpression": condition, "ExpressionAttributeValues": self._av(values)}
+        if names:
+            check['ExpressionAttributeNames'] = names
+        return {'ConditionCheck': check}
+
+    def active_execution_keys(self, tenant_id: str, limit: int = 100, cursor: str | None = None) -> dict:
+        if not isinstance(tenant_id, str) or not tenant_id or len(tenant_id) > 128 or \
+                type(limit) is not int or not 1 <= limit <= 100 or \
+                (cursor is not None and (not isinstance(cursor, str) or not cursor.startswith("EXEC#") or len(cursor) > 261)):
+            raise ValueError("invalid active execution inventory")
+        pk = f"ACTIVE#{tenant_id}"
+        args = {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").begins_with("EXEC#"),
+                "ProjectionExpression": "pk, sk", "ConsistentRead": True, "Limit": limit}
+        if cursor is not None:
+            args["ExclusiveStartKey"] = {"pk": pk, "sk": cursor}
+        page = self.table.query(**args)
+        keys = []
+        for item in page.get("Items", []):
+            if item.get("pk") != pk or not isinstance(item.get("sk"), str) or not item["sk"].startswith("EXEC#"):
+                raise ValueError("invalid active execution record")
+            keys.append(item["sk"])
+        next_key = page.get("LastEvaluatedKey")
+        if next_key is not None and (not isinstance(next_key, dict) or set(next_key) != {"pk", "sk"} or
+                next_key["pk"] != pk or not isinstance(next_key["sk"], str) or not next_key["sk"].startswith("EXEC#")):
+            raise ValueError("invalid active execution checkpoint")
+        return {"keys": keys, "next_cursor": next_key["sk"] if next_key else None}
+
     def reserve(self, execution: Execution, provider: str) -> None:
         """Claim one execution and all three limits in one DynamoDB transaction."""
         cost = execution.estimated_cost_usd
@@ -340,7 +431,7 @@ class DynamoRegistry:
         version = self._read_versions.get(key["pk"])
         if version is None:
             raise RegistryConflict("execution was not read consistently")
-        items = [{"Update": {"TableName": self.table_name, "Key": self._av(key),
+        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(key),
                   "UpdateExpression": "SET #s = :reserved, #v = #v + :one, reserved_provider = :provider",
                   "ConditionExpression": "#s = :pending AND #v = :v AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
@@ -365,6 +456,10 @@ class DynamoRegistry:
                          "UpdateExpression": update, "ConditionExpression": condition,
                          "ExpressionAttributeNames": {"#v": "version"},
                          "ExpressionAttributeValues": self._av(values)}})
+        items.append({"Put": {"TableName": self.table_name,
+                              "Item": self._av({"pk": f"ACTIVE#{execution.tenant_id}",
+                                                "sk": f"EXEC#{execution.execution_id}"}),
+                              "ConditionExpression": "attribute_not_exists(pk)"}})
         checked: set[str] = set()
         for kind, identifier in (("MODEL", execution.model_id),
                                  ("CREDENTIAL", execution.credential_id),
@@ -407,6 +502,7 @@ class DynamoRegistry:
             values[":previous"] = 1
         expires = int((datetime.now(timezone.utc) + timedelta(days=90)).timestamp())
         items = [
+            self._active_tenant_guard(execution.tenant_id),
             {"Update": {"TableName": self.table_name, "Key": self._av(execution_key),
                 "UpdateExpression": "SET #v = #v + :one, retry_count = :retry",
                 "ConditionExpression": "#v = :v AND #s = :reserved AND tenant_id = :tenant AND "
@@ -436,15 +532,28 @@ class DynamoRegistry:
             raise RegistryConflict("retry conflict or call limit exhausted") from error
 
     def finish(self, execution_id: str, *, succeeded: bool, actual_cost_usd: Decimal,
-               response_text: str | None = None, error_code: str | None = None) -> None:
+               response_text: str | None = None, error_code: str | None = None,
+               expected_execution: Execution | None = None,
+               recipe_source_guard: BoundRecipeSourceGuard | None = None) -> None:
         """Persist result, settle cost and terminal state in one transaction."""
         if succeeded != (response_text is not None) or (not succeeded and not error_code):
             raise ValueError("success requires a response; failure requires an error code")
         if response_text is not None and len(response_text.encode("utf-8")) > 16384:
             raise ValueError("model response exceeds the first-flow limit")
+        if recipe_source_guard is not None and (not succeeded or expected_execution is None or
+                type(recipe_source_guard) is not BoundRecipeSourceGuard or
+                recipe_source_guard.execution != expected_execution or expected_execution.execution_id != execution_id):
+            raise ValueError('invalid recipe settlement guard')
         item = self._get("EXEC", execution_id)
         if not item or item["state"] != "RESERVED" or actual_cost_usd < 0:
             raise RegistryConflict("execution is not reserved or actual cost is invalid")
+        if expected_execution is not None:
+            try:
+                matches = self._execution_from_item(item) == expected_execution
+            except (KeyError, TypeError, ValueError):
+                matches = False
+            if not matches:
+                raise RegistryConflict("execution changed before settlement")
         provider = item["reserved_provider"]
         tenant_id = item["tenant_id"]
         if self.budget(tenant_id, provider) is None:
@@ -495,6 +604,16 @@ class DynamoRegistry:
                             "ConditionExpression": condition,
                             "ExpressionAttributeNames": {"#v": "version"},
                             "ExpressionAttributeValues": self._av(values)}})
+        changes.append({"Delete": {"TableName": self.table_name,
+                                    "Key": self._av({"pk": f"ACTIVE#{tenant_id}", "sk": f"EXEC#{execution_id}"})}})
+        if recipe_source_guard is not None:
+            try:
+                checks = recipe_source_guard.settlement_checks()
+            except ValueError as error:
+                raise RegistryConflict('recipe source changed during settlement') from error
+            if any(check['ConditionCheck']['TableName'] == self.table_name for check in checks):
+                raise ValueError('recipe source tables must differ from execution registry')
+            changes.extend(checks)
         try:
             token = _transaction_token(self.table_name, "finish", execution_id, changes)
             self.client.transact_write_items(TransactItems=changes, ClientRequestToken=token)

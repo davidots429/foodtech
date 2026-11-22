@@ -63,9 +63,13 @@ async def register(request: Request, body: EncryptedCredential, response: Respon
     try:
         async with _client(ca, cert, key) as client:
             result = await client.post(f"{url}/internal/credentials",
-                                       json={**body.model_dump(), "tenant_id": session.subject})
+                                       json={**body.model_dump(), "tenant_id": session.subject, "expected_epoch": session.epoch})
             result.raise_for_status()
             response.headers["Cache-Control"] = "no-store"
             return result.json()
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 409:
+            raise HTTPException(409, "계정 상태가 변경되어 자격증명을 등록할 수 없습니다.") from None
+        raise HTTPException(502, "자격증명 등록을 완료하지 못했습니다.") from None
     except (httpx.HTTPError, ValueError, OSError):
         raise HTTPException(502, "자격증명 등록을 완료하지 못했습니다.") from None

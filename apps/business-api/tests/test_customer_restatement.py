@@ -18,7 +18,7 @@ class CustomerRestatementTests(unittest.IsolatedAsyncioTestCase):
         self.store.items[(self.pk, "META")] = {"job_id": self.job_id, "version": 7, "status": "COMPLETED",
             "menu": "TONKATSU", "provenance": "SYNTHETIC", "source_binding": {
                 "source_id": "source", "device_id": "device", "batch_id": "batch"}}
-        async def session(_request, _surface): return SimpleNamespace(subject=self.subject, csrf="csrf")
+        async def session(_request, _surface): return SimpleNamespace(subject=self.subject, csrf="csrf", epoch=0)
         self.patches = [patch.dict(os.environ, {"FOODTECH_SECURE_COOKIES": "false", "FOODTECH_DATA_TABLE": "data",
                                                "FOODTECH_COOKING_TABLE": "test-cooking",
                                                "FOODTECH_ORDERED_QUEUE_URL": "queue"}),

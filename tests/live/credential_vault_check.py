@@ -61,7 +61,7 @@ def main() -> None:
     period = datetime.now(timezone.utc).strftime("%Y-%m")
     registry = DynamoRegistry(REGISTRY_TABLE, period,
                               resource=session.resource("dynamodb"),
-                              client=session.client("dynamodb"))
+                              client=session.client("dynamodb"), auth_table="foodtech-auth-sessions-dev")
     item_key = {"pk": f"CREDENTIAL#{credential_id}", "sk": "META"}
     registry_keys: list[dict[str, str]] = []
 

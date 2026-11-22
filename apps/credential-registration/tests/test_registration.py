@@ -2,10 +2,12 @@ import base64
 import hashlib
 import hmac
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from botocore.exceptions import ClientError
 
 from foodtech_credential_registration.registration import (
     CredentialRegistrar, RegistrationError, TenantPseudonymizer, TransferKey,
@@ -49,9 +51,12 @@ class FakeWriter:
 class FakeDynamo:
     def __init__(self):
         self.items = []
+        self.failure = None
 
     def transact_write_items(self, *, TransactItems):
         self.items = TransactItems
+        if self.failure:
+            raise self.failure
 
 
 class RegistrationTests(unittest.TestCase):
@@ -83,20 +88,49 @@ class RegistrationTests(unittest.TestCase):
         registrar = CredentialRegistrar(
             writer, "registry-test", self.transfer,
             TenantPseudonymizer("arn:aws:kms:ap-southeast-2:123:key/hmac", "v1",
-                                kms_client=self.kms), dynamodb_client=dynamo)
+                                kms_client=self.kms), auth_table="auth-test", dynamodb_client=dynamo)
         credential_id = registrar.register("subject-1", "openai", "2026-11",
-                                           self.ciphertext(b"synthetic-api-key"))
+                                           self.ciphertext(b"synthetic-api-key"), 2)
         self.assertEqual(writer.seen_plaintext, b"synthetic-api-key")
         self.assertEqual(bytes(writer.buffer), b"\x00" * len(writer.buffer))
-        self.assertEqual(len(dynamo.items), 2)
-        self.assertEqual([item["Put"]["TableName"] for item in dynamo.items],
+        self.assertEqual(len(dynamo.items), 3)
+        self.assertEqual(dynamo.items[0]["ConditionCheck"]["ExpressionAttributeValues"][":expected"], {"N": "2"})
+        self.assertIn("attribute_not_exists(#epoch)", dynamo.items[0]["ConditionCheck"]["ConditionExpression"])
+        self.assertIn("deletion_lock_request", dynamo.items[0]["ConditionCheck"]["ConditionExpression"])
+        self.assertEqual([item["Put"]["TableName"] for item in dynamo.items[1:]],
                          ["vault-test", "registry-test"])
         self.assertNotIn("synthetic-api-key", repr(dynamo.items))
-        metadata = dynamo.items[1]["Put"]["Item"]
+        metadata = dynamo.items[2]["Put"]["Item"]
         self.assertEqual(metadata["credential_id"]["S"], credential_id)
         self.assertEqual(metadata["tenant_id"]["S"], "subject-1")
         self.assertTrue(metadata["tenant_pseudonym"]["S"].startswith("psn:v1:credential:"))
         self.assertEqual(metadata["vault_ref"]["S"], f"vault:{credential_id}")
+
+    def test_locked_registration_reports_conflict_and_erases_buffer(self):
+        writer, dynamo = FakeWriter(), FakeDynamo()
+        dynamo.failure = ClientError({'Error': {'Code': 'TransactionCanceledException'},
+                                      'CancellationReasons': [{'Code': 'ConditionalCheckFailed'}]}, 'TransactWriteItems')
+        registrar = CredentialRegistrar(writer, 'registry-test', self.transfer,
+            TenantPseudonymizer('arn:aws:kms:ap-southeast-2:123:key/hmac', 'v1', kms_client=self.kms),
+            auth_table='auth-test', dynamodb_client=dynamo)
+        with self.assertRaises(RegistrationError) as caught:
+            registrar.register('subject-1', 'openai', '2026-11', self.ciphertext(b'synthetic'), 0)
+        self.assertEqual(caught.exception.code, 'TENANT_UNAVAILABLE')
+        self.assertEqual(bytes(writer.buffer), b'\x00' * len(writer.buffer))
+
+    def test_initialized_registration_requires_existing_principal_and_exact_epoch(self):
+        writer, dynamo = FakeWriter(), FakeDynamo()
+        with patch.dict('os.environ', {'FOODTECH_PRINCIPAL_PROVISIONING_ENABLED': 'true'}):
+            registrar = CredentialRegistrar(writer, 'registry-test', self.transfer,
+                TenantPseudonymizer('arn:aws:kms:example', 'v1', kms_client=self.kms),
+                auth_table='auth-test', dynamodb_client=dynamo)
+        registrar.register('subject-1', 'openai', '2026-11', self.ciphertext(b'synthetic'), 0)
+        guard = dynamo.items[0]['ConditionCheck']
+        self.assertIn('attribute_exists(pk)', guard['ConditionExpression'])
+        self.assertNotIn('attribute_not_exists(#epoch)', guard['ConditionExpression'])
+        self.assertNotIn(':zero', guard['ExpressionAttributeValues'])
+        self.assertEqual(guard['ExpressionAttributeValues'][':expected'], {'N': '0'})
+        self.assertEqual(bytes(writer.buffer), b'\x00' * len(writer.buffer))
 
 
 class PseudonymValidationTests(unittest.TestCase):

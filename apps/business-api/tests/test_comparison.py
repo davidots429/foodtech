@@ -475,6 +475,7 @@ class ComparisonTransactionContractTests(unittest.TestCase):
     def test_dynamo_write_checks_both_current_jobs_and_pointers(self):
         store = object.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-cooking")
+        store.auth_table_name = "test-auth"
         store.client = MagicMock()
         store.serializer = TypeSerializer()
         meta = {"version": 3, "safety_version": 1}
@@ -482,13 +483,17 @@ class ComparisonTransactionContractTests(unittest.TestCase):
         record = {"comparison_id": "a" * 64, "score_total_delta": 2,
                   "baseline_job_id": "baseline-id", "candidate_job_id": "candidate-id",
                   "compared_at": "2026-11-15T00:00:00Z"}
-        store.save_comparison("baseline", "candidate", meta, meta, pointer, pointer, record)
+        store.save_comparison("SCOPE#USER#owner#JOB#baseline", "SCOPE#USER#owner#JOB#candidate", meta, meta, pointer, pointer, record, 3)
         items = store.client.transact_write_items.call_args.kwargs["TransactItems"]
-        self.assertEqual(len(items), 8)
-        self.assertEqual(sum("ConditionCheck" in item for item in items), 4)
+        guard = items[0]["ConditionCheck"]
+        self.assertEqual(guard["TableName"], "test-auth")
+        self.assertEqual(guard["ExpressionAttributeValues"][":expected"], {"N": "3"})
+        self.assertIn("attribute_not_exists(deletion_lock_request)", guard["ConditionExpression"])
+        self.assertEqual(len(items), 9)
+        self.assertEqual(sum("ConditionCheck" in item for item in items), 5)
         self.assertEqual(sum("Put" in item for item in items), 4)
-        self.assertIn("usable = :true", items[1]["ConditionCheck"]["ConditionExpression"])
-        self.assertIn("evaluation_blocked = :false", items[0]["ConditionCheck"]["ConditionExpression"])
+        self.assertIn("usable = :true", items[2]["ConditionCheck"]["ConditionExpression"])
+        self.assertIn("evaluation_blocked = :false", items[1]["ConditionCheck"]["ConditionExpression"])
 
     def test_existing_result_does_not_hide_stale_input(self):
         class Canceled(Exception):
@@ -497,6 +502,7 @@ class ComparisonTransactionContractTests(unittest.TestCase):
 
         store = object.__new__(DynamoCookingStore)
         store.table = SimpleNamespace(name="test-cooking")
+        store.auth_table_name = "test-auth"
         store.client = MagicMock()
         store.client.exceptions.TransactionCanceledException = Canceled
         store.serializer = TypeSerializer()
@@ -505,16 +511,23 @@ class ComparisonTransactionContractTests(unittest.TestCase):
         record = {"comparison_id": "a" * 64, "baseline_job_id": "baseline-id",
                   "candidate_job_id": "candidate-id", "compared_at": "2026-11-15T00:00:00Z"}
         with patch.object(store, "comparison", return_value=record):
-            first_canceled = Canceled(["None"] * 7 + ["ConditionalCheckFailed"])
+            first_canceled = Canceled(["None"] * 8 + ["ConditionalCheckFailed"])
             store.client.transact_write_items.side_effect = [first_canceled, None]
-            self.assertEqual(store.save_comparison("baseline", "candidate", meta, meta,
+            self.assertEqual(store.save_comparison("SCOPE#USER#owner#JOB#baseline", "SCOPE#USER#owner#JOB#candidate", meta, meta,
                                                    pointer, pointer, record), record)
             self.assertEqual(store.client.transact_write_items.call_count, 2)
             repair = store.client.transact_write_items.call_args.kwargs["TransactItems"]
-            self.assertEqual(len(repair), 8)
+            self.assertEqual(len(repair), 9)
+            self.assertEqual(repair[0]["ConditionCheck"]["TableName"], "test-auth")
             self.assertIn("if_not_exists", repair[-1]["Update"]["UpdateExpression"])
             store.client.transact_write_items.side_effect = Canceled(
-                ["ConditionalCheckFailed"] + ["None"] * 6 + ["ConditionalCheckFailed"])
+                ["ConditionalCheckFailed"] + ["None"] * 7 + ["ConditionalCheckFailed"])
             with self.assertRaises(Conflict):
-                store.save_comparison("baseline", "candidate", meta, meta,
+                store.save_comparison("SCOPE#USER#owner#JOB#baseline", "SCOPE#USER#owner#JOB#candidate", meta, meta,
                                       pointer, pointer, record)
+
+    def test_comparison_rejects_different_owners(self):
+        store = object.__new__(DynamoCookingStore)
+        with self.assertRaises(ValueError):
+            store.save_comparison("SCOPE#USER#other#JOB#baseline", "SCOPE#USER#owner#JOB#candidate",
+                                  {}, {}, {}, {}, {})

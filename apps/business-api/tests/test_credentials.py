@@ -33,7 +33,7 @@ class CustomerCredentialTests(unittest.IsolatedAsyncioTestCase):
     async def test_customer_identity_and_csrf_are_server_owned(self):
         internal = InternalClient()
         async def session(_request, _surface):
-            return SimpleNamespace(subject="server-owned-subject", csrf="csrf-test")
+            return SimpleNamespace(subject="server-owned-subject", csrf="csrf-test", epoch=2)
         with patch.object(credentials, "_session", side_effect=session), \
              patch.object(credentials, "_settings", return_value=("https://127.0.0.1:8444", "ca", "cert", "key")), \
              patch.object(credentials, "_client", return_value=internal):
@@ -51,8 +51,25 @@ class CustomerCredentialTests(unittest.IsolatedAsyncioTestCase):
                                           headers={"X-CSRF-Token": "csrf-test"})
                 self.assertEqual(saved.status_code, 201)
         self.assertEqual(internal.last_json["tenant_id"], "server-owned-subject")
+        self.assertEqual(internal.last_json["expected_epoch"], 2)
         self.assertEqual(internal.last_json["ciphertext_base64"], "synthetic-ciphertext")
         self.assertNotIn("api_key", internal.last_json)
+
+    async def test_registration_conflict_is_reported_without_internal_details(self):
+        class ConflictClient(InternalClient):
+            async def post(self, _url, *, json):
+                return httpx.Response(409, json={'detail': 'TENANT_UNAVAILABLE'},
+                                      request=httpx.Request('POST', 'https://127.0.0.1'))
+        async def session(_request, _surface):
+            return SimpleNamespace(subject='server-owned-subject', csrf='csrf-test', epoch=2)
+        with patch.object(credentials, '_session', side_effect=session), \
+             patch.object(credentials, '_settings', return_value=('https://127.0.0.1:8444', 'ca', 'cert', 'key')), \
+             patch.object(credentials, '_client', return_value=ConflictClient()):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+                result = await client.post('/api/customer/credentials', headers={'X-CSRF-Token': 'csrf-test'},
+                                           json={'provider': 'openai', 'key_version': 'v1', 'ciphertext_base64': 'opaque'})
+        self.assertEqual(result.status_code, 409)
+        self.assertNotIn('TENANT_UNAVAILABLE', result.text)
 
 
 if __name__ == "__main__":
