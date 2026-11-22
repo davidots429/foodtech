@@ -131,3 +131,12 @@ class PriorDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.json()['status'], 'HISTORY_INCOMPLETE')
                 self.assertIsNone(response.json()['candidate'])
                 self.meta(self.failed).update(original)
+
+    async def test_invalid_or_out_of_order_prior_end_is_not_usable(self):
+        for value in ('invalid', '2026-01-01T23:59:59Z', '2026-01-04T00:00:00Z'):
+            with self.subTest(value=value):
+                self.meta(self.failed)['actual_lifted_at'] = value
+                response = await self.client.get(self.path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['status'], 'UNAVAILABLE')
+                self.assertFalse(response.json()['immediately_previous_verified'])

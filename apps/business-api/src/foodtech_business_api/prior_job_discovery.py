@@ -113,7 +113,8 @@ async def discover(request, job_id: str) -> dict:
                      selected.get("provenance") == "SYNTHETIC" and \
                      selected.get("equipment_profile") == job.get("equipment_profile") and \
                      selected.get("status") in {"COMPLETED", "FAILED", "CANCELED"} and \
-                     (end is None or started <= end <= current_start) else "UNAVAILABLE"
+                     (selected.get("actual_lifted_at") is None or
+                      (end is not None and started <= end <= current_start)) else "UNAVAILABLE"
             candidate = {"job_id": selected_id, "status": selected.get("status"),
                          "safety_status": selected.get("safety_status"), "started_at": started.isoformat()}
     return {"status": status, "candidate": candidate, "listed_jobs_checked": len(roster),
