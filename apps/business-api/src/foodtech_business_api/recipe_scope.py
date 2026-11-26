@@ -8,28 +8,17 @@ returned bounds in AWS, independently of the gateway and request body.
 import asyncio
 import re
 import time
-from dataclasses import dataclass, field
 from decimal import Decimal
 from uuid import UUID
 
 from .auth import _session
 from .auth_store import get_store
+from .subject_identity import valid_subject
+from foodtech_contracts.recipe_read_scope import RecipeReadScope
 
 
 class RecipeScopeDenied(Exception):
     pass
-
-
-@dataclass(frozen=True)
-class RecipeReadScope:
-    owner: str = field(repr=False)
-    execution_id: str = field(repr=False)
-    job_partitions: tuple[str, str] = field(repr=False)
-    source_partitions: tuple[str, str] = field(repr=False)
-    job_versions: tuple[int, int] = field(repr=False)
-    source_revisions: tuple[int, int] = field(repr=False)
-    execution_state: str = field(repr=False)
-    execution_version: int = field(repr=False)
 
 
 def _uuid(value):
@@ -49,10 +38,14 @@ def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
     """Observe two stable snapshots; no permission is granted by this function."""
     subject = getattr(session, 'subject', None)
     expires = getattr(session, 'expires', None)
+    epoch = getattr(session, 'epoch', None)
     if getattr(session, 'surface', None) != 'customer' or not isinstance(subject, str) or \
-            not re.fullmatch(r'[A-Za-z0-9-]{1,128}', subject) or \
+            not valid_subject(subject) or \
             not _valid_future_expiry(expires) or \
             not _uuid(execution_id):
+        raise RecipeScopeDenied('recipe scope unavailable')
+    if isinstance(epoch, bool) or not isinstance(epoch, (int, Decimal)) or \
+            (isinstance(epoch, Decimal) and not epoch.is_finite()) or epoch != int(epoch) or not 0 <= epoch < 2**63:
         raise RecipeScopeDenied('recipe scope unavailable')
 
     def snapshot():
@@ -89,7 +82,7 @@ def resolve_recipe_scope(session, execution_id, execution_reader, job_reader):
             sources.append('JEYUK#' + binding['batch_id'])
         if sources[0] == sources[1]:
             raise RecipeScopeDenied('recipe scope unavailable')
-        return RecipeReadScope(subject, execution_id, tuple(jobs), tuple(sources), versions, revisions, state, record_version)
+        return RecipeReadScope(subject, execution_id, tuple(jobs), tuple(sources), versions, revisions, state, record_version, int(epoch))
 
     first = snapshot()
     if snapshot() != first or expires <= time.time():

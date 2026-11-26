@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { api, jobPath } from "./cookingApi";
+import { api, ApiError, jobPath } from "./cookingApi";
 
 type FeedTiming = { status: "RECORDED"; vegetable_start_offset_us: number; sauce_start_offset_us: number;
   start_separation_us: number; simultaneous: boolean } | { status: "NOT_RECORDED" | "INCONSISTENT" };
@@ -107,8 +107,14 @@ const recipeBlockedMessages: Record<string, string> = {
 };
 const downgradeEligible = new Set(["TIER1_MODEL_NOT_CONFIGURED", "MODEL_NOT_ACTIVE", "MODEL_CONFIGURATION_INVALID",
   "EXTERNAL_TRANSFER_CONSENT_REQUIRED", "EXTERNAL_TRANSFER_BLOCKED", "CREDENTIAL_NOT_USABLE", "LIMIT_ACTION_REQUIRED"]);
-type LocalNotice = { quote_id: string; notice_version: string; model_id: string; quality_notice: string;
+type LocalNotice = { quote_id: string; execution_id: string; notice_version: string; model_id: string; quality_notice: string;
   transmission_location: "LOCAL"; estimated_cost_usd: string; expires_at: string };
+type RecipeStatus = { execution_id: string; job_id: string; job_version: number;
+  state: "PENDING" | "RESERVED" | "SUCCEEDED" | "FAILED"; result_available: boolean;
+  execution_available: false; job_changed: boolean };
+const recipeStateLabels: Record<RecipeStatus["state"], string> = {
+  PENDING: "실행 대기", RESERVED: "처리 중", SUCCEEDED: "처리 완료", FAILED: "실패",
+};
 
 export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jobId: string; csrf: string; comparisonId?: string; menu: string }) {
   const [value, setValue] = useState<Evidence | null>(null);
@@ -118,6 +124,8 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
   const [notice, setNotice] = useState<LocalNotice | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [recoveryId, setRecoveryId] = useState("");
+  const [recovery, setRecovery] = useState<RecipeStatus | null>(null);
   const restatementId = useRef<string | null>(null);
   const [restatementStatus, setRestatementStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -147,8 +155,11 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
   async function requestRecipe() {
     if (!value || busy) return;
     setBusy(true); setError("");
-    try { setRequested(await api<RecipeRequest>("/api/customer/ai/recipe-requests", csrf,
-      { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null, jeyuk_source_revision: value.jeyuk_collection?.source_revision ?? null, prior_source_revision: value.selected_prior_job?.collection.source_revision ?? null })); }
+    try {
+      const result = await api<RecipeRequest>("/api/customer/ai/recipe-requests", csrf,
+        { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null, jeyuk_source_revision: value.jeyuk_collection?.source_revision ?? null, prior_source_revision: value.selected_prior_job?.collection.source_revision ?? null });
+      setRequested(result); setRecoveryId(result.execution_id); setRecovery(null);
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "권고 요청을 기록하지 못했습니다."); }
     finally { setBusy(false); }
   }
@@ -186,10 +197,29 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
   async function confirm() {
     if (!value || !notice || !acknowledged || busy) return;
     setBusy(true); setError("");
+    setRecoveryId(notice.execution_id); setRecovery(null);
     try { await api(`/api/customer/ai/recipe-quotes/${notice.quote_id}/confirm`, csrf,
       { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null, jeyuk_source_revision: value.jeyuk_collection?.source_revision ?? null, prior_source_revision: value.selected_prior_job?.collection.source_revision ?? null, notice_version: notice.notice_version,
         quality_warning_acknowledged: true }); setConfirmed(true); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "전환 동의를 기록하지 못했습니다."); }
+    catch (cause) {
+      setError(cause instanceof ApiError && (cause.status === 0 || cause.status >= 500)
+        ? "전환 응답을 확인하지 못했습니다. 아래에서 같은 실행 ID의 상태를 먼저 조회해 주세요."
+        : cause instanceof Error ? cause.message : "전환 동의를 기록하지 못했습니다.");
+    }
+    finally { setBusy(false); }
+  }
+  async function checkRecipeStatus() {
+    if (busy) return;
+    const identifier = recoveryId.trim().toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(identifier)) {
+      setError("조회할 권고 실행 ID를 확인해 주세요."); return;
+    }
+    setBusy(true); setError(""); setRecovery(null);
+    try {
+      const result = await api<RecipeStatus>(`/api/customer/ai/recipe-executions/${identifier}/status?job_id=${encodeURIComponent(jobId)}`);
+      setRecovery(result);
+      if (notice?.execution_id === identifier) setConfirmed(true);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "권고 실행 상태를 조회하지 못했습니다."); }
     finally { setBusy(false); }
   }
   return <section className="binding-box" aria-labelledby="recommendation-evidence-title">
@@ -315,5 +345,19 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
       {confirmed && <p role="status">전환 동의가 기록되었습니다. 원천 데이터 완전성과 실행 전 근거 확인이 끝나야 권고를 생성할 수 있습니다.</p>}
       <p className="small">이 화면에서 AI를 호출하거나 장비 설정을 변경하지 않습니다.</p>
     </div>}
+    <div className="binding-box" aria-label="권고 요청 상태 조회">
+      <label>권고 실행 ID
+        <input value={recoveryId} onChange={event => { setRecoveryId(event.target.value); setRecovery(null); }}
+          autoComplete="off" spellCheck={false} placeholder="확인할 실행 ID" />
+      </label>
+      <button type="button" disabled={busy || !recoveryId.trim()} onClick={() => void checkRecipeStatus()}>권고 요청 상태 확인</button>
+      <p className="small">응답을 확인하지 못한 경우 같은 실행 ID로 조회하세요. 새 AI 호출이나 전환 동의를 실행하지 않습니다.</p>
+      {recovery && <div role="status">
+        <p>권고 요청 상태: {recipeStateLabels[recovery.state]} · 요청 당시 작업 버전 {recovery.job_version}</p>
+        <p>처리 결과 기록: {recovery.result_available ? "있음" : "아직 없음"}</p>
+        {recovery.job_changed && <p>조리 기록이 요청 당시와 달라졌습니다. 새 권고를 요청하기 전에 근거를 다시 확인해 주세요.</p>}
+        <p className="small">처리 완료는 레시피 승인이나 장비 적용을 의미하지 않습니다.</p>
+      </div>}
+    </div>
   </section>;
 }

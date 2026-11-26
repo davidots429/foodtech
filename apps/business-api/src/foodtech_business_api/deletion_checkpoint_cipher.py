@@ -32,9 +32,9 @@ class DeletionCheckpointCipher:
             commitment_policy=CommitmentPolicy.REQUIRE_ENCRYPT_REQUIRE_DECRYPT, max_encrypted_data_keys=1)
         self.providers = providers or AwsCryptographicMaterialProviders(config=MaterialProvidersConfig())
 
-    def _context(self, subject, request_id, domain, version, state):
+    def _request_context(self, request_id, domain, version, state):
         try:
-            if not valid_subject(subject) or str(UUID(request_id)) != request_id or \
+            if str(UUID(request_id)) != request_id or \
                     not isinstance(domain, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', domain) or \
                     type(version) is not int or not 1 <= version < 2**63 or \
                     state not in {'IN_PROGRESS', 'VERIFYING', 'FAILED'}:
@@ -45,6 +45,11 @@ class DeletionCheckpointCipher:
                 'environment': self.environment, 'source_table': self.source_table_arn,
                 'request_id': request_id, 'domain': domain,
                 'version': str(version), 'state': state}
+
+    def _context(self, subject, request_id, domain, version, state):
+        if not valid_subject(subject):
+            raise ValueError('invalid deletion checkpoint subject')
+        return self._request_context(request_id, domain, version, state)
 
     def _keyring(self):
         return self.providers.create_aws_kms_keyring(input=CreateAwsKmsKeyringInput(
@@ -65,27 +70,52 @@ class DeletionCheckpointCipher:
         finally:
             raw[:] = b'\x00' * len(raw)
 
-    def open(self, *, subject, request_id, domain, version, state, ciphertext):
-        context = self._context(subject, request_id, domain, version, state)
+    def _use_plaintext(self, *, context, ciphertext, action):
         if not isinstance(ciphertext, bytes) or not 1 <= len(ciphertext) <= 65536:
             raise ValueError('invalid deletion checkpoint ciphertext')
-        raw = bytearray()
+        raw, checkpoint = bytearray(), bytearray()
         try:
             plaintext, header = self.sdk.decrypt(source=ciphertext, keyring=self._keyring(), encryption_context=context)
             actual = header.encryption_context
             if header.algorithm != SUITE or not isinstance(actual, dict) or \
                     not set(actual) <= set(context) | {'aws-crypto-public-key'} or \
-                    any(actual.get(key) != value for key, value in context.items()) or len(plaintext) > 24000:
+                    any(actual.get(key) != value for key, value in context.items()) or \
+                    not isinstance(plaintext, bytes) or len(plaintext) > 24000:
                 raise ValueError
             raw.extend(plaintext)
             result = json.loads(raw)
-            if not isinstance(result, dict) or set(result) != {'subject', 'checkpoint'} or result['subject'] != subject:
+            if not isinstance(result, dict) or set(result) != {'subject', 'checkpoint'} or not valid_subject(result['subject']):
                 raise ValueError
-            checkpoint = base64.b64decode(result['checkpoint'], validate=True)
+            checkpoint.extend(base64.b64decode(result['checkpoint'], validate=True))
             if not 1 <= len(checkpoint) <= 16384:
                 raise ValueError
-            return checkpoint
+            return action(result['subject'], checkpoint)
         except Exception:
             raise ValueError('unable to decrypt deletion checkpoint') from None
         finally:
             raw[:] = b'\x00' * len(raw)
+            checkpoint[:] = b'\x00' * len(checkpoint)
+
+    def open(self, *, subject, request_id, domain, version, state, ciphertext):
+        context = self._context(subject, request_id, domain, version, state)
+        def use(actual_subject, checkpoint):
+            if actual_subject != subject:
+                raise ValueError('checkpoint subject mismatch')
+            return bytes(checkpoint)
+        return self._use_plaintext(context=context, ciphertext=ciphertext, action=use)
+
+    def use_source_inventory_head(self, *, request_id, ciphertext, action):
+        """Recover the retired subject only inside a trusted cleanup callback.
+
+        Requires a separately authorized recovery worker/key. This neither
+        authenticates callers nor exports the subject or callback result.
+        Immutable Python/SDK string copies cannot be guaranteed erased.
+        """
+        if not callable(action) or not re.fullmatch(
+                r'arn:aws:dynamodb:ap-southeast-2:[0-9]{12}:table/foodtech-source-access-[a-z0-9-]{1,32}',
+                self.source_table_arn):
+            raise ValueError('restricted source inventory recovery required')
+        context = self._request_context(request_id, 'SOURCE_GRANT_INVENTORY', 1, 'VERIFYING')
+        def use(subject, checkpoint):
+            action(subject, checkpoint)
+        self._use_plaintext(context=context, ciphertext=ciphertext, action=use)

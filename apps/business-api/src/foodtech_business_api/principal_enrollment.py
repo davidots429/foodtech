@@ -9,9 +9,11 @@ Never recreate a lost production control item automatically: old generations
 must not be reused. Every principal-removal writer must use the retirement
 contract; deployment permissions and rollout must enforce this separately.
 """
+import re
 from uuid import UUID
 
 from .subject_identity import valid_subject
+from .source_grant_contract import SourceGrantConflict, _grant_mapping
 
 from .account_withdrawal import WithdrawalConflict, _integer
 
@@ -78,15 +80,80 @@ class DynamoPrincipalRetirement:
     """Internal final removal after registry completion and Cognito deletion.
 
     A trusted deletion worker must verify writer quiescence and all storage
-    residuals before publishing COMPLETED. This primitive cannot establish them.
+    residuals before publishing COMPLETED. Nonempty source references also
+    require an injected encrypted inventory whose saved ciphertext is checked
+    in the final transaction. This primitive cannot establish global writer
+    quiescence, retention or successful backup reconciliation.
     No Cognito deletion is performed here, and no public endpoint is provided.
     """
-    def __init__(self, *, auth_table, registry_table, cognito_client, pool_id, fence_key=FENCE_KEY):
+    def __init__(self, *, auth_table, registry_table, cognito_client, pool_id, fence_key=FENCE_KEY,
+                 source_catalog_table=None, source_inventory=None):
         if not registry_table or registry_table == auth_table.name or not pool_id or cognito_client is None:
             raise ValueError('separate registry and explicit Cognito boundary are required')
         self.enrollment = DynamoPrincipalEnrollment(table=auth_table, fence_key=fence_key)
         self.auth_table, self.registry_table = auth_table, registry_table
         self.cognito, self.pool_id = cognito_client, pool_id
+        if source_catalog_table is not None:
+            match = re.fullmatch(r'foodtech-auth-sessions-([a-z0-9-]{1,32})', auth_table.name)
+            if not match or registry_table != 'foodtech-deletion-registry-' + match[1] or \
+                    source_catalog_table != 'foodtech-source-access-' + match[1]:
+                raise ValueError('matching-stage source catalog retirement boundary required')
+        self.source_catalog_table = source_catalog_table
+        if source_inventory is not None and (source_inventory.catalog_table != source_catalog_table or
+                source_inventory.store.auth_table != auth_table.name or
+                source_inventory.store.registry_table != registry_table):
+            raise ValueError('source recovery inventory retirement boundary mismatch')
+        self.source_inventory = source_inventory
+
+    def _source_reference_condition(self, subject, request_id, expected_epoch):
+        # This is the privileged final-auth boundary, not the catalog cleanup
+        # role. References survive until this independent residual check.
+        client = self.auth_table.meta.client
+        response = client.transact_get_items(TransactItems=[
+            {'Get': {'TableName': self.auth_table.name, 'Key': {'pk': 'USER#' + subject},
+                'ProjectionExpression': 'pk, #epoch, suspended, deletion_lock_request, source_read_grants',
+                'ExpressionAttributeNames': {'#epoch': 'epoch'}}},
+            {'Get': {'TableName': self.registry_table, 'Key': {'pk': 'REGISTRY', 'sk': 'REQ#' + request_id},
+                'ProjectionExpression': 'pk, sk, request_id, #status',
+                'ExpressionAttributeNames': {'#status': 'status'}}},
+        ])
+        try:
+            rows = response['Responses']
+            if not isinstance(rows, list) or len(rows) != 2:
+                raise ValueError
+            account, registry = (row['Item'] for row in rows)
+            if account.get('pk') != 'USER#' + subject or account.get('suspended') is not True or \
+                    _integer(account.get('epoch'), 1) != expected_epoch or account.get('deletion_lock_request') != request_id or \
+                    registry.get('pk') != 'REGISTRY' or registry.get('sk') != 'REQ#' + request_id or \
+                    registry.get('request_id') != request_id or registry.get('status') != 'COMPLETED':
+                raise ValueError
+            grants = _grant_mapping(account)
+        except (KeyError, TypeError, AttributeError, ValueError, WithdrawalConflict, SourceGrantConflict):
+            raise PrincipalEnrollmentConflict('retirement source reference snapshot unavailable') from None
+        if grants and (self.source_catalog_table is None or self.source_inventory is None):
+            raise PrincipalEnrollmentConflict('independent source catalog and encrypted inventory verification required')
+        references = sorted(grants.values())
+        for start in range(0, len(references), 100):
+            batch = references[start:start + 100]
+            result = client.transact_get_items(TransactItems=[{'Get': {
+                'TableName': self.source_catalog_table, 'Key': {'pk': 'GRANT#' + grant, 'sk': 'META'},
+                'ProjectionExpression': 'pk, sk'}} for grant in batch])
+            found = result.get('Responses')
+            if not isinstance(found, list) or len(found) != len(batch) or \
+                    any(not isinstance(item, dict) or 'Item' in item for item in found):
+                raise PrincipalEnrollmentConflict('source catalog residual or unavailable observation')
+        # Account suspension/lock prevents legitimate registrar writes. The
+        # deployment's writer/quiescence contract and independent global checks
+        # remain required before Registry COMPLETED; reads do not prove those.
+        checks = []
+        if grants:
+            try:
+                checks = self.source_inventory.retirement_conditions(subject=subject, request_id=request_id, grants=grants)
+            except SourceGrantConflict:
+                raise PrincipalEnrollmentConflict('source recovery inventory unavailable') from None
+        condition, values = (('#grants = :observed_grants', {':observed_grants': grants})
+                             if 'source_read_grants' in account else ('attribute_not_exists(#grants)', {}))
+        return condition, values, checks
 
     def retire(self, *, subject, request_id, expected_epoch):
         _subject(subject)
@@ -103,6 +170,7 @@ class DynamoPrincipalRetirement:
             pass
         else:
             raise PrincipalEnrollmentConflict('Cognito identity has not been removed')
+        grant_condition, grant_values, inventory_checks = self._source_reference_condition(subject, request_id, expected_epoch)
         try:
             self.auth_table.meta.client.transact_write_items(TransactItems=[
                 {'Update': {'TableName': self.auth_table.name, 'Key': {'pk': self.enrollment.fence_key},
@@ -111,14 +179,15 @@ class DynamoPrincipalRetirement:
                     'ExpressionAttributeNames': {'#generation': 'generation', '#state': 'state'},
                     'ExpressionAttributeValues': {':observed': generation, ':next': generation + 1, ':open': 'OPEN'}}},
                 {'Delete': {'TableName': self.auth_table.name, 'Key': {'pk': f'USER#{subject}'},
-                    'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes AND #epoch = :epoch',
-                    'ExpressionAttributeNames': {'#epoch': 'epoch'},
-                    'ExpressionAttributeValues': {':request': request_id, ':yes': True, ':epoch': expected_epoch}}},
+                    'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes AND #epoch = :epoch '
+                        'AND ' + grant_condition,
+                    'ExpressionAttributeNames': {'#epoch': 'epoch', '#grants': 'source_read_grants'},
+                    'ExpressionAttributeValues': {':request': request_id, ':yes': True, ':epoch': expected_epoch, **grant_values}}},
                 {'ConditionCheck': {'TableName': self.registry_table,
                     'Key': {'pk': 'REGISTRY', 'sk': f'REQ#{request_id}'},
                     'ConditionExpression': '#status = :completed AND request_id = :request',
                     'ExpressionAttributeNames': {'#status': 'status'},
                     'ExpressionAttributeValues': {':completed': 'COMPLETED', ':request': request_id}}},
-            ])
+            ] + inventory_checks)
         except self.auth_table.meta.client.exceptions.TransactionCanceledException:
             raise PrincipalEnrollmentConflict('account retirement prerequisites changed') from None

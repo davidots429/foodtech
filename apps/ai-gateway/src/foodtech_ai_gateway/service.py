@@ -14,9 +14,12 @@ from .policy import Caller, Decision, Feature, GatewayPolicy
 from .ollama import OllamaClient, OllamaFailure
 from .registry import DynamoRegistry, RegistryConflict
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
+from .prior_history_conditions import DynamoPriorHistoryConditions
+from .recipe_read_authorization import DynamoRecipeReadAuthorization
 from .provider import LiteLLMProvider, ProviderFailure
 from .vault import DynamoCredentialVault, VaultFailure
 from .recommendation_generation import generate_candidate
+from .jeyuk_recommendation_inputs import build_jeyuk_inputs
 
 
 class _RecommendationDenied(Exception):
@@ -90,6 +93,35 @@ class GatewayService:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         return decision
 
+    async def execute_observed_local_recipe(self, caller: Caller, execution_id: str, *,
+                                            ollama: OllamaClient) -> ExecutionOutcome:
+        """Internal server-derived Jeyuk inputs; no public route is enabled.
+
+        The bound guard must come from the trusted v2 handoff. It observes the
+        sources and independently enforces live history/grant conditions.
+        """
+        execution = await asyncio.to_thread(self.registry.execution, execution_id)
+        if not execution or execution.tenant_id != caller.tenant_id:
+            return ExecutionOutcome(execution_id, 'DENIED', error_code='EXECUTION_NOT_FOUND')
+        guard = self.recipe_source_guard
+        if type(guard) is not BoundRecipeSourceGuard or guard.execution != execution or \
+                type(guard.read_authorization) is not DynamoRecipeReadAuthorization or \
+                type(guard.history_authorization) is not DynamoPriorHistoryConditions or \
+                not guard.history_authorization.matches(execution, guard.read_authorization):
+            return ExecutionOutcome(execution_id, 'DENIED', error_code='HISTORY_SCOPE_UNAVAILABLE')
+        try:
+            observed = await asyncio.to_thread(guard.observe_inputs)
+            if type(observed) is not tuple or len(observed) != 2 or \
+                    tuple(batch.job_id for batch in observed) != (execution.job_id, execution.prior_job_id):
+                raise ValueError('observed execution mismatch')
+            evidence, baseline, context = build_jeyuk_inputs(*observed)
+            if await asyncio.to_thread(self.registry.execution, execution_id) != execution:
+                raise ValueError('execution changed during observation')
+        except (ValueError, TypeError, AttributeError, BotoCoreError, ClientError):
+            return ExecutionOutcome(execution_id, 'DENIED', error_code='RECOMMENDATION_EVIDENCE_UNVERIFIED')
+        return await self.execute_local_recipe(caller, execution_id, evidence=evidence,
+                                               baseline=baseline, context=context, ollama=ollama)
+
     async def execute_local_recipe(self, caller: Caller, execution_id: str, *,
                                    evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline,
                                    context: dict, ollama: OllamaClient) -> ExecutionOutcome:
@@ -97,6 +129,8 @@ class GatewayService:
 
         No HTTP route accepts these arguments. Each provider request is reserved
         independently and only a validated candidate is stored on success.
+        Grant-bound internal handoffs also require protected history conditions;
+        bare source fixtures are not a registered customer invocation path.
         """
         execution = self.registry.execution(execution_id)
         model = self.registry.model(execution.model_id) if execution else None
@@ -112,6 +146,14 @@ class GatewayService:
             if type(guard) is not BoundRecipeSourceGuard or type(guard.guard) is not DynamoRecipeSourceGuard or \
                     guard.execution != execution:
                 return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_SCOPE_UNAVAILABLE")
+            if guard.read_authorization is not None and \
+                    (type(guard.read_authorization) is not DynamoRecipeReadAuthorization or
+                     guard.read_authorization.observation.auth_table != getattr(self.registry, 'auth_table', None)):
+                return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_SCOPE_UNAVAILABLE")
+            if guard.read_authorization is not None and (type(guard.history_authorization) is not DynamoPriorHistoryConditions or
+                    guard.history_authorization.cooking_table != guard.guard.cooking.name or
+                    not guard.history_authorization.matches(execution, guard.read_authorization)):
+                return ExecutionOutcome(execution_id, "DENIED", error_code="HISTORY_SCOPE_UNAVAILABLE")
             try:
                 checks = await asyncio.to_thread(guard.settlement_checks)
                 if any(check['ConditionCheck']['TableName'] == self.registry.table_name for check in checks):

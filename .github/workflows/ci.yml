@@ -95,6 +95,22 @@ jobs:
         run: |
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechStandardizationRuntime-dev --strict -c provisionStandardizationRuntime=true -c principalProvisioningEnabled=true -c standardizationTaskRoleArn=arn:aws:iam::123456789012:role/FoodtechMinimalDataFlow-dev-StandardizationWorkerTask-reviewed --output /tmp/foodtech-standardization-runtime-cdk > /dev/null
           python3 ../../tests/config/check_standardization_runtime.py /tmp/foodtech-standardization-runtime-cdk/FoodtechStandardizationRuntime-dev.template.json 123456789012
+      - name: Check recipe source broker access
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRecipeSourceAccess-dev FoodtechRecipeSourceCatalog-dev --strict --no-lookups -c provisionRecipeSourceAccess=true -c provisionRecipeSourceCatalog=true --output /tmp/foodtech-recipe-source-access-cdk > /dev/null
+          python3 ../../tests/config/check_recipe_source_access.py /tmp/foodtech-recipe-source-access-cdk/FoodtechRecipeSourceAccess-dev.template.json 123456789012
+          python3 ../../tests/config/check_recipe_source_catalog.py /tmp/foodtech-recipe-source-access-cdk/FoodtechRecipeSourceCatalog-dev.template.json
+      - name: Check incremental recipe history access
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRecipeHistoryAccess-dev --strict --no-lookups -c provisionRecipeHistoryAccess=true --output /tmp/foodtech-recipe-history-cdk > /dev/null
+          python3 ../../tests/config/check_recipe_history_access.py /tmp/foodtech-recipe-history-cdk/FoodtechRecipeHistoryAccess-dev.template.json 123456789012
+      - name: Check source grant deletion capability boundary
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechSourceGrantDeletionAccess-dev --strict --no-lookups -c provisionSourceGrantDeletionAccess=true --output /tmp/foodtech-source-grant-deletion-cdk > /dev/null
+          python3 ../../tests/config/check_source_grant_deletion_access.py /tmp/foodtech-source-grant-deletion-cdk/FoodtechSourceGrantDeletionAccess-dev.template.json 123456789012
       - name: Check manual identity role read probe
         working-directory: infra/cdk
         run: |
@@ -280,4 +296,9 @@ jobs:
         run: |
           status=0
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.withdrawal_identity_probe || status=$?
+          test "$status" -eq 2
+      - name: Verify source grant deletion command stays disabled without configuration
+        run: |
+          status=0
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.source_grant_deletion_worker || status=$?
           test "$status" -eq 2

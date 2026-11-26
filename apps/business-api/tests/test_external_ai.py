@@ -64,6 +64,7 @@ class ExternalAiBffTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(internal.requests[1][1]["tenant_id"], "actual-tenant")
                 status = await client.get(f"/api/customer/ai/executions/{'b' * 36}/status")
                 self.assertEqual(status.status_code, 200)
+                self.assertEqual(status.headers['Cache-Control'], 'no-store')
                 self.assertEqual(internal.requests[2][1]["tenant_id"], "actual-tenant")
 
 

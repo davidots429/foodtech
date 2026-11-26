@@ -16,8 +16,11 @@ from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts.jeyuk_process import PROFILES
 from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
 from foodtech_contracts.jeyuk_receipt import matches_jeyuk_snapshot
+from foodtech_contracts.jeyuk_observed_inputs import observe_jeyuk_batch
 
 from .policy import Execution, Feature
+from .recipe_read_authorization import DynamoRecipeReadAuthorization
+from .prior_history_conditions import DynamoPriorHistoryConditions
 
 MAX_SOURCE_ROWS = max(profile.time_bands[-1] for profile in PROFILES.values())
 MAX_RECEIPTS = 100
@@ -35,16 +38,61 @@ class BoundRecipeSourceGuard:
     execution: Execution = field(repr=False)
     job_partitions: tuple[str, str] = field(repr=False)
     source_partitions: tuple[str, str] = field(repr=False)
+    read_authorization: DynamoRecipeReadAuthorization | None = field(default=None, repr=False)
+    history_authorization: DynamoPriorHistoryConditions | None = field(default=None, repr=False)
+
+    def _authorized(self, execution):
+        if self.read_authorization is None:
+            return self.history_authorization is None
+        if type(self.read_authorization) is not DynamoRecipeReadAuthorization or type(self.guard) is not DynamoRecipeSourceGuard:
+            return False
+        stage = self.read_authorization.observation.auth_table.removeprefix('foodtech-auth-sessions-')
+        if (self.guard.cooking.name, self.guard.data.name) != \
+                (f'foodtech-cooking-jobs-{stage}', f'foodtech-data-flow-{stage}'):
+            return False
+        if self.history_authorization is not None:
+            return type(self.history_authorization) is DynamoPriorHistoryConditions and \
+                self.history_authorization.cooking_table == self.guard.cooking.name and \
+                self.history_authorization.verify(execution, self.read_authorization, self.source_partitions)
+        # Read-only fact gathering can precede history verification; production
+        # model execution/settlement separately require the history guard.
+        return self.read_authorization.verify(execution, self.source_partitions)
 
     def verify(self, execution: Execution) -> bool:
         if not isinstance(execution, Execution) or execution != self.execution:
             return False
-        return self.guard.verify_scoped(execution, self.job_partitions, self.source_partitions) is True
+        if not self._authorized(execution):
+            return False
+        if self.guard.verify_scoped(execution, self.job_partitions, self.source_partitions) is not True:
+            return False
+        return self._authorized(execution)
 
     def settlement_checks(self):
         if type(self.guard) is not DynamoRecipeSourceGuard:
             raise ValueError('DynamoDB source guard is required')
-        return self.guard.settlement_checks(self.execution, self.job_partitions, self.source_partitions)
+        if not self._authorized(self.execution):
+            raise ValueError('source read authorization unavailable')
+        checks = self.guard.settlement_checks(self.execution, self.job_partitions, self.source_partitions)
+        if self.read_authorization is not None:
+            if type(self.read_authorization) is not DynamoRecipeReadAuthorization:
+                raise ValueError('explicit source read authorization required')
+            if self.history_authorization is not None:
+                if type(self.history_authorization) is not DynamoPriorHistoryConditions:
+                    raise ValueError('explicit prior-history conditions required')
+                checks.extend(self.history_authorization.settlement_checks(self.execution,
+                    self.read_authorization, self.source_partitions))
+            else:
+                checks.extend(self.read_authorization.settlement_checks(self.execution, self.source_partitions))
+        return checks
+
+    def observe_inputs(self):
+        """Return authorized batch facts, never an Evidence grade or history proof."""
+        if type(self.guard) is not DynamoRecipeSourceGuard or not self._authorized(self.execution):
+            raise ValueError('source read authorization unavailable')
+        observed = self.guard.observe_scoped(self.execution, self.job_partitions, self.source_partitions)
+        if not self._authorized(self.execution):
+            raise ValueError('source read authorization changed')
+        return observed
 
 
 def _positive_integer(value: object) -> int | None:
@@ -95,11 +143,21 @@ class DynamoRecipeSourceGuard:
             return False
         return self._verify(execution, source_partitions)
 
+    def observe_scoped(self, execution, job_partitions, source_partitions):
+        if not self._valid_scope(execution, job_partitions, source_partitions):
+            raise ValueError('invalid recipe observation scope')
+        bindings = ((execution.job_id, execution.job_version, execution.jeyuk_source_revision),
+                    (execution.prior_job_id, execution.prior_job_version, execution.prior_source_revision))
+        first = self._read_snapshot(execution.tenant_id, bindings, source_partitions)
+        if first is None or first != self._read_snapshot(execution.tenant_id, bindings, source_partitions):
+            raise ValueError('recipe source changed or is unavailable')
+        return tuple(observe_jeyuk_batch(item[1], item[4]) for item in first)
+
     @staticmethod
     def _valid_scope(execution, job_partitions, source_partitions):
         if not isinstance(execution, Execution) or execution.feature != Feature.RECIPE_CORRECTION or \
                 not isinstance(execution.tenant_id, str) or \
-                not re.fullmatch(r'[A-Za-z0-9-]{1,128}', execution.tenant_id):
+                not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', execution.tenant_id):
             return False
         subject = execution.tenant_id
         expected_jobs = (f'SCOPE#USER#{subject}#JOB#{execution.job_id}',
@@ -176,7 +234,7 @@ class DynamoRecipeSourceGuard:
 
     def _verify(self, execution: Execution, source_partitions) -> bool:
         subject = execution.tenant_id
-        if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,128}', subject):
+        if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject):
             return False
         bindings = ((execution.job_id, execution.job_version, execution.jeyuk_source_revision),
                     (execution.prior_job_id, execution.prior_job_version, execution.prior_source_revision))

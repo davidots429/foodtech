@@ -76,6 +76,25 @@ class RecipeSourceGuardTests(unittest.TestCase):
         self.resource.tables['foodtech-data-flow-dev'].items[('JEYUK#batch-current', 'SOURCE#REVISION')]['revision'] = Decimal(31)
         self.assertFalse(self.guard.verify(self.execution))
 
+    def test_opaque_subject_with_underscore_is_scoped_without_normalization(self):
+        owner = 'tenant_a'
+        cooking = self.resource.tables['foodtech-cooking-jobs-dev']
+        rows = {}
+        for (pk, sk), row in cooking.items.items():
+            value = dict(row)
+            if 'owner_subject' in value:
+                value['owner_subject'] = owner
+            if 'job_pk' in value:
+                value['job_pk'] = value['job_pk'].replace('tenant-a', owner)
+            rows[(pk.replace('tenant-a', owner), sk)] = value
+        cooking.items = rows
+        execution = replace(self.execution, tenant_id=owner)
+        jobs = tuple(f'SCOPE#USER#{owner}#JOB#{job}' for job in (self.current, self.prior))
+        sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')
+        self.assertTrue(self.guard.verify(execution))
+        self.assertTrue(self.guard.verify_scoped(execution, jobs, sources))
+        self.assertFalse(self.guard.verify(replace(execution, tenant_id='tenant-a')))
+
     def test_scoped_guard_rejects_changed_binding_before_foreign_source_read(self):
         jobs = (f'SCOPE#USER#tenant-a#JOB#{self.current}', f'SCOPE#USER#tenant-a#JOB#{self.prior}')
         sources = ('JEYUK#batch-current', 'JEYUK#batch-prior')

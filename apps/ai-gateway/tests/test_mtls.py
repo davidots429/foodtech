@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import httpx
 import uvicorn
@@ -64,6 +65,17 @@ class MutualTlsTests(unittest.IsolatedAsyncioTestCase):
             app.state.mtls_listener = True
             app.state.gateway_service = SimpleNamespace(registry=SimpleNamespace(
                 create_execution=lambda execution: None))
+            scope_execution_id = str(uuid4())
+            scope_execution = SimpleNamespace(execution_id=scope_execution_id, tenant_id='tenant-a',
+                feature='RECIPE_CORRECTION', job_id=str(uuid4()), prior_job_id=str(uuid4()),
+                job_version=2, prior_job_version=1, jeyuk_source_revision=12, prior_source_revision=11,
+                prompt='synthetic private prompt', credential_id='synthetic private credential')
+            app.state.gateway_service.registry.execution_snapshot = lambda identifier: (
+                SimpleNamespace(execution=scope_execution, state='PENDING', version=1)
+                if identifier == scope_execution_id else None)
+            app.state.gateway_service.registry.execution_status_snapshot = lambda identifier, tenant: (
+                (SimpleNamespace(execution=scope_execution, state='PENDING', version=1), None)
+                if identifier == scope_execution_id and tenant == 'tenant-a' else None)
             listener = socket.socket()
             listener.bind(("127.0.0.1", 0))
             listener.listen(16)
@@ -102,6 +114,22 @@ class MutualTlsTests(unittest.IsolatedAsyncioTestCase):
                         await client.post(url, json={"tenant_id": "tenant-a"})
                 async with business_gateway_client(ca, client_cert, client_key) as client:
                     response = await client.post(url, json={"tenant_id": "tenant-a"})
+                    scope = await client.post(f'https://127.0.0.1:{port}/internal/ai/recipe-scopes/{scope_execution_id}',
+                                              json={'tenant_id': 'tenant-a'})
+                    self.assertEqual(scope.status_code, 200)
+                    self.assertEqual(scope.headers['Cache-Control'], 'no-store')
+                    self.assertEqual(scope.json()['execution_id'], scope_execution_id)
+                    self.assertNotIn('prompt', scope.json())
+                    self.assertNotIn('credential_id', scope.json())
+                    status = await client.post(f'https://127.0.0.1:{port}/internal/ai/recipe-status/{scope_execution_id}',
+                        json={'tenant_id': 'tenant-a', 'job_id': scope_execution.job_id})
+                    self.assertEqual(status.status_code, 200)
+                    self.assertEqual(status.headers['Cache-Control'], 'no-store')
+                    self.assertFalse(status.json()['execution_available'])
+                    self.assertNotIn('response_text', status.json())
+                    foreign = await client.post(f'https://127.0.0.1:{port}/internal/ai/recipe-scopes/{scope_execution_id}',
+                                                json={'tenant_id': 'foreign'})
+                    self.assertEqual(foreign.status_code, 409)
                 self.assertEqual(response.status_code, 201)
             finally:
                 server.should_exit = True

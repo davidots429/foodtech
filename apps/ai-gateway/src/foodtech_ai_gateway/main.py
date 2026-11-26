@@ -17,6 +17,7 @@ from .provider import LiteLLMProvider
 from .vault import DynamoCredentialVault
 from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 from .downgrade_flow import DowngradeFlow, DowngradeError
+from foodtech_contracts.recipe_execution_scope import recipe_execution_observation_payload, recipe_execution_status_payload
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -33,6 +34,14 @@ class StrictBody(BaseModel):
 
 class NewExecution(StrictBody):
     tenant_id: str = Field(min_length=1, max_length=128)
+
+
+class RecipeScopeRequest(StrictBody):
+    tenant_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')
+
+
+class RecipeStatusRequest(RecipeScopeRequest):
+    job_id: UUID
 
 
 class ChatMessage(StrictBody):
@@ -195,6 +204,38 @@ async def invoke_execution(request: Request, execution_id: str, body: InvokeExec
             "response_text": outcome.response_text, "error_code": outcome.error_code}
 
 
+@app.post('/internal/ai/recipe-scopes/{execution_id}')
+async def recipe_scope_observation(request: Request, execution_id: UUID, body: RecipeScopeRequest):
+    _internal(request)
+    registry = _service(request).registry
+    try:
+        snapshot = await asyncio.to_thread(registry.execution_snapshot, str(execution_id))
+        payload = recipe_execution_observation_payload(snapshot, execution_id=str(execution_id), tenant_id=body.tenant_id)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(409, 'RECIPE_EXECUTION_SCOPE_UNAVAILABLE', headers={'Cache-Control': 'no-store'}) from None
+    return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/internal/ai/recipe-status/{execution_id}')
+async def recipe_execution_status(request: Request, execution_id: UUID, body: RecipeStatusRequest):
+    _internal(request)
+    registry = _service(request).registry
+    identifier, job_id = str(execution_id), str(body.job_id)
+    try:
+        before = await asyncio.to_thread(registry.execution_snapshot, identifier)
+        execution = getattr(before, 'execution', None)
+        if not execution or execution.tenant_id != body.tenant_id or execution.feature != Feature.RECIPE_CORRECTION or \
+                execution.job_id != job_id:
+            raise HTTPException(404, 'EXECUTION_NOT_FOUND', headers={'Cache-Control': 'no-store'})
+        stable = await asyncio.to_thread(registry.execution_status_snapshot, identifier, body.tenant_id)
+        if stable is None or stable[0] != before:
+            raise RegistryConflict('execution changed during status lookup')
+        payload = recipe_execution_status_payload(*stable, execution_id=identifier, tenant_id=body.tenant_id, job_id=job_id)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(409, 'EXECUTION_STATUS_CHANGED', headers={'Cache-Control': 'no-store'}) from None
+    return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
+
+
 @app.post("/internal/ai/recipe-downgrades/preview", status_code=201)
 async def downgrade_preview(request: Request, body: DowngradePreview) -> dict:
     _internal(request)
@@ -315,8 +356,8 @@ async def execution_status(request: Request, execution_id: str, tenant_id: str) 
     if snapshot is None:
         raise HTTPException(404, "EXECUTION_NOT_FOUND")
     execution, result = snapshot
-    return {"execution_id": execution_id, "state": execution.state,
+    return JSONResponse({"execution_id": execution_id, "state": execution.state,
             "response_text": result.get("response_text") if result else None,
             "error_code": result.get("error_code") if result else None,
             "actual_cost_usd": str(result["actual_cost_usd"]) if result else None,
-            "settlement_status": result.get("settlement_status") if result else None}
+            "settlement_status": result.get("settlement_status") if result else None}, headers={'Cache-Control': 'no-store'})

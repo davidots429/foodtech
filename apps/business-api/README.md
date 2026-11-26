@@ -498,6 +498,28 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 
 작업자 IAM 후보를 AWS IAM Policy Autopilot으로 추출할 때 트랜잭션의 실제 항목별 동작을 구분하지 못해 불필요한 동작이 포함되었다. CDK에서 확인한 두 개발 테이블 이름을 분석 전용 입력으로 제공한 후 IAM 정책 시뮬레이터를 리소스별로 실행한 결과, 다른 테이블은 거부됐지만 인증 세션 테이블의 `DeleteItem`이 허용됐다. 이 후보는 사용하지 않는다. 실제 역할에는 인증 테이블 읽기·조건 확인과 업무 테이블/인덱스의 필요한 동작을 분리하고, 허용·거부 양방향 및 트랜잭션을 실제 역할로 검증해야 한다. 이 검토는 역할 생성이나 정책 적용을 수행하지 않았다.
 
+## 원천 읽기 broker의 내부 권한 계약
+
+`recipe_read_broker`는 인증된 고객 세션·실행·현재/직전 작업을 다시 확인하고, 별도 `source_read_authority`가 승인한 두 원천에 대해서만 STS 읽기 세션을 발급하는 내부 구성요소다. 작업의 배치 연결이나 고객 입력은 원천 읽기 권한을 만들지 않는다. 발급 전후에 계정 epoch·탈퇴 잠금·권한 기록을 재확인하며, 임시 자격증명은 일반 JSON·pickle·repr에 노출하지 않는다. 명시적인 Fargate 역할 확인과 활성화 설정 없이는 기본 실행하지 않는다.
+
+`gateway_recipe_scope.issue_customer_recipe_reads`는 고객 세션·CSRF 확인 후 기존 loopback mTLS 설정으로 Gateway의 `POST /internal/ai/recipe-scopes/{execution_id}`를 조회한다. Gateway가 강한 조회로 얻은 동일 실행의 소유자·기능·작업/원천 버전·상태만 반환하며 `Cache-Control: no-store`를 지정한다. 프롬프트·credential·모델 응답은 제외한다. 수신자는 다른 소유자, 종료된 실행, 누락/추가 필드, 중복 JSON 멤버, 4KB 초과 응답과 redirect를 거부한다. 이 관찰을 발급 전후의 세션·실행 재검사에 사용하며, 실행 레지스트리의 직접 읽기 권한을 Business API에 추가하지 않는다. 고객 cookie를 내부 요청으로 전달하지 않는다. 이 함수는 HTTP 응답을 만들지 않으며 lease를 브라우저로 내보내지 않는다.
+
+인증 도메인의 USER는 opaque grant ID를 참조하고, 별도 source-access catalog는 원천·권한 종류·상태·버전·명시 만료만 보관한다. catalog에 원문 고객 주체를 복제하지 않는다. `source_read_registrar`는 별도로 인가된 등록자에게 주입된 클라이언트만 사용하는 내부 처리다. 계정 epoch·중단·탈퇴 잠금·기존 grant map을 조건 검사하면서 USER 참조와 catalog 레코드를 한 트랜잭션으로 등록하거나 회수한다. 기존 권한의 묵시적 덮어쓰기나 경쟁 실패 후 무조건 갱신은 하지 않는다. 등록 만료는 호출자가 반드시 지정하며 TTL 정리를 기다리지 않고 읽기 시점에 만료를 검사한다.
+
+실제 authority 조회는 두 grant의 ID·버전·만료와 인증 epoch를 `SourceReadAuthorization`으로 보존한다. 발급 전후 관찰이 달라지면 lease를 폐기하고, 일치한 관찰만 private lease에 결합한다. 이 관찰은 자격증명이나 인가 서명이 아니며 별도의 현재 권한 검사를 생략하는 근거가 아니다.
+
+`recipe_read_delivery`는 검증된 관찰과 explicit 임시 키가 있는 lease만 전용 mTLS 요청 본문으로 인코딩한다. 일반 JSON 변환·repr·pickle에는 키를 내보내지 않는다. 요청 목적지는 기존 loopback Gateway 설정과 고정 실행 URI로 제한하고 cookie·proxy 환경·redirect·자동 재시도를 사용하지 않는다. 키는 URL·헤더·고객 응답에 포함하지 않는다. 응답은 같은 실행의 네 필드(`execution_id/state/response_text/error_code`)만 허용하고, 오류 본문이나 예상하지 않은 필드는 일반화된 실패로 처리한다. 전송용 요청 바이트와 SDK의 메모리 복사본 전체가 영구적으로 소거된다고 주장하지 않는다.
+
+전송 함수와 Gateway 수신 함수를 실제 로컬 mTLS 시험 서버로 연결한 시험은 통과했다. 이 서버는 합성 키·모의 STS/DynamoDB와 명시적인 권고 차단 응답만 사용한다. production의 `/internal/ai/recipe-executions/{execution_id}/invoke`는 아직 등록하지 않았으며, 고객 화면에서 이 전송 함수를 호출하지 않는다. 실제 AWS 범위 검증과 authoritative 근거가 연결되기 전에는 실행을 활성화하지 않는다.
+
+기존 근거 조회의 제육볶음 투입 시간 계산은 공통 `jeyuk_feed_timing` 계약을 사용한다. Gateway의 관측 입력 추출도 같은 고기 투입 완료 기준·투입 그룹·30초 동시성 계산을 사용하며, 고객 API의 시간 계산이나 권고 가능 상태를 바꾸지 않는다.
+
+`GET /api/customer/ai/recipe-executions/{execution_id}/status?job_id=...`는 현재 고객이 소유한 작업과 연결된 권고 실행 상태만 조회한다. 내부 mTLS POST에는 서버가 결정한 tenant를 본문에 담고, 실행·작업 연결 및 안정된 상태/결과 기록을 대조한다. 응답은 상태·요청 당시 작업 버전·결과 기록 유무만 포함하며 원문 응답·키·오류 상세는 반환하지 않는다. 조회 후 세션과 작업을 다시 확인하고, 작업 버전이 달라졌으면 `job_changed`로 표시한다. 이 API와 기존 일반 실행 상태 조회에는 `Cache-Control: no-store`를 지정한다.
+
+고객 화면은 전환 확인 전에 고지의 child execution ID를 보관한다. 응답이 유실돼도 같은 ID로 상태만 조회하고 새 확인 POST/AI 호출을 자동 실행하지 않는다. 같은 전환 실행 기록을 찾으면 확인된 상태로 표시하며, 잘못된 UUID는 전송하지 않는다. 알려진 ID의 조회 복구이며 실행 ID를 받지 못한 최초 요청을 자동 발견하거나, 원문 권고의 조회·승인을 구현한 것은 아니다.
+
+현재는 모의 SDK 시험을 통과한 구현 후보다. 등록자 API·실행 역할, 고객 요청→Gateway의 credential 전달, 고객 실행 경로에서의 모델 전후 재인가·원자적 정산 연결, catalog의 계정 삭제·복원 체크포인트 및 실제 AWS 허용/거부 검증은 후속 작업이다. 기존 권고 차단을 해제하거나 고객에게 credential 응답을 추가하지 않는다. 읽기 권한은 독점 삭제 소유권이 아니며, STS 세션 발급 뒤 권한을 회수해도 발급된 AWS 자격증명이 즉시 폐기되는 것은 아니다. 두 opt-in CDK 후보는 기본 배포에서 제외된다.
+
 ## 일반 탈퇴의 7일 취소 유예 내부 전이
 
 2026-11-22 승인한 일반 탈퇴 정책의 내부 상태 전이를 `account_withdrawal.py`에 추가했다. 서버 요청 시각부터 168시간 미만에는 취소할 수 있고, 경계 시각부터는 `DELETING`으로 전환한다. 요청과 취소·만료는 인증 상태 항목의 epoch와 기존 탈퇴 필드를 조건부로 대조하며, 없는 계정을 만들지 않는다. 요청 즉시 `suspended`와 epoch 증가로 기존 서비스 세션·보호된 쓰기를 차단한다. 취소는 다른 관리자 정지가 추가되지 않았을 때만 허용하고 기존 관리자 권한 제한은 유지한다. 중복 요청은 취소 기한을 연장하지 않는다.
