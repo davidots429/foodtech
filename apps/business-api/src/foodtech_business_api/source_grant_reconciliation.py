@@ -44,14 +44,14 @@ class SourceGrantReconciliation:
         result = self.client.get_item(TableName=self.inventory.store.registry_table,
             Key=self._encode({'pk': 'REGISTRY', 'sk': 'REQ#' + request_id}), ConsistentRead=True,
             ProjectionExpression='pk, sk, request_id, #status, #version, reconciliation_id, '
-                                 'reconciliation_hold_until, source_grant_restore_table_arn',
+                                 'reconciliation_hold_until, source_grant_restore_table_arn, source_archive_purge_id',
             ExpressionAttributeNames={'#status': 'status', '#version': 'version'})
         try:
             row = {key: self.decoder.deserialize(value) for key, value in result['Item'].items()}
             hold = row['reconciliation_hold_until']
             now = self.clock()
             if row.get('pk') != 'REGISTRY' or row.get('sk') != 'REQ#' + request_id or \
-                    row.get('request_id') != request_id or row.get('status') != 'RECONCILING' or \
+                    row.get('request_id') != request_id or row.get('status') != 'RECONCILING' or 'source_archive_purge_id' in row or \
                     type(row.get('version')) is bool or row.get('version') != expected_version or \
                     row.get('reconciliation_id') != reconciliation_id or \
                     row.get('source_grant_restore_table_arn') != self.restored_arn or \
@@ -70,7 +70,8 @@ class SourceGrantReconciliation:
             'Key': self._encode({'pk': 'REGISTRY', 'sk': 'REQ#' + request_id}),
             'ConditionExpression': 'request_id = :request AND #status = :active AND #version = :version '
                 'AND reconciliation_id = :restore AND reconciliation_hold_until = :hold '
-                'AND reconciliation_hold_until > :now AND source_grant_restore_table_arn = :table',
+                'AND reconciliation_hold_until > :now AND source_grant_restore_table_arn = :table '
+                'AND attribute_not_exists(source_archive_purge_id)',
             'ExpressionAttributeNames': {'#status': 'status', '#version': 'version'},
             'ExpressionAttributeValues': self._encode({':request': request_id, ':active': 'RECONCILING',
                 ':version': version, ':restore': reconciliation_id, ':hold': hold, ':now': now, ':table': self.restored_arn}),

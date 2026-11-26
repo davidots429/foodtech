@@ -69,6 +69,7 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_canceled_expired_missing_or_changed_lease_never_deletes(self):
         for changed in [{'status': 'CANCELED'}, {'status': 'COMPLETED'}, {'version': 5},
+                        {'source_archive_purge_id': str(uuid4())},
                         {'reconciliation_id': str(uuid4())}, {'reconciliation_hold_until': 100},
                         {'source_grant_restore_table_arn': self.inventory.cipher.source_table_arn}]:
             with self.subTest(changed=changed), Stubber(self.client) as stub:

@@ -89,7 +89,7 @@ class SourceGrantInventory:
         except (ValueError, TypeError, AttributeError):
             raise ValueError('invalid source recovery inventory scope') from None
 
-    def _open_record(self, *, subject, request_id, domain):
+    def _ciphertext_record(self, *, request_id, domain):
         key = {'pk': 'REQ#' + request_id, 'sk': 'DOMAIN#' + domain}
         result = self.store.client.get_item(TableName=self.store.progress_table,
             Key=self.store._encode(key), ConsistentRead=True,
@@ -106,13 +106,33 @@ class SourceGrantInventory:
             if not isinstance(ciphertext, (bytes, bytearray)) or not 1 <= len(ciphertext) <= 65536:
                 raise ValueError
             ciphertext = bytes(ciphertext)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise SourceGrantConflict('encrypted source recovery inventory unavailable') from None
+        return key, ciphertext
+
+    def _open_record(self, *, subject, request_id, domain):
+        key, ciphertext = self._ciphertext_record(request_id=request_id, domain=domain)
+        try:
             opened = self.cipher.open(subject=subject, request_id=request_id, domain=domain,
                                       version=1, state='VERIFYING', ciphertext=ciphertext)
             if not isinstance(opened, bytes) or not 1 <= len(opened) <= 16384:
                 raise ValueError
-        except (KeyError, TypeError, ValueError, AttributeError):
+        except (TypeError, ValueError, AttributeError):
             raise SourceGrantConflict('encrypted source recovery inventory unavailable') from None
         return key, opened, ciphertext
+
+    def use_retired_scope(self, *, request_id, action):
+        """Use the head's encrypted identity without a live Auth record or export."""
+        try:
+            if not isinstance(request_id, str) or str(UUID(request_id)) != request_id or not callable(action):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError('explicit source inventory cleanup request required') from None
+        _, ciphertext = self._ciphertext_record(request_id=request_id, domain=HEAD)
+        try:
+            self.cipher.use_source_inventory_head(request_id=request_id, ciphertext=ciphertext, action=action)
+        except ValueError:
+            raise SourceGrantConflict('retired source inventory scope unavailable') from None
 
     def retirement_conditions(self, *, subject, request_id, grants):
         """Verify saved pages, returning native DynamoDB final-transaction checks.

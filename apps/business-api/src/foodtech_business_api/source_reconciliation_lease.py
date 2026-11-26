@@ -72,7 +72,8 @@ class SourceReconciliationLeaseStore:
             condition='request_id = :request AND #version = :expected AND '
                 '(#status = :completed OR #status = :failed) AND attribute_type(reconcile_until, :number) '
                 'AND attribute_type(expires_at, :number) AND reconcile_until > :now AND expires_at > :now '
-                'AND (attribute_not_exists(reconciliation_hold_until) OR reconciliation_hold_until <= :now)',
+                'AND (attribute_not_exists(reconciliation_hold_until) OR reconciliation_hold_until <= :now) '
+                'AND attribute_not_exists(source_archive_purge_id)',
             names={'#status': 'status', '#version': 'version'},
             values={':active': 'RECONCILING', ':next': expected_version + 1, ':restore': reconciliation_id,
                 ':until': hold_until, ':table': self.restored_arn, ':request': request_id, ':expected': expected_version,
@@ -93,7 +94,7 @@ class SourceReconciliationLeaseStore:
         response = self.client.get_item(TableName=self.registry_table,
             Key=self._encode({'pk': 'REGISTRY', 'sk': 'REQ#' + request_id}), ConsistentRead=True,
             ProjectionExpression='pk, sk, request_id, #status, #version, reconciliation_id, '
-                                 'reconciliation_hold_until, source_grant_restore_table_arn',
+                                 'reconciliation_hold_until, source_grant_restore_table_arn, source_archive_purge_id',
             ExpressionAttributeNames={'#status': 'status', '#version': 'version'})
         try:
             decoder = TypeDeserializer()
@@ -101,7 +102,7 @@ class SourceReconciliationLeaseStore:
             hold = row['reconciliation_hold_until']
             current = self.clock()
             if row.get('pk') != 'REGISTRY' or row.get('sk') != 'REQ#' + request_id or \
-                    row.get('request_id') != request_id or row.get('status') != 'RECONCILING' or \
+                    row.get('request_id') != request_id or row.get('status') != 'RECONCILING' or 'source_archive_purge_id' in row or \
                     type(row.get('version')) is bool or row.get('version') != expected_version or \
                     row.get('reconciliation_id') != reconciliation_id or \
                     row.get('source_grant_restore_table_arn') != self.restored_arn or \
@@ -123,7 +124,8 @@ class SourceReconciliationLeaseStore:
             expression='SET #version = :next, reconciliation_hold_until = :until',
             condition='request_id = :request AND #status = :active AND #version = :expected '
                 'AND reconciliation_id = :restore AND source_grant_restore_table_arn = :table '
-                'AND reconciliation_hold_until = :previous AND reconciliation_hold_until > :now',
+                'AND reconciliation_hold_until = :previous AND reconciliation_hold_until > :now '
+                'AND attribute_not_exists(source_archive_purge_id)',
             names={'#status': 'status', '#version': 'version'},
             values={':request': request_id, ':active': 'RECONCILING', ':expected': expected_version,
                 ':next': expected_version + 1, ':restore': reconciliation_id, ':table': self.restored_arn,

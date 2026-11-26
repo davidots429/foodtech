@@ -96,6 +96,7 @@ class LeaseTests(unittest.TestCase):
             'status': 'RECONCILING', 'version': 5, 'reconciliation_id': self.restore,
             'reconciliation_hold_until': 200, 'source_grant_restore_table_arn': self.arn}
         for changed in [{'status': 'CANCELED'}, {'version': 6}, {'reconciliation_id': str(uuid4())},
+                        {'source_archive_purge_id': str(uuid4())},
                         {'reconciliation_hold_until': 100}, {'source_grant_restore_table_arn': self.arn + 'x'}]:
             with self.subTest(changed=changed), Stubber(self.client) as stub:
                 row = {**original, **changed}
