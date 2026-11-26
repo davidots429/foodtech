@@ -128,6 +128,29 @@ class JeyukProcessTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cooking_time_status("SMALL", -1)
 
+    def test_sampled_controller_trip_is_immediate_latched_and_distinct(self):
+        for profile, values in PROFILES.items():
+            for stopped in (False, True):
+                with self.subTest(profile=profile, stopped=stopped):
+                    monitor = ProcessMonitor(profile, values.recommended_load_kg)
+                    args = dict(surface=str(values.surface_low_normal),
+                                rpm="0" if stopped else str(values.rpm_low_normal),
+                                target="0" if stopped else str(values.rpm_low_normal))
+                    boundary = sample(monitor, 1, motor_load="100", **args)
+                    self.assertNotEqual(boundary.status, "FAILED")
+                    trip = sample(monitor, 2, motor_load="100.01", **args)
+                    self.assertEqual(trip.status, "FAILED")
+                    self.assertIn("MOTOR_OVERLOAD_TRIP", trip.reason_codes)
+                    self.assertIn("AGITATOR_FAILURE", trip.reason_codes)
+                    self.assertNotIn("EMERGENCY_STOPPED", trip.reason_codes)
+                    self.assertNotIn("HIGH_MOTOR_LOAD_WARNING", trip.reason_codes)
+                    self.assertIn("MOTOR_OVERLOAD_TRIP", sample(monitor, 3, **args).reason_codes)
+        emergency = sample(ProcessMonitor("SMALL", Decimal("1.8")), 1, event="EMERGENCY_STOPPED")
+        self.assertIn("EMERGENCY_STOPPED", emergency.reason_codes)
+        self.assertNotIn("MOTOR_OVERLOAD_TRIP", emergency.reason_codes)
+        explicit = sample(ProcessMonitor("SMALL", Decimal("1.8")), 1, event="MOTOR_OVERLOAD_TRIP")
+        self.assertIn("MOTOR_OVERLOAD_TRIP", explicit.reason_codes)
+
     def test_cumulative_low_rpm_and_high_rpm_failure(self):
         low = ProcessMonitor("SMALL", Decimal("1.8"))
         second = 1

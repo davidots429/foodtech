@@ -5,7 +5,7 @@ from dataclasses import asdict, fields
 from boto3.dynamodb.types import TypeSerializer
 
 from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
-from foodtech_contracts.jeyuk_process import ProcessMonitor
+from foodtech_contracts.jeyuk_process import ProcessMonitor, RULE_VERSION
 from foodtech_contracts.jeyuk_safety import JeyukSafetyMonitor, RULE_VERSION as SAFETY_RULE_VERSION
 
 
@@ -37,6 +37,8 @@ class DynamoJeyukProcessor:
         state_key = {"pk": pk, "sk": "STATE"}
         state = self.table.get_item(Key=state_key, ConsistentRead=True).get("Item")
         if state:
+            if state.get("process_rule_version") != RULE_VERSION:
+                raise ValueError("Jeyuk process rule changed; preserve this stream and use a new derived run")
             prior = int(state["last_second"])
             values = {field.name: state[field.name] for field in fields(ProcessMonitor)}
             values["failures"] = set(values["failures"])
@@ -66,6 +68,7 @@ class DynamoJeyukProcessor:
         assessment = {
             **assessment_key, "fixture_id": sample.fixture_id, "profile_id": "mockprofile-110",
             "raw_sk": raw_sk, "second": second, "process_status": reading.status,
+            "process_rule_version": RULE_VERSION,
             "reason_codes": list(reading.reason_codes), "surface_band": reading.surface_band,
             "rpm_band": reading.rpm_band, "load_status": reading.load_status,
             "profile": sample.profile, "actual_load_kg": str(sample.actual_load_kg),
@@ -78,12 +81,12 @@ class DynamoJeyukProcessor:
         }
         monitor_state = asdict(monitor)
         monitor_state["failures"] = sorted(monitor.failures)
-        next_state = {**state_key, **monitor_state,
+        next_state = {**state_key, **monitor_state, "process_rule_version": RULE_VERSION,
                       "safety_state": asdict(safety) if safety is not None else None}
         state_put = {"TableName": self.table.name, "Item": self._marshal(next_state),
-                     "ConditionExpression": "attribute_not_exists(pk)" if prior == 0 else "last_second = :prior"}
+                     "ConditionExpression": "attribute_not_exists(pk)" if prior == 0 else "last_second = :prior AND process_rule_version = :rule"}
         if prior:
-            state_put["ExpressionAttributeValues"] = {":prior": self.serializer.serialize(prior)}
+            state_put["ExpressionAttributeValues"] = {":prior": self.serializer.serialize(prior), ":rule": self.serializer.serialize(RULE_VERSION)}
         try:
             self.ddb.transact_write_items(TransactItems=[
                 {"Put": {"TableName": self.table.name, "Item": self._marshal(assessment),
@@ -101,6 +104,7 @@ class DynamoJeyukProcessor:
     def _result(item: dict, *, replayed: bool) -> dict:
         return {"fixture_id": item["fixture_id"], "second": int(item["second"]),
                 "process_status": item["process_status"], "reason_codes": item["reason_codes"],
+                "process_rule_version": item.get("process_rule_version", "jeyuk-process-v1"),
                 "surface_band": item["surface_band"], "rpm_band": item["rpm_band"],
                 "load_status": item["load_status"],
                 "profile": item["profile"], "actual_load_kg": item["actual_load_kg"],

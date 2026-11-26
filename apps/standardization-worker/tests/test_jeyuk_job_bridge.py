@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
+from foodtech_contracts.jeyuk_process import RULE_VERSION
 from foodtech_standardization_worker.jeyuk_job_bridge import DynamoJeyukJobBridge
 from foodtech_standardization_worker.aws_flow import DynamoStandardizationWorker
 
@@ -63,7 +64,7 @@ class Client:
 def decision(second: int, status: str) -> dict:
     return {"fixture_id": "jeyuk-small-process-v1", "second": second,
             "profile": "SMALL", "actual_load_kg": "1.8",
-            "process_status": status,
+            "process_status": status, "process_rule_version": RULE_VERSION,
             "reason_codes": ["AGITATOR_FAILURE"] if status == "FAILED" else
                             ["AGITATOR_JAM_WARNING"] if status == "WARNING" else [],
             "surface_band": "NORMAL", "rpm_band": "LOW_DEVIATION" if second >= 5 else "NORMAL",
@@ -90,6 +91,33 @@ class JeyukJobBridgeTests(unittest.TestCase):
         self.bridge.client = Client(self.table)
         self.bridge.serializer = TypeSerializer()
         self.bridge.auth_table_name = 'auth-table'
+
+    def test_legacy_assessment_and_job_are_not_relabelled(self):
+        from copy import deepcopy
+        before = deepcopy(self.table.items)
+        for version in (None, "jeyuk-process-v1"):
+            old = decision(1, "NORMAL")
+            old["process_rule_version"] = version
+            with self.assertRaisesRegex(ValueError, "version"):
+                self.bridge.apply(old)
+            self.assertEqual(self.table.items, before)
+        self.table.items[(self.job_pk, "META")]["process_assessment"] = {
+            "second": 1, "rule_version": "jeyuk-process-v1"}
+        before = deepcopy(self.table.items)
+        with self.assertRaisesRegex(ValueError, "version"):
+            self.bridge.apply(decision(2, "NORMAL"))
+        self.assertEqual(self.table.items, before)
+
+    def test_controller_trip_blocks_evaluation_and_preserves_cause(self):
+        result = decision(1, "FAILED")
+        result["reason_codes"] = ["AGITATOR_FAILURE", "MOTOR_OVERLOAD_TRIP"]
+        self.assertEqual(self.bridge.apply(result), "FAILED")
+        job = self.table.items[(self.job_pk, "META")]
+        self.assertEqual(job["status"], "FAILED")
+        self.assertTrue(job["evaluation_blocked"])
+        self.assertEqual(job["process_assessment"]["rule_version"], RULE_VERSION)
+        self.assertIn("MOTOR_OVERLOAD_TRIP", job["last_transition_reason"])
+        self.assertNotIn("EMERGENCY_STOPPED", job["last_transition_reason"])
 
     def test_locked_owner_does_not_write_and_requests_retry(self):
         self.bridge.client.owner_locked = True

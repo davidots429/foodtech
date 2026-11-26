@@ -25,6 +25,8 @@ class DynamoJeyukJobBridge:
         self.serializer = TypeSerializer()
 
     def apply(self, result: dict) -> str:
+        if result.get("process_rule_version") != RULE_VERSION:
+            raise ValueError("Jeyuk assessment rule version requires explicit restatement")
         fixture_id = result["fixture_id"]
         second = int(result["second"])
         stream_pk = f"JEYUK#{fixture_id}"
@@ -51,7 +53,10 @@ class DynamoJeyukJobBridge:
                 return "BINDING_MISMATCH"
             if old["status"] not in {"RUNNING", "PAUSED"}:
                 return "JOB_NOT_ACTIVE"
-            previous = old.get("process_assessment", {}).get("second", 0)
+            previous_process = old.get("process_assessment", {})
+            if previous_process and previous_process.get("rule_version") != RULE_VERSION:
+                raise ValueError("Jeyuk job rule version requires explicit restatement")
+            previous = previous_process.get("second", 0)
             if second <= previous:
                 return "OLD_SAMPLE"
             if second != previous + 1:
