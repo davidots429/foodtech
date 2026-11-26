@@ -31,8 +31,11 @@ def main(path):
     assert container['EntryPoint'] == ['python', '-m', 'foodtech_business_api.withdrawal_identity_worker']
     assert container['Image'] == {'Ref': 'ImageUri'}
     assert container['User'] == '10001:10001' and container['ReadonlyRootFilesystem'] is True
+    assert container['StopTimeout'] == 30
     env = {item['Name']: item['Value'] for item in container['Environment']}
     assert env == {'FOODTECH_WITHDRAWAL_IDENTITY_WORKER_ENABLED': 'true',
+                   'FOODTECH_WITHDRAWAL_IDENTITY_TASK_ROLE_ARN': {'Ref': 'TaskRoleArn'},
+                   'FOODTECH_WITHDRAWAL_IDENTITY_MAX_SECONDS': '600',
                    'FOODTECH_AUTH_TABLE': 'foodtech-auth-sessions-dev',
                    'FOODTECH_DELETION_REGISTRY_TABLE': 'foodtech-deletion-registry-dev',
                    'FOODTECH_COGNITO_USER_POOL_ID': {'Ref': 'CognitoUserPoolId'}}
@@ -58,6 +61,15 @@ def main(path):
     # This stack must not create task permissions, users or privacy storage.
     assert not any(r['Type'].startswith(('AWS::IAM::', 'AWS::Cognito::', 'AWS::DynamoDB::', 'AWS::KMS::')) for r in resources)
     parameters = template['Parameters']
+    pattern = parameters['TaskRoleArn']['AllowedPattern']
+    account = re.search(r'iam::([0-9]{12}):role/', pattern)[1]
+    for name, kind in [('TaskRoleArn', 'task'), ('ExecutionRoleArn', 'execution'), ('InvokeRoleArn', 'invoke')]:
+        role_pattern = parameters[name]['AllowedPattern']
+        role = f'arn:aws:iam::{account}:role/foodtech-withdrawal-identity-{kind}-dev'
+        assert re.fullmatch(role_pattern, role)
+        assert not re.fullmatch(role_pattern, role.replace(account, '000000000000'))
+        assert not re.fullmatch(role_pattern, role + '-other')
+        assert not re.fullmatch(role_pattern, role.replace('-dev', '-demo'))
     for name in ('TaskRoleArn', 'ExecutionRoleArn', 'InvokeRoleArn', 'CognitoUserPoolId', 'ImageUri', 'IntervalMinutes'):
         assert 'Default' not in parameters[name]
     image_pattern = parameters['ImageUri']['AllowedPattern']
