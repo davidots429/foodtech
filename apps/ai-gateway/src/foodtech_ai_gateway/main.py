@@ -17,6 +17,7 @@ from .provider import LiteLLMProvider
 from .vault import DynamoCredentialVault
 from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 from .downgrade_flow import DowngradeFlow, DowngradeError
+from foodtech_contracts.recipe_execution_scope import recipe_execution_observation_payload
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -33,6 +34,10 @@ class StrictBody(BaseModel):
 
 class NewExecution(StrictBody):
     tenant_id: str = Field(min_length=1, max_length=128)
+
+
+class RecipeScopeRequest(StrictBody):
+    tenant_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')
 
 
 class ChatMessage(StrictBody):
@@ -193,6 +198,18 @@ async def invoke_execution(request: Request, execution_id: str, body: InvokeExec
         raise HTTPException(403, outcome.error_code)
     return {"execution_id": outcome.execution_id, "state": outcome.state,
             "response_text": outcome.response_text, "error_code": outcome.error_code}
+
+
+@app.post('/internal/ai/recipe-scopes/{execution_id}')
+async def recipe_scope_observation(request: Request, execution_id: UUID, body: RecipeScopeRequest):
+    _internal(request)
+    registry = _service(request).registry
+    try:
+        snapshot = await asyncio.to_thread(registry.execution_snapshot, str(execution_id))
+        payload = recipe_execution_observation_payload(snapshot, execution_id=str(execution_id), tenant_id=body.tenant_id)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(409, 'RECIPE_EXECUTION_SCOPE_UNAVAILABLE', headers={'Cache-Control': 'no-store'}) from None
+    return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
 
 
 @app.post("/internal/ai/recipe-downgrades/preview", status_code=201)

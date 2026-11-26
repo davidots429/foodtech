@@ -502,6 +502,8 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 
 `recipe_read_broker`는 인증된 고객 세션·실행·현재/직전 작업을 다시 확인하고, 별도 `source_read_authority`가 승인한 두 원천에 대해서만 STS 읽기 세션을 발급하는 내부 구성요소다. 작업의 배치 연결이나 고객 입력은 원천 읽기 권한을 만들지 않는다. 발급 전후에 계정 epoch·탈퇴 잠금·권한 기록을 재확인하며, 임시 자격증명은 일반 JSON·pickle·repr에 노출하지 않는다. 명시적인 Fargate 역할 확인과 활성화 설정 없이는 기본 실행하지 않는다.
 
+`gateway_recipe_scope.issue_customer_recipe_reads`는 고객 세션·CSRF 확인 후 기존 loopback mTLS 설정으로 Gateway의 `POST /internal/ai/recipe-scopes/{execution_id}`를 조회한다. Gateway가 강한 조회로 얻은 동일 실행의 소유자·기능·작업/원천 버전·상태만 반환하며 `Cache-Control: no-store`를 지정한다. 프롬프트·credential·모델 응답은 제외한다. 수신자는 다른 소유자, 종료된 실행, 누락/추가 필드, 중복 JSON 멤버, 4KB 초과 응답과 redirect를 거부한다. 이 관찰을 발급 전후의 세션·실행 재검사에 사용하며, 실행 레지스트리의 직접 읽기 권한을 Business API에 추가하지 않는다. 고객 cookie를 내부 요청으로 전달하지 않는다. 이 함수는 HTTP 응답을 만들지 않으며 lease를 브라우저로 내보내지 않는다.
+
 인증 도메인의 USER는 opaque grant ID를 참조하고, 별도 source-access catalog는 원천·권한 종류·상태·버전·명시 만료만 보관한다. catalog에 원문 고객 주체를 복제하지 않는다. `source_read_registrar`는 별도로 인가된 등록자에게 주입된 클라이언트만 사용하는 내부 처리다. 계정 epoch·중단·탈퇴 잠금·기존 grant map을 조건 검사하면서 USER 참조와 catalog 레코드를 한 트랜잭션으로 등록하거나 회수한다. 기존 권한의 묵시적 덮어쓰기나 경쟁 실패 후 무조건 갱신은 하지 않는다. 등록 만료는 호출자가 반드시 지정하며 TTL 정리를 기다리지 않고 읽기 시점에 만료를 검사한다.
 
 현재는 모의 SDK 시험을 통과한 구현 후보다. 등록자 API·실행 역할, 고객 요청→Gateway 내부 전달, 모델 전후 재인가와 원자적 정산, catalog의 계정 삭제·복원 체크포인트 및 실제 AWS 허용/거부 검증은 후속 연결이 필요하다. 기존 권고 차단을 해제하거나 고객에게 credential 응답을 추가하지 않는다. 읽기 권한은 독점 삭제 소유권이 아니며, STS 세션 발급 뒤 권한을 회수해도 발급된 AWS 자격증명이 즉시 폐기되는 것은 아니다. 두 opt-in CDK 후보는 기본 배포에서 제외된다.
