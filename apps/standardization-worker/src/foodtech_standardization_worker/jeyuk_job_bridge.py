@@ -14,13 +14,14 @@ from foodtech_contracts.validation_changes import recorded_safety_change
 
 
 class DynamoJeyukJobBridge:
-    def __init__(self, table_name: str, region: str = "ap-southeast-2"):
+    def __init__(self, table_name: str, region: str = "ap-southeast-2", *, aws_session=None, aws_config=None):
         self.auth_table_name = os.getenv('FOODTECH_AUTH_TABLE', '')
         if not self.auth_table_name:
             raise ValueError('authentication table is required for the Jeyuk job bridge')
-        session = boto3.Session(region_name=region)
-        self.table = session.resource("dynamodb").Table(table_name)
-        self.client = session.client("dynamodb")
+        session = aws_session or boto3.Session(region_name=region)
+        sdk_options = {"config": aws_config} if aws_config is not None else {}
+        self.table = session.resource("dynamodb", **sdk_options).Table(table_name)
+        self.client = session.client("dynamodb", **sdk_options)
         self.serializer = TypeSerializer()
 
     def apply(self, result: dict) -> str:

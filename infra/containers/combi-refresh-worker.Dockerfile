@@ -16,11 +16,17 @@ COPY apps/capsule-crypto apps/capsule-crypto
 COPY apps/collection-adapter apps/collection-adapter
 COPY apps/standardization-worker apps/standardization-worker
 COPY packages/contracts packages/contracts
-RUN uv sync --locked --no-dev --no-editable --package foodtech-business-api
+ARG FOODTECH_PACKAGE=foodtech-business-api
+RUN case "$FOODTECH_PACKAGE" in foodtech-business-api|foodtech-standardization-worker) ;; *) exit 1 ;; esac \
+    && uv sync --locked --no-dev --no-editable --package "$FOODTECH_PACKAGE"
 
-FROM base
+FROM base AS runtime
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 USER 10001:10001
+FROM runtime AS standardization
+ENTRYPOINT ["python", "-m", "foodtech_standardization_worker.runtime"]
+
+FROM runtime AS maintenance
 ENTRYPOINT ["python", "-m", "foodtech_business_api.combi_refresh_worker"]
