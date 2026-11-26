@@ -12,6 +12,10 @@
 
 이 결합은 아직 고객 invoke route에서 활성화하지 않았다. 기존 내부 시험의 선택적 검사 인자를 production 권한 승인으로 간주하지 않는다. 조건 검사에 필요한 실제 IAM 검토·적용과 고객별 읽기 credential 전달이 끝나기 전에는 기존 차단을 유지한다. 조건 검사 client는 명시적으로 주입하며 원천 GetItem/Query용 기본 credentials나 새 AssumeRole 경로를 추가하지 않는다. 원천 읽기 권한은 독점 삭제 권한과 별개다.
 
+내부 `receive_internal_recipe_handoff`는 실제 mTLS listener의 HTTPS 요청만 처리한다. 전용 Content-Type·본문 상한 64KiB·중복/추가 JSON 필드·명시 만료를 검사하고, Pydantic 오류에 키를 포함시키지 않는 일반화된 오류를 반환한다. 별도 조회한 실행 snapshot의 소유자·작업/원천 버전·상태를 대조하고, 현재 grant를 확인한 뒤 전달받은 키로 explicit SDK Session을 만든다. STS GetCallerIdentity의 계정·실제 assumed-role ARN과 지역 endpoint를 확인한 후 grant를 다시 확인한다. DynamoDB resource도 이 세션과 고정 지역 설정만 사용하며 profile/container-role로 대체하지 않는다. 역할 일치는 inline session policy 범위의 증명이 아니므로 발급자 신뢰와 실제 AWS 허용/거부 검증을 대체하지 않는다.
+
+수신 함수는 아직 production 실행 route에 등록하지 않았다. 합성 키의 codec·수신 거부·실제 로컬 mTLS 전달과 HTTP 로그/응답 비노출만 검증했으며, 실제 AWS/모델 실행 결과가 아니다. 입력용 mutable buffer는 처리 후 덮어쓰지만 Python JSON 문자열·요청 bytes·SDK 보유 키의 모든 메모리 복사본이 소거되는 것은 아니다. 요청 본문과 SDK 비밀을 로그에 기록하지 않는다.
+
 검사기는 배치의 역방향 `BINDING`이 같은 고객 작업을 가리키는지도 확인한다. 배치 키 자체에는 고객 식별자가 없으므로 이 애플리케이션 검사만으로 AWS의 고객 간 접근 격리가 완성되는 것은 아니다. 배포 역할에 전체 테이블 읽기 권한을 추가해 해결하지 않으며 고객별 신뢰 경계와 접근 범위 검증이 남아 있다.
 
 각 배치의 전체 합성 원본과 수집 완료 기록의 순서·건수·해시도 비교한다. 개발 DynamoDB에서 버전은 그대로 둔 원본 변경이 감지되는 것을 확인했다. 이 비교는 수집된 원본의 일치 여부이며 센서 유효성이나 직전 작업 여부까지 승인하지 않는다. 고객별로 제한된 `GetItem`·`Query` 권한의 발급과 실검증이 필요하며 전체 테이블 권한은 부여하지 않았다.

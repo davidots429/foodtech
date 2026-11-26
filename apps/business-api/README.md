@@ -508,6 +508,10 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 
 실제 authority 조회는 두 grant의 ID·버전·만료와 인증 epoch를 `SourceReadAuthorization`으로 보존한다. 발급 전후 관찰이 달라지면 lease를 폐기하고, 일치한 관찰만 private lease에 결합한다. 이 관찰은 자격증명이나 인가 서명이 아니며 별도의 현재 권한 검사를 생략하는 근거가 아니다.
 
+`recipe_read_delivery`는 검증된 관찰과 explicit 임시 키가 있는 lease만 전용 mTLS 요청 본문으로 인코딩한다. 일반 JSON 변환·repr·pickle에는 키를 내보내지 않는다. 요청 목적지는 기존 loopback Gateway 설정과 고정 실행 URI로 제한하고 cookie·proxy 환경·redirect·자동 재시도를 사용하지 않는다. 키는 URL·헤더·고객 응답에 포함하지 않는다. 응답은 같은 실행의 네 필드(`execution_id/state/response_text/error_code`)만 허용하고, 오류 본문이나 예상하지 않은 필드는 일반화된 실패로 처리한다. 전송용 요청 바이트와 SDK의 메모리 복사본 전체가 영구적으로 소거된다고 주장하지 않는다.
+
+전송 함수와 Gateway 수신 함수를 실제 로컬 mTLS 시험 서버로 연결한 시험은 통과했다. 이 서버는 합성 키·모의 STS/DynamoDB와 명시적인 권고 차단 응답만 사용한다. production의 `/internal/ai/recipe-executions/{execution_id}/invoke`는 아직 등록하지 않았으며, 고객 화면에서 이 전송 함수를 호출하지 않는다. 실제 AWS 범위 검증과 authoritative 근거가 연결되기 전에는 실행을 활성화하지 않는다.
+
 현재는 모의 SDK 시험을 통과한 구현 후보다. 등록자 API·실행 역할, 고객 요청→Gateway의 credential 전달, 고객 실행 경로에서의 모델 전후 재인가·원자적 정산 연결, catalog의 계정 삭제·복원 체크포인트 및 실제 AWS 허용/거부 검증은 후속 작업이다. 기존 권고 차단을 해제하거나 고객에게 credential 응답을 추가하지 않는다. 읽기 권한은 독점 삭제 소유권이 아니며, STS 세션 발급 뒤 권한을 회수해도 발급된 AWS 자격증명이 즉시 폐기되는 것은 아니다. 두 opt-in CDK 후보는 기본 배포에서 제외된다.
 
 ## 일반 탈퇴의 7일 취소 유예 내부 전이

@@ -8,30 +8,17 @@ returned bounds in AWS, independently of the gateway and request body.
 import asyncio
 import re
 import time
-from dataclasses import dataclass, field
 from decimal import Decimal
 from uuid import UUID
 
 from .auth import _session
 from .auth_store import get_store
 from .subject_identity import valid_subject
+from foodtech_contracts.recipe_read_scope import RecipeReadScope
 
 
 class RecipeScopeDenied(Exception):
     pass
-
-
-@dataclass(frozen=True)
-class RecipeReadScope:
-    owner: str = field(repr=False)
-    execution_id: str = field(repr=False)
-    job_partitions: tuple[str, str] = field(repr=False)
-    source_partitions: tuple[str, str] = field(repr=False)
-    job_versions: tuple[int, int] = field(repr=False)
-    source_revisions: tuple[int, int] = field(repr=False)
-    execution_state: str = field(repr=False)
-    execution_version: int = field(repr=False)
-    auth_epoch: int | None = field(default=None, repr=False)
 
 
 def _uuid(value):

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import json
 import os
 import re
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import boto3
 from botocore.config import Config
@@ -17,9 +17,9 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from .recipe_scope import (RecipeReadScope, RecipeScopeDenied, authenticated_recipe_scope,
                            revalidate_recipe_scope)
-from .subject_identity import valid_subject
 from .source_read_authority import DynamoSourceReadAuthority
 from foodtech_contracts.source_read_authorization import SourceReadAuthorization
+from foodtech_contracts.recipe_read_scope import validate_recipe_read_scope
 
 REGION = 'ap-southeast-2'
 # Retained from the Autopilot read baseline. Replication/KMS wildcard grants in
@@ -28,35 +28,21 @@ READ_ACTIONS = ['dynamodb:GetItem', 'dynamodb:Query']
 
 
 def _validate_scope(scope):
-    if type(scope) is not RecipeReadScope or not valid_subject(scope.owner):
-        raise RecipeScopeDenied('recipe read scope unavailable')
     try:
-        if str(UUID(scope.execution_id)) != scope.execution_id or any(
-                str(UUID(pk.rsplit('#', 1)[-1])) != pk.rsplit('#', 1)[-1] for pk in scope.job_partitions):
-            raise ValueError
-    except (ValueError, TypeError, AttributeError):
+        validate_recipe_read_scope(scope)
+    except ValueError:
         raise RecipeScopeDenied('recipe read scope unavailable') from None
-    if not isinstance(scope.job_partitions, tuple) or len(scope.job_partitions) != 2 or \
-            len(set(scope.job_partitions)) != 2 or any(
-                not isinstance(pk, str) or not re.fullmatch(
-                    r'SCOPE#USER#' + re.escape(scope.owner) + r'#JOB#[0-9a-f-]{36}', pk)
-                for pk in scope.job_partitions):
-        raise RecipeScopeDenied('recipe read scope unavailable')
-    if not isinstance(scope.source_partitions, tuple) or len(scope.source_partitions) != 2 or \
-            len(set(scope.source_partitions)) != 2 or any(
-                not isinstance(pk, str) or not re.fullmatch(r'JEYUK#jeyuk-[A-Za-z0-9-]{1,121}', pk)
-                for pk in scope.source_partitions):
-        raise RecipeScopeDenied('recipe read scope unavailable')
 
 
 class RecipeReadLease:
-    """Private, in-memory capability. Never serialize or return to a browser."""
-    __slots__ = ('__scope', '__expires', '__session', '__config', '__authorization')
+    """Private capability. Only explicit internal TLS encoding is permitted."""
+    __slots__ = ('__scope', '__expires', '__session', '__config', '__authorization', '__read_role', '__assumed_role')
 
-    def __init__(self, scope, expires_at, session, config):
+    def __init__(self, scope, expires_at, session, config, *, read_role_arn=None, assumed_role_arn=None):
         self.__scope, self.__expires = scope, expires_at
         self.__session, self.__config = session, config
         self.__authorization = None
+        self.__read_role, self.__assumed_role = read_role_arn, assumed_role_arn
 
     @property
     def scope(self):
@@ -87,6 +73,20 @@ class RecipeReadLease:
         if expected_scope != self.scope or self.expires_at <= datetime.now(timezone.utc):
             raise RecipeScopeDenied('recipe read lease unavailable')
         return self.__session.resource('dynamodb', config=self.__config)
+
+    def _internal_handoff(self):
+        from foodtech_contracts.recipe_read_handoff import RecipeReadHandoff
+        if self.authorization is None:
+            raise RecipeScopeDenied('verified source grant observation required')
+        try:
+            credentials = self.__session.get_credentials()
+            if credentials is None or credentials.method != 'explicit':
+                raise ValueError('explicit scoped credentials required')
+            frozen = credentials.get_frozen_credentials()
+            return RecipeReadHandoff(self.scope, self.authorization, self.__read_role, self.__assumed_role,
+                self.expires_at, frozen.access_key, frozen.secret_key, frozen.token)
+        except (ValueError, TypeError, AttributeError, BotoCoreError, ClientError):
+            raise RecipeScopeDenied('recipe read handoff unavailable') from None
 
 
 class RecipeReadBroker:
@@ -137,7 +137,8 @@ class RecipeReadBroker:
             raise RecipeScopeDenied('recipe read credentials unavailable')
         session = self.session_factory(region_name=REGION, aws_access_key_id=credentials['AccessKeyId'],
             aws_secret_access_key=credentials['SecretAccessKey'], aws_session_token=credentials['SessionToken'])
-        return RecipeReadLease(scope, expires, session, self.config)
+        return RecipeReadLease(scope, expires, session, self.config,
+                               read_role_arn=self.read_role_arn, assumed_role_arn=identity['Arn'])
 
 
 def configured_broker():
