@@ -4,7 +4,8 @@ import sys
 from pathlib import Path
 
 
-def main(path: str) -> None:
+def main(path: str, expected_mode: str = 'false') -> None:
+    assert expected_mode in {'true', 'false'}
     template = json.loads(Path(path).read_text())
     resources = template['Resources'].values()
     tasks = [r['Properties'] for r in resources if r['Type'] == 'AWS::ECS::TaskDefinition']
@@ -24,6 +25,8 @@ def main(path: str) -> None:
     container, = task['ContainerDefinitions']
     assert container['Image'] == {'Ref': 'ImageUri'} and container['User'] == '10001:10001'
     assert container['ReadonlyRootFilesystem'] is True
+    env = {item['Name']: item['Value'] for item in container['Environment']}
+    assert env['FOODTECH_PRINCIPAL_PROVISIONING_ENABLED'] == expected_mode
     assert rule['State'] == 'DISABLED'
     target, = rule['Targets']
     assert target['RoleArn'] == {'Ref': 'InvokeRoleArn'}
@@ -40,4 +43,4 @@ def main(path: str) -> None:
 
 
 if __name__ == '__main__':
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else 'false')

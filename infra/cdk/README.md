@@ -16,7 +16,7 @@
 
 `-c provisionCredentialVault=true -c provisionAiServiceTasks=true`는 별도 `FoodtechAiServiceTasks-dev` 스택에 자격증명 등록기와 AI Gateway의 Fargate Task Definition을 만든다. 각 Task는 기존 Vault 스택의 **서로 다른** 업무 역할을 사용한다. 실행 역할은 해당 ECR 이미지와 Secrets Manager TLS 자료를 읽고 CloudWatch Logs에 기록한다. 등록기는 Vault 쓰기와 KMS 전송·저장·가명화 권한, Gateway는 Vault 읽기와 저장 키 복호화 권한을 유지한다. 외부 공급자 실행은 기본 비활성이다.
 
-`-c principalProvisioningEnabled=true`는 두 Task에 같은 `FOODTECH_PRINCIPAL_PROVISIONING_ENABLED=true`를 전달한다. 기본값은 false이며 `true`/`false` 이외의 값은 합성에서 거부한다. 업무 API의 PR #229 초기화·최종 제거 계약과 함께 준비해 모든 관련 프로세스를 같은 모드로 재시작한 뒤 적용해야 한다. CI는 두 모드의 합성 결과에서 등록기·Gateway의 일치 및 외부 공급자 실행의 비활성을 확인한다. 이 설정은 실제 배포나 계정 초기화 제어 항목 생성을 수행하지 않는다.
+`-c principalProvisioningEnabled=true`는 AI 서비스 두 Task에 같은 `FOODTECH_PRINCIPAL_PROVISIONING_ENABLED=true`를 전달한다. 기본값은 false이며 `true`/`false` 이외의 값은 합성에서 거부한다. 업무 API의 PR #229 초기화·최종 제거 계약과 함께 준비해 모든 관련 프로세스를 같은 모드로 재시작한 뒤 적용해야 한다. CI는 두 모드의 합성 결과에서 등록기·Gateway의 일치 및 외부 공급자 실행의 비활성을 확인한다. 이 설정은 실제 배포나 계정 초기화 제어 항목 생성을 수행하지 않는다.
 
 필수 CDK context: `credentialKeyPeriod`, `credentialHmacVersion`, `registrationImageRepository`, `registrationImageTag`, `gatewayImageRepository`, `gatewayImageTag`, `registrationTlsSecretArn`, `gatewayTlsSecretArn`. 이미지 태그는 `latest`를 허용하지 않는다. TLS Secret 두 개는 각각 JSON 키 `server_cert_pem`, `server_key_pem`, `business_ca_pem`을 가져야 한다. 인증서 개인키와 CA는 저장소와 Task Definition의 일반 환경변수에 넣지 않는다. ECS 실행 역할이 Secret 값을 주입하고 컨테이너 시작기가 권한 `0600`의 임시 파일로 작성한다. 이미지 빌드는 `infra/containers/ai-service.Dockerfile`에 `FOODTECH_PACKAGE=foodtech-credential-registration` 또는 `foodtech-ai-gateway`를 전달한다. CI는 두 이미지를 빌드만 하며 게시하지 않는다.
 
@@ -215,3 +215,12 @@ python3 ../../tests/config/check_maintenance_publishing.py /tmp/foodtech-mainten
 ```
 
 공개 claim·컨텍스트 불일치·만료·비밀값 출력 방지·고정 digest·계정 불일치 검사를 포함한 로컬 시험 9건과 두 provider 모드의 타입/합성 검사를 통과했다. 실제 OIDC 발급·역할 인수·ECR 게시·이미지 pull은 아직 수행하지 않았다. workflow·역할 코드를 병합하는 것은 실제 생성·권한 적용·게시 실행의 승인이 아니다.
+
+
+### 조리·공정 쓰기의 초기화 계정 경계
+
+`FOODTECH_PRINCIPAL_PROVISIONING_ENABLED=true`에서는 조리 저장소의 고객 쓰기에 정확한 epoch 일치를 요구하고, 배경 파생 쓰기와 표준화 Worker의 제육/튀김/재판정 쓰기에도 계정 항목과 유효한 epoch를 요구한다. 상태 항목 부재·잘못된 epoch·정지·삭제 잠금은 같은 DynamoDB 트랜잭션에서 거부한다. 기본 호환 모드는 유지한다.
+
+`principalProvisioningEnabled` context는 AI 서비스와 식사 재집계 Task에 같은 값으로 전달한다. 별도로 시작하는 업무 API·표준화 Worker도 같은 환경변수로 시작해야 한다. 이는 환경변수 전파 계약이며 현재 배포나 기존 프로세스 종료를 수행하지 않는다. 초기화 제어 항목과 모든 작성자의 rollout/권한을 확인하기 전 삭제 조정기의 QUIESCENCE 차단을 해제하지 않는다.
+
+`tests/live/principal_writer_fence_check.py --allow-synthetic-writes`는 foodtech/ap-southeast-2의 기존 개발 테이블에 고유 합성 키만 사용해 초기화·잠금·계정 제거·오래된 epoch 조건과 정리를 검증한다. `AWS_PROFILE=foodtech` 및 위 엄격 모드를 명시해야 한다. 개발자 자격증명에 의한 조건 검증이며 실제 배포 역할·legacy writer 중지·전체 삭제 증거가 아니다.

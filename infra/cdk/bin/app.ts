@@ -22,6 +22,11 @@ const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
 if (!/^[a-z0-9-]+$/.test(stage)) throw new Error("stage must be lowercase letters, numbers or hyphens");
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: "ap-southeast-2" };
+const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
+if (principalProvisioning !== "true" && principalProvisioning !== "false") {
+  throw new Error("principalProvisioningEnabled must be true or false");
+}
+
 if (app.node.tryGetContext("provisionWithdrawalIdentityProbe") === "true" &&
     app.node.tryGetContext("provisionWithdrawalIdentitySchedule") === "true" &&
     app.node.tryGetContext("identityLogGroupMode") !== "existing") {
@@ -510,6 +515,7 @@ class MaintenanceScheduleStack extends Stack {
           { name: "FOODTECH_COGNITO_USER_POOL_ID", value: pool!.valueAsString },
         ] : [
           { name: "FOODTECH_COOKING_TABLE", value: `foodtech-cooking-jobs-${stage}` },
+          { name: "FOODTECH_PRINCIPAL_PROVISIONING_ENABLED", value: principalProvisioning },
           { name: "FOODTECH_AUTH_TABLE", value: `foodtech-auth-sessions-${stage}` },
         ], logConfiguration: { logDriver: "awslogs", options: { "awslogs-group": logGroup.logGroupName,
           "awslogs-region": this.region, "awslogs-stream-prefix": "worker" } } }],
@@ -706,10 +712,6 @@ class CredentialVaultStack extends Stack {
 class AiServiceTasksStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps, vault: CredentialVaultStack) {
     super(scope, id, props);
-    const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
-    if (principalProvisioning !== "true" && principalProvisioning !== "false") {
-      throw new Error("principalProvisioningEnabled must be true or false");
-    }
     const required = (name: string): string => {
       const value = app.node.tryGetContext(name);
       if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);

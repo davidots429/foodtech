@@ -7,6 +7,8 @@ import os
 import boto3
 from boto3.dynamodb.types import TypeSerializer
 
+from .principal_write_guard import principal_write_guard
+
 from foodtech_contracts.jeyuk_process import RULE_VERSION
 from foodtech_contracts.validation_changes import recorded_safety_change
 
@@ -115,11 +117,7 @@ class DynamoJeyukJobBridge:
                 operations.append({"Put": put})
             if not getattr(self, 'auth_table_name', ''):
                 raise ValueError('authentication table is required for the Jeyuk job bridge')
-            operations.append({"ConditionCheck": {"TableName": self.auth_table_name,
-                "Key": self._item({"pk": f"USER#{owner}"}),
-                "ConditionExpression": "(attribute_not_exists(suspended) OR suspended = :false) "
-                                       "AND attribute_not_exists(deletion_lock_request)",
-                "ExpressionAttributeValues": self._item({":false": False})}})
+            operations.append(principal_write_guard(self.auth_table_name, owner))
             try:
                 self.client.transact_write_items(TransactItems=operations)
                 return process_status
