@@ -1,21 +1,22 @@
 """Check the runtime network boundary; synth success does not prove deployment."""
 import json
-import sys
+import argparse
 from collections import Counter
 from pathlib import Path
 
 
-def check(path):
+def check(path, existing_repository=False):
     template = json.loads(Path(path).read_text())
     resources = template['Resources']
     counts = Counter(value['Type'] for value in resources.values())
     counts.pop('AWS::CDK::Metadata', None)
-    assert counts == Counter({'AWS::EC2::VPC': 1, 'AWS::EC2::Subnet': 2,
+    expected_counts = Counter({'AWS::EC2::VPC': 1, 'AWS::EC2::Subnet': 2,
         'AWS::EC2::RouteTable': 2, 'AWS::EC2::SubnetRouteTableAssociation': 2,
         'AWS::EC2::Route': 2, 'AWS::EC2::EIP': 1, 'AWS::EC2::NatGateway': 1,
         'AWS::EC2::InternetGateway': 1, 'AWS::EC2::VPCGatewayAttachment': 1,
         'AWS::EC2::VPCEndpoint': 2, 'AWS::EC2::SecurityGroup': 1,
-        'AWS::ECS::Cluster': 1, 'AWS::ECR::Repository': 1})
+        'AWS::ECS::Cluster': 1, 'AWS::ECR::Repository': int(not existing_repository)})
+    assert counts == +expected_counts
     def of_type(kind):
         return {key: value for key, value in resources.items() if value['Type'] == kind}
     forbidden = ('AWS::IAM::', 'AWS::DynamoDB::', 'AWS::KMS::', 'AWS::Cognito::', 'AWS::Events::')
@@ -66,6 +67,8 @@ def check(path):
             return value
         if value == {'Ref': 'AWS::Partition'}:
             return 'aws'
+        if value == {'Ref': 'AWS::URLSuffix'}:
+            return 'amazonaws.com'
         separator, parts = value['Fn::Join']
         return separator.join(text(part) for part in parts)
     names = {'auth-sessions', 'cooking-jobs', 'data-flow', 'ai-execution-registry',
@@ -76,18 +79,29 @@ def check(path):
     assert set(map(text, dynamo['Resource'])) == expected
     cluster, = of_type('AWS::ECS::Cluster').values()
     assert cluster['Properties']['ClusterName'] == 'foodtech-runtime-dev'
-    repository, = of_type('AWS::ECR::Repository').values()
-    props = repository['Properties']
-    assert props['RepositoryName'] == 'foodtech/maintenance-dev'
-    assert props['ImageTagMutability'] == 'IMMUTABLE'
-    assert props['ImageScanningConfiguration']['ScanOnPush'] is True
-    assert props.get('EncryptionConfiguration', {'EncryptionType': 'AES256'})['EncryptionType'] == 'AES256'
-    assert props['EmptyOnDelete'] is False
-    assert repository['DeletionPolicy'] == repository['UpdateReplacePolicy'] == 'Retain'
+    if existing_repository:
+        assert not of_type('AWS::ECR::Repository')
+        assert text(template['Outputs']['ImageRepositoryArn']['Value']) == (
+            f'arn:aws:ecr:ap-southeast-2:{account}:repository/foodtech/maintenance-dev')
+        assert text(template['Outputs']['ImageRepositoryUri']['Value']) == (
+            f'{account}.dkr.ecr.ap-southeast-2.amazonaws.com/foodtech/maintenance-dev')
+    else:
+        repository, = of_type('AWS::ECR::Repository').values()
+        props = repository['Properties']
+        assert props['RepositoryName'] == 'foodtech/maintenance-dev'
+        assert props['ImageTagMutability'] == 'IMMUTABLE'
+        assert props['ImageScanningConfiguration']['ScanOnPush'] is True
+        assert props.get('EncryptionConfiguration', {'EncryptionType': 'AES256'})['EncryptionType'] == 'AES256'
+        assert props['EmptyOnDelete'] is False
+        assert repository['DeletionPolicy'] == repository['UpdateReplacePolicy'] == 'Retain'
     assert {'VpcId', 'ClusterArn', 'PrivateSubnetIds', 'TaskSecurityGroupId', 'ImageRepositoryArn',
             'ImageRepositoryUri', 'DynamoDbEndpointId', 'ImageLayerEndpointId'} <= set(template['Outputs'])
     print('Runtime foundation network, image boundary and no-workload invariants verified.')
 
 
 if __name__ == '__main__':
-    check(sys.argv[1])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('template')
+    parser.add_argument('--existing-repository', action='store_true')
+    args = parser.parse_args()
+    check(args.template, args.existing_repository)

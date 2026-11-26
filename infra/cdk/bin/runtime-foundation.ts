@@ -19,6 +19,10 @@ export class RuntimeFoundationStack extends Stack {
     if (this.node.tryGetContext("runtimeEgressMode") !== "nat") {
       throw new Error("runtimeEgressMode=nat is required: the NAT gateway incurs idle charges");
     }
+    const repositoryMode = this.node.tryGetContext("runtimeImageRepositoryMode") ?? "create";
+    if (repositoryMode !== "create" && repositoryMode !== "existing") {
+      throw new Error("runtimeImageRepositoryMode must be create or existing");
+    }
     const zone = new CfnParameter(this, "AvailabilityZone", {
       type: "AWS::EC2::AvailabilityZone::Name",
       description: "Reviewed ap-southeast-2 availability zone for the single-AZ development runtime",
@@ -69,7 +73,11 @@ export class RuntimeFoundationStack extends Stack {
       vpc, clusterName: `foodtech-runtime-${stage}`,
       containerInsightsV2: ecs.ContainerInsights.DISABLED,
     });
-    const repository = new ecr.Repository(this, "MaintenanceImageRepository", {
+    // Explicit existing mode references the retained image destination without
+    // taking ownership, changing its policy/settings, or recreating its name.
+    const repository = repositoryMode === "existing"
+      ? ecr.Repository.fromRepositoryName(this, "RetainedMaintenanceImageRepository", `foodtech/maintenance-${stage}`)
+      : new ecr.Repository(this, "MaintenanceImageRepository", {
       repositoryName: `foodtech/maintenance-${stage}`,
       encryption: ecr.RepositoryEncryption.AES_256,
       imageTagMutability: ecr.TagMutability.IMMUTABLE,
