@@ -819,25 +819,36 @@ class DynamoCookingStore:
         self.client = session.client("dynamodb")
         self.serializer = TypeSerializer()
         self.auth_table_name = auth_table_name or os.getenv("FOODTECH_AUTH_TABLE", "")
+        self.require_principal = os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED', 'false') == 'true'
 
     def _owner_guard(self, subject: str, expected_epoch: int) -> dict:
         if not getattr(self, 'auth_table_name', '') or type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63:
             raise ValueError('authentication table and valid epoch are required')
+        condition = 'attribute_exists(pk) AND '
+        values = {':expected': expected_epoch, ':false': False}
+        if getattr(self, 'require_principal', False):
+            condition += '#epoch = :expected '
+        else:
+            condition += '((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) '
+            values[':zero'] = 0
+        condition += 'AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)'
         return {"ConditionCheck": {"TableName": self.auth_table_name,
-                    "Key": self._item({"pk": f"USER#{subject}"}),
-                    "ConditionExpression": "attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR #epoch = :expected) "
-                        "AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
-                    "ExpressionAttributeNames": {"#epoch": "epoch"},
-                    "ExpressionAttributeValues": self._item({":expected": expected_epoch, ":zero": 0, ":false": False})}}
+            "Key": self._item({"pk": f"USER#{subject}"}), "ConditionExpression": condition,
+            "ExpressionAttributeNames": {"#epoch": "epoch"}, "ExpressionAttributeValues": self._item(values)}}
 
     def _derived_owner_guard(self, subject: str, expected_epoch: int | None) -> dict:
         if expected_epoch is not None:
             return self._owner_guard(subject, expected_epoch)
         if not getattr(self, 'auth_table_name', ''):
             raise ValueError('authentication table is required')
-        return {"ConditionCheck": {"TableName": self.auth_table_name, "Key": self._item({"pk": f"USER#{subject}"}),
+        check = {"TableName": self.auth_table_name, "Key": self._item({"pk": f"USER#{subject}"}),
             "ConditionExpression": "attribute_exists(pk) AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
-            "ExpressionAttributeValues": self._item({":false": False})}}
+            "ExpressionAttributeValues": self._item({":false": False})}
+        if getattr(self, 'require_principal', False):
+            check['ConditionExpression'] += ' AND #epoch >= :zero AND #epoch < :max'
+            check['ExpressionAttributeNames'] = {'#epoch': 'epoch'}
+            check['ExpressionAttributeValues'].update(self._item({':zero': 0, ':max': 2**63}))
+        return {'ConditionCheck': check}
 
     def create_condition_profile(self, subject: str, profile: dict, expected_epoch: int = 0) -> None:
         guard = self._owner_guard(subject, expected_epoch)

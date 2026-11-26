@@ -10,8 +10,11 @@ import boto3
 import rfc8785
 from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
+
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.collection_evidence import matches_snapshot
+
+from .principal_write_guard import principal_write_guard
 from foodtech_contracts.tonkatsu_process import process_status
 from foodtech_contracts.tonkatsu_observation_summary import VERSION as SUMMARY_VERSION, summarize
 from foodtech_contracts.tonkatsu_preload_observation import VERSION as PRELOAD_VERSION, observe as observe_preload
@@ -127,10 +130,7 @@ class DynamoProcessRestatement:
         if not owner or ('owner_subject' in job and job['owner_subject'] != owner) or \
                 ('job_id' in job and job['job_id'] != job_id) or not getattr(self, 'auth_table_name', ''):
             raise ValueError('invalid job owner or authentication table')
-        return {'ConditionCheck': {'TableName': self.auth_table_name, 'Key': self._item({'pk': f'USER#{owner}'}),
-                'ConditionExpression': '(attribute_not_exists(suspended) OR suspended = :false) '
-                                       'AND attribute_not_exists(deletion_lock_request)',
-                'ExpressionAttributeValues': self._item({':false': False})}}
+        return principal_write_guard(self.auth_table_name, owner)
 
     def has_new_source(self, job_pk: str, assessment: dict) -> bool:
         pointer = self.cooking.get_item(

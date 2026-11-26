@@ -6,9 +6,11 @@ import os
 
 import boto3
 from boto3.dynamodb.types import TypeSerializer
+
 from foodtech_contracts import stream_binding_key
 from foodtech_contracts.tonkatsu_process import process_status
 
+from .principal_write_guard import principal_write_guard
 from .process_rules import advance
 from .process_restatement import DynamoProcessRestatement
 
@@ -37,10 +39,7 @@ class DynamoProcessBridge:
         if not owner or ('owner_subject' in job and job['owner_subject'] != owner) or \
                 ('job_id' in job and job['job_id'] != job_id) or not getattr(self, 'auth_table_name', ''):
             raise ValueError('invalid job owner or authentication table')
-        return {'ConditionCheck': {'TableName': self.auth_table_name, 'Key': self._item({'pk': f'USER#{owner}'}),
-                'ConditionExpression': '(attribute_not_exists(suspended) OR suspended = :false) '
-                                       'AND attribute_not_exists(deletion_lock_request)',
-                'ExpressionAttributeValues': self._item({':false': False})}}
+        return principal_write_guard(self.auth_table_name, owner)
 
     def apply(self, assessment: dict) -> str:
         normalized = assessment.get("normalized")
