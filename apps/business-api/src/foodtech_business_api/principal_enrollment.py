@@ -111,9 +111,10 @@ class DynamoPrincipalRetirement:
                     'ExpressionAttributeNames': {'#generation': 'generation', '#state': 'state'},
                     'ExpressionAttributeValues': {':observed': generation, ':next': generation + 1, ':open': 'OPEN'}}},
                 {'Delete': {'TableName': self.auth_table.name, 'Key': {'pk': f'USER#{subject}'},
-                    'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes AND #epoch = :epoch',
-                    'ExpressionAttributeNames': {'#epoch': 'epoch'},
-                    'ExpressionAttributeValues': {':request': request_id, ':yes': True, ':epoch': expected_epoch}}},
+                    'ConditionExpression': 'deletion_lock_request = :request AND suspended = :yes AND #epoch = :epoch '
+                        'AND (attribute_not_exists(#grants) OR #grants = :empty)',
+                    'ExpressionAttributeNames': {'#epoch': 'epoch', '#grants': 'source_read_grants'},
+                    'ExpressionAttributeValues': {':request': request_id, ':yes': True, ':epoch': expected_epoch, ':empty': {}}}},
                 {'ConditionCheck': {'TableName': self.registry_table,
                     'Key': {'pk': 'REGISTRY', 'sk': f'REQ#{request_id}'},
                     'ConditionExpression': '#status = :completed AND request_id = :request',

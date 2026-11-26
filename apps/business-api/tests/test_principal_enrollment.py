@@ -135,6 +135,9 @@ class EnrollmentWireTests(unittest.TestCase):
         update, delete, check = seen[0]['TransactItems']
         self.assertEqual(update['Update']['ExpressionAttributeValues'][':next'], 4)
         self.assertEqual(delete['Delete']['Key']['pk'], f'USER#{self.subject}')
+        self.assertIn('(attribute_not_exists(#grants) OR #grants = :empty)', delete['Delete']['ConditionExpression'])
+        self.assertEqual(delete['Delete']['ExpressionAttributeNames']['#grants'], 'source_read_grants')
+        self.assertEqual(delete['Delete']['ExpressionAttributeValues'][':empty'], {})
         self.assertEqual(check['ConditionCheck']['ExpressionAttributeValues'][':completed'], 'COMPLETED')
 
 

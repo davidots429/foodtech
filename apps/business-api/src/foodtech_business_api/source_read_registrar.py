@@ -18,6 +18,20 @@ class SourceGrantConflict(Exception):
     """The observed account/grant mapping is no longer current."""
 
 
+def _grant_mapping(principal):
+    mapping = principal.get('source_read_grants', {})
+    if not isinstance(mapping, dict):
+        raise SourceGrantConflict('source grant mapping unavailable')
+    try:
+        if any(not isinstance(key, str) or not re.fullmatch(r'JEYUK#jeyuk-[A-Za-z0-9-]{1,121}', key) or
+               not isinstance(ref, str) or str(UUID(ref)) != ref for key, ref in mapping.items()) or \
+                len(set(mapping.values())) != len(mapping):
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise SourceGrantConflict('source grant mapping unavailable') from None
+    return dict(mapping)
+
+
 class DynamoSourceReadRegistrar:
     def __init__(self, *, auth_table, catalog_table, client, clock):
         # Reuse the reader's table boundary; do not discover or create resources.
@@ -40,17 +54,7 @@ class DynamoSourceReadRegistrar:
                 _integer(principal.get('epoch')) != expected_epoch or \
                 principal.get('suspended', False) is not False or 'deletion_lock_request' in principal:
             raise SourceGrantConflict('source grant account unavailable')
-        mapping = principal.get('source_read_grants', {})
-        if not isinstance(mapping, dict):
-            raise SourceGrantConflict('source grant mapping unavailable')
-        try:
-            if any(not isinstance(key, str) or not re.fullmatch(r'JEYUK#jeyuk-[A-Za-z0-9-]{1,121}', key) or
-                   not isinstance(ref, str) or str(UUID(ref)) != ref for key, ref in mapping.items()) or \
-                    len(set(mapping.values())) != len(mapping):
-                raise ValueError
-        except (ValueError, TypeError, AttributeError):
-            raise SourceGrantConflict('source grant mapping unavailable') from None
-        return principal, dict(mapping)
+        return principal, _grant_mapping(principal)
 
     def _account_update(self, subject, epoch, principal, before, after):
         names = {'#epoch': 'epoch', '#grants': 'source_read_grants', '#suspended': 'suspended'}
@@ -108,8 +112,8 @@ class DynamoSourceReadRegistrar:
         """Remove the exact reference and its catalog row in one transaction.
 
         An already TTL-deleted catalog row is allowed; a different row is not.
-        Full account deletion must capture all grant references before deleting
-        USER. This method cannot replace that lifecycle checkpoint protocol.
+        Full account deletion uses locked catalog/reference cleanup before USER
+        retirement. This active-account method cannot replace that lifecycle.
         """
         for value in (expected_grant_id, operation_id):
             try:
