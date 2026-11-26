@@ -287,3 +287,8 @@ jobs:
           status=0
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.withdrawal_identity_probe || status=$?
           test "$status" -eq 2
+      - name: Verify source grant deletion command stays disabled without configuration
+        run: |
+          status=0
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.source_grant_deletion_worker || status=$?
+          test "$status" -eq 2
