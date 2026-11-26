@@ -49,6 +49,13 @@ jobs:
         run: |
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRuntimeFoundation-dev --strict --no-lookups -c provisionRuntimeFoundation=true -c runtimeEgressMode=nat --output /tmp/foodtech-runtime-foundation-cdk > /dev/null
           python3 ../../tests/config/check_runtime_foundation.py /tmp/foodtech-runtime-foundation-cdk/FoodtechRuntimeFoundation-dev.template.json
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRuntimeFoundation-dev --strict --no-lookups -c provisionRuntimeFoundation=true -c runtimeEgressMode=nat -c runtimeImageRepositoryMode=existing --output /tmp/foodtech-runtime-existing-image-cdk > /dev/null
+          python3 ../../tests/config/check_runtime_foundation.py /tmp/foodtech-runtime-existing-image-cdk/FoodtechRuntimeFoundation-dev.template.json --existing-repository
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRuntimeFoundation-dev --strict --no-lookups -c provisionRuntimeFoundation=true -c runtimeEgressMode=nat -c runtimeImageRepositoryMode=unknown --output /tmp/foodtech-runtime-invalid-image-mode > /tmp/foodtech-runtime-image-rejected.log 2>&1; then
+            echo 'Invalid repository ownership mode was accepted'
+            exit 1
+          fi
+          python3 -c "from pathlib import Path; assert 'runtimeImageRepositoryMode must be create or existing' in Path('/tmp/foodtech-runtime-image-rejected.log').read_text()"
           if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRuntimeFoundation-dev --strict --no-lookups -c provisionRuntimeFoundation=true --output /tmp/foodtech-runtime-foundation-rejected > /tmp/foodtech-runtime-rejected.log 2>&1; then
             echo 'Missing billable-egress acknowledgement was accepted'
             exit 1

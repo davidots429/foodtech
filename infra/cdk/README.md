@@ -149,6 +149,10 @@ Task/실행 역할의 신뢰는 ECS 서비스와 같은 계정·리전의 Source
 
 `provisionRuntimeFoundation=true`는 별도 `FoodtechRuntimeFoundation-dev`에 새 VPC, 공개 egress 서브넷·프라이빗 Task 서브넷 각 1개, NAT Gateway·Elastic IP 각 1개, DynamoDB·S3 Gateway Endpoint, HTTPS 송신 전용 Task 보안 그룹, ECS 클러스터와 비공개 ECR 저장소 `foodtech/maintenance-dev`를 합성한다. 기존 업무 테이블·Cognito·키·IAM 역할은 변경하지 않으며 Task·Service·예약 작업을 생성하지 않는다. 이 구성은 단일 AZ 개발 검증용이며 장애 시 가용성이나 운영 배포 완료를 보장하지 않는다.
 
+최초 생성의 저장소 모드는 `runtimeImageRepositoryMode=create`가 기본이다. 비용 정리를 위해 기반 스택을 삭제하면 RETAIN ECR 저장소와 이미지는 남는다. 이후 기반을 재생성할 때는 먼저 같은 계정·리전의 `foodtech/maintenance-dev` 존재, 불변 태그·스캔·암호화 설정과 사용할 digest를 확인한 뒤 `-c runtimeImageRepositoryMode=existing`을 명시한다. 이 모드는 해당 이름의 저장소를 참조만 하며 ECR 생성·변경·삭제·정책 갱신이나 CloudFormation 소유권 가져오기를 하지 않는다. 합성에는 AWS 조회가 없으므로 저장소 존재나 설정 적합성을 검증했다고 간주하지 않는다. 저장소가 없으면 기존 모드를 선택하지 않으며, 존재하는 저장소에 기본 생성 모드를 적용하면 이름 충돌로 실패한다. 소유권 이관이 필요하면 별도의 CloudFormation import 절차로 검토한다.
+
+기존 기반 스택에 저장소를 여전히 소유한 채 이 모드만 변경하는 것을 재생성 절차로 사용하지 않는다. 삭제가 완료된 기반을 다시 만드는 경우에 사용하고, 변경 세트에서 ECR 추가·변경·삭제가 없는지 확인한다. 두 모드 모두 NAT 비용 확인과 실제 배포 승인은 동일하게 필요하며, 이미지의 스캔·실행 적합성은 별도다. 2026-11-26 게시 시험의 OpenSSL finding은 [이슈 #247](https://github.com/davidots429/foodtech/issues/247)에서 추적한다.
+
 NAT Gateway와 공인 IPv4는 Task가 없어도 비용이 발생한다. `runtimeEgressMode=nat`를 함께 명시하지 않으면 합성을 거부한다. 배포 AZ는 기본값 없는 `AvailabilityZone` 파라미터로 검토·지정한다. 실제 배포 전에 계정의 가용 AZ·Free Plan 제한·크레딧·정리 시점과 CloudFormation 변경 세트를 확인한다. 이번 코드는 배포나 자원 생성 승인을 의미하지 않는다.
 
 두 서브넷 모두 자동 공인 IP 할당을 끈다. 인터넷 기본 경로는 공개 egress 서브넷의 IGW와 프라이빗 서브넷의 NAT로 분리한다. Task 보안 그룹에는 인바운드 규칙이 없고 TCP 443 송신만 허용한다. 이는 포트 제한이며 목적지 호스트 allowlist나 외부 AI 전송 승인, MQTT·OPC UA 수집기 네트워크를 제공하지 않는다.
