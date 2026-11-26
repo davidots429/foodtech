@@ -1,5 +1,8 @@
 """No AWS calls: SDK validation and simulated atomic publication races."""
 from dataclasses import replace
+import asyncio
+from datetime import datetime, timedelta
+import json
 import unittest
 from uuid import uuid4
 
@@ -9,11 +12,13 @@ from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from foodtech_ai_gateway.ollama import OllamaResult
+from foodtech_ai_gateway.policy import Caller
 from foodtech_ai_gateway.recipe_read_authorization import DynamoRecipeReadAuthorization
 from foodtech_ai_gateway.service import GatewayService
 from foodtech_ai_gateway.prior_history_conditions import DynamoPriorHistoryConditions
 from foodtech_contracts.prior_history_witness import PriorHistoryWitness
 from foodtech_contracts.source_read_authorization import SourceReadAuthorization
+from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
 
 import test_bound_recipe_integration as integration_fixture
 from test_registry import TransactionCanceledException as SimulatedTransactionCancelled
@@ -172,6 +177,46 @@ class GrantPublicationIntegrationTests(unittest.TestCase):
             if sk == 'META':
                 row.update(jeyuk_size_profile='SMALL', equipment_profile='jeyuk-small',
                            actual_load_kg='1.8', safety_status='PASSED')
+
+    def test_derived_failed_batch_inputs_reach_model_and_atomic_guarded_settlement(self):
+        self.prepare_batch_observation()
+        cooking = self.flow.source.resource.tables['foodtech-cooking-jobs-dev'].items
+        data = self.flow.source.resource.tables['foodtech-data-flow-dev'].items
+        for job in (row for (_, sk), row in cooking.items() if sk == 'META'):
+            placed = datetime.fromisoformat(job['actual_placed_at'])
+            iso = lambda seconds: (placed + timedelta(seconds=seconds)).isoformat()
+            job.update(safety_status='FAILED', jeyuk_addition_group_id='group', jeyuk_additions_simultaneous=True)
+            job['jeyuk_feeds'] = {name: {'ingredient': name, 'provenance': 'SYNTHETIC', 'started_at': iso(start),
+                'completed_at': iso(end), 'addition_group_id': 'group', 'mass_kg': mass,
+                'initial_temperature_c': '4', 'temperature_observed_at': iso(-3)} for name, start, end, mass in
+                [('MEAT', -2, 0, '1.0'), ('VEGETABLE', 1, 1.5, '0.5'), ('SAUCE', 2, 2.5, '0.3')]}
+            pk = 'JEYUK#' + job['source_binding']['batch_id']
+            tracker = JeyukCompletionTracker(0)
+            for second in range(1, int(job['actual_cooking_seconds']) + 1):
+                row = data[(pk, f'RAW#{second:06d}')]
+                sample = json.loads(row['raw'])
+                sample.update(heatingSetpointCelsius=200, mixtureCelsius=75, calibrationStatus='OK',
+                    safetySensorPosition='LOWEST_MIXTURE_POINT', lastIngredientAdditionCompleted=second == 3)
+                row['raw'] = json.dumps(sample)
+                tracker.record(row['raw'])
+            receipt = tracker.finish(cursor=int(job['actual_cooking_seconds']), complete=True, explicit=True)
+            receipt.update(pk=pk, sk='COLLECTION#RECEIPT#1')
+            data[(pk, receipt['sk'])] = receipt
+        calls = []
+        class Model:
+            async def structured_chat(self, _model, messages, _schema):
+                calls.append(messages)
+                return OllamaResult('{"temperature_c":200,"rpm":30,"duration_seconds":480,"load_kg":1.8,'
+                    '"vegetable_interval_seconds":1,"sauce_interval_seconds":2}', 1, 1)
+        result = asyncio.run(self.flow.service.execute_observed_local_recipe(Caller('business-api', 'tenant-a'),
+            'exec', ollama=Model()))
+        self.assertEqual(result.state, 'SUCCEEDED')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.flow.registry.execution_state('exec'), 'SUCCEEDED')
+        self.assertEqual(self.grant_checks_at_publish, 3)
+        self.assertEqual(self.history_checks_at_publish, 2)
+        self.assertEqual(self.flow.registry.budget('tenant-a', 'ollama').calls_remaining, 0)
+        self.assertNotIn(self.flow.execution.prior_job_id, json.dumps(calls))
 
     def test_authorized_snapshot_exposes_facts_without_fabricating_input_readiness(self):
         self.prepare_batch_observation()
