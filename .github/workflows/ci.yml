@@ -73,6 +73,25 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentitySchedule-dev --strict -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-withdrawal-identity-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-withdrawal-identity-cdk/FoodtechWithdrawalIdentitySchedule-dev.template.json
+      - name: Check manual identity role read probe
+        working-directory: infra/cdk
+        run: |
+          for mode in create existing; do
+            CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentityProbe-dev --strict --no-lookups -c provisionWithdrawalIdentityProbe=true -c identityLogGroupMode="$mode" --output "/tmp/foodtech-identity-read-probe-$mode" > /dev/null
+            if [ "$mode" = existing ]; then
+              python3 ../../tests/config/check_withdrawal_identity_probe.py "/tmp/foodtech-identity-read-probe-$mode/FoodtechWithdrawalIdentityProbe-dev.template.json" --existing-logs
+            else
+              python3 ../../tests/config/check_withdrawal_identity_probe.py "/tmp/foodtech-identity-read-probe-$mode/FoodtechWithdrawalIdentityProbe-dev.template.json"
+            fi
+          done
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentityProbe-dev FoodtechWithdrawalIdentitySchedule-dev --strict --no-lookups -c provisionWithdrawalIdentityProbe=true -c provisionWithdrawalIdentitySchedule=true -c identityLogGroupMode=existing --output /tmp/foodtech-identity-shared-logs > /dev/null
+          python3 ../../tests/config/check_withdrawal_identity_probe.py /tmp/foodtech-identity-shared-logs/FoodtechWithdrawalIdentityProbe-dev.template.json --existing-logs
+          python3 ../../tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-identity-shared-logs/FoodtechWithdrawalIdentitySchedule-dev.template.json
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentityProbe-dev --strict --no-lookups -c provisionWithdrawalIdentityProbe=true -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-identity-read-probe-collision > /tmp/foodtech-identity-probe-collision.log 2>&1; then
+            echo 'Duplicate identity log ownership was accepted'
+            exit 1
+          fi
+          python3 -c "from pathlib import Path; assert 'must not both create the shared log group' in Path('/tmp/foodtech-identity-probe-collision.log').read_text()"
       - run: CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentityAccess-dev --strict -c provisionWithdrawalIdentityAccess=true --output /tmp/foodtech-withdrawal-identity-access-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_withdrawal_identity_access.py /tmp/foodtech-withdrawal-identity-access-cdk/FoodtechWithdrawalIdentityAccess-dev.template.json
@@ -221,4 +240,9 @@ jobs:
           docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -c 'import foodtech_business_api.withdrawal_identity_worker'
           status=0
           docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.withdrawal_identity_worker || status=$?
+          test "$status" -eq 2
+      - name: Verify read-only identity probe guard without network
+        run: |
+          status=0
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.withdrawal_identity_probe || status=$?
           test "$status" -eq 2

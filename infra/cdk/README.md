@@ -145,6 +145,25 @@ Task/실행 역할의 신뢰는 ECS 서비스와 같은 계정·리전의 Source
 
 2026-11-22 리전 조건을 포함한 기존 배포 역할 재검증에서는 네 사례 모두 조직 정책 허용으로 평가됐다. 필요한 활성 표식의 트랜잭션 삭제는 역할 정책에서 `implicitDeny`였고 다른 파티션·키 없음·단건 삭제도 거부됐다. 필요한 역할 정책 변경은 미배포 상태이므로 배포 후 권한 및 실제 Task 정산을 검증해야 한다.
 
+## 신원 제거 역할의 수동 읽기 검증
+
+`provisionWithdrawalIdentityProbe=true`는 개발용 `FoodtechWithdrawalIdentityProbe-dev`에 검증 명령의 Fargate Task 정의와 7일 보존 로그 그룹만 등록한다. Role·VPC·클러스터·예약·Service를 생성하거나 `RunTask`를 실행하지 않는다. 기본값 없는 `TaskRoleArn`, `ExecutionRoleArn`은 같은 계정의 이미 검토한 identity 작업/실행 역할 이름으로 제한한다. `ImageUri`도 해당 계정·ap-southeast-2의 `foodtech/maintenance-dev@sha256`로 제한하고, `ProbeId`에는 새 UUIDv4를 지정한다.
+
+명령은 `python -m foodtech_business_api.withdrawal_identity_probe`다. Fargate 환경과 명시적 플래그·계정·검증 ID가 없으면 SDK 생성 전 종료 코드 2로 거부한다. STS가 반환한 계정/ARN이 지정 identity 작업 역할과 일치해야 읽기를 시작한다. 환경 변수 자체를 인증 근거로 삼지 않는다. 정상 경로는 제어 키의 pk 조회, 실제 업무 ID가 될 수 없는 `ROLEPROBE#` 키의 인증/Registry 트랜잭션 조회, DynamoDB 레코드를 최대 1개 검사하는 메타데이터 Scan의 요청 수락을 확인한다. 이어 세션 읽기·트랜잭션 밖의 계정 읽기·다른 업무 테이블의 트랜잭션 읽기에서 정확한 IAM AccessDeniedException을 요구한다. throttling·테이블 없음·예상 밖 허용은 통과로 간주하지 않는다.
+
+이 검증 명령에는 데이터 변경·Cognito·직접 KMS 호출이 없다. 기존 작업 역할 자체에는 승인된 삭제/갱신 권한이 있으므로 이를 '읽기 전용 IAM 역할'로 표현하지 않는다. 성공 로그는 고정된 검사명과 완료 범위만 담고 계정/세션 ARN·키·반환 항목·SDK 오류·커서는 출력하지 않는다. 한 번의 제한된 Scan은 전체 검색이 아니며, 읽기 요청 수락만으로 제어 항목/삭제 레코드 존재·초기화 준비·KMS 복호화·Cognito 삭제·전체 삭제 완료를 증명하지 않는다.
+
+실행 역할이 허용한 `/foodtech/dev/withdrawal-identity` 로그 그룹은 실제 작업자와 공유한다. 기본 `identityLogGroupMode=create`는 이 그룹을 RETAIN으로 생성한다. 한 스택에서 생성한 뒤 다른 스택이나 후속 재생성에서는 존재/설정/소유권을 확인하고 `identityLogGroupMode=existing`을 명시해 참조만 한다. 두 스택이 동시에 생성하려는 합성은 거부한다. 이는 CloudFormation import나 존재 확인이 아니며, 기본 신원 제거 예약 스택과 기존 재집계 스택의 생성 계약은 유지한다.
+
+실제 실행 전에는 이 명령을 포함한 main 커밋의 이미지를 새로 게시하고, digest·스캔 finding·실행 적합성을 검토해야 한다. 이전 게시 이미지를 새 모듈이 들어 있는 것처럼 사용하지 않는다. Task 정의 배포와 실제 실행·임시 네트워크 재생성은 별도 승인 범위다. 실행할 때 검토한 private subnet/송신 SG와 `assignPublicIp=DISABLED`를 명시하고 종료·로그·네트워크 정리를 확인한다. Task 정의의 awsvpc 설정만으로 이런 RunTask 입력이 강제됐다고 주장하지 않는다. 예약 호출 역할을 probe family에 맞춰 확대하지 않으며, 제어/삭제 시험 전용 업무 기록을 만들거나 사용자 삭제를 수행하는 단계도 포함하지 않는다.
+
+로컬에서는 `infra/cdk`에서 아래처럼 AWS 조회 없이 합성하고 저장소 루트의 검사기로 등록 범위를 확인한다. 합성은 실제 로그·이미지·역할·프라이빗 연결의 적합성 증거가 아니다.
+
+```sh
+CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentityProbe-dev --strict --no-lookups -c provisionWithdrawalIdentityProbe=true --output /tmp/foodtech-identity-read-probe-cdk
+python3 ../../tests/config/check_withdrawal_identity_probe.py /tmp/foodtech-identity-read-probe-cdk/FoodtechWithdrawalIdentityProbe-dev.template.json
+```
+
 ## 개발용 유지보수 실행 기반
 
 `provisionRuntimeFoundation=true`는 별도 `FoodtechRuntimeFoundation-dev`에 새 VPC, 공개 egress 서브넷·프라이빗 Task 서브넷 각 1개, NAT Gateway·Elastic IP 각 1개, DynamoDB·S3 Gateway Endpoint, HTTPS 송신 전용 Task 보안 그룹, ECS 클러스터와 비공개 ECR 저장소 `foodtech/maintenance-dev`를 합성한다. 기존 업무 테이블·Cognito·키·IAM 역할은 변경하지 않으며 Task·Service·예약 작업을 생성하지 않는다. 이 구성은 단일 AZ 개발 검증용이며 장애 시 가용성이나 운영 배포 완료를 보장하지 않는다.

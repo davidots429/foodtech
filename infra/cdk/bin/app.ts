@@ -16,11 +16,17 @@ import { Construct } from "constructs";
 import { WithdrawalIdentityAccessStack } from "./withdrawal-identity-access.js";
 import { MaintenancePublishingStack } from "./maintenance-publishing.js";
 import { RuntimeFoundationStack } from "./runtime-foundation.js";
+import { WithdrawalIdentityProbeStack, identityWorkerLogs } from "./withdrawal-identity-probe.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
 if (!/^[a-z0-9-]+$/.test(stage)) throw new Error("stage must be lowercase letters, numbers or hyphens");
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: "ap-southeast-2" };
+if (app.node.tryGetContext("provisionWithdrawalIdentityProbe") === "true" &&
+    app.node.tryGetContext("provisionWithdrawalIdentitySchedule") === "true" &&
+    app.node.tryGetContext("identityLogGroupMode") !== "existing") {
+  throw new Error("Probe and identity schedule must not both create the shared log group; use existing mode after separate creation");
+}
 
 if (app.node.tryGetContext("provisionMaintenancePublishing") === "true") {
   const publishing = new MaintenancePublishingStack(app, `FoodtechMaintenancePublishing-${stage}`, { env }, stage);
@@ -488,7 +494,7 @@ class MaintenanceScheduleStack extends Stack {
     const interval = param("IntervalMinutes", "^([1-9]|[1-9][0-9]|[1-9][0-9]{2}|1[0-3][0-9]{2}|14[0-3][0-9]|1440)$",
       "Validated sweep interval in whole minutes, from 1 to 1440");
     const oneMinute = new CfnCondition(this, "OneMinute", { expression: Fn.conditionEquals(interval.valueAsString, "1") });
-    const logGroup = new logs.LogGroup(this, "WorkerLogs", { logGroupName: `/foodtech/${stage}/${workload}`,
+    const logGroup = identityRelease ? identityWorkerLogs(this, stage) : new logs.LogGroup(this, "WorkerLogs", { logGroupName: `/foodtech/${stage}/${workload}`,
       retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN });
     const task = new ecs.CfnTaskDefinition(this, "WorkerTask", {
       family: `foodtech-${workload}-${stage}`, requiresCompatibilities: ["FARGATE"], networkMode: "awsvpc",
@@ -978,6 +984,10 @@ if (app.node.tryGetContext("provisionWithdrawalIdentitySchedule") === "true") {
 if (app.node.tryGetContext("provisionWithdrawalIdentityAccess") === "true") {
   const identityAccess = new WithdrawalIdentityAccessStack(app, `FoodtechWithdrawalIdentityAccess-${stage}`, { env }, stage);
   Tags.of(identityAccess).add("Project", "foodtech");
+}
+if (app.node.tryGetContext("provisionWithdrawalIdentityProbe") === "true") {
+  const probe = new WithdrawalIdentityProbeStack(app, `FoodtechWithdrawalIdentityProbe-${stage}`, { env }, stage);
+  Tags.of(probe).add("Project", "foodtech");
 }
 if (app.node.tryGetContext("provisionTierRequests") === "true") {
   const tierRequests = new TierRequestsStack(app, `FoodtechTierRequests-${stage}`, { env });
