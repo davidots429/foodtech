@@ -33,6 +33,17 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechPrivacyStorage-dev --strict -c provisionPrivacyStorage=true --output /tmp/foodtech-privacy-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_privacy_storage.py /tmp/foodtech-privacy-cdk/FoodtechPrivacyStorage-dev.template.json
+      - name: Check manual maintenance publishing roles
+        working-directory: infra/cdk
+        run: |
+          for provider in false true; do
+            CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMaintenancePublishing-dev --strict --no-lookups -c provisionMaintenancePublishing=true -c createGitHubOidcProvider="$provider" --output "/tmp/foodtech-maintenance-publish-$provider" > /dev/null
+            if [ "$provider" = true ]; then
+              python3 ../../tests/config/check_maintenance_publishing.py "/tmp/foodtech-maintenance-publish-$provider/FoodtechMaintenancePublishing-dev.template.json" --create-provider
+            else
+              python3 ../../tests/config/check_maintenance_publishing.py "/tmp/foodtech-maintenance-publish-$provider/FoodtechMaintenancePublishing-dev.template.json"
+            fi
+          done
       - run: CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiExecutionRegistry-dev --strict -c provisionAiExecutionRegistry=true --output /tmp/foodtech-ai-registry-retention-cdk > /dev/null
         working-directory: infra/cdk
       - run: python3 tests/config/check_ai_registry_retention.py /tmp/foodtech-ai-registry-retention-cdk/FoodtechAiExecutionRegistry-dev.template.json
@@ -73,6 +84,7 @@ jobs:
           version: "0.12.17"
           python-version: "3.12"
       - run: uv sync --all-packages --locked
+      - run: uv run --no-sync python -m unittest discover -s tests/config -p test_maintenance_publish.py -v
       - run: uv run --no-sync python -c "from foodtech_business_api.main import app as business; from foodtech_ai_gateway.main import app as gateway; assert business.title and gateway.title"
       - run: uv run --no-sync python -m unittest discover -s apps/business-api/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v

@@ -144,3 +144,27 @@ Task/실행 역할의 신뢰는 ECS 서비스와 같은 계정·리전의 Source
 `dynamodb:EnclosingOperation`은 문자열 문맥 키이므로 단일 값 `StringEquals`로 제한하고 시뮬레이션에도 `string`으로 전달한다. 배열용 `ForAnyValue`를 사용하지 않는다. 수정 후보의 실제 IAM 시뮬레이션 6건에서 활성 표식 트랜잭션 삭제만 허용하고 다른 파티션·키 누락·직접 삭제·혼합 키·다른 연산은 거부했다. 합성·시뮬레이션은 실제 역할에 정책을 적용하거나 실제 ECS 정산을 검증한 결과가 아니다.
 
 2026-11-22 리전 조건을 포함한 기존 배포 역할 재검증에서는 네 사례 모두 조직 정책 허용으로 평가됐다. 필요한 활성 표식의 트랜잭션 삭제는 역할 정책에서 `implicitDeny`였고 다른 파티션·키 없음·단건 삭제도 거부됐다. 필요한 역할 정책 변경은 미배포 상태이므로 배포 후 권한 및 실제 Task 정산을 검증해야 한다.
+
+## 유지보수 이미지의 수동 게시와 OIDC
+
+`publish-maintenance-image.yml`은 `workflow_dispatch` 전용이며 기본 operation은 `inspect`다. 저장소·불변 저장소/소유자 ID·main ref·실행 SHA·수동 이벤트를 확인한 뒤 GitHub가 전달한 토큰에서 필요한 공개 claim만 추출한다. JWT 원문·요청 토큰·AWS 자격증명은 출력하거나 artifact에 넣지 않는다. 이 점검은 서명 검증을 대신하지 않으며 실제 역할 사용 시 AWS STS가 서명·issuer·audience·subject를 검증한다. 임의 JWT를 인증 근거로 받아들이는 애플리케이션 경로가 아니다.
+
+먼저 main에서 `operation=inspect`를 명시 실행하고 `maintenance-oidc-<run>-<attempt>` artifact의 subject를 확인한다. 새 저장소는 [GitHub 문서](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)에 따라 불변 ID가 포함된 subject를 사용할 수 있다. 옛 형식을 추측해 신뢰 정책에 넣지 않는다.
+
+`provisionMaintenancePublishing=true`는 별도 `FoodtechMaintenancePublishing-dev`에 ECR 게시 역할만 정의한다. 기본값 없는 `VerifiedGitHubSubject` 파라미터는 이 프로젝트의 main subject 두 형식 중 실제로 관찰한 정확한 값이어야 한다. 신뢰는 GitHub OIDC provider, `aud=sts.amazonaws.com`, 정확한 subject로 제한한다. AWS가 지원하지 않는 사용자 정의 claim에 workflow 파일 제한을 걸었다고 주장하지 않는다. 같은 조건을 만족하는 신뢰된 main의 다른 workflow도 역할을 사용할 수 있다.
+
+기존 GitHub OIDC provider가 있으면 URL·client ID·계정과 기존 사용자를 확인한 후 `GitHubOidcProviderArn`으로 결합한다. 없을 때만 `createGitHubOidcProvider=true`를 명시해 네이티브 IAM OIDC provider를 생성한다. 새 provider는 다른 역할이 공유할 수 있어 RETAIN이며 별도 정리해야 한다. 기존 provider를 수정하거나 중복 생성하지 않는다. 기본 합성과 provider 생성 모드는 모두 로컬에서 검증했다.
+
+게시 역할은 `foodtech/maintenance-dev` 저장소의 업로드·필요한 조회와 ECR 인증 토큰만 허용한다. [ECR push 권한](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html)에 기록된 작업에 digest 확인용 DescribeImages를 더했으며 리전은 ap-southeast-2다. CloudFormation·IAM 변경·PassRole·ECS 실행·DynamoDB·KMS 권한은 부여하지 않는다. 이미지 게시 역할과 배포·Task/실행 역할을 분리한다.
+
+실제 역할·저장소를 검토·생성한 뒤 저장소 변수 `FOODTECH_AWS_ACCOUNT_ID`, `FOODTECH_MAINTENANCE_PUBLISH_ROLE_ARN`을 설정한다. 장기 AWS 키를 GitHub Secrets에 저장하지 않는다. `operation=publish`는 SHA로 고정한 main 소스의 유지보수 Dockerfile을 빌드하고, 그 뒤에만 900초 OIDC 세션을 받아 게시한다. 태그는 source SHA·run·attempt로 구분해 불변 태그의 덮어쓰기를 피한다. Docker 인증 파일은 runner 임시 경로에서 사용하고 단계 종료 때 정리하며 AWS 세션은 action의 종료 정리를 사용한다.
+
+게시 후 ECR에서 조회한 digest·source SHA·run·attempt·플랫폼을 `maintenance-image-<run>-<attempt>` artifact에 기록한다. 실행에는 태그 대신 이 manifest의 `image_uri`(`@sha256`)를 사용한다. 재시도마다 다른 빌드가 생길 수 있고 base 이미지 태그는 변할 수 있으므로 같은 source SHA의 모든 빌드가 같은 digest라고 가정하지 않는다. Push 응답 유실·실패 때는 성공 manifest를 만들지 않으며 기존 태그를 임의 삭제하거나 덮어쓰지 않는다. 기본 스캔 설정이나 digest 기록만으로 이미지 보안 검토·실제 Task 실행 완료를 표시하지 않는다.
+
+```sh
+# infra/cdk에서 가상 계정으로 합성; 실제 계정 생성/권한 적용이 아니다.
+CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMaintenancePublishing-dev --strict --no-lookups -c provisionMaintenancePublishing=true --output /tmp/foodtech-maintenance-publish
+python3 ../../tests/config/check_maintenance_publishing.py /tmp/foodtech-maintenance-publish/FoodtechMaintenancePublishing-dev.template.json
+```
+
+공개 claim·컨텍스트 불일치·만료·비밀값 출력 방지·고정 digest·계정 불일치 검사를 포함한 로컬 시험 9건과 두 provider 모드의 타입/합성 검사를 통과했다. 실제 OIDC 발급·역할 인수·ECR 게시·이미지 pull은 아직 수행하지 않았다. workflow·역할 코드를 병합하는 것은 실제 생성·권한 적용·게시 실행의 승인이 아니다.
