@@ -19,6 +19,8 @@ from .recipe_scope import (RecipeReadScope, RecipeScopeDenied, authenticated_rec
                            revalidate_recipe_scope)
 from .source_read_authority import DynamoSourceReadAuthority
 from foodtech_contracts.source_read_authorization import SourceReadAuthorization
+from foodtech_contracts.prior_history_witness import PriorHistoryWitness
+from .prior_history_authority import DynamoPriorHistoryAuthority, PriorHistoryUnavailable
 from foodtech_contracts.recipe_read_scope import validate_recipe_read_scope
 
 REGION = 'ap-southeast-2'
@@ -36,12 +38,13 @@ def _validate_scope(scope):
 
 class RecipeReadLease:
     """Private capability. Only explicit internal TLS encoding is permitted."""
-    __slots__ = ('__scope', '__expires', '__session', '__config', '__authorization', '__read_role', '__assumed_role')
+    __slots__ = ('__scope', '__expires', '__session', '__config', '__authorization', '__read_role', '__assumed_role', '__history', '__history_authority')
 
     def __init__(self, scope, expires_at, session, config, *, read_role_arn=None, assumed_role_arn=None):
         self.__scope, self.__expires = scope, expires_at
         self.__session, self.__config = session, config
         self.__authorization = None
+        self.__history, self.__history_authority = None, None
         self.__read_role, self.__assumed_role = read_role_arn, assumed_role_arn
 
     @property
@@ -63,6 +66,25 @@ class RecipeReadLease:
             raise RecipeScopeDenied('source authorization observation unavailable')
         self.__authorization = observation
 
+    def _bind_history(self, witness, authority):
+        _validate_scope(self.scope)
+        if self.__history is not None or type(witness) is not PriorHistoryWitness or type(authority) is not DynamoPriorHistoryAuthority:
+            raise RecipeScopeDenied('trusted history observation required')
+        role = re.fullmatch(r'arn:aws:iam::([0-9]{12}):role/foodtech-recipe-source-read-([a-z0-9-]{1,32})',
+                            self.__read_role or '')
+        if not role or authority.auth != 'foodtech-auth-sessions-' + role[2] or \
+                authority.cooking_arn != f'arn:aws:dynamodb:{REGION}:{role[1]}:table/foodtech-cooking-jobs-{role[2]}' or \
+                (witness.owner, witness.auth_epoch, witness.job_versions, witness.current_job_id, witness.prior_job_id) != \
+                (self.scope.owner, self.scope.auth_epoch, self.scope.job_versions,
+                 *(key.rsplit('#', 1)[-1] for key in self.scope.job_partitions)):
+            raise RecipeScopeDenied('history read scope changed')
+        try:
+            if authority.revalidate(witness) != witness:
+                raise ValueError
+        except (ValueError, PriorHistoryUnavailable, BotoCoreError, ClientError):
+            raise RecipeScopeDenied('history observation unavailable') from None
+        self.__history, self.__history_authority = witness, authority
+
     def __repr__(self):
         return 'RecipeReadLease()'
 
@@ -79,13 +101,15 @@ class RecipeReadLease:
         if self.authorization is None:
             raise RecipeScopeDenied('verified source grant observation required')
         try:
+            if self.__history is not None and self.__history_authority.revalidate(self.__history) != self.__history:
+                raise ValueError
             credentials = self.__session.get_credentials()
             if credentials is None or credentials.method != 'explicit':
                 raise ValueError('explicit scoped credentials required')
             frozen = credentials.get_frozen_credentials()
             return RecipeReadHandoff(self.scope, self.authorization, self.__read_role, self.__assumed_role,
-                self.expires_at, frozen.access_key, frozen.secret_key, frozen.token)
-        except (ValueError, TypeError, AttributeError, BotoCoreError, ClientError):
+                self.expires_at, frozen.access_key, frozen.secret_key, frozen.token, history=self.__history)
+        except (ValueError, TypeError, AttributeError, PriorHistoryUnavailable, BotoCoreError, ClientError):
             raise RecipeScopeDenied('recipe read handoff unavailable') from None
 
 
@@ -212,3 +236,27 @@ async def issue_authenticated_reads(request, execution_id, *, execution_reader, 
     if type(after_authorization) is SourceReadAuthorization:
         lease._bind_authorization(after_authorization)
     return lease
+
+
+async def bind_authenticated_recipe_history(request, lease, *, authority, execution_reader, job_reader):
+    """Attach server-observed history after fresh customer/CSRF/scope checks.
+
+    No public route or attestation issuer is created; the authority must read
+    independently protected, actually verified writer/coverage records.
+    """
+    from .auth import _session, _csrf
+    if type(lease) is not RecipeReadLease or type(authority) is not DynamoPriorHistoryAuthority:
+        raise RecipeScopeDenied('trusted recipe history boundary required')
+    session = await _session(request, 'customer')
+    _csrf(request, session)
+    await revalidate_recipe_scope(request, lease.scope, execution_reader, job_reader)
+    try:
+        witness = await asyncio.to_thread(authority.observe, owner=lease.scope.owner, auth_epoch=lease.scope.auth_epoch,
+            current_job_id=lease.scope.job_partitions[0].rsplit('#', 1)[-1],
+            prior_job_id=lease.scope.job_partitions[1].rsplit('#', 1)[-1], job_versions=lease.scope.job_versions)
+        await revalidate_recipe_scope(request, lease.scope, execution_reader, job_reader)
+        await asyncio.to_thread(lease._bind_history, witness, authority)
+        await revalidate_recipe_scope(request, lease.scope, execution_reader, job_reader)
+        return lease
+    except (ValueError, PriorHistoryUnavailable, BotoCoreError, ClientError):
+        raise RecipeScopeDenied('recipe history observation unavailable') from None

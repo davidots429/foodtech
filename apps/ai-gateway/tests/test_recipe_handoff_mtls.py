@@ -19,6 +19,8 @@ import uvicorn
 
 from foodtech_ai_gateway.recipe_read_handoff import receive_internal_recipe_handoff
 from foodtech_business_api.recipe_read_broker import RecipeReadLease
+from foodtech_business_api.prior_history_authority import DynamoPriorHistoryAuthority
+from foodtech_contracts.prior_history_witness import PriorHistoryWitness
 from foodtech_business_api.recipe_read_delivery import deliver_internal_recipe_read_lease
 from foodtech_contracts.recipe_read_handoff import CONTENT_TYPE
 from foodtech_contracts.recipe_read_scope import RecipeReadScope
@@ -43,6 +45,12 @@ class RecipeHandoffMutualTlsTests(unittest.IsolatedAsyncioTestCase):
         lease = RecipeReadLease(scope, now + timedelta(seconds=899), source_session, Config(),
                                 read_role_arn=role, assumed_role_arn=arn)
         lease._bind_authorization(grant)
+        witness = PriorHistoryWitness(owner, *jobs, scope.job_versions, scope.auth_epoch, 10, 1, 1,
+            str(uuid4()), 'a' * 64, 'b' * 64, 10, 'a' * 64, 'c' * 64)
+        authority = DynamoPriorHistoryAuthority(auth_table=grant.auth_table, cooking_table='foodtech-cooking-jobs-dev',
+            account_id='123456789012', client=object(), clock=lambda: 1000)
+        authority.revalidate = MagicMock(return_value=witness)
+        lease._bind_history(witness, authority)
         snapshot = SimpleNamespace(state='PENDING', version=1, execution=SimpleNamespace(
             execution_id=execution_id, tenant_id=owner, feature='RECIPE_CORRECTION', job_id=jobs[0],
             prior_job_id=jobs[1], job_version=2, prior_job_version=1, jeyuk_source_revision=12, prior_source_revision=11))
@@ -101,6 +109,10 @@ class RecipeHandoffMutualTlsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(accepted[0].execution.execution_id, execution_id)
                 self.assertEqual(sessions.call_args.kwargs['aws_secret_access_key'], 'synthetic-secret-marker')
                 self.assertEqual(conditions.transact_write_items.call_count, 2)
+                self.assertEqual(accepted[0].history_authorization.witness, witness)
+                self.assertEqual(authority.revalidate.call_count, 2)
+                self.assertTrue(all(len(call.kwargs['TransactItems']) == 5 for call in conditions.transact_write_items.call_args_list))
+                self.assertNotIn(owner, '\n'.join(logs.output))
             finally:
                 server.should_exit = True
                 await asyncio.wait_for(task, timeout=10)

@@ -1,5 +1,5 @@
 """Synthetic temporary keys only; SDK calls are injected mocks."""
-from dataclasses import replace
+from dataclasses import replace, asdict
 from datetime import datetime, timedelta, timezone
 import json
 import pickle
@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import MagicMock
 from uuid import uuid4
 
+from botocore.exceptions import ClientError
+from foodtech_contracts.prior_history_witness import PriorHistoryWitness
 import boto3
 from botocore.config import Config
 import httpx
@@ -81,6 +83,54 @@ class RecipeReadHandoffTests(unittest.TestCase):
         self.assertEqual(config.proxies, {})
         self.assertEqual(config.account_id_endpoint_mode, 'disabled')
         self.assertEqual(guard.guard.cooking.name, 'foodtech-cooking-jobs-dev')
+
+    def history_handoff(self):
+        witness = PriorHistoryWitness(self.owner, *self.job_ids, self.scope.job_versions, self.scope.auth_epoch,
+            10, 1, 1, str(uuid4()), 'a' * 64, 'b' * 64, 10, 'a' * 64, 'c' * 64)
+        return RecipeReadHandoff(self.scope, self.authorization, self.role, self.arn, self.handoff.expires_at,
+            'ASIA' + 'A' * 16, 'synthetic-secret-marker', 'synthetic-token-marker', history=witness)
+
+    def test_v2_history_is_scope_bound_and_live_checked_before_and_after_sts(self):
+        handoff = self.history_handoff()
+        self.raw = handoff._encode_for_internal_tls()
+        self.assertEqual(RecipeReadHandoff._decode_from_internal_tls(self.raw).history, handoff.history)
+        guard = self.accept()
+        self.assertEqual(guard.history_authorization.witness, handoff.history)
+        self.assertEqual(self.conditions.transact_write_items.call_count, 2)
+        for call in self.conditions.transact_write_items.call_args_list:
+            self.assertEqual(len(call.kwargs['TransactItems']), 5)
+        self.assertNotIn('synthetic-secret-marker', repr(handoff))
+        with self.assertRaises(ValueError):
+            jsonable_encoder(handoff)
+        with self.assertRaises(TypeError):
+            pickle.dumps(handoff)
+
+    def test_v2_unknown_flags_wrong_owner_or_missing_history_are_rejected_before_keys(self):
+        original = json.loads(self.history_handoff()._encode_for_internal_tls())
+        import copy
+        for mode in ['owner', 'flag', 'missing', 'mixed_schema']:
+            with self.subTest(mode=mode):
+                payload = copy.deepcopy(original)
+                if mode == 'owner':
+                    payload['history']['owner'] = 'another-owner'
+                elif mode == 'flag':
+                    payload['history']['immediately_previous_verified'] = True
+                elif mode == 'missing':
+                    del payload['history']
+                else:
+                    payload['schema'] = 'recipe-source-read-handoff-v1'
+                with self.assertRaises(ValueError):
+                    RecipeReadHandoff._decode_from_internal_tls(json.dumps(payload).encode())
+        self.sessions.assert_not_called()
+
+    def test_v2_revoked_history_prevents_any_scoped_key_use(self):
+        self.raw = self.history_handoff()._encode_for_internal_tls()
+        self.conditions.transact_write_items.side_effect = ClientError(
+            {'Error': {'Code': 'TransactionCanceledException', 'Message': 'synthetic changed history'}}, 'TransactWriteItems')
+        with self.assertRaises(RecipeHandoffDenied):
+            self.accept()
+        self.sessions.assert_not_called()
+        self.resource.Table.assert_not_called()
 
     def test_installed_sdk_uses_explicit_keys_and_expected_regional_endpoints_without_requests(self):
         session = boto3.Session(region_name='ap-southeast-2', aws_access_key_id='ASIA' + 'A' * 16,

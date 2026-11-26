@@ -16,6 +16,7 @@ from starlette.requests import ClientDisconnect
 
 from foodtech_contracts.recipe_read_handoff import CONTENT_TYPE, MAX_BYTES, RecipeReadHandoff
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
+from .prior_history_conditions import DynamoPriorHistoryConditions
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 
 REGION = 'ap-southeast-2'
@@ -50,7 +51,13 @@ def _accept(raw, *, snapshot, expected_read_role_arn, condition_client, session_
         if not expected or handoff.read_role_arn != expected_read_role_arn or not _matches_snapshot(handoff.scope, snapshot):
             raise ValueError
         authorization = DynamoRecipeReadAuthorization(handoff.authorization, client=condition_client)
-        if not authorization.verify(snapshot.execution, handoff.scope.source_partitions):
+        history = (DynamoPriorHistoryConditions(handoff.history, auth_table=handoff.authorization.auth_table,
+            cooking_table=f'foodtech-cooking-jobs-{expected[2]}', account_id=expected[1], client=condition_client)
+            if handoff.history is not None else None)
+        def authorized():
+            return (history.verify(snapshot.execution, authorization, handoff.scope.source_partitions)
+                    if history is not None else authorization.verify(snapshot.execution, handoff.scope.source_partitions))
+        if not authorized():
             raise ValueError
         config = Config(connect_timeout=5, read_timeout=15, ignore_configured_endpoint_urls=True,
             proxies={}, account_id_endpoint_mode='disabled', retries={'mode': 'standard', 'total_max_attempts': 2})
@@ -63,7 +70,7 @@ def _accept(raw, *, snapshot, expected_read_role_arn, condition_client, session_
             raise ValueError
         identity = sts.get_caller_identity()
         if identity.get('Account') != expected[1] or identity.get('Arn') != handoff.assumed_role_arn or \
-                not authorization.verify(snapshot.execution, handoff.scope.source_partitions):
+                not authorized():
             raise ValueError
         # Refresh local expiry checks after network calls, without falling back
         # to a profile or the Gateway's long-lived source-read credentials.
@@ -74,7 +81,7 @@ def _accept(raw, *, snapshot, expected_read_role_arn, condition_client, session_
         guard = DynamoRecipeSourceGuard(f'foodtech-cooking-jobs-{expected[2]}',
             f'foodtech-data-flow-{expected[2]}', resource=resource)
         return BoundRecipeSourceGuard(guard, snapshot.execution, handoff.scope.job_partitions,
-                                       handoff.scope.source_partitions, authorization)
+                                       handoff.scope.source_partitions, authorization, history)
     except (ValueError, TypeError, AttributeError, BotoCoreError, ClientError):
         raise RecipeHandoffDenied('recipe read handoff unavailable') from None
 
