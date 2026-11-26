@@ -95,8 +95,8 @@ class DynamoSourceReadRegistrar:
         """Remove the exact reference and its catalog row in one transaction.
 
         An already TTL-deleted catalog row is allowed; a different row is not.
-        Full account deletion uses locked catalog/reference cleanup before USER
-        retirement. This active-account method cannot replace that lifecycle.
+        Full account deletion retains references during locked catalog cleanup
+        and verifies encrypted recovery inventory before USER retirement. This active-account method cannot replace that lifecycle.
         """
         for value in (expected_grant_id, operation_id):
             try:
