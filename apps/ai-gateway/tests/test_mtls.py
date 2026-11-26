@@ -73,6 +73,9 @@ class MutualTlsTests(unittest.IsolatedAsyncioTestCase):
             app.state.gateway_service.registry.execution_snapshot = lambda identifier: (
                 SimpleNamespace(execution=scope_execution, state='PENDING', version=1)
                 if identifier == scope_execution_id else None)
+            app.state.gateway_service.registry.execution_status_snapshot = lambda identifier, tenant: (
+                (SimpleNamespace(execution=scope_execution, state='PENDING', version=1), None)
+                if identifier == scope_execution_id and tenant == 'tenant-a' else None)
             listener = socket.socket()
             listener.bind(("127.0.0.1", 0))
             listener.listen(16)
@@ -118,6 +121,12 @@ class MutualTlsTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(scope.json()['execution_id'], scope_execution_id)
                     self.assertNotIn('prompt', scope.json())
                     self.assertNotIn('credential_id', scope.json())
+                    status = await client.post(f'https://127.0.0.1:{port}/internal/ai/recipe-status/{scope_execution_id}',
+                        json={'tenant_id': 'tenant-a', 'job_id': scope_execution.job_id})
+                    self.assertEqual(status.status_code, 200)
+                    self.assertEqual(status.headers['Cache-Control'], 'no-store')
+                    self.assertFalse(status.json()['execution_available'])
+                    self.assertNotIn('response_text', status.json())
                     foreign = await client.post(f'https://127.0.0.1:{port}/internal/ai/recipe-scopes/{scope_execution_id}',
                                                 json={'tenant_id': 'foreign'})
                     self.assertEqual(foreign.status_code, 409)

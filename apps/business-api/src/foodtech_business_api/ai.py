@@ -9,9 +9,11 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from .auth import _csrf, _session
+from foodtech_contracts.recipe_execution_scope import validate_recipe_status_payload
 
 
 router = APIRouter(prefix="/api/customer/ai", tags=["ai"])
@@ -165,6 +167,31 @@ async def recipe_local_confirm(request: Request, quote_id: UUID, body: RecipeCon
     return {**result, "execution_available": False}
 
 
+@router.get('/recipe-executions/{execution_id}/status')
+async def recipe_execution_status(request: Request, execution_id: UUID, job_id: UUID):
+    from .cooking import _read
+    before, _, _, _, _ = await _read(request, str(job_id))
+    url, ca, cert, key = _gateway_settings()
+    try:
+        async with _client(ca, cert, key) as client:
+            result = await client.post(f'{url}/internal/ai/recipe-status/{execution_id}',
+                                      json={'tenant_id': before.subject, 'job_id': str(job_id)})
+            if result.status_code == 404:
+                raise HTTPException(404, '해당 조리작업의 권고 실행 기록을 찾을 수 없습니다.', headers={'Cache-Control': 'no-store'})
+            if result.status_code == 409:
+                raise HTTPException(409, '실행 상태가 변경되었습니다. 다시 조회해 주세요.', headers={'Cache-Control': 'no-store'})
+            result.raise_for_status()
+            payload = validate_recipe_status_payload(result.json(), execution_id=str(execution_id), job_id=str(job_id))
+    except (httpx.HTTPError, ValueError, OSError):
+        raise HTTPException(502, '권고 실행 상태를 읽지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
+    after, _, _, job, _ = await _read(request, str(job_id))
+    if (before.subject, getattr(before, 'epoch', None), before.csrf) != \
+            (after.subject, getattr(after, 'epoch', None), after.csrf):
+        raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.', headers={'Cache-Control': 'no-store'})
+    return JSONResponse({**payload, 'job_changed': payload['job_version'] != job['version']},
+                        headers={'Cache-Control': 'no-store'})
+
+
 def _gateway_settings() -> tuple[str, str, str, str]:
     url = os.getenv("FOODTECH_GATEWAY_URL", "")
     ca = os.getenv("FOODTECH_GATEWAY_CA", "")
@@ -304,6 +331,6 @@ async def execution_status(request: Request, execution_id: str) -> dict:
             result = await client.get(f"{url}/internal/ai/executions/{execution_id}/status",
                                       params={"tenant_id": session.subject})
             result.raise_for_status()
-            return result.json()
+            return JSONResponse(result.json(), headers={'Cache-Control': 'no-store'})
     except (httpx.HTTPError, ValueError, OSError):
         raise HTTPException(502, "실행 상태를 읽지 못했습니다.") from None
