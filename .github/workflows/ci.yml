@@ -101,6 +101,11 @@ jobs:
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRecipeSourceAccess-dev FoodtechRecipeSourceCatalog-dev --strict --no-lookups -c provisionRecipeSourceAccess=true -c provisionRecipeSourceCatalog=true --output /tmp/foodtech-recipe-source-access-cdk > /dev/null
           python3 ../../tests/config/check_recipe_source_access.py /tmp/foodtech-recipe-source-access-cdk/FoodtechRecipeSourceAccess-dev.template.json 123456789012
           python3 ../../tests/config/check_recipe_source_catalog.py /tmp/foodtech-recipe-source-access-cdk/FoodtechRecipeSourceCatalog-dev.template.json
+      - name: Check incremental recipe history access
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRecipeHistoryAccess-dev --strict --no-lookups -c provisionRecipeHistoryAccess=true --output /tmp/foodtech-recipe-history-cdk > /dev/null
+          python3 ../../tests/config/check_recipe_history_access.py /tmp/foodtech-recipe-history-cdk/FoodtechRecipeHistoryAccess-dev.template.json 123456789012
       - name: Check source grant deletion capability boundary
         working-directory: infra/cdk
         run: |

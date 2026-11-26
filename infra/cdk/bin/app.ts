@@ -21,6 +21,7 @@ import { WithdrawalIdentityProbeStack, identityWorkerLogs } from "./withdrawal-i
 import { StandardizationRuntimeStack, StandardizationExecutionAccessStack } from "./standardization-runtime.js";
 import { SourceGrantDeletionAccessStack } from "./source-grant-deletion-access.js";
 import { RecipeSourceAccessStack, RecipeSourceCatalogStack } from "./recipe-source-access.js";
+import { RecipeHistoryAccessStack } from "./recipe-history-access.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
@@ -33,6 +34,12 @@ if (principalProvisioning !== "true" && principalProvisioning !== "false") {
 
 if (app.node.tryGetContext("provisionSourceGrantDeletionAccess") === "true") {
   const access = new SourceGrantDeletionAccessStack(app, `FoodtechSourceGrantDeletionAccess-${stage}`, { env }, stage);
+  Tags.of(access).add("Project", "foodtech");
+  Tags.of(access).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionRecipeHistoryAccess") === "true") {
+  const access = new RecipeHistoryAccessStack(app, `FoodtechRecipeHistoryAccess-${stage}`, { env }, stage);
   Tags.of(access).add("Project", "foodtech");
   Tags.of(access).add("Environment", stage);
 }
