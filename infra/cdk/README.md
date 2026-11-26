@@ -149,7 +149,7 @@ Task/실행 역할의 신뢰는 ECS 서비스와 같은 계정·리전의 Source
 
 `provisionWithdrawalIdentityProbe=true`는 개발용 `FoodtechWithdrawalIdentityProbe-dev`에 검증 명령의 Fargate Task 정의와 7일 보존 로그 그룹만 등록한다. Role·VPC·클러스터·예약·Service를 생성하거나 `RunTask`를 실행하지 않는다. 기본값 없는 `TaskRoleArn`, `ExecutionRoleArn`은 같은 계정의 이미 검토한 identity 작업/실행 역할 이름으로 제한한다. `ImageUri`도 해당 계정·ap-southeast-2의 `foodtech/maintenance-dev@sha256`로 제한하고, `ProbeId`에는 새 UUIDv4를 지정한다.
 
-명령은 `python -m foodtech_business_api.withdrawal_identity_probe`다. Fargate 환경과 명시적 플래그·계정·검증 ID가 없으면 SDK 생성 전 종료 코드 2로 거부한다. STS가 반환한 계정/ARN이 지정 identity 작업 역할과 일치해야 읽기를 시작한다. 환경 변수 자체를 인증 근거로 삼지 않는다. 정상 경로는 제어 키의 pk 조회, 실제 업무 ID가 될 수 없는 `ROLEPROBE#` 키의 인증/Registry 트랜잭션 조회, DynamoDB 레코드를 최대 1개 검사하는 메타데이터 Scan의 요청 수락을 확인한다. 이어 세션 읽기·트랜잭션 밖의 계정 읽기·다른 업무 테이블의 트랜잭션 읽기에서 정확한 IAM AccessDeniedException을 요구한다. throttling·테이블 없음·예상 밖 허용은 통과로 간주하지 않는다.
+명령은 `python -m foodtech_business_api.withdrawal_identity_probe`다. Fargate 환경과 명시적 플래그·계정·검증 ID가 없으면 SDK 생성 전 종료 코드 2로 거부한다. SDK 자격증명 provider가 container-role이어야 하고, STS가 반환한 계정/ARN이 지정 identity 작업 역할과 일치해야 읽기를 시작한다. 정적 키·프로필·일반 AssumeRole 자격증명을 대체 사용하지 않으며 사용자 지정 AWS endpoint 설정을 무시한다. 환경 변수 자체를 인증 근거로 삼지 않는다. 정상 경로는 제어 키의 pk 조회, 실제 업무 ID가 될 수 없는 `ROLEPROBE#` 키의 인증/Registry 트랜잭션 조회, DynamoDB 레코드를 최대 1개 검사하는 메타데이터 Scan의 요청 수락을 확인한다. 이어 세션 읽기·트랜잭션 밖의 계정 읽기·다른 업무 테이블의 트랜잭션 읽기에서 정확한 IAM AccessDeniedException을 요구한다. throttling·테이블 없음·예상 밖 허용은 통과로 간주하지 않는다.
 
 이 검증 명령에는 데이터 변경·Cognito·직접 KMS 호출이 없다. 기존 작업 역할 자체에는 승인된 삭제/갱신 권한이 있으므로 이를 '읽기 전용 IAM 역할'로 표현하지 않는다. 성공 로그는 고정된 검사명과 완료 범위만 담고 계정/세션 ARN·키·반환 항목·SDK 오류·커서는 출력하지 않는다. 한 번의 제한된 Scan은 전체 검색이 아니며, 읽기 요청 수락만으로 제어 항목/삭제 레코드 존재·초기화 준비·KMS 복호화·Cognito 삭제·전체 삭제 완료를 증명하지 않는다.
 

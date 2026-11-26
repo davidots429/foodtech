@@ -61,8 +61,12 @@ def main():
         print('Explicit valid Fargate read-probe configuration is required.', file=sys.stderr)
         return 2
     try:
-        config = Config(retries={'mode': 'standard', 'total_max_attempts': 2}, connect_timeout=5, read_timeout=10)
+        config = Config(retries={'mode': 'standard', 'total_max_attempts': 2}, connect_timeout=5, read_timeout=10,
+                        ignore_configured_endpoint_urls=True)
         session = boto3.Session(region_name='ap-southeast-2')
+        credentials = session.get_credentials()
+        if credentials is None or credentials.method != 'container-role':
+            raise ValueError('ECS container credentials required')
         caller = session.client('sts', config=config).get_caller_identity()
         expected = rf'arn:aws:sts::{account}:assumed-role/foodtech-withdrawal-identity-task-dev/[A-Za-z0-9+=,.@_-]{{2,64}}'
         if caller.get('Account') != account or not re.fullmatch(expected, caller.get('Arn', '')):

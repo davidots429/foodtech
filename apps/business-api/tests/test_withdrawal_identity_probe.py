@@ -52,7 +52,7 @@ class ReadOnlyResource:
 
 
 class IdentityReadProbeTests(unittest.TestCase):
-    def run_main(self, resource=None, *, env=ENV, caller=None):
+    def run_main(self, resource=None, *, env=ENV, caller=None, credential_method='container-role'):
         resource = resource or ReadOnlyResource()
         caller = caller or {'Account': ACCOUNT,
             'Arn': f'arn:aws:sts::{ACCOUNT}:assumed-role/foodtech-withdrawal-identity-task-dev/probe-session'}
@@ -61,6 +61,7 @@ class IdentityReadProbeTests(unittest.TestCase):
                 patch('foodtech_business_api.withdrawal_identity_probe.boto3.Session') as factory, \
                 redirect_stdout(out), redirect_stderr(err):
             factory.return_value.client.return_value.get_caller_identity.return_value = caller
+            factory.return_value.get_credentials.return_value = SimpleNamespace(method=credential_method)
             factory.return_value.resource.return_value = resource
             code = main()
             return code, out.getvalue(), err.getvalue(), factory
@@ -79,6 +80,7 @@ class IdentityReadProbeTests(unittest.TestCase):
         session.assert_called_once_with(region_name='ap-southeast-2')
         self.assertEqual(session.return_value.client.call_count, 1)
         self.assertEqual(session.return_value.client.call_args.args, ('sts',))
+        self.assertTrue(session.return_value.client.call_args.kwargs['config'].ignore_configured_endpoint_urls)
         self.assertEqual(len(resource.calls), 6)
         self.assertEqual({name for name, _ in resource.calls}, {'get_item', 'transact_get_items', 'scan'})
         scan, = [args for name, args in resource.calls if name == 'scan']
@@ -124,6 +126,14 @@ class IdentityReadProbeTests(unittest.TestCase):
             code, out, err, _ = self.run_main(resource)
             self.assertEqual((code, out), (1, ''))
             self.assertNotIn('synthetic-private-value', err)
+
+    def test_environment_profile_and_assumed_credentials_do_not_replace_ecs_identity(self):
+        for method in ('env', 'shared-credentials-file', 'assume-role', 'login', None):
+            with self.subTest(method=method):
+                code, out, _, session = self.run_main(credential_method=method)
+                self.assertEqual((code, out), (1, ''))
+                session.return_value.client.assert_not_called()
+                session.return_value.resource.assert_not_called()
 
 
 if __name__ == '__main__':
