@@ -16,7 +16,6 @@ No public route, factory, default credentials, writer API or AI activation here.
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID
 
@@ -25,27 +24,12 @@ from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from .source_read_authority import _integer
 from .subject_identity import valid_subject
 
-CONTRACT = 'atomic-cooking-history-v1'
+from foodtech_contracts.prior_history_witness import HISTORY_CONTRACT as CONTRACT, PriorHistoryWitness
 MAX_JOBS = 100
 
 
 class PriorHistoryUnavailable(Exception):
     pass
-
-
-@dataclass(frozen=True)
-class PriorHistoryWitness:
-    owner: str = field(repr=False)
-    current_job_id: str = field(repr=False)
-    prior_job_id: str = field(repr=False)
-    job_versions: tuple[int, int]
-    auth_epoch: int
-    history_revision: int
-    writer_version: int
-    coverage_version: int
-    generation: str = field(repr=False)
-    roster_sha256: str = field(repr=False)
-    writer_manifest_sha256: str = field(repr=False)
 
 
 def _uuid(value):
@@ -231,7 +215,8 @@ class DynamoPriorHistoryAuthority:
         if self._controls(owner, auth_epoch) != before:
             raise PriorHistoryUnavailable('history or protected coverage changed')
         return PriorHistoryWitness(owner, current_job_id, prior_job_id, job_versions, auth_epoch, revision,
-            int(before[1]['version']), int(coverage['version']), before[1]['generation'], roster_hash, before[1]['manifest_sha256'])
+            int(before[1]['version']), int(coverage['version']), before[1]['generation'], roster_hash, before[1]['manifest_sha256'],
+            int(coverage['coverage_revision']), coverage['baseline_roster_sha256'], coverage['proof_sha256'])
 
     def revalidate(self, witness):
         """Re-observe the whole authoritative scope; no cached proof is sufficient."""

@@ -14,6 +14,7 @@ from .policy import Caller, Decision, Feature, GatewayPolicy
 from .ollama import OllamaClient, OllamaFailure
 from .registry import DynamoRegistry, RegistryConflict
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
+from .prior_history_conditions import DynamoPriorHistoryConditions
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
 from .provider import LiteLLMProvider, ProviderFailure
 from .vault import DynamoCredentialVault, VaultFailure
@@ -98,6 +99,8 @@ class GatewayService:
 
         No HTTP route accepts these arguments. Each provider request is reserved
         independently and only a validated candidate is stored on success.
+        Grant-bound internal handoffs also require protected history conditions;
+        bare source fixtures are not a registered customer invocation path.
         """
         execution = self.registry.execution(execution_id)
         model = self.registry.model(execution.model_id) if execution else None
@@ -117,6 +120,10 @@ class GatewayService:
                     (type(guard.read_authorization) is not DynamoRecipeReadAuthorization or
                      guard.read_authorization.observation.auth_table != getattr(self.registry, 'auth_table', None)):
                 return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_SCOPE_UNAVAILABLE")
+            if guard.read_authorization is not None and (type(guard.history_authorization) is not DynamoPriorHistoryConditions or
+                    guard.history_authorization.cooking_table != guard.guard.cooking.name or
+                    not guard.history_authorization.matches(execution, guard.read_authorization)):
+                return ExecutionOutcome(execution_id, "DENIED", error_code="HISTORY_SCOPE_UNAVAILABLE")
             try:
                 checks = await asyncio.to_thread(guard.settlement_checks)
                 if any(check['ConditionCheck']['TableName'] == self.registry.table_name for check in checks):

@@ -20,6 +20,7 @@ from foodtech_contracts.jeyuk_observed_inputs import observe_jeyuk_batch
 
 from .policy import Execution, Feature
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
+from .prior_history_conditions import DynamoPriorHistoryConditions
 
 MAX_SOURCE_ROWS = max(profile.time_bands[-1] for profile in PROFILES.values())
 MAX_RECEIPTS = 100
@@ -38,16 +39,24 @@ class BoundRecipeSourceGuard:
     job_partitions: tuple[str, str] = field(repr=False)
     source_partitions: tuple[str, str] = field(repr=False)
     read_authorization: DynamoRecipeReadAuthorization | None = field(default=None, repr=False)
+    history_authorization: DynamoPriorHistoryConditions | None = field(default=None, repr=False)
 
     def _authorized(self, execution):
         if self.read_authorization is None:
-            return True
+            return self.history_authorization is None
         if type(self.read_authorization) is not DynamoRecipeReadAuthorization or type(self.guard) is not DynamoRecipeSourceGuard:
             return False
         stage = self.read_authorization.observation.auth_table.removeprefix('foodtech-auth-sessions-')
-        return (self.guard.cooking.name, self.guard.data.name) == \
-            (f'foodtech-cooking-jobs-{stage}', f'foodtech-data-flow-{stage}') and \
-            self.read_authorization.verify(execution, self.source_partitions)
+        if (self.guard.cooking.name, self.guard.data.name) != \
+                (f'foodtech-cooking-jobs-{stage}', f'foodtech-data-flow-{stage}'):
+            return False
+        if self.history_authorization is not None:
+            return type(self.history_authorization) is DynamoPriorHistoryConditions and \
+                self.history_authorization.cooking_table == self.guard.cooking.name and \
+                self.history_authorization.verify(execution, self.read_authorization, self.source_partitions)
+        # Read-only fact gathering can precede history verification; production
+        # model execution/settlement separately require the history guard.
+        return self.read_authorization.verify(execution, self.source_partitions)
 
     def verify(self, execution: Execution) -> bool:
         if not isinstance(execution, Execution) or execution != self.execution:
@@ -67,7 +76,13 @@ class BoundRecipeSourceGuard:
         if self.read_authorization is not None:
             if type(self.read_authorization) is not DynamoRecipeReadAuthorization:
                 raise ValueError('explicit source read authorization required')
-            checks.extend(self.read_authorization.settlement_checks(self.execution, self.source_partitions))
+            if self.history_authorization is not None:
+                if type(self.history_authorization) is not DynamoPriorHistoryConditions:
+                    raise ValueError('explicit prior-history conditions required')
+                checks.extend(self.history_authorization.settlement_checks(self.execution,
+                    self.read_authorization, self.source_partitions))
+            else:
+                checks.extend(self.read_authorization.settlement_checks(self.execution, self.source_partitions))
         return checks
 
     def observe_inputs(self):

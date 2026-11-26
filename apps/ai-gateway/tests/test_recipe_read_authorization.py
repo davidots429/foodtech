@@ -11,6 +11,8 @@ from botocore.stub import Stubber
 from foodtech_ai_gateway.ollama import OllamaResult
 from foodtech_ai_gateway.recipe_read_authorization import DynamoRecipeReadAuthorization
 from foodtech_ai_gateway.service import GatewayService
+from foodtech_ai_gateway.prior_history_conditions import DynamoPriorHistoryConditions
+from foodtech_contracts.prior_history_witness import PriorHistoryWitness
 from foodtech_contracts.source_read_authorization import SourceReadAuthorization
 
 import test_bound_recipe_integration as integration_fixture
@@ -84,6 +86,9 @@ class GrantPublicationIntegrationTests(unittest.TestCase):
         self.active = True
         self.revoke_at_publish = False
         self.grant_checks_at_publish = 0
+        self.history_active = True
+        self.history_change_at_publish = False
+        self.history_checks_at_publish = 0
         old_transact = self.flow.client.transact_write_items
         decoder = TypeDeserializer()
 
@@ -92,10 +97,15 @@ class GrantPublicationIntegrationTests(unittest.TestCase):
                                  and item['Put'].get('Item', {}).get('state') == {'S': 'SUCCEEDED'} for item in TransactItems)
             if is_publication and self.revoke_at_publish:
                 self.active = False
-            remaining, grant_checks = [], []
+            if is_publication and self.history_change_at_publish:
+                self.history_active = False
+            remaining, grant_checks, history_checks = [], [], []
             for item in TransactItems:
                 check = item.get('ConditionCheck', {})
-                if check.get('TableName') == self.receipt.catalog_table or '#grants' in check.get('ExpressionAttributeNames', {}):
+                key = check.get('Key', {})
+                if key.get('pk') in ({'S': 'CONTROL#COOKING_HISTORY_WRITERS'}, {'S': 'SCOPE#USER#tenant-a#JOBS'}):
+                    history_checks.append(item)
+                elif check.get('TableName') == self.receipt.catalog_table or '#grants' in check.get('ExpressionAttributeNames', {}):
                     grant_checks.append(item)
                 elif check.get('TableName') == self.receipt.auth_table:
                     # Adapt only the old fake principal table name; production
@@ -103,6 +113,13 @@ class GrantPublicationIntegrationTests(unittest.TestCase):
                     remaining.append({'ConditionCheck': {**check, 'TableName': 'auth-test'}})
                 else:
                     remaining.append(item)
+            if history_checks:
+                self.assertEqual(len(history_checks), 2)
+                if is_publication:
+                    self.history_checks_at_publish = len(history_checks)
+                if not self.history_active:
+                    raise GrantTransactionCancelled({'Error': {'Code': 'TransactionCanceledException',
+                        'Message': 'synthetic stale history'}}, 'TransactWriteItems')
             if grant_checks:
                 self.assertEqual(len(grant_checks), 3)
                 if is_publication:
@@ -121,7 +138,13 @@ class GrantPublicationIntegrationTests(unittest.TestCase):
         self.flow.client.transact_write_items = transact
         self.flow.registry.auth_table = self.receipt.auth_table
         authorization = DynamoRecipeReadAuthorization(self.receipt, client=self.flow.client, clock=lambda: 1000)
-        self.flow.guard = replace(self.flow.guard, read_authorization=authorization)
+        execution = self.flow.execution
+        self.history_witness = PriorHistoryWitness('tenant-a', execution.job_id, execution.prior_job_id,
+            (execution.job_version, execution.prior_job_version), self.receipt.auth_epoch, 10, 1, 1,
+            str(uuid4()), 'a' * 64, 'b' * 64, 10, 'a' * 64, 'c' * 64)
+        history = DynamoPriorHistoryConditions(self.history_witness, auth_table=self.receipt.auth_table,
+            cooking_table='foodtech-cooking-jobs-dev', account_id='123456789012', client=self.flow.client, clock=lambda: 1000)
+        self.flow.guard = replace(self.flow.guard, read_authorization=authorization, history_authorization=history)
         self.flow.service = GatewayService(self.flow.registry, recipe_source_guard=self.flow.guard)
 
     def invoke(self, on_model=None):
@@ -141,6 +164,7 @@ class GrantPublicationIntegrationTests(unittest.TestCase):
         self.assertEqual(result.state, 'SUCCEEDED')
         self.assertEqual(len(calls), 1)
         self.assertEqual(self.grant_checks_at_publish, 3)
+        self.assertEqual(self.history_checks_at_publish, 2)
 
     def prepare_batch_observation(self):
         cooking = self.flow.source.resource.tables['foodtech-cooking-jobs-dev']
@@ -223,3 +247,27 @@ class GrantPublicationIntegrationTests(unittest.TestCase):
         self.assertIsNone(stored['response_text'])
         self.assertEqual(len(calls), 1)
         self.assertEqual(self.grant_checks_at_publish, 3)
+
+    def test_missing_history_blocks_registered_model_and_direct_success_settlement(self):
+        self.flow.guard = replace(self.flow.guard, history_authorization=None)
+        self.flow.service.recipe_source_guard = self.flow.guard
+        result, calls = self.invoke()
+        self.assertEqual((result.state, result.error_code), ('DENIED', 'HISTORY_SCOPE_UNAVAILABLE'))
+        self.assertEqual(calls, [])
+        with self.assertRaises(ValueError):
+            self.flow.registry.finish('exec', succeeded=True, actual_cost_usd=0, response_text='synthetic',
+                expected_execution=self.flow.execution, recipe_source_guard=self.flow.guard)
+
+    def test_history_change_during_model_discards_candidate(self):
+        result, calls = self.invoke(lambda: setattr(self, 'history_active', False))
+        self.assertEqual(result.state, 'FAILED')
+        self.assertIsNone(result.response_text)
+        self.assertEqual(len(calls), 1)
+
+    def test_history_change_at_publication_rolls_back_candidate_atomically(self):
+        self.history_change_at_publish = True
+        result, calls = self.invoke()
+        self.assertEqual((result.state, result.error_code), ('FAILED', 'RECIPE_SETTLEMENT_CONFLICT'))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.history_checks_at_publish, 2)
+        self.assertIsNone(self.flow.registry.execution_result('exec')['response_text'])
