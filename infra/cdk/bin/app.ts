@@ -19,6 +19,7 @@ import { RuntimeFoundationStack } from "./runtime-foundation.js";
 import { WithdrawalIdentityProbeStack, identityWorkerLogs } from "./withdrawal-identity-probe.js";
 
 import { StandardizationRuntimeStack, StandardizationExecutionAccessStack } from "./standardization-runtime.js";
+import { RecipeSourceAccessStack, RecipeSourceCatalogStack } from "./recipe-source-access.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
@@ -27,6 +28,18 @@ const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: "ap-southeast-2"
 const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
 if (principalProvisioning !== "true" && principalProvisioning !== "false") {
   throw new Error("principalProvisioningEnabled must be true or false");
+}
+
+if (app.node.tryGetContext("provisionRecipeSourceAccess") === "true") {
+  const access = new RecipeSourceAccessStack(app, `FoodtechRecipeSourceAccess-${stage}`, { env }, stage);
+  Tags.of(access).add("Project", "foodtech");
+  Tags.of(access).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionRecipeSourceCatalog") === "true") {
+  const catalog = new RecipeSourceCatalogStack(app, `FoodtechRecipeSourceCatalog-${stage}`, { env }, stage);
+  Tags.of(catalog).add("Project", "foodtech");
+  Tags.of(catalog).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionWithdrawalIdentityProbe") === "true" &&

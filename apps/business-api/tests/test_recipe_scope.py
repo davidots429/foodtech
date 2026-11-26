@@ -37,6 +37,18 @@ class RecipeScopeTests(unittest.TestCase):
     def resolve(self):
         return resolve_recipe_scope(self.session, self.execution_id, self.snapshot_reader, self.jobs.get)
 
+    def test_opaque_subject_with_underscore_preserves_exact_owner_scope(self):
+        self.session.subject = 'opaque_subject_1'
+        self.execution.tenant_id = self.session.subject
+        self.jobs = {pk.replace(self.subject, self.session.subject): {
+            **row, 'owner_subject': self.session.subject} for pk, row in self.jobs.items()}
+        scope = self.resolve()
+        self.assertEqual(scope.owner, 'opaque_subject_1')
+        self.assertTrue(all(pk.startswith('SCOPE#USER#opaque_subject_1#JOB#') for pk in scope.job_partitions))
+        self.execution.tenant_id = 'opaque-subject-1'
+        with self.assertRaises(RecipeScopeDenied):
+            self.resolve()
+
     def test_scope_is_derived_from_customer_owned_execution_and_jobs(self):
         scope = self.resolve()
         self.assertEqual(scope.source_partitions, ('JEYUK#jeyuk-current', 'JEYUK#jeyuk-previous'))

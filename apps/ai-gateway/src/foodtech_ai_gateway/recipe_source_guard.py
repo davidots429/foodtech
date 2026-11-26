@@ -99,7 +99,7 @@ class DynamoRecipeSourceGuard:
     def _valid_scope(execution, job_partitions, source_partitions):
         if not isinstance(execution, Execution) or execution.feature != Feature.RECIPE_CORRECTION or \
                 not isinstance(execution.tenant_id, str) or \
-                not re.fullmatch(r'[A-Za-z0-9-]{1,128}', execution.tenant_id):
+                not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', execution.tenant_id):
             return False
         subject = execution.tenant_id
         expected_jobs = (f'SCOPE#USER#{subject}#JOB#{execution.job_id}',
@@ -176,7 +176,7 @@ class DynamoRecipeSourceGuard:
 
     def _verify(self, execution: Execution, source_partitions) -> bool:
         subject = execution.tenant_id
-        if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,128}', subject):
+        if not isinstance(subject, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subject):
             return False
         bindings = ((execution.job_id, execution.job_version, execution.jeyuk_source_revision),
                     (execution.prior_job_id, execution.prior_job_version, execution.prior_source_revision))
