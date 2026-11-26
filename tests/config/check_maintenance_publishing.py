@@ -9,7 +9,9 @@ def check(path, create_provider):
     resources = template['Resources']
     assert all(value['Type'] in {'AWS::IAM::Role', 'AWS::IAM::Policy',
         'AWS::IAM::OIDCProvider', 'AWS::CDK::Metadata'} for value in resources.values())
-    role, = [value['Properties'] for value in resources.values() if value['Type'] == 'AWS::IAM::Role']
+    roles = {key: value for key, value in resources.items() if value['Type'] == 'AWS::IAM::Role'}
+    role_id, = roles
+    role = roles[role_id]['Properties']
     assert role['RoleName'] == 'foodtech-maintenance-publish-dev' and role['MaxSessionDuration'] == 3600
     assert not role.get('ManagedPolicyArns')
     trust, = role['AssumeRolePolicyDocument']['Statement']
@@ -34,7 +36,9 @@ def check(path, create_provider):
     else:
         assert trust['Principal'] == {'Federated': {'Ref': 'GitHubOidcProviderArn'}}
         assert 'Default' not in template['Parameters']['GitHubOidcProviderArn']
-    policy, = [value['Properties']['PolicyDocument'] for value in resources.values() if value['Type'] == 'AWS::IAM::Policy']
+    binding, = [value['Properties'] for value in resources.values() if value['Type'] == 'AWS::IAM::Policy']
+    assert binding['Roles'] == [{'Ref': role_id}]
+    policy = binding['PolicyDocument']
     statements = policy['Statement']
     assert len(statements) == 2
     actions = set()
@@ -54,6 +58,10 @@ def check(path, create_provider):
                 value = separator.join('aws' if part == {'Ref': 'AWS::Partition'} else part for part in parts)
             assert value.startswith('arn:aws:ecr:ap-southeast-2:') and value.endswith(':repository/foodtech/maintenance-dev')
             assert '*' not in value
+            account = value.split(':')[4]
+            if not create_provider:
+                assert template['Parameters']['GitHubOidcProviderArn']['AllowedPattern'] == (
+                    f'^arn:aws:iam::{account}:oidc-provider/token[.]actions[.]githubusercontent[.]com$')
     assert actions == {'ecr:GetAuthorizationToken', 'ecr:BatchCheckLayerAvailability', 'ecr:InitiateLayerUpload',
         'ecr:UploadLayerPart', 'ecr:CompleteLayerUpload', 'ecr:PutImage', 'ecr:BatchGetImage', 'ecr:DescribeImages'}
     print('Manual publisher trust and single-repository privilege boundary verified; no AWS role applied.')

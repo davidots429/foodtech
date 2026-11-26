@@ -15,6 +15,7 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 import { WithdrawalIdentityAccessStack } from "./withdrawal-identity-access.js";
 import { MaintenancePublishingStack } from "./maintenance-publishing.js";
+import { RuntimeFoundationStack } from "./runtime-foundation.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
@@ -25,6 +26,12 @@ if (app.node.tryGetContext("provisionMaintenancePublishing") === "true") {
   const publishing = new MaintenancePublishingStack(app, `FoodtechMaintenancePublishing-${stage}`, { env }, stage);
   Tags.of(publishing).add("Project", "foodtech");
   Tags.of(publishing).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionRuntimeFoundation") === "true") {
+  const runtime = new RuntimeFoundationStack(app, `FoodtechRuntimeFoundation-${stage}`, { env }, stage);
+  Tags.of(runtime).add("Project", "foodtech");
+  Tags.of(runtime).add("Environment", stage);
 }
 
 class AuthSessionsStack extends Stack {
