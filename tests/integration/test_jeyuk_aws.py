@@ -91,7 +91,9 @@ class FakeDdb:
                 allowed = current is None
             else:
                 prior = self.decoder.deserialize(put["ExpressionAttributeValues"][":prior"])
-                allowed = current is not None and current["last_second"] == prior
+                allowed = current is not None and current["last_second"] == prior and (
+                    ":rule" not in put["ExpressionAttributeValues"] or
+                    current.get("process_rule_version") == self.decoder.deserialize(put["ExpressionAttributeValues"][":rule"]))
             if not allowed:
                 raise TransactionCanceled()
             writes.append((key, item))
@@ -101,6 +103,45 @@ class FakeDdb:
 
 @unittest.skipUnless(shutil.which("dotnet") and DLL.exists(), "built .NET 10 Mock required")
 class JeyukAwsTests(unittest.TestCase):
+    def test_sampled_overload_reaches_both_workers_and_versions_are_preserved(self):
+        from copy import deepcopy
+        from foodtech_standardization_worker.jeyuk_bridge import JeyukProcessStream
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = json.loads(FIXTURE.read_text())
+            fixture["samples"] = [{**fixture["samples"][0], "seconds": 2, "actualRpm": "30",
+                                   "targetRpm": "30", "motorLoadPercent": "101"}]
+            fixture.pop("checkpoints", None)
+            source = Path(directory) / "overload.json"
+            output = Path(directory) / "samples.jsonl"
+            source.write_text(json.dumps(fixture))
+            subprocess.run(["dotnet", str(DLL), "simulate-jeyuk", "--fixture", str(source),
+                            "--output", str(output)], check=True, capture_output=True)
+            raws = output.read_text().splitlines()
+        table, sqs = FakeTable(), FakeSqs()
+        ingestor = DynamoJeyukIngestor.__new__(DynamoJeyukIngestor)
+        ingestor.table, ingestor.sqs, ingestor.queue_url = table, sqs, "test.fifo"
+        worker, local = DynamoJeyukProcessor(table, FakeDdb(table)), JeyukProcessStream()
+        references = [ingestor.ingest(raw) for raw in raws]
+        first = worker.process(references[0])
+        self.assertEqual(local.accept(raws[0]).status, first["process_status"])
+        self.assertEqual(first["process_status"], "FAILED")
+        self.assertIn("MOTOR_OVERLOAD_TRIP", first["reason_codes"])
+        self.assertNotIn("EMERGENCY_STOPPED", first["reason_codes"])
+        self.assertEqual(first["process_rule_version"], RULE_VERSION)
+        self.assertEqual(worker.process(references[1])["process_status"], "FAILED")
+        self.assertTrue(worker.process(references[0])["replayed"])
+        pk = references[0]["pk"]
+        table.items[(pk, "ASSESSMENT#000001")].pop("process_rule_version")
+        legacy = worker.process(references[0])
+        self.assertEqual(legacy["process_rule_version"], "jeyuk-process-v1")
+        table.items.pop((pk, "ASSESSMENT#000002"))
+        table.items[(pk, "STATE")]["last_second"] = 1
+        table.items[(pk, "STATE")].pop("process_rule_version")
+        before = deepcopy(table.items)
+        with self.assertRaisesRegex(ValueError, "rule changed"):
+            worker.process(references[1])
+        self.assertEqual(table.items, before)
+
     def test_full_medium_and_large_streams_persist_every_sample_and_safety_state(self):
         for size, seconds in (("medium", 900), ("large", 1500)):
             with self.subTest(size=size), tempfile.TemporaryDirectory() as directory:

@@ -7,7 +7,7 @@ so five-second transport averages cannot silently satisfy duration thresholds.
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-RULE_VERSION = "jeyuk-process-v1"
+RULE_VERSION = "jeyuk-process-v2"
 
 
 @dataclass(frozen=True)
@@ -165,7 +165,13 @@ class ProcessMonitor:
             self.failures.add("LOW_SURFACE_TEMPERATURE")
         if self.high_surface_consecutive >= 30:
             self.failures.add("HIGH_SURFACE_TEMPERATURE")
-        if self.jam_consecutive >= 30 or event in ("MOTOR_OVERLOAD_TRIP", "EMERGENCY_STOPPED"):
+        # The synthetic controller default trips above 100%, even while
+        # commanded stopped. A sampled trip is distinct from emergency stop.
+        if motor_load_percent > 100 or event == "MOTOR_OVERLOAD_TRIP":
+            self.failures.add("MOTOR_OVERLOAD_TRIP")
+        if event == "EMERGENCY_STOPPED":
+            self.failures.add("EMERGENCY_STOPPED")
+        if self.jam_consecutive >= 30 or self.failures & {"MOTOR_OVERLOAD_TRIP", "EMERGENCY_STOPPED"}:
             self.failures.add("AGITATOR_FAILURE")
         if self.low_rpm_consecutive >= 60 or self.low_rpm_cumulative >= 120:
             self.failures.add("LOW_RPM_DURATION")
@@ -185,7 +191,7 @@ class ProcessMonitor:
             warnings.add("LOW_RPM_WARNING")
         if rpm in ("HIGH_DEVIATION", "HIGH_WARNING"):
             warnings.add("HIGH_RPM_WARNING")
-        if motor_load_percent > 90 and active:
+        if 90 < motor_load_percent <= 100 and active:
             warnings.add("HIGH_MOTOR_LOAD_WARNING")
         if self.jam_consecutive >= 5:
             warnings.discard("LOW_RPM_WARNING")

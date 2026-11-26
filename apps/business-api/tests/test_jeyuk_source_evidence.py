@@ -8,7 +8,7 @@ from foodtech_contracts.jeyuk_process import ProcessMonitor, RULE_VERSION as PRO
 from foodtech_contracts.jeyuk_safety import JeyukSafetyMonitor, RULE_VERSION as SAFETY_RULE_VERSION
 
 
-def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL"):
+def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL", overload_at=None):
     batch = "jeyuk-evidence-a"
     pk = f"JEYUK#{batch}"
     assessments = []
@@ -26,7 +26,7 @@ def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL"):
                "instanceId": "mockprofile-110-a-001", "profile": size, "actualLoadKg": float(load),
                "second": second, "sampleIntervalSeconds": 1,
                "surfaceCelsius": surface - 10 if second == warning_at else surface,
-               "actualRpm": rpm, "targetRpm": rpm, "motorLoadPercent": 50,
+               "actualRpm": rpm, "targetRpm": rpm, "motorLoadPercent": 101 if second == overload_at else 50,
                "mixtureCelsius": 75, "calibrationStatus": "EXPIRED" if second == expired_at else "OK",
                "safetySensorPosition": "LOWEST_MIXTURE_POINT",
                "validationIdentity": identity,
@@ -34,7 +34,7 @@ def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL"):
         raws.append({"pk": pk, "sk": raw_sk, "raw": json.dumps(raw)})
         process_reading = process.observe(second, surface_celsius=Decimal(raw["surfaceCelsius"]),
                                           actual_rpm=Decimal(rpm), target_rpm=Decimal(rpm),
-                                          motor_load_percent=Decimal(50))
+                                          motor_load_percent=Decimal(raw["motorLoadPercent"]))
         safety_reading = safety.observe(second, mixture_celsius=Decimal(75),
                                        calibration_status=raw["calibrationStatus"],
                                        safety_sensor_position="LOWEST_MIXTURE_POINT",
@@ -42,7 +42,7 @@ def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL"):
         assessments.append({"pk": pk, "sk": f"ASSESSMENT#{second:06d}", "raw_sk": raw_sk,
                             "fixture_id": batch, "second": second, "profile_id": "mockprofile-110",
                             "profile": size, "actual_load_kg": load, "provenance": "SYNTHETIC",
-                            "process_status": process_reading.status,
+                            "process_status": process_reading.status, "process_rule_version": PROCESS_RULE_VERSION,
                             "reason_codes": list(process_reading.reason_codes),
                             "surface_band": process_reading.surface_band,
                             "rpm_band": process_reading.rpm_band,
@@ -69,6 +69,22 @@ def fixture(count=61, *, warning_at=None, expired_at=None, size="SMALL"):
 
 
 class JeyukSourceEvidenceTests(unittest.TestCase):
+    def test_overload_source_is_reproducible_but_not_normal_recipe_evidence(self):
+        job, assessments, raws = fixture(overload_at=2)
+        job["process_assessment"]["status"] = "FAILED"
+        job["process_assessment_status"] = "FAILED"
+        result = audit_source_records(job, assessments, raws)
+        self.assertTrue(result["source_derived_results_match_raw"])
+        self.assertFalse(result["source_process_conditions_normal"])
+        self.assertIn("MOTOR_OVERLOAD_TRIP", assessments[-1]["reason_codes"])
+
+    def test_legacy_or_mixed_rule_assessments_are_not_current_evidence(self):
+        job, assessments, raws = fixture()
+        self.assertTrue(audit_source_records(job, assessments, raws)["source_derived_results_match_raw"])
+        for version in (None, "jeyuk-process-v1"):
+            assessments[0]["process_rule_version"] = version
+            self.assertFalse(audit_source_records(job, assessments, raws)["source_derived_results_match_raw"])
+
     def test_final_feed_must_match_source_marker_and_complete_hold(self):
         job, assessments, raws = fixture()
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
