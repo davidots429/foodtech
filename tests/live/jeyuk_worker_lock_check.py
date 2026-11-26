@@ -3,6 +3,7 @@ import os
 from uuid import uuid4
 
 import boto3
+from foodtech_contracts.jeyuk_process import RULE_VERSION
 from foodtech_standardization_worker.jeyuk_job_bridge import DynamoJeyukJobBridge
 
 
@@ -28,7 +29,7 @@ def main():
             'source_binding': {'source_id': 'synthetic-rest', 'device_id': 'mockprofile-110-a-001', 'batch_id': fixture},
             'jeyuk_size_profile': 'SMALL', 'actual_load_kg': '1.8'}
     result = {'fixture_id': fixture, 'second': 1, 'profile': 'SMALL', 'actual_load_kg': '1.8',
-              'process_status': 'NORMAL', 'reason_codes': [], 'surface_band': 'NORMAL',
+              'process_status': 'NORMAL', 'process_rule_version': RULE_VERSION, 'reason_codes': [], 'surface_band': 'NORMAL',
               'rpm_band': 'NORMAL', 'load_status': 'NORMAL'}
     auth_created = False
     try:
