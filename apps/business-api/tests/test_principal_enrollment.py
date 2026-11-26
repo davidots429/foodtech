@@ -153,6 +153,14 @@ class EnrollmentWireTests(unittest.TestCase):
         retire = DynamoPrincipalRetirement(auth_table=table, registry_table='foodtech-deletion-registry-dev',
             cognito_client=SimpleNamespace(exceptions=SimpleNamespace(UserNotFoundException=NotFound), admin_get_user=absent),
             pool_id='synthetic-pool', source_catalog_table='foodtech-source-access-dev')
+        inventory_check = {'ConditionCheck': {'TableName': 'synthetic-progress',
+            'Key': {'pk': 'REQ#' + self.request, 'sk': 'DOMAIN#SOURCE_GRANT_INVENTORY'},
+            'ConditionExpression': 'encrypted_checkpoint = :expected',
+            'ExpressionAttributeValues': {':expected': b'encrypted-inventory'}}}
+        inventory = SimpleNamespace(catalog_table='foodtech-source-access-dev',
+            store=SimpleNamespace(auth_table=table.name, registry_table='foodtech-deletion-registry-dev'),
+            retirement_conditions=lambda **_: [inventory_check])
+        retire.source_inventory = inventory
         grants = {'JEYUK#jeyuk-' + str(index): str(uuid4()) for index in range(101)}
         snapshot = {'Responses': [{'Item': {'pk': 'USER#' + self.subject, 'epoch': 2, 'suspended': True,
             'deletion_lock_request': self.request, 'source_read_grants': grants}}, {'Item': {'pk': 'REGISTRY',
@@ -176,8 +184,9 @@ class EnrollmentWireTests(unittest.TestCase):
                     self.assertEqual(delete['ExpressionAttributeValues'][':observed_grants'], grants)
                     self.assertIn('#grants = :observed_grants', delete['ConditionExpression'])
                     self.assertNotIn('UpdateExpression', delete)
+                    self.assertEqual(write.call_args.kwargs['TransactItems'][-1], inventory_check)
         self.assertEqual(len(snapshot['Responses'][0]['Item']['source_read_grants']), 101)
-        retire.source_catalog_table = None
+        retire.source_inventory = None
         with patch.object(retire.enrollment, 'fence', return_value=3), \
                 patch.object(table.meta.client, 'transact_get_items', return_value=snapshot), \
                 patch.object(table.meta.client, 'transact_write_items') as write:

@@ -80,13 +80,14 @@ class DynamoPrincipalRetirement:
     """Internal final removal after registry completion and Cognito deletion.
 
     A trusted deletion worker must verify writer quiescence and all storage
-    residuals, and retain an encrypted source-reference recovery inventory for
-    backup reconciliation, before publishing COMPLETED. This primitive cannot
-    establish those global prerequisites or create that recovery inventory.
+    residuals before publishing COMPLETED. Nonempty source references also
+    require an injected encrypted inventory whose saved ciphertext is checked
+    in the final transaction. This primitive cannot establish global writer
+    quiescence, retention or successful backup reconciliation.
     No Cognito deletion is performed here, and no public endpoint is provided.
     """
     def __init__(self, *, auth_table, registry_table, cognito_client, pool_id, fence_key=FENCE_KEY,
-                 source_catalog_table=None):
+                 source_catalog_table=None, source_inventory=None):
         if not registry_table or registry_table == auth_table.name or not pool_id or cognito_client is None:
             raise ValueError('separate registry and explicit Cognito boundary are required')
         self.enrollment = DynamoPrincipalEnrollment(table=auth_table, fence_key=fence_key)
@@ -98,6 +99,11 @@ class DynamoPrincipalRetirement:
                     source_catalog_table != 'foodtech-source-access-' + match[1]:
                 raise ValueError('matching-stage source catalog retirement boundary required')
         self.source_catalog_table = source_catalog_table
+        if source_inventory is not None and (source_inventory.catalog_table != source_catalog_table or
+                source_inventory.store.auth_table != auth_table.name or
+                source_inventory.store.registry_table != registry_table):
+            raise ValueError('source recovery inventory retirement boundary mismatch')
+        self.source_inventory = source_inventory
 
     def _source_reference_condition(self, subject, request_id, expected_epoch):
         # This is the privileged final-auth boundary, not the catalog cleanup
@@ -124,8 +130,8 @@ class DynamoPrincipalRetirement:
             grants = _grant_mapping(account)
         except (KeyError, TypeError, AttributeError, ValueError, WithdrawalConflict, SourceGrantConflict):
             raise PrincipalEnrollmentConflict('retirement source reference snapshot unavailable') from None
-        if grants and self.source_catalog_table is None:
-            raise PrincipalEnrollmentConflict('independent source catalog verification required')
+        if grants and (self.source_catalog_table is None or self.source_inventory is None):
+            raise PrincipalEnrollmentConflict('independent source catalog and encrypted inventory verification required')
         references = sorted(grants.values())
         for start in range(0, len(references), 100):
             batch = references[start:start + 100]
@@ -139,8 +145,15 @@ class DynamoPrincipalRetirement:
         # Account suspension/lock prevents legitimate registrar writes. The
         # deployment's writer/quiescence contract and independent global checks
         # remain required before Registry COMPLETED; reads do not prove those.
-        return (('#grants = :observed_grants', {':observed_grants': grants})
-                if 'source_read_grants' in account else ('attribute_not_exists(#grants)', {}))
+        checks = []
+        if grants:
+            try:
+                checks = self.source_inventory.retirement_conditions(subject=subject, request_id=request_id, grants=grants)
+            except SourceGrantConflict:
+                raise PrincipalEnrollmentConflict('source recovery inventory unavailable') from None
+        condition, values = (('#grants = :observed_grants', {':observed_grants': grants})
+                             if 'source_read_grants' in account else ('attribute_not_exists(#grants)', {}))
+        return condition, values, checks
 
     def retire(self, *, subject, request_id, expected_epoch):
         _subject(subject)
@@ -157,7 +170,7 @@ class DynamoPrincipalRetirement:
             pass
         else:
             raise PrincipalEnrollmentConflict('Cognito identity has not been removed')
-        grant_condition, grant_values = self._source_reference_condition(subject, request_id, expected_epoch)
+        grant_condition, grant_values, inventory_checks = self._source_reference_condition(subject, request_id, expected_epoch)
         try:
             self.auth_table.meta.client.transact_write_items(TransactItems=[
                 {'Update': {'TableName': self.auth_table.name, 'Key': {'pk': self.enrollment.fence_key},
@@ -175,6 +188,6 @@ class DynamoPrincipalRetirement:
                     'ConditionExpression': '#status = :completed AND request_id = :request',
                     'ExpressionAttributeNames': {'#status': 'status'},
                     'ExpressionAttributeValues': {':completed': 'COMPLETED', ':request': request_id}}},
-            ])
+            ] + inventory_checks)
         except self.auth_table.meta.client.exceptions.TransactionCanceledException:
             raise PrincipalEnrollmentConflict('account retirement prerequisites changed') from None
