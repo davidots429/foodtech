@@ -129,16 +129,61 @@ class EnrollmentWireTests(unittest.TestCase):
         retire = DynamoPrincipalRetirement(auth_table=self.table, registry_table='synthetic-registry',
                                            cognito_client=cognito, pool_id='synthetic-pool')
         seen = []
+        snapshot = {'Responses': [{'Item': {'pk': f'USER#{self.subject}', 'epoch': 2, 'suspended': True,
+            'deletion_lock_request': self.request}}, {'Item': {'pk': 'REGISTRY', 'sk': f'REQ#{self.request}',
+            'request_id': self.request, 'status': 'COMPLETED'}}]}
         with patch.object(retire.enrollment, 'fence', return_value=3), \
+                patch.object(self.resource.meta.client, 'transact_get_items', return_value=snapshot), \
                 patch.object(self.resource.meta.client, 'transact_write_items', side_effect=lambda **kwargs: seen.append(kwargs)):
             retire.retire(subject=self.subject, request_id=self.request, expected_epoch=2)
         update, delete, check = seen[0]['TransactItems']
         self.assertEqual(update['Update']['ExpressionAttributeValues'][':next'], 4)
         self.assertEqual(delete['Delete']['Key']['pk'], f'USER#{self.subject}')
-        self.assertIn('(attribute_not_exists(#grants) OR #grants = :empty)', delete['Delete']['ConditionExpression'])
+        self.assertIn('attribute_not_exists(#grants)', delete['Delete']['ConditionExpression'])
         self.assertEqual(delete['Delete']['ExpressionAttributeNames']['#grants'], 'source_read_grants')
-        self.assertEqual(delete['Delete']['ExpressionAttributeValues'][':empty'], {})
+        self.assertNotIn(':observed_grants', delete['Delete']['ExpressionAttributeValues'])
         self.assertEqual(check['ConditionCheck']['ExpressionAttributeValues'][':completed'], 'COMPLETED')
+
+    def test_nonempty_references_survive_until_all_catalog_rows_are_absent(self):
+        class NotFound(Exception):
+            pass
+        def absent(**_):
+            raise NotFound()
+        table = self.resource.Table('foodtech-auth-sessions-dev')
+        retire = DynamoPrincipalRetirement(auth_table=table, registry_table='foodtech-deletion-registry-dev',
+            cognito_client=SimpleNamespace(exceptions=SimpleNamespace(UserNotFoundException=NotFound), admin_get_user=absent),
+            pool_id='synthetic-pool', source_catalog_table='foodtech-source-access-dev')
+        grants = {'JEYUK#jeyuk-' + str(index): str(uuid4()) for index in range(101)}
+        snapshot = {'Responses': [{'Item': {'pk': 'USER#' + self.subject, 'epoch': 2, 'suspended': True,
+            'deletion_lock_request': self.request, 'source_read_grants': grants}}, {'Item': {'pk': 'REGISTRY',
+            'sk': 'REQ#' + self.request, 'request_id': self.request, 'status': 'COMPLETED'}}]}
+        for present in (True, False):
+            responses = [snapshot, {'Responses': ([{'Item': {'pk': 'GRANT#residual'}}] + [{}] * 99
+                                               if present else [{}] * 100)}]
+            if not present:
+                responses.append({'Responses': [{}]})
+            with patch.object(retire.enrollment, 'fence', return_value=3), \
+                    patch.object(table.meta.client, 'transact_get_items', side_effect=responses) as read, \
+                    patch.object(table.meta.client, 'transact_write_items') as write:
+                if present:
+                    with self.assertRaisesRegex(PrincipalEnrollmentConflict, 'residual'):
+                        retire.retire(subject=self.subject, request_id=self.request, expected_epoch=2)
+                    write.assert_not_called()
+                else:
+                    retire.retire(subject=self.subject, request_id=self.request, expected_epoch=2)
+                    self.assertEqual(read.call_count, 3)
+                    delete = write.call_args.kwargs['TransactItems'][1]['Delete']
+                    self.assertEqual(delete['ExpressionAttributeValues'][':observed_grants'], grants)
+                    self.assertIn('#grants = :observed_grants', delete['ConditionExpression'])
+                    self.assertNotIn('UpdateExpression', delete)
+        self.assertEqual(len(snapshot['Responses'][0]['Item']['source_read_grants']), 101)
+        retire.source_catalog_table = None
+        with patch.object(retire.enrollment, 'fence', return_value=3), \
+                patch.object(table.meta.client, 'transact_get_items', return_value=snapshot), \
+                patch.object(table.meta.client, 'transact_write_items') as write:
+            with self.assertRaisesRegex(PrincipalEnrollmentConflict, 'verification required'):
+                retire.retire(subject=self.subject, request_id=self.request, expected_epoch=2)
+            write.assert_not_called()
 
 
 class CognitoSubjectBindingTests(unittest.TestCase):

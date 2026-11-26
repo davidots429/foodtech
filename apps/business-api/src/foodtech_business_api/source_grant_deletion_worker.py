@@ -27,7 +27,7 @@ def sweep_grants(table, deletion, *, page_size=20, max_pages=50, max_changes=20,
             type(max_pages) is not int or not 1 <= max_pages <= 1000 or \
             type(max_changes) is not int or not 1 <= max_changes <= 100:
         raise ValueError('invalid source grant worker bounds')
-    totals = {'pages': 0, 'references_removed': 0, 'empty_observed': 0, 'blocked': 0,
+    totals = {'pages': 0, 'delete_acknowledged': 0, 'empty_observed': 0, 'blocked': 0,
               'scan_finished': False, 'budget_exhausted': False, 'deletion_complete': False}
     cursor, seen = None, set()
     for _ in range(max_pages):
@@ -53,21 +53,21 @@ def sweep_grants(table, deletion, *, page_size=20, max_pages=50, max_changes=20,
                     not isinstance(row['pk'], str) or not row['pk'].startswith('USER#') or \
                     not valid_subject(row['pk'][5:]) or _integer(row['epoch'], 1) is None:
                 raise ValueError('invalid source grant discovery candidate')
-            while totals['references_removed'] < max_changes:
+            while totals['delete_acknowledged'] < max_changes:
                 try:
                     result = deletion.step(subject=row['pk'][5:], request_id=row['withdrawal_request_id'],
                                            expected_epoch=int(row['epoch']))
                 except SourceGrantConflict:
                     totals['blocked'] += 1
                     break
-                if not isinstance(result, dict) or set(result) != {'state', 'remaining', 'deletion_complete'} or \
-                        result['deletion_complete'] is not False or type(result['remaining']) is not int or \
-                        result['remaining'] < 0 or result['state'] not in {'REFERENCES_EMPTY', 'GRANT_REFERENCE_REMOVED'} or \
-                        (result['state'] == 'REFERENCES_EMPTY' and result['remaining'] != 0):
+                if not isinstance(result, dict) or set(result) != {'state', 'remaining_upper_bound', 'deletion_complete'} or \
+                        result['deletion_complete'] is not False or type(result['remaining_upper_bound']) is not int or \
+                        result['remaining_upper_bound'] < 0 or result['state'] not in {'CATALOG_EMPTY_OBSERVED', 'GRANT_REMOVED'} or \
+                        (result['state'] == 'CATALOG_EMPTY_OBSERVED' and result['remaining_upper_bound'] != 0):
                     raise ValueError('invalid source grant deletion result')
-                if result['state'] == 'GRANT_REFERENCE_REMOVED':
-                    totals['references_removed'] += 1
-                if result['remaining'] == 0:
+                if result['state'] == 'GRANT_REMOVED':
+                    totals['delete_acknowledged'] += 1
+                if result['state'] == 'CATALOG_EMPTY_OBSERVED':
                     totals['empty_observed'] += 1
                     break
             else:

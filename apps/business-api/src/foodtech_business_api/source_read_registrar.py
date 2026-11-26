@@ -12,24 +12,7 @@ from boto3.dynamodb.types import TypeSerializer
 
 from .source_read_authority import DynamoSourceReadAuthority, _integer
 from .subject_identity import valid_subject
-
-
-class SourceGrantConflict(Exception):
-    """The observed account/grant mapping is no longer current."""
-
-
-def _grant_mapping(principal):
-    mapping = principal.get('source_read_grants', {})
-    if not isinstance(mapping, dict):
-        raise SourceGrantConflict('source grant mapping unavailable')
-    try:
-        if any(not isinstance(key, str) or not re.fullmatch(r'JEYUK#jeyuk-[A-Za-z0-9-]{1,121}', key) or
-               not isinstance(ref, str) or str(UUID(ref)) != ref for key, ref in mapping.items()) or \
-                len(set(mapping.values())) != len(mapping):
-            raise ValueError
-    except (ValueError, TypeError, AttributeError):
-        raise SourceGrantConflict('source grant mapping unavailable') from None
-    return dict(mapping)
+from .source_grant_contract import SourceGrantConflict, _grant_mapping
 
 
 class DynamoSourceReadRegistrar:

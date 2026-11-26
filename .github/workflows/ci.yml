@@ -101,6 +101,11 @@ jobs:
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRecipeSourceAccess-dev FoodtechRecipeSourceCatalog-dev --strict --no-lookups -c provisionRecipeSourceAccess=true -c provisionRecipeSourceCatalog=true --output /tmp/foodtech-recipe-source-access-cdk > /dev/null
           python3 ../../tests/config/check_recipe_source_access.py /tmp/foodtech-recipe-source-access-cdk/FoodtechRecipeSourceAccess-dev.template.json 123456789012
           python3 ../../tests/config/check_recipe_source_catalog.py /tmp/foodtech-recipe-source-access-cdk/FoodtechRecipeSourceCatalog-dev.template.json
+      - name: Check source grant deletion capability boundary
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechSourceGrantDeletionAccess-dev --strict --no-lookups -c provisionSourceGrantDeletionAccess=true --output /tmp/foodtech-source-grant-deletion-cdk > /dev/null
+          python3 ../../tests/config/check_source_grant_deletion_access.py /tmp/foodtech-source-grant-deletion-cdk/FoodtechSourceGrantDeletionAccess-dev.template.json 123456789012
       - name: Check manual identity role read probe
         working-directory: infra/cdk
         run: |

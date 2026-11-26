@@ -16,17 +16,17 @@ class SourceGrantWorkerTests(unittest.TestCase):
     def candidate(self):
         return {'pk': 'USER#opaque_subject', 'epoch': Decimal(3), 'withdrawal_request_id': str(uuid4())}
 
-    def result(self, remaining, state='GRANT_REFERENCE_REMOVED'):
-        return {'state': state, 'remaining': remaining, 'deletion_complete': False}
+    def result(self, remaining, state='GRANT_REMOVED'):
+        return {'state': state, 'remaining_upper_bound': remaining, 'deletion_complete': False}
 
     def test_empty_intermediate_page_keeps_sensitive_cursor_only_in_memory(self):
         table, deletion = MagicMock(), MagicMock()
         key = {'pk': 'SESSION#synthetic-secret'}
         row = self.candidate()
         table.scan.side_effect = [{'Items': [], 'LastEvaluatedKey': key}, {'Items': [row]}]
-        deletion.step.side_effect = [self.result(1), self.result(0)]
+        deletion.step.side_effect = [self.result(1), self.result(0), self.result(0, 'CATALOG_EMPTY_OBSERVED')]
         result = runtime.sweep_grants(table, deletion, clock=lambda: 1000)
-        self.assertEqual(result['references_removed'], 2)
+        self.assertEqual(result['delete_acknowledged'], 2)
         self.assertTrue(result['scan_finished'])
         self.assertFalse(result['deletion_complete'])
         self.assertNotIn('synthetic-secret', repr(result))
