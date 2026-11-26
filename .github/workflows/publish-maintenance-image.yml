@@ -10,6 +10,13 @@ on:
         type: choice
         options: [inspect, publish]
 
+      workload:
+        description: Explicit finite worker image to publish
+        required: true
+        default: maintenance
+        type: choice
+        options: [maintenance, standardization]
+
 permissions:
   contents: read
 
@@ -29,6 +36,7 @@ jobs:
       PUBLISH_ROLE_ARN: ${{ vars.FOODTECH_MAINTENANCE_PUBLISH_ROLE_ARN }}
       PUBLISH_ACCOUNT_ID: ${{ vars.FOODTECH_AWS_ACCOUNT_ID }}
       OPERATION: ${{ inputs.operation }}
+      IMAGE_WORKLOAD: ${{ inputs.workload }}
     steps:
       - name: Require manual trusted main context
         run: |
@@ -63,6 +71,8 @@ jobs:
         with:
           context: .
           file: infra/containers/combi-refresh-worker.Dockerfile
+          target: ${{ steps.target.outputs.build_target }}
+          build-args: FOODTECH_PACKAGE=${{ steps.target.outputs.package }}
           platforms: linux/amd64
           load: true
           push: false
@@ -78,6 +88,17 @@ jobs:
           status=0
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" -m foodtech_business_api.withdrawal_identity_probe || status=$?
           test "$status" -eq 2
+      - name: Verify disabled standardization runtime before obtaining AWS credentials
+        if: inputs.operation == 'publish'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          WORKLOAD: ${{ steps.target.outputs.workload }}
+        run: |
+          if [ "$WORKLOAD" = standardization ]; then
+            status=0
+            docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" -m foodtech_standardization_worker.runtime || status=$?
+            test "$status" -eq 2
+          fi
       - name: Verify patched maintenance library before obtaining AWS credentials
         if: inputs.operation == 'publish'
         env:

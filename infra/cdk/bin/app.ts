@@ -18,6 +18,8 @@ import { MaintenancePublishingStack } from "./maintenance-publishing.js";
 import { RuntimeFoundationStack } from "./runtime-foundation.js";
 import { WithdrawalIdentityProbeStack, identityWorkerLogs } from "./withdrawal-identity-probe.js";
 
+import { StandardizationRuntimeStack } from "./standardization-runtime.js";
+
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
 if (!/^[a-z0-9-]+$/.test(stage)) throw new Error("stage must be lowercase letters, numbers or hyphens");
@@ -41,6 +43,12 @@ if (app.node.tryGetContext("provisionMaintenancePublishing") === "true") {
 
 if (app.node.tryGetContext("provisionRuntimeFoundation") === "true") {
   const runtime = new RuntimeFoundationStack(app, `FoodtechRuntimeFoundation-${stage}`, { env }, stage);
+  Tags.of(runtime).add("Project", "foodtech");
+  Tags.of(runtime).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionStandardizationRuntime") === "true") {
+  const runtime = new StandardizationRuntimeStack(app, `FoodtechStandardizationRuntime-${stage}`, { env }, stage);
   Tags.of(runtime).add("Project", "foodtech");
   Tags.of(runtime).add("Environment", stage);
 }

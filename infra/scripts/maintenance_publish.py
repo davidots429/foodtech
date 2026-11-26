@@ -84,6 +84,13 @@ def fetch_token(env):
     return json.loads(raw)['value']
 
 
+def workload(env):
+    value = env.get('IMAGE_WORKLOAD', 'maintenance')
+    if value not in {'maintenance', 'standardization'}:
+        raise ValueError('unsupported image workload')
+    return value
+
+
 def target(env):
     sha = context(env)
     match = re.fullmatch(r'arn:aws:iam::([0-9]{12}):role/foodtech-maintenance-publish-dev', env.get('PUBLISH_ROLE_ARN', ''))
@@ -93,15 +100,19 @@ def target(env):
     if account != env.get('PUBLISH_ACCOUNT_ID'):
         raise ValueError('publishing account does not match reviewed configuration')
     registry = f'{account}.dkr.ecr.{REGION}.amazonaws.com'
+    kind = workload(env)
+    prefix = '' if kind == 'maintenance' else 'standardization-'
     return {'account': account, 'registry': registry, 'repository': registry + '/foodtech/maintenance-dev',
-            'tag': f'sha-{sha}-run-{env["GITHUB_RUN_ID"]}-{env["GITHUB_RUN_ATTEMPT"]}'}
+            'tag': f'{prefix}sha-{sha}-run-{env["GITHUB_RUN_ID"]}-{env["GITHUB_RUN_ATTEMPT"]}',
+            'workload': kind, 'build_target': kind,
+            'package': 'foodtech-business-api' if kind == 'maintenance' else 'foodtech-standardization-worker'}
 
 
 def manifest(env, digest):
     values = target(env)
     if not re.fullmatch('sha256:[0-9a-f]{64}', digest):
         raise ValueError('invalid registry image digest')
-    return {'schema': 1, 'source_sha': context(env), 'image_uri': values['repository'] + '@' + digest,
+    return {'schema': 1, 'workload': values['workload'], 'source_sha': context(env), 'image_uri': values['repository'] + '@' + digest,
         'image_tag': values['tag'], 'digest': digest, 'platform': 'linux/amd64',
         'workflow_run_id': env['GITHUB_RUN_ID'], 'workflow_attempt': env['GITHUB_RUN_ATTEMPT']}
 

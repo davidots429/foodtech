@@ -18,19 +18,20 @@ from .jeyuk_job_bridge import DynamoJeyukJobBridge
 
 
 class DynamoStandardizationWorker:
-    def __init__(self, table_name: str, queue_url: str, dlq_url: str, region: str = "ap-southeast-2"):
-        session = boto3.Session(region_name=region)
-        self.table = session.resource("dynamodb").Table(table_name)
-        self.ddb = session.client("dynamodb")
-        self.sqs = session.client("sqs")
+    def __init__(self, table_name: str, queue_url: str, dlq_url: str, region: str = "ap-southeast-2", *, aws_session=None, aws_config=None):
+        session = aws_session or boto3.Session(region_name=region)
+        sdk_options = {"config": aws_config} if aws_config is not None else {}
+        self.table = session.resource("dynamodb", **sdk_options).Table(table_name)
+        self.ddb = session.client("dynamodb", **sdk_options)
+        self.sqs = session.client("sqs", **sdk_options)
         self.queue_url = queue_url
         self.dlq_url = dlq_url
         self.serializer = TypeSerializer()
         self.jeyuk_processor = DynamoJeyukProcessor(self.table, self.ddb)
         cooking_table = os.getenv("FOODTECH_COOKING_TABLE")
-        self.process_bridge = (DynamoProcessBridge(cooking_table, region, table_name)
+        self.process_bridge = (DynamoProcessBridge(cooking_table, region, table_name, aws_session=session, aws_config=aws_config)
                                if cooking_table else None)
-        self.jeyuk_job_bridge = DynamoJeyukJobBridge(cooking_table, region) if cooking_table else None
+        self.jeyuk_job_bridge = DynamoJeyukJobBridge(cooking_table, region, aws_session=session, aws_config=aws_config) if cooking_table else None
 
     def run_once(self) -> list[dict]:
         page = self.sqs.receive_message(

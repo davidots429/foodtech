@@ -224,3 +224,14 @@ python3 ../../tests/config/check_maintenance_publishing.py /tmp/foodtech-mainten
 `principalProvisioningEnabled` context는 AI 서비스와 식사 재집계 Task에 같은 값으로 전달한다. 별도로 시작하는 업무 API·표준화 Worker도 같은 환경변수로 시작해야 한다. 이는 환경변수 전파 계약이며 현재 배포나 기존 프로세스 종료를 수행하지 않는다. 초기화 제어 항목과 모든 작성자의 rollout/권한을 확인하기 전 삭제 조정기의 QUIESCENCE 차단을 해제하지 않는다.
 
 `tests/live/principal_writer_fence_check.py --allow-synthetic-writes`는 foodtech/ap-southeast-2의 기존 개발 테이블에 고유 합성 키만 사용해 초기화·잠금·계정 제거·오래된 epoch 조건과 정리를 검증한다. `AWS_PROFILE=foodtech` 및 위 엄격 모드를 명시해야 한다. 개발자 자격증명에 의한 조건 검증이며 실제 배포 역할·legacy writer 중지·전체 삭제 증거가 아니다.
+
+
+### 표준화 Worker의 수동 Fargate 실행 정의
+
+`provisionStandardizationRuntime=true`와 `principalProvisioningEnabled=true`를 함께 지정하면 개발용 `FoodtechStandardizationRuntime-dev`에 Task 정의와 RETAIN 7일 로그(`/foodtech/dev/standardization`)만 등록한다. 새 IAM·네트워크·테이블·큐·Service·예약·RunTask는 만들지 않는다. `standardizationTaskRoleArn` context에는 실제 MinimalDataFlow 스택의 검토한 `StandardizationWorkerTaskRoleArn` 출력을 지정한다. 템플릿의 TaskRoleArn 매개변수는 이 정확한 ARN만 허용한다. ExecutionRoleArn은 별도로 검토·생성할 `foodtech-standardization-execution-dev`, ImageUri는 검토한 standardization workload manifest의 불변 digest여야 한다. 실행 역할은 아직 이 스택에서 제공하지 않는다.
+
+이미지 게시 workflow의 `workload=standardization`은 기존 main 전용 OIDC 게시 역할과 ECR 하나를 사용한다. 허용한 패키지/빌드 target만 선택하며 태그 접두사와 manifest workload를 유지보수 이미지와 구분한다. AWS 자격증명을 받기 전에 실제 이미지의 비활성 명령 가드와 libzstd 수정 버전을 검사한다. 기본 `maintenance` 이미지와 기존 태그 규약은 유지한다. 두 이미지는 같은 저장소에 있지만 Task의 업무 역할과 실행 명령은 분리한다.
+
+새 명령 `python -m foodtech_standardization_worker.runtime`은 명시적 opt-in·엄격 초기화 모드·Fargate 환경·같은 프로젝트/단계의 테이블·큐·작업 역할을 요구한다. 실제 container-role provider와 STS 역할을 확인하고 그 Session 및 regional/endpoint 보호 SDK 설정을 모든 중첩 bridge에 전달한다. 큐 메시지는 최대 10개를 한 번 처리하고 전체 실행은 최대 600초로 제한한다. 성공 로그는 처리 건수만 남기며 0건 성공을 실제 데이터 흐름 검증으로 간주하지 않는다. 실패·시간 초과는 원천/SDK 오류를 출력하지 않고 비정상 종료한다. 부분 처리·SQS 재노출 시 기존 멱등성 기록을 재조회해야 한다.
+
+합성과 이미지 CI는 실제 Worker 역할·SCP/RCP·KMS/Endpoint 정책이나 전체 수집→공정판정 검증이 아니다. 실제 실행 전 이미지 digest·역할 정책·프라이빗 연결·큐/fixture/기존 작성자 상태·비용/관찰/중단/정리 범위를 검토한다. 앞선 identity 읽기 시험 승인을 이 Task 실행 승인으로 확대하지 않는다.

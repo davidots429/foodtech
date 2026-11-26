@@ -77,6 +77,18 @@ class PublishingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 publish.manifest(self.env, value)
 
+    def test_workload_selection_cannot_inject_package_path_and_has_separate_tags(self):
+        normal = publish.target(self.env)
+        selected = publish.target({**self.env, 'IMAGE_WORKLOAD': 'standardization'})
+        self.assertEqual(normal['build_target'], 'maintenance')
+        self.assertEqual(selected['package'], 'foodtech-standardization-worker')
+        self.assertEqual(selected['build_target'], 'standardization')
+        self.assertNotEqual(normal['tag'], selected['tag'])
+        self.assertEqual(publish.manifest({**self.env, 'IMAGE_WORKLOAD': 'standardization'}, 'sha256:' + 'b' * 64)['workload'], 'standardization')
+        for value in ('', '../secret', 'business;command', 'untrusted'):
+            with self.assertRaises(ValueError):
+                publish.target({**self.env, 'IMAGE_WORKLOAD': value})
+
     def test_token_error_does_not_print_credentials_or_response(self):
         output = io.StringIO()
         with patch.object(publish, 'fetch_token', side_effect=RuntimeError('secret-token-material')), \
