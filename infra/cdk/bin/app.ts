@@ -508,12 +508,16 @@ class MaintenanceScheduleStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps, workload: "meal-refresh" | "withdrawal-identity" = "meal-refresh") {
     super(scope, id, props);
     const identityRelease = workload === "withdrawal-identity";
+    if (identityRelease && Token.isUnresolved(this.account)) {
+      throw new Error("identity worker runtime requires an explicit verified CDK account");
+    }
     const arnPattern = "^arn:[a-z0-9-]+:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$";
     const param = (name: string, pattern: string, description: string): CfnParameter =>
       new CfnParameter(this, name, { type: "String", allowedPattern: pattern, description });
-    const taskRole = param("TaskRoleArn", arnPattern, "Existing reviewed least-privilege task role ARN");
-    const executionRole = param("ExecutionRoleArn", arnPattern, "Existing ECS task execution role ARN");
-    const invokeRole = param("InvokeRoleArn", arnPattern, "Existing EventBridge ECS invocation role ARN");
+    const identityRolePattern = (kind: string) => `^arn:aws:iam::${this.account}:role/foodtech-withdrawal-identity-${kind}-${stage}$`;
+    const taskRole = param("TaskRoleArn", identityRelease ? identityRolePattern("task") : arnPattern, "Existing reviewed least-privilege task role ARN");
+    const executionRole = param("ExecutionRoleArn", identityRelease ? identityRolePattern("execution") : arnPattern, "Existing ECS task execution role ARN");
+    const invokeRole = param("InvokeRoleArn", identityRelease ? identityRolePattern("invoke") : arnPattern, "Existing EventBridge ECS invocation role ARN");
     if (identityRelease) {
       new CfnRule(this, "SeparateIdentityWorkerRoles", { assertions: [{
         assert: Fn.conditionAnd(
@@ -542,8 +546,11 @@ class MaintenanceScheduleStack extends Stack {
       containerDefinitions: [{ name: "worker", image: image.valueAsString, essential: true, user: "10001:10001",
         readonlyRootFilesystem: true,
         ...(identityRelease ? { entryPoint: ["python", "-m", "foodtech_business_api.withdrawal_identity_worker"] } : {}),
+        ...(identityRelease ? { stopTimeout: 30 } : {}),
         environment: identityRelease ? [
           { name: "FOODTECH_WITHDRAWAL_IDENTITY_WORKER_ENABLED", value: "true" },
+          { name: "FOODTECH_WITHDRAWAL_IDENTITY_TASK_ROLE_ARN", value: taskRole.valueAsString },
+          { name: "FOODTECH_WITHDRAWAL_IDENTITY_MAX_SECONDS", value: "600" },
           { name: "FOODTECH_AUTH_TABLE", value: `foodtech-auth-sessions-${stage}` },
           { name: "FOODTECH_DELETION_REGISTRY_TABLE", value: `foodtech-deletion-registry-${stage}` },
           { name: "FOODTECH_COGNITO_USER_POOL_ID", value: pool!.valueAsString },

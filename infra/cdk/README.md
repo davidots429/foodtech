@@ -94,6 +94,8 @@ Gateway의 실행 정산은 레지스트리의 `ACTIVE#` 진행 표식을 같은
 
 예약 스택의 배포 입력은 검토한 `TaskRoleArn`, `ExecutionRoleArn`, `InvokeRoleArn`, `ClusterArn`, `ImageUri`, `SubnetIds`, `SecurityGroupIds`, `DeliveryDlqArn`, 실측·검토할 `IntervalMinutes` 및 `CognitoUserPoolId`다. 세 역할의 ARN이 서로 같으면 CloudFormation 규칙에서 거부한다. ARN이 다르다는 것만으로 최소 권한을 증명하지 않으며 실제 정책·신뢰 관계·PassRole 범위·계정/리전·네트워크를 별도로 검증해야 한다. 예약 스택은 역할·사용자·개인정보 저장소를 생성하거나 기존 역할에 실행 권한을 부여하지 않는다. 별도의 역할 정의 초안은 아래 Access 스택으로 제공한다. 같은 stage의 인증·삭제 Registry 테이블과 검증된 Cognito Pool이 준비되어야 한다.
 
+신원 제거 예약의 합성에는 검증할 계정을 명시한다. 역할 입력은 같은 계정/stage의 기존 `foodtech-withdrawal-identity-task/execution/invoke-<stage>` 이름에 각각 제한하고 TaskRoleArn을 명령의 기대 역할로 전달한다. 명령은 ECS container-role provider와 STS의 실제 역할을 추가 확인한다. Task 환경의 전체 실행 제한은 600초이고 종료 유예는 30초다. 이 입력 제약은 최소 권한·실제 배포 적합성의 증명이 아니며 예약은 계속 DISABLED다.
+
 Task에는 신원 제거 작업자의 명시적 활성화와 공개 자원 식별자만 전달한다. 웹 API의 탈퇴·초기화 기능 플래그는 변경하지 않는다. 실행 시 이미 준비된 초기화 제어 항목을 읽으며 자동 생성하지 않는다. Task를 수동으로 실행하면 잠금·기한이 검증된 이전 Cognito 주체를 실제로 제거하므로, 비활성 예약 규칙만으로 수동 실행까지 차단된다고 간주하지 않는다.
 
 실행 요청 전달 실패는 지정한 EventBridge DLQ로 보내고, 해당 Task group의 STOPPED 이벤트에서 비정상·누락 종료 코드를 별도 지표·경보로 관찰한다. 경보의 알림 대상·실제 전달·중복/동시 실행·재시도는 배포 검증 전제다. 경보와 로그는 작업 미실행이나 관찰 경로 자체의 실패를 모두 증명하지 않으며 전체 데이터 삭제·백업 제거의 완료 증거가 아니다. 제어 항목·실행 역할·이미지 게시·프라이빗 연결·실제 합성 Task 검증과 전체 삭제 조정기 연결 전에는 예약 규칙을 활성화하지 않는다.
