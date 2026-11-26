@@ -70,6 +70,14 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/davidots429/foodtech
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Verify disabled read probe before obtaining AWS credentials
+        if: inputs.operation == 'publish'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          status=0
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" -m foodtech_business_api.withdrawal_identity_probe || status=$?
+          test "$status" -eq 2
       - name: Obtain short-lived publishing credentials
         uses: aws-actions/configure-aws-credentials@v6.3.1
         if: inputs.operation == 'publish'

@@ -107,6 +107,12 @@ class PublishingTests(unittest.TestCase):
         build = next(i for i, step in enumerate(steps) if step.get('uses', '').startswith('docker/build-push-action@'))
         credentials = next(i for i, step in enumerate(steps) if step.get('uses', '').startswith('aws-actions/configure-aws-credentials@'))
         self.assertLess(build, credentials)
+        guard = next(i for i, step in enumerate(steps) if step.get('name') == 'Verify disabled read probe before obtaining AWS credentials')
+        self.assertLess(build, guard)
+        self.assertLess(guard, credentials)
+        self.assertEqual(steps[guard]['if'], "inputs.operation == 'publish'")
+        for isolation in ('--network none', '--read-only', '--cap-drop ALL', '--security-opt no-new-privileges'):
+            self.assertIn(isolation, steps[guard]['run'])
         self.assertEqual(steps[build]['with']['push'], 'false')
         checkout = next(step for step in steps if step.get('uses', '').startswith('actions/checkout@'))
         self.assertEqual(checkout['with']['ref'], '${{ github.sha }}')
