@@ -76,6 +76,20 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechWithdrawalIdentitySchedule-dev --strict -c provisionWithdrawalIdentitySchedule=true --output /tmp/foodtech-withdrawal-identity-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_withdrawal_identity_schedule.py /tmp/foodtech-withdrawal-identity-cdk/FoodtechWithdrawalIdentitySchedule-dev.template.json
+      - name: Check core-only Worker policy update mode
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMinimalDataFlow-dev --strict -c provisionDataFlow=true -c collectionInfrastructureMode=deferred --output /tmp/foodtech-worker-core-cdk > /dev/null
+          python3 ../../tests/config/check_worker_core_mode.py /tmp/foodtech-worker-core-cdk/FoodtechMinimalDataFlow-dev.template.json
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMinimalDataFlow-dev --strict -c provisionDataFlow=true -c collectionInfrastructureMode=deferred -c provisionRestCollectionTask=true --output /tmp/foodtech-worker-core-rejected > /tmp/foodtech-worker-core-rejected.log 2>&1; then
+            exit 1
+          fi
+          python3 -c "from pathlib import Path; assert 'collection tasks require collectionInfrastructureMode=create' in Path('/tmp/foodtech-worker-core-rejected.log').read_text()"
+      - name: Check standardization agent execution access
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechStandardizationExecutionAccess-dev --strict -c provisionStandardizationExecutionAccess=true --output /tmp/foodtech-standardization-execution-cdk > /dev/null
+          python3 ../../tests/config/check_standardization_execution_access.py /tmp/foodtech-standardization-execution-cdk/FoodtechStandardizationExecutionAccess-dev.template.json 123456789012
       - name: Check manual standardization runtime definition
         working-directory: infra/cdk
         run: |
@@ -129,6 +143,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --all-packages --locked
       - run: uv run --no-sync python -m unittest discover -s tests/config -p test_maintenance_publish.py -v
+      - run: uv run --no-sync python -m unittest discover -s tests/config -p test_worker_policy_update.py -v
       - run: uv run --no-sync python -c "from foodtech_business_api.main import app as business; from foodtech_ai_gateway.main import app as gateway; assert business.title and gateway.title"
       - run: uv run --no-sync python -m unittest discover -s apps/business-api/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v

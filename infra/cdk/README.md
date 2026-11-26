@@ -228,10 +228,18 @@ python3 ../../tests/config/check_maintenance_publishing.py /tmp/foodtech-mainten
 
 ### 표준화 Worker의 수동 Fargate 실행 정의
 
-`provisionStandardizationRuntime=true`와 `principalProvisioningEnabled=true`를 함께 지정하면 개발용 `FoodtechStandardizationRuntime-dev`에 Task 정의와 RETAIN 7일 로그(`/foodtech/dev/standardization`)만 등록한다. 새 IAM·네트워크·테이블·큐·Service·예약·RunTask는 만들지 않는다. `standardizationTaskRoleArn` context에는 실제 MinimalDataFlow 스택의 검토한 `StandardizationWorkerTaskRoleArn` 출력을 지정한다. 템플릿의 TaskRoleArn 매개변수는 이 정확한 ARN만 허용한다. ExecutionRoleArn은 별도로 검토·생성할 `foodtech-standardization-execution-dev`, ImageUri는 검토한 standardization workload manifest의 불변 digest여야 한다. 실행 역할은 아직 이 스택에서 제공하지 않는다.
+`provisionStandardizationRuntime=true`와 `principalProvisioningEnabled=true`를 함께 지정하면 개발용 `FoodtechStandardizationRuntime-dev`에 Task 정의와 RETAIN 7일 로그(`/foodtech/dev/standardization`)만 등록한다. 새 IAM·네트워크·테이블·큐·Service·예약·RunTask는 만들지 않는다. `standardizationTaskRoleArn` context에는 실제 MinimalDataFlow 스택의 검토한 `StandardizationWorkerTaskRoleArn` 출력을 지정한다. 템플릿의 TaskRoleArn 매개변수는 이 정확한 ARN만 허용한다. ExecutionRoleArn은 별도로 검토·생성할 `foodtech-standardization-execution-dev`, ImageUri는 검토한 standardization workload manifest의 불변 digest여야 한다. Task 스택 자체는 실행 역할을 생성하지 않는다.
 
 이미지 게시 workflow의 `workload=standardization`은 기존 main 전용 OIDC 게시 역할과 ECR 하나를 사용한다. 허용한 패키지/빌드 target만 선택하며 태그 접두사와 manifest workload를 유지보수 이미지와 구분한다. AWS 자격증명을 받기 전에 실제 이미지의 비활성 명령 가드와 libzstd 수정 버전을 검사한다. 기본 `maintenance` 이미지와 기존 태그 규약은 유지한다. 두 이미지는 같은 저장소에 있지만 Task의 업무 역할과 실행 명령은 분리한다.
 
 새 명령 `python -m foodtech_standardization_worker.runtime`은 명시적 opt-in·엄격 초기화 모드·Fargate 환경·같은 프로젝트/단계의 테이블·큐·작업 역할을 요구한다. 실제 container-role provider와 STS 역할을 확인하고 그 Session 및 regional/endpoint 보호 SDK 설정을 모든 중첩 bridge에 전달한다. 큐 메시지는 최대 10개를 한 번 처리하고 전체 실행은 최대 600초로 제한한다. 성공 로그는 처리 건수만 남기며 0건 성공을 실제 데이터 흐름 검증으로 간주하지 않는다. 실패·시간 초과는 원천/SDK 오류를 출력하지 않고 비정상 종료한다. 부분 처리·SQS 재노출 시 기존 멱등성 기록을 재조회해야 한다.
 
 합성과 이미지 CI는 실제 Worker 역할·SCP/RCP·KMS/Endpoint 정책이나 전체 수집→공정판정 검증이 아니다. 실제 실행 전 이미지 digest·역할 정책·프라이빗 연결·큐/fixture/기존 작성자 상태·비용/관찰/중단/정리 범위를 검토한다. 앞선 identity 읽기 시험 승인을 이 Task 실행 승인으로 확대하지 않는다.
+
+
+`provisionStandardizationExecutionAccess=true`는 별도 `FoodtechStandardizationExecutionAccess-dev`에 실행 역할 1개와 inline 정책만 합성한다. [ECS 실행 역할 문서](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_execution_IAM_role.html)의 agent 계약을 기준으로, ECR 인증 토큰·해당 저장소 이미지 읽기와 `worker/worker/*` 전용 로그 스트림의 생성/기록만 허용한다. SDK 업무 소스에서 작업 역할 정책을 새로 생성하지 않으며 기존 데이터 처리 역할은 유지한다. 업무 테이블·큐·KMS·Secrets·Cognito·IAM/PassRole·Task 실행 권한은 없다. ECS 신뢰는 같은 계정/ap-southeast-2 SourceArn으로 제한한다. [클러스터 단위 SourceArn 미지원](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html) 때문에 특정 클러스터라고 표시하지 않는다. 실제 IAM 생성/적용은 별도 검토 대상이다.
+
+기존 Worker의 배포된 inline 정책을 읽기 전용으로 점검한 결과, 현재 main CDK가 요구하는 원천 데이터 테이블 Query와 인증 테이블 ConditionCheckItem이 아직 배포되지 않았다. `tests/live/worker_role_iam_check.py`는 두 권한 및 인증 데이터 읽기/쓰기 거부를 포함한 최신 기대 범위를 검사한다. 실제 시험 전 MinimalDataFlow 변경 세트를 검토하고, 시뮬레이터만으로 실제 역할·조직 정책 통과를 선언하지 않는다. 이 PR은 기존 Worker 정책을 직접 수정하거나 스택을 배포하지 않는다.
+
+
+기존 수집자원 없이 최초 core-only로 배포한 개발 스택의 Worker 정책만 보완할 때는 `collectionInfrastructureMode=deferred`를 사용할 수 있다. 기본값 create의 템플릿은 유지하며 deferred는 수집 S3/수집 역할/프로토콜 Task를 합성하지 않는다. 이미 수집 자원이 관리되는 스택에는 사용하지 않는다. 적용 전 원격 Original 템플릿과 후보를 `infra/scripts/review_worker_policy_update.py --deployed-template <GetTemplate JSON> --candidate-template <synth JSON> --account-id <verified-account>`로 비교한다. 이 도구는 리소스 추가/삭제·신뢰/역할 연결·출력 변경을 거부하고 기존 Worker 정책의 원천 Query·인증 ConditionCheckItem 두 권한 추가만 수락한다. 현재 개발 스택과 후보 비교에서 이 정책 1개만 바뀌고 리소스 추가/삭제는 0개임을 확인했다. 이 로컬 대조는 실제 CloudFormation 변경 세트·배포·권한 검증을 대신하지 않는다.

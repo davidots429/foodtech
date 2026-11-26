@@ -1,7 +1,38 @@
 import { CfnOutput, CfnParameter, RemovalPolicy, Stack, StackProps, Token } from "aws-cdk-lib";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as iam from "aws-cdk-lib/aws-iam";
 import { Construct } from "constructs";
+
+/** ECS agent permissions only, derived from the documented ECR/awslogs contract.
+ * The SDK application's existing data-flow task policy is not generated here.
+ */
+export class StandardizationExecutionAccessStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string) {
+    super(scope, id, props);
+    if (stage !== "dev" || Token.isUnresolved(this.account) || !/^\d{12}$/.test(this.account)) {
+      throw new Error("standardization execution access requires dev and an explicit verified account");
+    }
+    const regional = { "aws:RequestedRegion": "ap-southeast-2" };
+    const role = new iam.Role(this, "ExecutionRole", {
+      roleName: "foodtech-standardization-execution-dev",
+      description: "ECS agent pull from one maintenance repository and write dedicated worker logs",
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", { conditions: {
+        StringEquals: { "aws:SourceAccount": this.account },
+        ArnLike: { "aws:SourceArn": `arn:aws:ecs:ap-southeast-2:${this.account}:*` },
+      } }),
+    });
+    role.addToPolicy(new iam.PolicyStatement({ actions: ["ecr:GetAuthorizationToken"], resources: ["*"],
+      conditions: { StringEquals: regional } }));
+    role.addToPolicy(new iam.PolicyStatement({ actions: ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+      resources: [`arn:aws:ecr:ap-southeast-2:${this.account}:repository/foodtech/maintenance-dev`],
+      conditions: { StringEquals: regional } }));
+    role.addToPolicy(new iam.PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
+      resources: [`arn:aws:logs:ap-southeast-2:${this.account}:log-group:/foodtech/dev/standardization:log-stream:worker/worker/*`],
+      conditions: { StringEquals: regional } }));
+    new CfnOutput(this, "ExecutionRoleArn", { value: role.roleArn });
+  }
+}
 
 /** Manual, finite worker definition; grants no permissions and never runs a Task. */
 export class StandardizationRuntimeStack extends Stack {

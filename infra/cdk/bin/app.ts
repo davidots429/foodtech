@@ -18,7 +18,7 @@ import { MaintenancePublishingStack } from "./maintenance-publishing.js";
 import { RuntimeFoundationStack } from "./runtime-foundation.js";
 import { WithdrawalIdentityProbeStack, identityWorkerLogs } from "./withdrawal-identity-probe.js";
 
-import { StandardizationRuntimeStack } from "./standardization-runtime.js";
+import { StandardizationRuntimeStack, StandardizationExecutionAccessStack } from "./standardization-runtime.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
@@ -45,6 +45,12 @@ if (app.node.tryGetContext("provisionRuntimeFoundation") === "true") {
   const runtime = new RuntimeFoundationStack(app, `FoodtechRuntimeFoundation-${stage}`, { env }, stage);
   Tags.of(runtime).add("Project", "foodtech");
   Tags.of(runtime).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionStandardizationExecutionAccess") === "true") {
+  const access = new StandardizationExecutionAccessStack(app, `FoodtechStandardizationExecutionAccess-${stage}`, { env }, stage);
+  Tags.of(access).add("Project", "foodtech");
+  Tags.of(access).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionStandardizationRuntime") === "true") {
@@ -186,6 +192,11 @@ class AuthIdentityStack extends Stack {
 class MinimalDataFlowStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps) {
     super(scope, id, props);
+    const collectionMode = this.node.tryGetContext("collectionInfrastructureMode") ?? "create";
+    if (collectionMode !== "create" && collectionMode !== "deferred") {
+      throw new Error("collectionInfrastructureMode must be create or deferred");
+    }
+    const createCollection = collectionMode === "create";
     const table = new dynamodb.Table(this, "DataFlow", {
       tableName: `foodtech-data-flow-${stage}`,
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
@@ -202,12 +213,12 @@ class MinimalDataFlowStack extends Stack {
       enforceSSL: true,
       visibilityTimeout: Duration.seconds(30),
     });
-    const ingestionDlq = new s3.Bucket(this, "IngestionDlq", {
+    const ingestionDlq = createCollection ? new s3.Bucket(this, "IngestionDlq", {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
       removalPolicy: RemovalPolicy.RETAIN,
-    });
+    }) : undefined;
     const processingDlq = queue("ProcessingDlq");
     const quarantine = queue("StandardizationDlq");
     const ordered = new sqs.Queue(this, "Ordered", {
@@ -219,7 +230,7 @@ class MinimalDataFlowStack extends Stack {
       visibilityTimeout: Duration.seconds(30),
       deadLetterQueue: { queue: processingDlq, maxReceiveCount: 3 },
     });
-    const collectorRole = new iam.Role(this, "CollectionAdapterTaskRole", {
+    const collectorRole = createCollection ? new iam.Role(this, "CollectionAdapterTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
         conditions: {
           ArnLike: { "aws:SourceArn": `arn:${this.partition}:ecs:${this.region}:${this.account}:*` },
@@ -227,18 +238,21 @@ class MinimalDataFlowStack extends Stack {
         },
       }),
       description: "ECS task access for read-only equipment collection and quarantine",
-    });
-    table.grant(collectorRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem");
-    collectorRole.addToPolicy(new iam.PolicyStatement({
-      actions: ["dynamodb:DeleteItem"], resources: [table.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["STREAM#*"] },
-                    Null: { "dynamodb:LeadingKeys": "false" } },
-    }));
-    ordered.grant(collectorRole, "sqs:SendMessage");
-    collectorRole.addToPolicy(new iam.PolicyStatement({
-      actions: ["s3:PutObject"], resources: [ingestionDlq.arnForObjects("ingestion/*")],
-    }));
+    }) : undefined;
+    if (collectorRole && ingestionDlq) {
+      table.grant(collectorRole, "dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem");
+      collectorRole.addToPolicy(new iam.PolicyStatement({
+        actions: ["dynamodb:DeleteItem"], resources: [table.tableArn],
+        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["STREAM#*"] },
+                      Null: { "dynamodb:LeadingKeys": "false" } },
+      }));
+      ordered.grant(collectorRole, "sqs:SendMessage");
+      collectorRole.addToPolicy(new iam.PolicyStatement({
+        actions: ["s3:PutObject"], resources: [ingestionDlq.arnForObjects("ingestion/*")],
+      }));
+    }
     if (app.node.tryGetContext("provisionRestCollectionTask") === "true") {
+      if (!collectorRole || !ingestionDlq) throw new Error("collection tasks require collectionInfrastructureMode=create");
       const required = (name: string): string => {
         const value = app.node.tryGetContext(name);
         if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
@@ -285,6 +299,7 @@ class MinimalDataFlowStack extends Stack {
       new CfnOutput(this, "RestCollectionTaskArn", { value: task.taskDefinitionArn });
     }
     if (app.node.tryGetContext("provisionMqttCollectionTask") === "true") {
+      if (!collectorRole || !ingestionDlq) throw new Error("collection tasks require collectionInfrastructureMode=create");
       const required = (name: string): string => {
         const value = app.node.tryGetContext(name);
         if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
@@ -332,6 +347,7 @@ class MinimalDataFlowStack extends Stack {
       new CfnOutput(this, "MqttCollectionTaskArn", { value: task.taskDefinitionArn });
     }
     if (app.node.tryGetContext("provisionOpcUaJsonCollectionTask") === "true") {
+      if (!collectorRole || !ingestionDlq) throw new Error("collection tasks require collectionInfrastructureMode=create");
       const required = (name: string): string => {
         const value = app.node.tryGetContext(name);
         if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
@@ -379,6 +395,7 @@ class MinimalDataFlowStack extends Stack {
       new CfnOutput(this, "OpcUaJsonCollectionTaskArn", { value: task.taskDefinitionArn });
     }
     if (app.node.tryGetContext("provisionOpcUaBinaryCollectionTask") === "true") {
+      if (!collectorRole || !ingestionDlq) throw new Error("collection tasks require collectionInfrastructureMode=create");
       const required = (name: string): string => {
         const value = app.node.tryGetContext(name);
         if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
@@ -447,8 +464,10 @@ class MinimalDataFlowStack extends Stack {
     authTable.grant(workerRole, "dynamodb:ConditionCheckItem");
     ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
     quarantine.grant(workerRole, "sqs:SendMessage");
-    new CfnOutput(this, "IngestionDlqBucketName", { value: ingestionDlq.bucketName });
-    new CfnOutput(this, "CollectionAdapterTaskRoleArn", { value: collectorRole.roleArn });
+    if (collectorRole && ingestionDlq) {
+      new CfnOutput(this, "IngestionDlqBucketName", { value: ingestionDlq.bucketName });
+      new CfnOutput(this, "CollectionAdapterTaskRoleArn", { value: collectorRole.roleArn });
+    }
     new CfnOutput(this, "DataTableName", { value: table.tableName });
     new CfnOutput(this, "OrderedQueueUrl", { value: ordered.queueUrl });
     new CfnOutput(this, "StandardizationDlqUrl", { value: quarantine.queueUrl });
