@@ -144,3 +144,25 @@ Task/실행 역할의 신뢰는 ECS 서비스와 같은 계정·리전의 Source
 `dynamodb:EnclosingOperation`은 문자열 문맥 키이므로 단일 값 `StringEquals`로 제한하고 시뮬레이션에도 `string`으로 전달한다. 배열용 `ForAnyValue`를 사용하지 않는다. 수정 후보의 실제 IAM 시뮬레이션 6건에서 활성 표식 트랜잭션 삭제만 허용하고 다른 파티션·키 누락·직접 삭제·혼합 키·다른 연산은 거부했다. 합성·시뮬레이션은 실제 역할에 정책을 적용하거나 실제 ECS 정산을 검증한 결과가 아니다.
 
 2026-11-22 리전 조건을 포함한 기존 배포 역할 재검증에서는 네 사례 모두 조직 정책 허용으로 평가됐다. 필요한 활성 표식의 트랜잭션 삭제는 역할 정책에서 `implicitDeny`였고 다른 파티션·키 없음·단건 삭제도 거부됐다. 필요한 역할 정책 변경은 미배포 상태이므로 배포 후 권한 및 실제 Task 정산을 검증해야 한다.
+
+## 개발용 유지보수 실행 기반
+
+`provisionRuntimeFoundation=true`는 별도 `FoodtechRuntimeFoundation-dev`에 새 VPC, 공개 egress 서브넷·프라이빗 Task 서브넷 각 1개, NAT Gateway·Elastic IP 각 1개, DynamoDB·S3 Gateway Endpoint, HTTPS 송신 전용 Task 보안 그룹, ECS 클러스터와 비공개 ECR 저장소 `foodtech/maintenance-dev`를 합성한다. 기존 업무 테이블·Cognito·키·IAM 역할은 변경하지 않으며 Task·Service·예약 작업을 생성하지 않는다. 이 구성은 단일 AZ 개발 검증용이며 장애 시 가용성이나 운영 배포 완료를 보장하지 않는다.
+
+NAT Gateway와 공인 IPv4는 Task가 없어도 비용이 발생한다. `runtimeEgressMode=nat`를 함께 명시하지 않으면 합성을 거부한다. 배포 AZ는 기본값 없는 `AvailabilityZone` 파라미터로 검토·지정한다. 실제 배포 전에 계정의 가용 AZ·Free Plan 제한·크레딧·정리 시점과 CloudFormation 변경 세트를 확인한다. 이번 코드는 배포나 자원 생성 승인을 의미하지 않는다.
+
+두 서브넷 모두 자동 공인 IP 할당을 끈다. 인터넷 기본 경로는 공개 egress 서브넷의 IGW와 프라이빗 서브넷의 NAT로 분리한다. Task 보안 그룹에는 인바운드 규칙이 없고 TCP 443 송신만 허용한다. 이는 포트 제한이며 목적지 호스트 allowlist나 외부 AI 전송 승인, MQTT·OPC UA 수집기 네트워크를 제공하지 않는다.
+
+DynamoDB Endpoint는 같은 계정의 명시된 프로젝트 테이블/인덱스와 항목 작업만 통과시킨다. 서비스별 역할·사용자 키 범위는 별도로 제한해야 한다. S3 Endpoint는 지역 ECR 이미지 계층 버킷의 GetObject만 허용하므로 애플리케이션 격리 버킷 읽기/쓰기를 제공하지 않는다. 수집기를 이 서브넷에 연결하려면 실제 격리 버킷과 권한을 검토해 Endpoint 정책을 확장해야 한다. Endpoint 정책은 역할 권한을 부여하지 않는다.
+
+Cognito 도메인을 사용하는 기존 호스팅 로그인과의 호환성을 유지하기 위해 Cognito Interface Endpoint를 자동 추가하지 않는다. [Cognito PrivateLink 공식 제약](https://docs.aws.amazon.com/cognito/latest/developerguide/vpc-interface-endpoints.html)을 배포 때 다시 확인한다. ECR 이미지 계층의 S3 Gateway Endpoint 사용은 [ECR 공식 문서](https://docs.aws.amazon.com/AmazonECR/latest/userguide/vpc-endpoints.html)를 따른다.
+
+ECR은 불변 태그·기본 스캔·AES256 저장 암호화·RETAIN이다. 스택을 삭제해도 이미지 저장소는 남으므로 중단 시 별도 정리한다. 이 스택은 이미지를 빌드하거나 업로드하지 않는다. 기존 `infra/containers/combi-refresh-worker.Dockerfile`의 업무 패키지를 게시한 뒤 검증된 digest를 사용하고, 역할 스택·비활성 Task/예약 스택은 이 스택의 출력에 실제 자원을 결합해 별도로 검토한다. 일반 업무 API와 삭제 작업자를 같은 실행 역할로 합치지 않는다.
+
+```sh
+# infra/cdk에서 합성; 가상 계정은 CI 전용이다.
+CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRuntimeFoundation-dev --strict --no-lookups -c provisionRuntimeFoundation=true -c runtimeEgressMode=nat --output /tmp/foodtech-runtime-foundation-cdk
+python3 ../../tests/config/check_runtime_foundation.py /tmp/foodtech-runtime-foundation-cdk/FoodtechRuntimeFoundation-dev.template.json
+```
+
+TypeScript·strict synth와 네트워크/저장소 경계 검사를 통과했다. 명시적 NAT 선택이 없는 합성의 거부도 확인했다. 실제 AWS 배포·Task 역할·이미지 pull·Cognito 접근·작업 완료는 아직 검증하지 않았다.
