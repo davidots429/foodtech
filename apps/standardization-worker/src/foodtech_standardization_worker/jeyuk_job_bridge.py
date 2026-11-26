@@ -35,8 +35,10 @@ class DynamoJeyukJobBridge:
             return "UNBOUND"
         job_pk = binding["job_pk"]
         event_key = {"pk": job_pk, "sk": f"EVENT#JEYUK#{second:06d}"}
-        if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
+        if self._recorded_replay(result, stream_pk, event_key):
             return "REPLAYED"
+        if result.get("process_rule_version") != RULE_VERSION:
+            raise ValueError("Jeyuk assessment rule version requires explicit restatement")
         for _ in range(4):
             old = self.table.get_item(Key={"pk": job_pk, "sk": "META"},
                                       ConsistentRead=True).get("Item")
@@ -51,7 +53,10 @@ class DynamoJeyukJobBridge:
                 return "BINDING_MISMATCH"
             if old["status"] not in {"RUNNING", "PAUSED"}:
                 return "JOB_NOT_ACTIVE"
-            previous = old.get("process_assessment", {}).get("second", 0)
+            previous_process = old.get("process_assessment", {})
+            if previous_process and previous_process.get("rule_version") != RULE_VERSION:
+                raise ValueError("Jeyuk job rule version requires explicit restatement")
+            previous = previous_process.get("second", 0)
             if second <= previous:
                 return "OLD_SAMPLE"
             if second != previous + 1:
@@ -123,7 +128,7 @@ class DynamoJeyukJobBridge:
                 self.client.transact_write_items(TransactItems=operations)
                 return process_status
             except self.client.exceptions.TransactionCanceledException as exc:
-                if self.table.get_item(Key=event_key, ConsistentRead=True).get("Item"):
+                if self._recorded_replay(result, stream_pk, event_key):
                     return "REPLAYED"
                 reasons = exc.response.get("CancellationReasons", [])
                 if len(reasons) == len(operations) and reasons[-1].get("Code") == "ConditionalCheckFailed":
@@ -135,6 +140,20 @@ class DynamoJeyukJobBridge:
                 if not retryable:
                     raise
         raise RuntimeError("Jeyuk process decision could not commit after concurrent job updates")
+
+    def _recorded_replay(self, result: dict, stream_pk: str, event_key: dict) -> bool:
+        existing = self.table.get_item(Key=event_key, ConsistentRead=True).get("Item")
+        if not existing:
+            return False
+        version = result.get("process_rule_version")
+        if not isinstance(version, str) or version not in {"jeyuk-process-v1", RULE_VERSION} or any((
+                existing.get("rule_version") != version,
+                existing.get("source_assessment_pk") != stream_pk,
+                existing.get("source_assessment_sk") != f"ASSESSMENT#{int(result['second']):06d}",
+                existing.get("to_status") != result["process_status"],
+                existing.get("reason_codes") != result["reason_codes"])):
+            raise ValueError("Jeyuk replay does not match its recorded assessment version")
+        return True
 
     def _item(self, value: dict) -> dict:
         return {key: self.serializer.serialize(item) for key, item in value.items()}

@@ -158,7 +158,8 @@ def audit_source_records(job: dict, assessments: list[dict], raws: list[dict]) -
                 last_ingredient_addition_completed=sample.last_ingredient_addition_completed)
         except (TypeError, ValueError):
             return result
-        if (assessment.get("process_status") != reading.status or
+        if (assessment.get("process_rule_version") != PROCESS_RULE_VERSION or
+                assessment.get("process_status") != reading.status or
                 assessment.get("reason_codes") != list(reading.reason_codes) or
                 assessment.get("surface_band") != reading.surface_band or
                 assessment.get("rpm_band") != reading.rpm_band or
@@ -302,6 +303,7 @@ def read_collection_completion(table_name: str, batch_id: str, *, include_settin
                                       actual_rpm=sample.actual_rpm, target_rpm=sample.target_rpm,
                                       motor_load_percent=sample.motor_load_percent)
             found.update(set(reading.reason_codes) & {"AGITATOR_JAM_WARNING", "AGITATOR_FAILURE",
+                                                     "MOTOR_OVERLOAD_TRIP", "EMERGENCY_STOPPED",
                                                      "OVER_RECOMMENDED_LOAD", "RATED_LOAD_EXCEEDED"})
         result["process_observations"] = {"reason_codes": sorted(found),
                                           "basis": "SYNTHETIC_SAMPLES_ONLY",
