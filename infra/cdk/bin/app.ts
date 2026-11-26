@@ -14,11 +14,18 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 import { WithdrawalIdentityAccessStack } from "./withdrawal-identity-access.js";
+import { RuntimeFoundationStack } from "./runtime-foundation.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
 if (!/^[a-z0-9-]+$/.test(stage)) throw new Error("stage must be lowercase letters, numbers or hyphens");
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: "ap-southeast-2" };
+
+if (app.node.tryGetContext("provisionRuntimeFoundation") === "true") {
+  const runtime = new RuntimeFoundationStack(app, `FoodtechRuntimeFoundation-${stage}`, { env }, stage);
+  Tags.of(runtime).add("Project", "foodtech");
+  Tags.of(runtime).add("Environment", stage);
+}
 
 class AuthSessionsStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps) {
