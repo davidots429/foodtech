@@ -1,4 +1,11 @@
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim-trixie AS base
+# DSA-6657-1: use Debian 13's security update, without unstable repositories.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade libzstd1 \
+    && dpkg --compare-versions "$(dpkg-query --show --showformat='${Version}' libzstd1)" ge '1.5.7+dfsg-1+deb13u1' \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS builder
 COPY --from=ghcr.io/astral-sh/uv:0.12.17 /uv /uvx /bin/
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
@@ -11,7 +18,7 @@ COPY apps/standardization-worker apps/standardization-worker
 COPY packages/contracts packages/contracts
 RUN uv sync --locked --no-dev --no-editable --package foodtech-business-api
 
-FROM python:3.12-slim
+FROM base
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv

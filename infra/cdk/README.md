@@ -192,6 +192,8 @@ TypeScript·strict synth와 네트워크/저장소 경계 검사를 통과했다
 
 ## 유지보수 이미지의 수동 게시와 OIDC
 
+유지보수 이미지는 Python 3.12의 Debian 13(trixie) 변형을 명시하고 빌드·실행 단계가 같은 갱신된 base를 공유한다. [DSA-6657-1](https://security-tracker.debian.org/tracker/DSA-6657-1)에 따라 stable security 저장소의 libzstd1을 갱신하며, `1.5.7+dfsg-1+deb13u1` 이상이 아니면 빌드를 실패시킨다. 불안정 저장소·자체 패치로 OpenSSL을 교체하지 않는다. CI와 실제 게시할 이미지에서 이 버전을 다시 확인하고, 새 digest의 실제 ECR 스캔으로 수정 여부를 검증한다. 이 최소 버전 조건만으로 나머지 OpenSSL·dpkg finding이나 이미지 전체를 합격 처리하지 않는다. 상세 항목은 [이슈 #247](https://github.com/davidots429/foodtech/issues/247)을 따른다.
+
 `publish-maintenance-image.yml`은 `workflow_dispatch` 전용이며 기본 operation은 `inspect`다. 저장소·불변 저장소/소유자 ID·main ref·실행 SHA·수동 이벤트를 확인한 뒤 GitHub가 전달한 토큰에서 필요한 공개 claim만 추출한다. JWT 원문·요청 토큰·AWS 자격증명은 출력하거나 artifact에 넣지 않는다. 이 점검은 서명 검증을 대신하지 않으며 실제 역할 사용 시 AWS STS가 서명·issuer·audience·subject를 검증한다. 임의 JWT를 인증 근거로 받아들이는 애플리케이션 경로가 아니다.
 
 먼저 main에서 `operation=inspect`를 명시 실행하고 `maintenance-oidc-<run>-<attempt>` artifact의 subject를 확인한다. 새 저장소는 [GitHub 문서](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)에 따라 불변 ID가 포함된 subject를 사용할 수 있다. 옛 형식을 추측해 신뢰 정책에 넣지 않는다.

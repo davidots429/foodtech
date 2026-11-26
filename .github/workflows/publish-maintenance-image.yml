@@ -78,6 +78,12 @@ jobs:
           status=0
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" -m foodtech_business_api.withdrawal_identity_probe || status=$?
           test "$status" -eq 2
+      - name: Verify patched maintenance library before obtaining AWS credentials
+        if: inputs.operation == 'publish'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" -c 'import subprocess; version = subprocess.check_output(["dpkg-query", "--show", "--showformat=${Version}", "libzstd1"], text=True).strip(); subprocess.run(["dpkg", "--compare-versions", version, "ge", "1.5.7+dfsg-1+deb13u1"], check=True); print("Debian libzstd1 security floor verified")'
       - name: Obtain short-lived publishing credentials
         uses: aws-actions/configure-aws-credentials@v6.3.1
         if: inputs.operation == 'publish'
