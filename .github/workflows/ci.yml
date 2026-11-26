@@ -111,6 +111,18 @@ jobs:
         run: |
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechSourceGrantDeletionAccess-dev --strict --no-lookups -c provisionSourceGrantDeletionAccess=true --output /tmp/foodtech-source-grant-deletion-cdk > /dev/null
           python3 ../../tests/config/check_source_grant_deletion_access.py /tmp/foodtech-source-grant-deletion-cdk/FoodtechSourceGrantDeletionAccess-dev.template.json 123456789012
+      - name: Check manual source grant runtime definition
+        working-directory: infra/cdk
+        run: |
+          image="123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/foodtech/maintenance-dev@sha256:$(printf 'a%.0s' {1..64})"
+          for mode in create existing; do
+            CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechSourceGrantRuntime-dev --strict --no-lookups -c provisionSourceGrantRuntime=true -c principalProvisioningEnabled=true -c sourceGrantImageUri="$image" -c sourceGrantLogGroupMode="$mode" --output "/tmp/foodtech-source-grant-runtime-$mode" > /dev/null
+            python3 ../../tests/config/check_source_grant_runtime.py "/tmp/foodtech-source-grant-runtime-$mode/FoodtechSourceGrantRuntime-dev.template.json" 123456789012 "$mode"
+          done
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechSourceGrantRuntime-dev --strict --no-lookups -c provisionSourceGrantRuntime=true -c sourceGrantImageUri="$image" --output /tmp/foodtech-source-grant-runtime-rejected > /tmp/foodtech-source-grant-runtime-rejected.log 2>&1; then exit 1; fi
+          python3 -c "from pathlib import Path; assert 'source grant runtime requires principalProvisioningEnabled=true' in Path('/tmp/foodtech-source-grant-runtime-rejected.log').read_text()"
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechSourceGrantRuntime-dev --strict --no-lookups -c provisionSourceGrantRuntime=true -c principalProvisioningEnabled=true -c sourceGrantImageUri=123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/foodtech/maintenance-dev:latest --output /tmp/foodtech-source-grant-runtime-mutable-rejected > /tmp/foodtech-source-grant-runtime-mutable-rejected.log 2>&1; then exit 1; fi
+          python3 -c "from pathlib import Path; assert 'sourceGrantImageUri must be the reviewed immutable maintenance workload image' in Path('/tmp/foodtech-source-grant-runtime-mutable-rejected.log').read_text()"
       - name: Check manual identity role read probe
         working-directory: infra/cdk
         run: |

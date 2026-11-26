@@ -15,6 +15,24 @@ def main(path, account):
     doc = boundary['Properties']['PolicyDocument']
     # IAM excludes whitespace; our ASCII compact form is a conservative bound.
     assert len(json.dumps(doc, separators=(',', ':'))) <= 6144
+    # CloudFormation Ref placeholders can be shorter than their actual ARNs.
+    # Check the rendered policy too (IAM managed-policy character quota).
+    # https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+    key = f'arn:aws:kms:ap-southeast-2:{account}:key/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    refs = {'RegistryStorageKeyArn':key, 'DynamoDbManagedKeyArn':key,
+            'AWS::Partition':'aws', 'AWS::Region':'ap-southeast-2',
+            'AWS::AccountId':account, 'AWS::URLSuffix':'amazonaws.com'}
+    def render(value):
+        if isinstance(value,list):return [render(v) for v in value]
+        if isinstance(value,dict):
+            if set(value)=={'Ref'}:return refs[value['Ref']]
+            if set(value)=={'Fn::Join'}:
+                separator,items=value['Fn::Join']
+                return separator.join(render(item) for item in items)
+            return {name:render(item) for name,item in value.items()}
+        return value
+    rendered = json.dumps(render(doc), separators=(',', ':'))
+    assert 'Fn::' not in rendered and len(rendered) <= 6144, 'rendered boundary exceeds IAM size limit'
     purposes = boundary['Metadata']['PurposeBySid']
     statements = {purposes[s['Sid']]: s for s in doc['Statement']}
     assert len(statements) == 15

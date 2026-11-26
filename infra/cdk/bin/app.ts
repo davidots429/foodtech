@@ -22,6 +22,7 @@ import { StandardizationRuntimeStack, StandardizationExecutionAccessStack } from
 import { SourceGrantDeletionAccessStack } from "./source-grant-deletion-access.js";
 import { RecipeSourceAccessStack, RecipeSourceCatalogStack } from "./recipe-source-access.js";
 import { RecipeHistoryAccessStack } from "./recipe-history-access.js";
+import { SourceGrantRuntimeStack } from "./source-grant-runtime.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
@@ -30,6 +31,12 @@ const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: "ap-southeast-2"
 const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
 if (principalProvisioning !== "true" && principalProvisioning !== "false") {
   throw new Error("principalProvisioningEnabled must be true or false");
+}
+
+if (app.node.tryGetContext("provisionSourceGrantRuntime") === "true") {
+  const runtime = new SourceGrantRuntimeStack(app, `FoodtechSourceGrantRuntime-${stage}`, { env }, stage);
+  Tags.of(runtime).add("Project", "foodtech");
+  Tags.of(runtime).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionSourceGrantDeletionAccess") === "true") {

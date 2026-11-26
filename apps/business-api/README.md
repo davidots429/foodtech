@@ -1,5 +1,11 @@
 # Business API 인증과 첫 조리 업무 흐름
 
+`FoodtechSourceGrantRuntime-dev`는 기존 `source_grant_deletion_worker`를 위한 수동 Fargate Task 정의다. `provisionSourceGrantRuntime=true`, `principalProvisioningEnabled=true`와 검토한 유지보수 이미지의 정확한 digest URI를 `sourceGrantImageUri`에 명시해야 합성할 수 있다. 배포 매개변수 `ImageUri`도 그 URI 하나만 허용하며, 별도 catalog 정리 역할과 ECR/로그 실행 역할을 지정한다. 이 스택의 자원은 Task 정의와 선택적인 7일 보존 로그 그룹이다.
+
+정의 등록 후 실제 `RunTask`에는 별도의 실행 검토·승인이 필요하다. 실제 역할·catalog·enrollment fence, fixture 소유 범위·부재/차단 사례, 네트워크·클러스터·관찰·중단·정리 계획과 이미지 적합성을 먼저 확인한다. 기존 IAM 후보는 Auth/Registry의 투영 조회·조건 검사와 catalog 삭제만 허용하며 Auth 참조·Registry 완료·Cognito·원천 데이터는 갱신하지 않는다. 로그는 건수만 남긴다. 기본 스택 선택에는 이 정의가 포함되지 않고 서비스·예약은 생성하지 않는다.
+
+정의는 기존 작업자의 한도(페이지당 20개·최대 50페이지·삭제 응답 확인 최대 20건·프로세스 내 초기화/처리 최대 600초)를 명시한다. Task 시작·이미지 pull·종료 관찰은 별도 제한이 필요하다. 0건 처리·종료 코드 0은 시험 fixture 처리나 전체 삭제 완료 증거가 아니며, 실패·응답 유실 후에는 같은 Task와 저장 상태를 확인해야 한다. `sourceGrantLogGroupMode=existing`은 같은 전용 로그 그룹을 재사용한다.
+
 권고 근거 조회의 선택적 `comparison_id`는 같은 고객이 선택한 현재 비교를 작업·안전·평가 버전과 투입 종료 순서에 대해 다시 확인한다. 두 작업의 읽기 중 변경은 충돌로 처리한다. 선택된 이전 비교는 전체 작업 중 가장 직전이라는 뜻이 아니며, 읽기 뒤 변경 가능성이 있으므로 실제 모델 실행 시 별도 원자적 검증이 필요하다.
 
 권고 근거는 현재 재계산에서 확인된 투입 전 마지막 표본의 온도·시각·경과시간·품질 상태만 반환한다. 표본이 오래되었는지에 대한 합격 기준은 정하지 않았으며 품질 경고도 별도로 표시한다.
