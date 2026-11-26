@@ -142,6 +142,47 @@ class GrantPublicationIntegrationTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(self.grant_checks_at_publish, 3)
 
+    def prepare_batch_observation(self):
+        cooking = self.flow.source.resource.tables['foodtech-cooking-jobs-dev']
+        for (pk, sk), row in cooking.items.items():
+            if sk == 'META':
+                row.update(jeyuk_size_profile='SMALL', equipment_profile='jeyuk-small',
+                           actual_load_kg='1.8', safety_status='PASSED')
+
+    def test_authorized_snapshot_exposes_facts_without_fabricating_input_readiness(self):
+        self.prepare_batch_observation()
+        current, prior = self.flow.guard.observe_inputs()
+        self.assertEqual((current.cooking_seconds, prior.cooking_seconds), (30, 29))
+        self.assertIsNone(current.heating_setpoint_c)
+        self.assertIn('MIXTURE_SAFETY_SAMPLES_MISSING', current.unresolved)
+        self.assertNotIn('completeness', current.model_context())
+
+    def test_revoke_during_observation_discards_facts(self):
+        self.prepare_batch_observation()
+        original = self.flow.source.guard.observe_scoped
+        def observe(*args):
+            result = original(*args)
+            self.active = False
+            return result
+        self.flow.source.guard.observe_scoped = observe
+        with self.assertRaisesRegex(ValueError, 'source read authorization changed'):
+            self.flow.guard.observe_inputs()
+
+    def test_source_change_between_observation_reads_is_not_returned_as_stable_input(self):
+        self.prepare_batch_observation()
+        original = self.flow.source.guard._read_snapshot
+        calls = 0
+        def snapshot(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                table = self.flow.source.resource.tables['foodtech-data-flow-dev']
+                table.items[('JEYUK#batch-current', 'SOURCE#REVISION')]['revision'] += 1
+            return original(*args)
+        self.flow.source.guard._read_snapshot = snapshot
+        with self.assertRaisesRegex(ValueError, 'recipe source changed or is unavailable'):
+            self.flow.guard.observe_inputs()
+
     def test_revoked_before_call_does_not_read_sources_or_call_model(self):
         self.active = False
         def forbidden(*args, **kwargs):

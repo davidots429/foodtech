@@ -16,6 +16,7 @@ from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts.jeyuk_process import PROFILES
 from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
 from foodtech_contracts.jeyuk_receipt import matches_jeyuk_snapshot
+from foodtech_contracts.jeyuk_observed_inputs import observe_jeyuk_batch
 
 from .policy import Execution, Feature
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
@@ -69,6 +70,15 @@ class BoundRecipeSourceGuard:
             checks.extend(self.read_authorization.settlement_checks(self.execution, self.source_partitions))
         return checks
 
+    def observe_inputs(self):
+        """Return authorized batch facts, never an Evidence grade or history proof."""
+        if type(self.guard) is not DynamoRecipeSourceGuard or not self._authorized(self.execution):
+            raise ValueError('source read authorization unavailable')
+        observed = self.guard.observe_scoped(self.execution, self.job_partitions, self.source_partitions)
+        if not self._authorized(self.execution):
+            raise ValueError('source read authorization changed')
+        return observed
+
 
 def _positive_integer(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, Decimal)):
@@ -117,6 +127,16 @@ class DynamoRecipeSourceGuard:
         if not self._valid_scope(execution, job_partitions, source_partitions):
             return False
         return self._verify(execution, source_partitions)
+
+    def observe_scoped(self, execution, job_partitions, source_partitions):
+        if not self._valid_scope(execution, job_partitions, source_partitions):
+            raise ValueError('invalid recipe observation scope')
+        bindings = ((execution.job_id, execution.job_version, execution.jeyuk_source_revision),
+                    (execution.prior_job_id, execution.prior_job_version, execution.prior_source_revision))
+        first = self._read_snapshot(execution.tenant_id, bindings, source_partitions)
+        if first is None or first != self._read_snapshot(execution.tenant_id, bindings, source_partitions):
+            raise ValueError('recipe source changed or is unavailable')
+        return tuple(observe_jeyuk_batch(item[1], item[4]) for item in first)
 
     @staticmethod
     def _valid_scope(execution, job_partitions, source_partitions):
