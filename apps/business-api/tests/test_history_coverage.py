@@ -18,6 +18,7 @@ from test_roster_audit import FakeStore
 class HistoryCoverageTests(unittest.TestCase):
     def setUp(self):
         self.owner = 'opaque_owner'
+        self.registration_id = str(uuid4())
         self.ids = [str(uuid4()), str(uuid4())]
         self.store = FakeStore(self.owner, self.ids)
         self.client = boto3.client('dynamodb', region_name='ap-southeast-2',
@@ -42,7 +43,7 @@ class HistoryCoverageTests(unittest.TestCase):
         stub.add_response('transact_get_items', second or self.response())
 
     def run_register(self):
-        return self.registrar.register(owner=self.owner, auth_epoch=2)
+        return self.registrar.register(owner=self.owner, auth_epoch=2, registration_id=self.registration_id)
 
     def test_complete_audit_cas_binds_account_writer_and_revision_without_model_authority(self):
         with Stubber(self.client) as stub:
@@ -181,3 +182,73 @@ class HistoryCoverageTests(unittest.TestCase):
         self.assertEqual(witness.coverage_proof_sha256,coverage['proof_sha256'])
         self.assertEqual(witness.roster_sha256,coverage['baseline_roster_sha256'])
         self.assertEqual((witness.coverage_version,witness.history_revision),(1,3))
+
+    def test_uncertain_commit_recovers_exact_receipt_without_rewriting_or_auditing(self):
+        with Stubber(self.client) as stub:
+            self.controls(stub)
+            stub.add_client_error('transact_write_items','InternalServerError','synthetic response loss',http_status_code=500)
+            with self.assertRaises(HistoryCoverageUnavailable):self.run_register()
+        self.user['history_coverage'] = self.decoder.deserialize(
+            self.requests[0]['TransactItems'][0]['Update']['ExpressionAttributeValues'][':coverage'])
+        self.store.revisions = [10,11]  # Recovery must not claim fresh roster validation.
+        with Stubber(self.client) as stub:
+            stub.add_response('transact_get_items',self.response())
+            result = self.registrar.recover(owner=self.owner,auth_epoch=2,registration_id=self.registration_id)
+            stub.assert_no_pending_responses()
+        self.assertEqual(result,{'coverage_version':1,'record_count':2,'receipt_only':True,'immediately_previous_verified':False})
+        self.assertEqual(len(self.requests),1)
+        self.assertEqual(self.store.revisions,[10,11])
+        for value in [self.owner,self.registration_id,*self.ids]:self.assertNotIn(value,json.dumps(result))
+
+    def test_replaying_current_registration_id_cannot_increment_version(self):
+        with Stubber(self.client) as stub:
+            self.controls(stub)
+            stub.add_response('transact_write_items',{})
+            self.run_register()
+        self.user['history_coverage'] = self.decoder.deserialize(
+            self.requests[0]['TransactItems'][0]['Update']['ExpressionAttributeValues'][':coverage'])
+        self.store.revisions = [3,3]
+        with Stubber(self.client) as stub:
+            stub.add_response('transact_get_items',self.response())
+            with self.assertRaises(HistoryCoverageUnavailable):self.run_register()
+            stub.assert_no_pending_responses()
+        self.assertEqual(len(self.requests),1)
+        self.assertEqual(self.store.revisions,[3,3])
+
+    def test_missing_replaced_revoked_or_mismatched_receipt_is_not_recreated(self):
+        for mode in ['absent','other_id','epoch','generation','writer','scope','state','hash','count','suspended','locked']:
+            with self.subTest(mode=mode):
+                self.setUp()
+                with Stubber(self.client) as stub:
+                    self.controls(stub)
+                    stub.add_response('transact_write_items',{})
+                    self.run_register()
+                coverage = self.decoder.deserialize(
+                    self.requests[0]['TransactItems'][0]['Update']['ExpressionAttributeValues'][':coverage'])
+                self.user['history_coverage'] = coverage
+                if mode=='absent':del self.user['history_coverage']
+                elif mode=='other_id':coverage['registration_id']=str(uuid4())
+                elif mode=='epoch':coverage['registration_epoch']=3
+                elif mode=='generation':coverage['generation']=str(uuid4())
+                elif mode=='writer':self.writer['manifest_sha256']='d'*64
+                elif mode=='scope':coverage['coverage_scope']='PARTIAL'
+                elif mode=='state':coverage['state']='REVOKED'
+                elif mode=='hash':coverage['proof_sha256']='invalid'
+                elif mode=='count':coverage['record_count']=True
+                elif mode=='suspended':self.user['suspended']=True
+                else:self.user['deletion_lock_request']=str(uuid4())
+                self.store.revisions=[3,3]
+                with Stubber(self.client) as stub:
+                    stub.add_response('transact_get_items',self.response())
+                    with self.assertRaises(HistoryCoverageUnavailable):
+                        self.registrar.recover(owner=self.owner,auth_epoch=2,registration_id=self.registration_id)
+                    stub.assert_no_pending_responses()
+                self.assertEqual(len(self.requests),1)
+                self.assertEqual(self.store.revisions,[3,3])
+
+    def test_malformed_operation_id_never_reaches_sdk(self):
+        with Stubber(self.client):
+            for bad in [None,True,'not-uuid','AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA']:
+                for method in [self.registrar.register,self.registrar.recover]:
+                    with self.subTest(bad=bad,method=method.__name__),self.assertRaises(ValueError):
+                        method(owner=self.owner,auth_epoch=2,registration_id=bad)

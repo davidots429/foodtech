@@ -56,20 +56,24 @@ class DynamoHistoryCoverageRegistrar:
                 not int(writer['verified_at']) <= now < int(writer['valid_until']):
             raise ValueError('verified writer controls unavailable')
         old = user.get('history_coverage')
-        if old is not None and (not isinstance(old, dict) or _integer(old.get('version'), 1) is None or old['version'] >= 10**18):
+        if old is not None and (not isinstance(old, dict) or _integer(old.get('version'), 1) is None or old['version'] > 10**18):
             raise ValueError('invalid previous coverage')
         return user, writer
 
-    def register(self, *, owner, auth_epoch, max_scanned=10_000):
+    def register(self, *, owner, auth_epoch, registration_id, max_scanned=10_000):
         """Audit internally, then CAS account coverage + writer + revision.
 
         A lost transaction response is not success and is never retried here.
-        The caller needs separate exact-record recovery before further work.
+        The trusted caller retains a fresh UUID before starting and uses recover
+        after uncertainty. Never reuse a prior operation ID for a new audit.
         """
-        if not valid_subject(owner) or type(auth_epoch) is not int or not 0 <= auth_epoch < 2**63:
+        if not valid_subject(owner) or type(auth_epoch) is not int or not 0 <= auth_epoch < 2**63 or not _uuid(registration_id):
             raise ValueError('explicit trusted account scope required')
         try:
             before = self._controls(owner, auth_epoch)
+            previous = before[0].get('history_coverage')
+            if previous is not None and (previous.get('registration_id') == registration_id or previous['version'] >= 10**18):
+                raise ValueError('use exact receipt recovery, not registration replay')
             observed = audit_snapshot(self.store, owner, max_scanned=max_scanned)
             if observed.owner != owner or self._controls(owner, auth_epoch) != before:
                 raise ValueError('controls changed during audit')
@@ -79,7 +83,8 @@ class DynamoHistoryCoverageRegistrar:
                 'generation': writer['generation'], 'writer_contract': HISTORY_CONTRACT,
                 'coverage_scope': 'ALL_RETAINED_JOBS', 'coverage_revision': observed.revision,
                 'baseline_roster_sha256': observed.roster_sha256, 'proof_sha256': observed.proof_sha256,
-                'writer_manifest_sha256': writer['manifest_sha256']}
+                'writer_manifest_sha256': writer['manifest_sha256'], 'registration_id': registration_id,
+                'registration_epoch': auth_epoch, 'record_count': observed.count}
             now = self.clock()
             if type(now) is not int or not int(writer['verified_at']) <= now < int(writer['valid_until']):
                 raise ValueError('writer verification expired before registration')
@@ -114,3 +119,31 @@ class DynamoHistoryCoverageRegistrar:
                     'immediately_previous_verified': False}
         except (ValueError, TypeError, KeyError, AttributeError, BotoCoreError, ClientError):
             raise HistoryCoverageUnavailable('history coverage registration unavailable') from None
+
+    def recover(self, *, owner, auth_epoch, registration_id):
+        """Read the same account/epoch/operation receipt, without writes or audit.
+
+        This is historical registration evidence, never a fresh roster/history
+        authorization. Failure to recover does not prove a write did not commit.
+        A replaced, locked or revoked record is unavailable, not recreated.
+        """
+        if not valid_subject(owner) or type(auth_epoch) is not int or not 0 <= auth_epoch < 2**63 or not _uuid(registration_id):
+            raise ValueError('explicit trusted registration receipt scope required')
+        try:
+            user, writer = self._controls(owner, auth_epoch)
+            coverage = user.get('history_coverage')
+            if not isinstance(coverage, dict) or coverage.get('state') != 'ACTIVE' or \
+                    coverage.get('registration_id') != registration_id or \
+                    _integer(coverage.get('registration_epoch')) != auth_epoch or \
+                    coverage.get('generation') != writer['generation'] or \
+                    coverage.get('writer_manifest_sha256') != writer['manifest_sha256'] or \
+                    coverage.get('writer_contract') != HISTORY_CONTRACT or coverage.get('coverage_scope') != 'ALL_RETAINED_JOBS' or \
+                    _integer(coverage.get('coverage_revision'), 1) is None or coverage['coverage_revision'] > 10**18 or \
+                    _integer(coverage.get('record_count')) is None or coverage['record_count'] > 100 or \
+                    any(not isinstance(coverage.get(key), str) or not re.fullmatch('[a-f0-9]{64}', coverage[key])
+                        for key in ('baseline_roster_sha256', 'proof_sha256')):
+                raise ValueError('exact registration receipt unavailable')
+            return {'coverage_version': int(coverage['version']), 'record_count': int(coverage['record_count']),
+                    'receipt_only': True, 'immediately_previous_verified': False}
+        except (ValueError, TypeError, KeyError, AttributeError, BotoCoreError, ClientError):
+            raise HistoryCoverageUnavailable('history coverage receipt unavailable') from None
