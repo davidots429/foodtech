@@ -19,6 +19,7 @@ from .recipe_scope import (RecipeReadScope, RecipeScopeDenied, authenticated_rec
                            revalidate_recipe_scope)
 from .subject_identity import valid_subject
 from .source_read_authority import DynamoSourceReadAuthority
+from foodtech_contracts.source_read_authorization import SourceReadAuthorization
 
 REGION = 'ap-southeast-2'
 # Retained from the Autopilot read baseline. Replication/KMS wildcard grants in
@@ -50,11 +51,12 @@ def _validate_scope(scope):
 
 class RecipeReadLease:
     """Private, in-memory capability. Never serialize or return to a browser."""
-    __slots__ = ('__scope', '__expires', '__session', '__config')
+    __slots__ = ('__scope', '__expires', '__session', '__config', '__authorization')
 
     def __init__(self, scope, expires_at, session, config):
         self.__scope, self.__expires = scope, expires_at
         self.__session, self.__config = session, config
+        self.__authorization = None
 
     @property
     def scope(self):
@@ -63,6 +65,17 @@ class RecipeReadLease:
     @property
     def expires_at(self):
         return self.__expires
+
+    @property
+    def authorization(self):
+        return self.__authorization
+
+    def _bind_authorization(self, observation):
+        if self.__authorization is not None or type(observation) is not SourceReadAuthorization or \
+                (observation.subject, observation.execution_id, observation.auth_epoch, observation.source_partitions) != \
+                (self.scope.owner, self.scope.execution_id, self.scope.auth_epoch, self.scope.source_partitions):
+            raise RecipeScopeDenied('source authorization observation unavailable')
+        self.__authorization = observation
 
     def __repr__(self):
         return 'RecipeReadLease()'
@@ -168,24 +181,33 @@ async def issue_authenticated_reads(request, execution_id, *, execution_reader, 
     # binding is not independent authority to disclose the source payload.
     authority = broker.source_authority if source_authority is None else source_authority
     authorize = getattr(authority, 'authorize_read', None)
+    snapshotter = getattr(authority, 'authorization_snapshot', None)
     if not callable(authorize):
         raise RecipeScopeDenied('independent source authority unavailable')
 
     async def require_source_authority():
         try:
-            allowed = await asyncio.to_thread(authorize, scope)
+            allowed = await asyncio.to_thread(snapshotter if callable(snapshotter) else authorize, scope)
         except (BotoCoreError, ClientError, ValueError, TypeError, AttributeError):
             raise RecipeScopeDenied('source authority unavailable') from None
-        if allowed is not True:
+        if callable(snapshotter):
+            if type(allowed) is not SourceReadAuthorization:
+                raise RecipeScopeDenied('source authority unavailable')
+        elif allowed is not True:
             raise RecipeScopeDenied('source authority unavailable')
+        return allowed
 
     scope = await authenticated_recipe_scope(request, execution_id, execution_reader, job_reader)
-    await require_source_authority()
+    before_authorization = await require_source_authority()
     try:
         lease = await asyncio.to_thread(broker.issue, scope)
     except (BotoCoreError, ClientError, ValueError):
         raise RecipeScopeDenied('recipe read lease unavailable') from None
     # A revoke/change during issuance discards the capability before any read.
     await revalidate_recipe_scope(request, scope, execution_reader, job_reader)
-    await require_source_authority()
+    after_authorization = await require_source_authority()
+    if after_authorization != before_authorization:
+        raise RecipeScopeDenied('source authorization changed')
+    if type(after_authorization) is SourceReadAuthorization:
+        lease._bind_authorization(after_authorization)
     return lease

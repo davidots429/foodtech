@@ -203,7 +203,7 @@ class AuthenticatedRecipeReadTests(unittest.IsolatedAsyncioTestCase):
         fixture.sessions.return_value.resource.assert_not_called()
 
     async def test_real_catalog_reader_is_connected_and_rechecks_after_assume_role(self):
-        for revoke in [False, True]:
+        for mutation in ['none', 'suspend', 'version']:
             fixture = RecipeReadBrokerTests()
             fixture.setUp()
             refs = [str(uuid4()), str(uuid4())]
@@ -223,21 +223,27 @@ class AuthenticatedRecipeReadTests(unittest.IsolatedAsyncioTestCase):
 
             def assumed(**kwargs):
                 response = original(**kwargs)
-                if revoke:
+                if mutation == 'suspend':
                     principal['suspended'] = True
+                elif mutation == 'version':
+                    grants[0]['version'] += 1
                 return response
 
             fixture.sts.assume_role.side_effect = assumed
-            with self.subTest(revoke=revoke), patch(
+            with self.subTest(mutation=mutation), patch(
                     'foodtech_business_api.recipe_read_broker.authenticated_recipe_scope',
                     new=AsyncMock(return_value=fixture.scope)), patch(
                     'foodtech_business_api.recipe_read_broker.revalidate_recipe_scope', new=AsyncMock()):
                 call = issue_authenticated_reads(object(), fixture.scope.execution_id,
                     execution_reader=object(), job_reader=object(), broker=fixture.broker)
-                if revoke:
+                if mutation != 'none':
                     with self.assertRaises(RecipeScopeDenied):
                         await call
                 else:
-                    self.assertEqual((await call).scope, fixture.scope)
+                    lease = await call
+                    self.assertEqual(lease.scope, fixture.scope)
+                    self.assertEqual(lease.authorization.grant_ids, tuple(refs))
+                    self.assertEqual(lease.authorization.grant_versions, (1, 1))
+                    self.assertEqual(lease.authorization.auth_epoch, fixture.scope.auth_epoch)
             self.assertEqual(client.get_item.call_count, 2)
             fixture.sessions.return_value.resource.assert_not_called()

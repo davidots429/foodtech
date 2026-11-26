@@ -44,6 +44,17 @@ class SourceReadAuthorityTests(unittest.TestCase):
         self.assertNotIn('opaque_subject', repr(self.grants))
         self.assertNotIn('owner_subject', repr(self.grants))
 
+    def test_snapshot_preserves_versions_for_later_atomic_reauthorization(self):
+        self.grants[1]['version'] = 2
+        self.responses()
+        receipt = self.authority.authorization_snapshot(self.scope)
+        self.assertEqual(receipt.grant_ids, tuple(self.refs))
+        self.assertEqual(receipt.grant_versions, (1, 2))
+        self.assertEqual(receipt.expires_at, (2000, 2000))
+        self.assertEqual(receipt.auth_epoch, self.scope.auth_epoch)
+        self.assertNotIn(self.scope.owner, repr(receipt))
+        self.assertIsNone(self.authority.authorization_snapshot(replace(self.scope, source_partitions=([], []))))
+
     def test_uninitialized_suspended_locked_or_wrong_epoch_cannot_look_up_grants(self):
         original = copy.deepcopy(self.principal)
         variants = [{k: v for k, v in original.items() if k != 'epoch'}, {**original, 'epoch': 4},

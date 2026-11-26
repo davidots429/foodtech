@@ -20,6 +20,7 @@ from boto3.dynamodb.types import TypeSerializer
 
 from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, Model, Tier, UNCONFIGURED_TIER1
 from .recipe_source_guard import BoundRecipeSourceGuard
+from .recipe_read_authorization import DynamoRecipeReadAuthorization
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -544,6 +545,10 @@ class DynamoRegistry:
                 type(recipe_source_guard) is not BoundRecipeSourceGuard or
                 recipe_source_guard.execution != expected_execution or expected_execution.execution_id != execution_id):
             raise ValueError('invalid recipe settlement guard')
+        if recipe_source_guard is not None and recipe_source_guard.read_authorization is not None and \
+                (type(recipe_source_guard.read_authorization) is not DynamoRecipeReadAuthorization or
+                 recipe_source_guard.read_authorization.observation.auth_table != self.auth_table):
+            raise ValueError('recipe authorization table must match execution authentication')
         item = self._get("EXEC", execution_id)
         if not item or item["state"] != "RESERVED" or actual_cost_usd < 0:
             raise RegistryConflict("execution is not reserved or actual cost is invalid")

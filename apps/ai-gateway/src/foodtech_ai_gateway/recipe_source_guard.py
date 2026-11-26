@@ -18,6 +18,7 @@ from foodtech_contracts.jeyuk_mock import decode_jeyuk_mock_sample
 from foodtech_contracts.jeyuk_receipt import matches_jeyuk_snapshot
 
 from .policy import Execution, Feature
+from .recipe_read_authorization import DynamoRecipeReadAuthorization
 
 MAX_SOURCE_ROWS = max(profile.time_bands[-1] for profile in PROFILES.values())
 MAX_RECEIPTS = 100
@@ -35,16 +36,38 @@ class BoundRecipeSourceGuard:
     execution: Execution = field(repr=False)
     job_partitions: tuple[str, str] = field(repr=False)
     source_partitions: tuple[str, str] = field(repr=False)
+    read_authorization: DynamoRecipeReadAuthorization | None = field(default=None, repr=False)
+
+    def _authorized(self, execution):
+        if self.read_authorization is None:
+            return True
+        if type(self.read_authorization) is not DynamoRecipeReadAuthorization or type(self.guard) is not DynamoRecipeSourceGuard:
+            return False
+        stage = self.read_authorization.observation.auth_table.removeprefix('foodtech-auth-sessions-')
+        return (self.guard.cooking.name, self.guard.data.name) == \
+            (f'foodtech-cooking-jobs-{stage}', f'foodtech-data-flow-{stage}') and \
+            self.read_authorization.verify(execution, self.source_partitions)
 
     def verify(self, execution: Execution) -> bool:
         if not isinstance(execution, Execution) or execution != self.execution:
             return False
-        return self.guard.verify_scoped(execution, self.job_partitions, self.source_partitions) is True
+        if not self._authorized(execution):
+            return False
+        if self.guard.verify_scoped(execution, self.job_partitions, self.source_partitions) is not True:
+            return False
+        return self._authorized(execution)
 
     def settlement_checks(self):
         if type(self.guard) is not DynamoRecipeSourceGuard:
             raise ValueError('DynamoDB source guard is required')
-        return self.guard.settlement_checks(self.execution, self.job_partitions, self.source_partitions)
+        if not self._authorized(self.execution):
+            raise ValueError('source read authorization unavailable')
+        checks = self.guard.settlement_checks(self.execution, self.job_partitions, self.source_partitions)
+        if self.read_authorization is not None:
+            if type(self.read_authorization) is not DynamoRecipeReadAuthorization:
+                raise ValueError('explicit source read authorization required')
+            checks.extend(self.read_authorization.settlement_checks(self.execution, self.source_partitions))
+        return checks
 
 
 def _positive_integer(value: object) -> int | None:

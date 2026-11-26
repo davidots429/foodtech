@@ -15,6 +15,7 @@ from boto3.dynamodb.types import TypeDeserializer
 
 from .recipe_scope import RecipeReadScope
 from .subject_identity import valid_subject
+from foodtech_contracts.source_read_authorization import SourceReadAuthorization
 
 
 def _integer(value, minimum=0):
@@ -58,18 +59,21 @@ class DynamoSourceReadAuthority:
         return refs
 
     def authorize_read(self, scope):
+        return self.authorization_snapshot(scope) is not None
+
+    def authorization_snapshot(self, scope):
         if type(scope) is not RecipeReadScope or not valid_subject(scope.owner) or \
                 type(scope.auth_epoch) is not int or not 0 <= scope.auth_epoch < 2**63 or \
                 not isinstance(scope.source_partitions, tuple) or len(scope.source_partitions) != 2 or \
-                len(set(scope.source_partitions)) != 2 or any(not isinstance(pk, str) or not
-                    re.fullmatch(r'JEYUK#jeyuk-[A-Za-z0-9-]{1,121}', pk) for pk in scope.source_partitions):
-            return False
+                any(not isinstance(pk, str) or not re.fullmatch(r'JEYUK#jeyuk-[A-Za-z0-9-]{1,121}', pk)
+                    for pk in scope.source_partitions) or scope.source_partitions[0] == scope.source_partitions[1]:
+            return None
         key = {'pk': {'S': 'USER#' + scope.owner}}
         principal = self._decode(self.client.get_item(TableName=self.auth_table, Key=key,
             ConsistentRead=True).get('Item'))
         refs = self._refs(scope, principal)
         if refs is None:
-            return False
+            return None
         response = self.client.transact_get_items(TransactItems=[
             {'Get': {'TableName': self.auth_table, 'Key': key}},
             *({'Get': {'TableName': self.catalog_table, 'Key': {
@@ -77,14 +81,14 @@ class DynamoSourceReadAuthority:
         ])
         rows = response.get('Responses')
         if not isinstance(rows, list) or len(rows) != 3 or any(not isinstance(row, dict) for row in rows):
-            return False
+            return None
         current = self._decode(rows[0].get('Item'))
         if self._refs(scope, current) != refs:
-            return False
+            return None
         now = self.clock()
         if isinstance(now, bool) or not isinstance(now, (int, float)) or not math.isfinite(now) or now <= 0:
-            return False
-        deadlines = []
+            return None
+        deadlines, versions = [], []
         for ref, source, row in zip(refs, scope.source_partitions, rows[1:], strict=True):
             grant = self._decode(row.get('Item'))
             if not isinstance(grant, dict) or set(grant) != {
@@ -93,11 +97,15 @@ class DynamoSourceReadAuthority:
                     _integer(grant['schema'], 1) != 1 or grant['grant_id'] != ref or \
                     grant['source_partition'] != source or grant['permission'] != 'RECIPE_SOURCE_READ' or \
                     grant['state'] != 'ACTIVE' or _integer(grant['version'], 1) is None:
-                return False
+                return None
             expires = _integer(grant['expires_at'], 1)
             if expires is None or expires <= now:
-                return False
+                return None
             deadlines.append(expires)
+            versions.append(_integer(grant['version'], 1))
         final_now = self.clock()
-        return isinstance(final_now, (int, float)) and not isinstance(final_now, bool) and \
-            math.isfinite(final_now) and now <= final_now < min(deadlines)
+        if not isinstance(final_now, (int, float)) or isinstance(final_now, bool) or \
+                not math.isfinite(final_now) or not now <= final_now < min(deadlines):
+            return None
+        return SourceReadAuthorization(self.auth_table, self.catalog_table, scope.owner, scope.execution_id,
+                                       scope.auth_epoch, scope.source_partitions, refs, tuple(versions), tuple(deadlines))

@@ -14,6 +14,7 @@ from .policy import Caller, Decision, Feature, GatewayPolicy
 from .ollama import OllamaClient, OllamaFailure
 from .registry import DynamoRegistry, RegistryConflict
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
+from .recipe_read_authorization import DynamoRecipeReadAuthorization
 from .provider import LiteLLMProvider, ProviderFailure
 from .vault import DynamoCredentialVault, VaultFailure
 from .recommendation_generation import generate_candidate
@@ -111,6 +112,10 @@ class GatewayService:
             guard = self.recipe_source_guard
             if type(guard) is not BoundRecipeSourceGuard or type(guard.guard) is not DynamoRecipeSourceGuard or \
                     guard.execution != execution:
+                return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_SCOPE_UNAVAILABLE")
+            if guard.read_authorization is not None and \
+                    (type(guard.read_authorization) is not DynamoRecipeReadAuthorization or
+                     guard.read_authorization.observation.auth_table != getattr(self.registry, 'auth_table', None)):
                 return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_SCOPE_UNAVAILABLE")
             try:
                 checks = await asyncio.to_thread(guard.settlement_checks)
