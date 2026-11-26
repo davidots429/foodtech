@@ -110,6 +110,11 @@ class PublishingTests(unittest.TestCase):
         guard = next(i for i, step in enumerate(steps) if step.get('name') == 'Verify disabled read probe before obtaining AWS credentials')
         self.assertLess(build, guard)
         self.assertLess(guard, credentials)
+        patch_guard = next(i for i, step in enumerate(steps) if step.get('name') == 'Verify patched maintenance library before obtaining AWS credentials')
+        self.assertLess(build, patch_guard)
+        self.assertLess(patch_guard, credentials)
+        self.assertEqual(steps[patch_guard]['if'], "inputs.operation == 'publish'")
+        self.assertIn('1.5.7+dfsg-1+deb13u1', steps[patch_guard]['run'])
         self.assertEqual(steps[guard]['if'], "inputs.operation == 'publish'")
         for isolation in ('--network none', '--read-only', '--cap-drop ALL', '--security-opt no-new-privileges'):
             self.assertIn(isolation, steps[guard]['run'])
