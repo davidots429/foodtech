@@ -15,6 +15,14 @@ def main(path):
     assert 'StandardizationWorkerTaskRoleArn' in template['Outputs']
     assert len([r for r in resources if r['Type'] == 'AWS::DynamoDB::Table']) == 1
     assert len([r for r in resources if r['Type'] == 'AWS::SQS::Queue']) == 3
+    policy, = [r['Properties']['PolicyDocument'] for r in resources if r['Type'] == 'AWS::IAM::Policy']
+    auth, = [s for s in policy['Statement'] if 'foodtech-auth-sessions-dev' in json.dumps(s['Resource'])]
+    assert auth['Action'] == 'dynamodb:ConditionCheckItem'
+    assert auth['Condition'] == {
+        'ForAllValues:StringLike': {'dynamodb:LeadingKeys': ['USER#*']},
+        'Null': {'dynamodb:LeadingKeys': 'false'},
+        'StringEqualsIfExists': {'dynamodb:ReturnValues': 'NONE'}}
+
 
 
 if __name__ == '__main__':

@@ -22,7 +22,10 @@ class WorkerPolicyReviewTests(unittest.TestCase):
         new = copy.deepcopy(old)
         new['Resources']['Policy']['Properties']['PolicyDocument']['Statement'].extend([
             {'Effect': 'Allow', 'Action': 'dynamodb:Query', 'Resource': data},
-            {'Effect': 'Allow', 'Action': 'dynamodb:ConditionCheckItem', 'Resource': auth}])
+            {'Effect': 'Allow', 'Action': 'dynamodb:ConditionCheckItem', 'Resource': auth,
+             'Condition': {'ForAllValues:StringLike': {'dynamodb:LeadingKeys': ['USER#*']},
+                           'Null': {'dynamodb:LeadingKeys': 'false'},
+                           'StringEqualsIfExists': {'dynamodb:ReturnValues': 'NONE'}}}])
         return old, new, account
 
     def test_exact_two_permissions_are_reviewable_without_provisioning_resources(self):
@@ -55,6 +58,13 @@ class WorkerPolicyReviewTests(unittest.TestCase):
             else:
                 new['Resources']['Worker']['Properties']['AssumeRolePolicyDocument'] = {'Statement': []}
             with self.subTest(variant=variant), self.assertRaises(ValueError):
+                reviewer.review(old, new, account)
+
+    def test_unrestricted_session_keys_or_failure_item_return_are_rejected(self):
+        for key in ('ForAllValues:StringLike', 'Null', 'StringEqualsIfExists'):
+            old, new, account = self.pair()
+            del new['Resources']['Policy']['Properties']['PolicyDocument']['Statement'][-1]['Condition'][key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
                 reviewer.review(old, new, account)
 
     def test_output_and_deployment_contract_changes_are_rejected(self):

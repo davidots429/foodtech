@@ -67,7 +67,11 @@ def main() -> None:
     auth = f"arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/foodtech-auth-sessions-dev"
     auth_actions = ['dynamodb:ConditionCheckItem', 'dynamodb:GetItem', 'dynamodb:Query',
                     'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem']
-    table_results.update(decisions(iam, custom, auth_actions, [auth]))
+    auth_context = [
+        {'ContextKeyName': 'dynamodb:LeadingKeys', 'ContextKeyValues': ['USER#synthetic-role-probe'], 'ContextKeyType': 'stringList'},
+        {'ContextKeyName': 'dynamodb:ReturnValues', 'ContextKeyValues': ['NONE'], 'ContextKeyType': 'string'},
+    ]
+    table_results.update(decisions(iam, {**custom, 'ContextEntries': auth_context}, auth_actions, [auth]))
     expected_tables.update({(action, auth): 'allowed' if action == 'dynamodb:ConditionCheckItem' else 'implicitDeny'
                             for action in auth_actions})
     ordered = f"arn:aws:sqs:{REGION}:{ACCOUNT}:foodtech-ordered-dev.fifo"
@@ -90,10 +94,18 @@ def main() -> None:
         raise AssertionError(f"Worker identity policy mismatch: {mismatches}")
     effective = decisions(iam, principal, table_actions, [data, cooking]) | \
         decisions(iam, principal, sqs_actions, [ordered, quarantine]) | \
-        decisions(iam, principal, auth_actions, [auth])
+        decisions(iam, {**principal, 'ContextEntries': principal['ContextEntries'] + auth_context}, auth_actions, [auth])
     blocked = [(action, resource) for (action, resource), expected in
                (expected_tables | expected_queues).items() if expected == "allowed" and
                effective.get((action, resource), {}).get("decision") != "allowed"]
+    for context in (
+        [{**auth_context[0], 'ContextKeyValues': ['SESSION#synthetic-role-probe']}, auth_context[1]],
+        [auth_context[0], {**auth_context[1], 'ContextKeyValues': ['ALL_OLD']}],
+        [auth_context[1]],
+    ):
+        result = decisions(iam, {**custom, 'ContextEntries': context}, ['dynamodb:ConditionCheckItem'], [auth])
+        if result[('dynamodb:ConditionCheckItem', auth)]['decision'] != 'implicitDeny':
+            raise AssertionError('Worker auth condition must not read sessions or return failed items')
     summary = {"account": ACCOUNT, "region": REGION, "role_arn": role_arn,
                       "allowed": sum(value == "allowed" for value in
                                      (expected_tables | expected_queues).values()),

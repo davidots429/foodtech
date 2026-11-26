@@ -45,11 +45,12 @@ def permissions(document, resources, account):
     result = set()
     for statement in document['Statement']:
         if not {'Effect', 'Action', 'Resource'} <= set(statement) or \
-                set(statement) - {'Effect', 'Action', 'Resource', 'Sid'} or statement['Effect'] != 'Allow':
+                set(statement) - {'Effect', 'Action', 'Resource', 'Sid', 'Condition'} or statement['Effect'] != 'Allow':
             raise ValueError('unsupported identity policy statement')
         actions = statement['Action'] if isinstance(statement['Action'], list) else [statement['Action']]
         targets = statement['Resource'] if isinstance(statement['Resource'], list) else [statement['Resource']]
-        result.update((action, resolve(target)) for action in actions for target in targets)
+        result.update((action, resolve(target), json.dumps(statement.get('Condition', {}), sort_keys=True))
+                      for action in actions for target in targets)
     return result
 
 
@@ -80,12 +81,17 @@ def review(deployed, candidate, account):
         raise ValueError('existing standardization role unavailable')
     previous = permissions(before['PolicyDocument'], old, account)
     proposed = permissions(after['PolicyDocument'], new, account)
-    expected = {('dynamodb:Query', f'arn:aws:dynamodb:ap-southeast-2:{account}:table/foodtech-data-flow-dev'),
-                ('dynamodb:ConditionCheckItem', f'arn:aws:dynamodb:ap-southeast-2:{account}:table/foodtech-auth-sessions-dev')}
+    auth_condition = {'ForAllValues:StringLike': {'dynamodb:LeadingKeys': ['USER#*']},
+                      'Null': {'dynamodb:LeadingKeys': 'false'},
+                      'StringEqualsIfExists': {'dynamodb:ReturnValues': 'NONE'}}
+    expected = {('dynamodb:Query', f'arn:aws:dynamodb:ap-southeast-2:{account}:table/foodtech-data-flow-dev', '{}'),
+                ('dynamodb:ConditionCheckItem', f'arn:aws:dynamodb:ap-southeast-2:{account}:table/foodtech-auth-sessions-dev',
+                 json.dumps(auth_condition, sort_keys=True))}
     if previous - proposed or proposed - previous != expected:
         raise ValueError('unexpected worker permission delta')
     return {'schema': 1, 'reviewed': True, 'changed_policy': logical,
-            'added_permissions': sorted([list(pair) for pair in expected]),
+            'added_permissions': sorted([{'action': action, 'resource': resource, 'condition': json.loads(condition)}
+                                         for action, resource, condition in expected], key=lambda row: row['action']),
             'added_resources': [], 'removed_resources': [], 'runtime_verified': False}
 
 

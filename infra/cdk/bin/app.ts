@@ -461,7 +461,14 @@ class MinimalDataFlowStack extends Stack {
     const authTable = dynamodb.Table.fromTableName(
       this, "AuthSessionsForWorker", `foodtech-auth-sessions-${stage}`,
     );
-    authTable.grant(workerRole, "dynamodb:ConditionCheckItem");
+    workerRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:ConditionCheckItem"], resources: [authTable.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["USER#*"] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+        StringEqualsIfExists: { "dynamodb:ReturnValues": "NONE" },
+      },
+    }));
     ordered.grant(workerRole, "sqs:ReceiveMessage", "sqs:DeleteMessage");
     quarantine.grant(workerRole, "sqs:SendMessage");
     if (collectorRole && ingestionDlq) {
