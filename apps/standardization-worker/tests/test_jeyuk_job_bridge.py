@@ -108,6 +108,38 @@ class JeyukJobBridgeTests(unittest.TestCase):
             self.bridge.apply(decision(2, "NORMAL"))
         self.assertEqual(self.table.items, before)
 
+    def test_matching_legacy_replay_preserves_event_without_new_writes(self):
+        from copy import deepcopy
+        self.bridge.apply(decision(1, "NORMAL"))
+        key = (self.job_pk, "EVENT#JEYUK#000001")
+        self.table.items[key]["rule_version"] = "jeyuk-process-v1"
+        before = deepcopy(self.table.items)
+        result = decision(1, "NORMAL")
+        result["process_rule_version"] = "jeyuk-process-v1"
+        self.assertEqual(self.bridge.apply(result), "REPLAYED")
+        self.assertEqual(self.table.items, before)
+        for field, value in (("process_rule_version", RULE_VERSION),
+                             ("process_status", "FAILED"),
+                             ("reason_codes", ["MOTOR_OVERLOAD_TRIP"])):
+            changed = {**result, field: value}
+            with self.assertRaisesRegex(ValueError, "replay"):
+                self.bridge.apply(changed)
+            self.assertEqual(self.table.items, before)
+        self.table.items[key]["source_assessment_pk"] = "JEYUK#another-source"
+        with self.assertRaisesRegex(ValueError, "replay"):
+            self.bridge.apply(result)
+
+    def test_conflicting_event_after_transaction_race_is_not_acknowledged(self):
+        def lost_race(**_):
+            self.table.items[(self.job_pk, "EVENT#JEYUK#000001")] = {
+                "rule_version": "jeyuk-process-v1", "to_status": "NORMAL", "reason_codes": [],
+                "source_assessment_pk": self.stream_pk, "source_assessment_sk": "ASSESSMENT#000001"}
+            raise TransactionCanceled()
+        self.bridge.client.transact_write_items = lost_race
+        with self.assertRaisesRegex(ValueError, "replay"):
+            self.bridge.apply(decision(1, "NORMAL"))
+        self.assertEqual(self.table.items[(self.job_pk, "META")]["version"], 1)
+
     def test_controller_trip_blocks_evaluation_and_preserves_cause(self):
         result = decision(1, "FAILED")
         result["reason_codes"] = ["AGITATOR_FAILURE", "MOTOR_OVERLOAD_TRIP"]
