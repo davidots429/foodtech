@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import subprocess
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
@@ -122,12 +124,13 @@ class MealRefreshRuntimeTests(unittest.TestCase):
     def test_deadline_during_a_marker_is_not_swallowed_or_reported_success(self):
         store = MagicMock()
         store.table.query.return_value = {'Items': [{}]}
-        with patch('foodtech_business_api.combi_refresh_worker.process_pending_marker', side_effect=TimeoutError('private-key')):
-            with self.assertRaises(TimeoutError):
-                process_pending_page(store, object(), 0)
+        for failure in (TimeoutError('private-key'), runtime.MealRefreshDeadline('private-key')):
+            with patch('foodtech_business_api.combi_refresh_worker.process_pending_marker', side_effect=failure):
+                with self.assertRaises(type(failure)):
+                    process_pending_page(store, object(), 0)
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, self.environment(), clear=True), \
-                patch.object(runtime, 'configured_worker', side_effect=TimeoutError('private-key')), \
+                patch.object(runtime, 'configured_worker', side_effect=runtime.MealRefreshDeadline('private-key')), \
                 redirect_stdout(output), redirect_stderr(errors):
             self.assertEqual(runtime.main(), 1)
         self.assertEqual(output.getvalue(), '')
@@ -137,9 +140,35 @@ class MealRefreshRuntimeTests(unittest.TestCase):
         with patch.object(runtime.signal, 'signal', return_value='previous') as signal, patch.object(runtime.signal, 'alarm') as alarm:
             with runtime.deadline(60):
                 handler = signal.call_args_list[0].args[1]
-                with self.assertRaises(TimeoutError): handler()
+                with self.assertRaises(runtime.MealRefreshDeadline):
+                    # Generic SDK retry handlers must not swallow the pass deadline.
+                    try:
+                        handler()
+                    except Exception:
+                        self.fail('deadline was caught as a retryable request error')
             self.assertEqual([c.args[0] for c in alarm.call_args_list], [60, 0])
             signal.assert_any_call(runtime.signal.SIGALRM, 'previous')
+
+    def test_real_alarm_escapes_a_generic_sdk_retry_loop(self):
+        script = '''
+import time
+from unittest.mock import patch
+from foodtech_business_api import meal_refresh_runtime as runtime
+real_deadline = runtime.deadline
+def retrying_initialization():
+    while True:
+        try:
+            time.sleep(60)
+        except Exception:
+            continue
+with patch.object(runtime, 'configured_worker', side_effect=retrying_initialization), \\
+     patch.object(runtime, 'deadline', side_effect=lambda _: real_deadline(1)):
+    raise SystemExit(runtime.main())
+'''
+        result = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(result.stderr, 'Meal refresh pass failed; reconcile before retrying.\n')
 
 
 if __name__ == '__main__':

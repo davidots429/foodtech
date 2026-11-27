@@ -17,6 +17,10 @@ from .combi_refresh_worker import sweep_pending
 from .cooking_store import DynamoCookingStore
 
 
+class MealRefreshDeadline(BaseException):
+    """Escape SDK retries and per-record Exception handlers; caught only by main."""
+
+
 def configured_worker():
     if os.getenv('FOODTECH_MEAL_REFRESH_ENABLED') != 'true' or \
             os.getenv('AWS_EXECUTION_ENV') != 'AWS_ECS_FARGATE':
@@ -69,7 +73,7 @@ def configured_worker():
 def deadline(seconds):
     """Interrupt initialization and the sweep; in-flight SDK shutdown is bounded separately."""
     def expire(*_):
-        raise TimeoutError('meal refresh deadline')
+        raise MealRefreshDeadline('meal refresh deadline')
     previous = signal.signal(signal.SIGALRM, expire)
     signal.alarm(seconds)
     try:
@@ -97,7 +101,7 @@ def main():
                 print('Explicit valid meal refresh configuration is required.', file=sys.stderr)
                 return 2
             result = sweep_pending(store, auth, page_size=page_size, max_pages_per_shard=pages)
-    except Exception:
+    except (MealRefreshDeadline, Exception):
         print('Meal refresh pass failed; reconcile before retrying.', file=sys.stderr)
         return 1
     print(json.dumps(result, sort_keys=True))
