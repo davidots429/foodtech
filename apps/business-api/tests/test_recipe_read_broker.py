@@ -140,7 +140,10 @@ class RecipeReadBrokerTests(unittest.TestCase):
         self.assertEqual(broker.read_role_arn, self.role)
         self.assertIs(broker.sts, session.client.return_value)
         self.assertTrue(session.client.call_args.kwargs['config'].ignore_configured_endpoint_urls)
-        session.resource.assert_not_called()
+        session.resource.assert_called_once_with('dynamodb', config=session.client.call_args.kwargs['config'],
+                                                endpoint_url='https://dynamodb.ap-southeast-2.amazonaws.com')
+        self.assertIs(broker.cooking_resource, session.resource.return_value)
+        session.resource.return_value.Table.assert_not_called()
         session.client.return_value.assume_role.assert_not_called()
 
 

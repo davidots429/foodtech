@@ -95,7 +95,7 @@ class GatewayService:
 
     async def execute_observed_local_recipe(self, caller: Caller, execution_id: str, *,
                                             ollama: OllamaClient) -> ExecutionOutcome:
-        """Internal server-derived Jeyuk inputs; no public route is enabled.
+        """Server-derived Jeyuk inputs for the opt-in internal invocation route.
 
         The bound guard must come from the trusted v2 handoff. It observes the
         sources and independently enforces live history/grant conditions.

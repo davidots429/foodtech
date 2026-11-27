@@ -145,8 +145,8 @@ def _service(request: Request) -> GatewayService:
                 if value.strip()}
     vault = (DynamoCredentialVault(vault_table, os.getenv("FOODTECH_STAGE", "dev"), key_arns)
              if vault_table and key_arns else None)
-    # Customer-scoped source credentials are not yet issued to this service.
-    # Do not fall back to the Gateway's long-lived role for recipe source reads.
+    # The shared service has no source capability. Recipe invocation creates a
+    # separate service from each validated handoff, never a long-lived fallback.
     return GatewayService(registry, vault=vault, provider=LiteLLMProvider() if vault else None)
 
 
@@ -214,6 +214,17 @@ async def recipe_scope_observation(request: Request, execution_id: UUID, body: R
     except (ValueError, TypeError, AttributeError):
         raise HTTPException(409, 'RECIPE_EXECUTION_SCOPE_UNAVAILABLE', headers={'Cache-Control': 'no-store'}) from None
     return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/internal/ai/recipe-executions/{execution_id}/invoke')
+async def invoke_recipe_execution(request: Request, execution_id: UUID):
+    _internal(request)
+    if os.getenv('FOODTECH_RECIPE_INVOCATION_ENABLED') != 'true':
+        raise HTTPException(503, 'RECIPE_INVOCATION_UNAVAILABLE', headers={'Cache-Control': 'no-store'})
+    from .recipe_invocation import invoke_observed_recipe
+    ollama = getattr(request.app.state, 'ollama_client', None) or OllamaClient(
+        os.getenv('FOODTECH_OLLAMA_URL', 'http://127.0.0.1:11434'))
+    return await invoke_observed_recipe(request, execution_id, service=_service(request), ollama=ollama)
 
 
 @app.post('/internal/ai/recipe-status/{execution_id}')

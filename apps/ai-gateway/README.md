@@ -122,3 +122,9 @@ AI 기존 기록 인벤토리는 삭제 잠금 아래 스캔한 파티션 후보
 AI 실행 관찰은 보존된 인벤토리의 실행 META를 강한 일관성으로 확인하고 예약 상태·활성 표식이 있으면 차단한다. META가 없는데 하위 기록이 남은 경우도 오류다. 개발 AWS에서 합성 예약의 차단과 정산 상태 변경 후 관찰을 확인했다. `CLEAR_OBSERVED`는 스캔 시점 이후 구버전 작성자의 실행이나 이미 진행 중인 외부 호출이 없다는 증거가 아니다. 호출자 인증과 작성자 중단·호출 정산 확인은 별도로 필요하다.
 
 자격증명 준비 상태 관찰은 암호화된 계획과 현재 레지스트리·Vault 메타데이터를 다시 대조한 후 같은 인벤토리의 실행 상태를 관찰한다. 결과는 `BLOCKED` 또는 `CLEAR_OBSERVED`만 반환하며 자격증명 삭제 권한이나 완료를 뜻하지 않는다. 개발 AWS에서 합성 자격증명과 예약 실행의 차단 및 상태 변경 후 관찰을 확인했다.
+
+### 요청별 권고 실행 경계
+
+`POST /internal/ai/recipe-executions/{execution_id}/invoke`는 전용 mTLS listener에서만 받으며 기본 `FOODTECH_RECIPE_INVOCATION_ENABLED=false`다. 활성화 설정은 Fargate container-role provider, 실제 STS Gateway 역할, 동일 계정·stage의 read role/엄격한 DynamoRegistry를 요구한다. `FOODTECH_RECIPE_GATEWAY_TASK_ROLE_ARN`과 `FOODTECH_RECIPE_SOURCE_READ_ROLE_ARN`은 검토한 서로 다른 역할이어야 한다.
+
+실행 레지스트리와 condition 검사에는 동일하게 검증한 task Session의 regional SDK 클라이언트를 사용한다. bounded handoff를 해석한 뒤 실행 snapshot을 재조회하며, 검증된 원천·이력 조건이 있는 요청별 GatewayService에서 로컬 권고만 실행한다. 공유 서비스의 guard를 변경하거나 Gateway 역할로 원천 payload 읽기를 대체하지 않는다. 모든 결과는 no-store이고 자격증명은 응답하지 않는다. 이 경로 추가는 실제 권한·writer fencing·coverage·서비스 연결 검증이나 모델 호출의 승인이 아니다.

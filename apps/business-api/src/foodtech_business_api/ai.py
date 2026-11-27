@@ -192,6 +192,12 @@ async def recipe_execution_status(request: Request, execution_id: UUID, job_id: 
                         headers={'Cache-Control': 'no-store'})
 
 
+@router.post('/recipe-executions/{execution_id}/invoke')
+async def invoke_recipe_execution(request: Request, execution_id: UUID):
+    from .recipe_invocation import invoke_customer_recipe
+    return await invoke_customer_recipe(request, execution_id)
+
+
 def _gateway_settings() -> tuple[str, str, str, str]:
     url = os.getenv("FOODTECH_GATEWAY_URL", "")
     ca = os.getenv("FOODTECH_GATEWAY_CA", "")
