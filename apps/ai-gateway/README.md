@@ -2,11 +2,11 @@
 
 `DynamoCombiHistoryConditions`는 보호된 전체 이력 판독기가 만든 typed witness와 저장된 실행의 Combi 참조가 일치할 때 계정/epoch/coverage·작성자 전환 기록과 만료·이력 개정·현재/이전 배치 META의 버전/작업/원본 해시를 조건 검사한다. 계정 조건을 기존 레지스트리 조건과 AND로 합쳐 같은 USER에 중복 트랜잭션 작업을 만들지 않는 조합 함수를 제공한다. 다섯 대상은 ConditionCheck뿐이며 실패 반환은 NONE이다.
 
-이 검사는 이력 검증 기록을 발급하지 않고, 원본 읽기 위임·실제 SDK 역할 격리·모델 호출 권한이나 식품 안전을 증명하지 않는다. SDK 조건 검증과 기록 판독 왕복 검사는 로컬 fixture 기반이며 실제 AWS 적용·실행/정산 연결은 후속이다. Combi 실행 차단은 유지한다.
+이 검사는 이력 검증 기록을 발급하지 않고, 원본 읽기 위임·실제 SDK 역할 격리·모델 호출 권한이나 식품 안전을 증명하지 않는다. SDK 조건 검증과 기록 판독 왕복 검사는 로컬 fixture 기반이며 전용 서비스는 이 조건을 예약/재시도/성공 정산에 결합한다. 실제 배포 검증은 별도이며 기본 Combi 호출 차단은 유지한다.
 
 `CombiExecutionBinding`은 메뉴·현재/비교 식사배치 및 조리작업·배치 버전·원본 해시·인증 epoch를 별도 계약으로 보존한다. 실행·전환 고지·동의로 생성한 로컬 실행의 참조가 다르거나 제육 원천 버전/일반 비교 ID가 섞이면 거부한다. DynamoDB에서 읽은 정수 Decimal은 범위 확인 후 정수로 정규화하고 구형 실행의 누락 필드는 `None`으로 유지한다. 콤비 실행/고지 생성과 동의·예약 트랜잭션은 계정 존재와 기록된 epoch의 일치도 요구한다.
 
-이 참조는 소유권 위임이나 직전/전체 이력 증명이 아니다. Combi에 묶인 실행은 다른 메뉴의 기준 객체를 전달해도 기존 경로로 실행할 수 없고, 예약/모델/결과 저장 전에 차단한다. 실제 Combi 읽기 권한·이력·정산 경계는 후속이다.
+이 참조는 소유권 위임이나 직전/전체 이력 증명이 아니다. Combi에 묶인 실행은 다른 메뉴의 기준 객체를 전달해도 기존 경로로 실행할 수 없고, 예약/모델/결과 저장 전에 차단한다. 전용 Combi 경로만 보호된 읽기 객체·전체 이력·원자적 정산을 결합한다. 기존 경로의 거부를 해제하지 않는다.
 
 콤비 관찰 입력은 현재 유효한 완료 품질평가도 대조한다. 배치 버전 안의 평가 사건, 최신 포인터·평가/안전 버전, 척도·공식·장비 규모·완료시각·7개 점수와 관찰 근거를 확인하고 점수 합계·백분율·합격/목표 및 메뉴별 사유 코드를 다시 계산한다. 안전 통과 후 현재 평가가 없거나 무효화되면 권고 입력을 완성하지 않는다. 안전 실패 상태에서는 이전 품질평가를 복원하지 않고 `BLOCKED_BY_SAFETY`로 표시하며 기존 시간 단축 금지 기준을 유지한다.
 
@@ -157,7 +157,7 @@ AI 실행 관찰은 보존된 인벤토리의 실행 META를 강한 일관성으
 
 중첩 구조를 포함한 JSON Schema를 모델에 전달하며 잘못된 구조만 최대 3회 요청합니다. 누락/잘못된 서버 기준은 첫 호출 전 차단하고 한계 초과를 모델 재시도로 완화하지 않습니다. 유효한 출력도 운영자 검토 후보이며 장비 제어나 안전 합격·기존 프로그램 갱신이 아닙니다.
 
-등록된 Gateway의 권고 실행은 아직 제육볶음 전용 원천/이력 handoff만 검증하므로 `CombiBaseline` 실행을 `COMBI_SOURCE_SCOPE_UNAVAILABLE`로 거부합니다. 계정·실행 예약과 공급자 호출을 하지 않습니다. 콤비오븐의 서버 근거 생성·원천/직전 기록/정산 조건·고객 요청/저장 결과 투영/후보 UI 연결이 준비되기 전에 이 거부를 해제하지 않습니다. 내부 생성기가 지원한다는 이유로 고객 실행 경로를 확대하지 않습니다.
+기존 범용 `execute_local_recipe`는 `CombiBaseline` 또는 Combi에 묶인 실행을 `COMBI_SOURCE_SCOPE_UNAVAILABLE`로 거부합니다. Combi는 별도 broker pin TLS 경로에서 받은 typed 읽기 객체와 저장 실행을 확인하고, 서버 관찰값으로 입력을 만드는 전용 서비스만 사용합니다. 수치 기준 객체를 직접 전달해 호출하거나 기존 경로를 우회할 수 없습니다. 전용 호출도 기본 비활성이며 실제 작성자/이력·배포와 고객 결과·검토 연결은 별도 검증 대상입니다.
 ### Combi 소유 원본 판독 경계
 
 `DynamoCombiSourceGuard`는 별도로 범위가 제한된 명시적 DynamoDB client와 보호된 이력 조건 client를 받는다. 저장 실행에서 도출한 두 배치의 기록은 강한 일관성의 SDK paginator로 끝까지 읽고, 원본은 각 배치의 별도 `#SOURCE` 파티션에서 정확한 청크 키로 읽는다. 배치당 10,000행/1,000페이지와 원본 5,000건을 초과하면 부분 자료로 진행하지 않는다.
@@ -168,11 +168,11 @@ AI 실행 관찰은 보존된 인벤토리의 실행 META를 강한 일관성으
 
 ### Combi 비공개 수신 경계 준비
 
-`receive_internal_combi_handoff`는 HTTPS·전용 mTLS listener·Combi 발급자 전용 listener 계약을 확인한 뒤에만 본문을 읽는다. 기존 범용 business listener만으로는 통과하지 않는다. 전용 pin 프로토콜이 실제 연결의 인증서 지문을 요청 ASGI state에 넣고 수신기가 구성된 지문과 대조한다. 앱 전체 Boolean이나 신원 헤더만으로 인증되지 않는다. 모델 라우터는 아직 활성화하지 않는다.
+`receive_internal_combi_handoff`는 HTTPS·전용 mTLS listener·Combi 발급자 전용 listener 계약을 확인한 뒤에만 본문을 읽는다. 기존 범용 business listener만으로는 통과하지 않는다. 전용 pin 프로토콜이 실제 연결의 인증서 지문을 요청 ASGI state에 넣고 수신기가 구성된 지문과 대조한다. 앱 전체 Boolean이나 신원 헤더만으로 인증되지 않는다. 전용 호출 controller는 같은 검사를 SDK 초기화/저장 실행 조회 전에 적용하며, 기본 비활성이다.
 
 Combi 전용 타입·최대 본문·인코딩/길이를 제한하고, 정확한 저장 ExecutionSnapshot·범위/전체 이력과 구성된 역할 ARN/불변 RoleId를 대조한다. 임시 자격증명으로 만든 SDK client의 endpoint를 고정하고 STS 식별값의 역할·세션·RoleId를 확인한 뒤 별도 조건 client와 원본 판독기에 연결한다. 오류는 키·본문을 반환하지 않고, 실패/취소 또는 늦은 미전달 결과의 client를 닫는다. 반환된 읽기 객체는 해당 실행/만료에 결합되며 일반 직렬화를 허용하지 않는다.
 
-STS 역할/RoleId 일치가 인라인 세션 정책의 증명은 아니다. 실제 독점 발급자·인증서/runner·위임/서비스 접근 검증과 저장 실행의 예약 전 재조회·원자적 예약/정산이 필요하다. 고객·기존 Combi 실행 차단은 유지한다. 로컬 SDK fixture 왕복은 실제 TLS·AWS 세션·모델 종단간 증거가 아니다.
+STS 역할/RoleId 일치가 인라인 세션 정책의 증명은 아니다. 저장 실행의 예약 전 재조회·원자적 예약/재시도/정산은 전용 경로에 결합되어 있다. 실제 독점 발급자·인증서/runner·위임/서비스 접근 검증은 별도로 필요하다. 고객·기존 Combi 실행 차단은 유지한다. 로컬 SDK fixture 왕복은 실제 TLS·AWS 세션·모델 종단간 증거가 아니다.
 
 ### Combi 전용 pin TLS 실행기와 전송
 
@@ -182,4 +182,27 @@ Native TLS가 CA/클라이언트 인증서를 검증한 뒤 H11 연결 프로토
 
 발송기는 일반 CA 전체 대신 검토된 서버 leaf만 신뢰하는 native TLS chain/목적/만료/hostname 검증을 사용한다. 서버 인증서가 바뀌면 pin도 갱신해야 한다. 프레임은 1회 POST만 하며 리다이렉트/자동 재시도·환경 proxy·TLS keylog를 사용하지 않는다. 제한된 JSON/no-store 결과만 수용하고 자격증명 문자열이 결과에 들어오면 반환하지 않는다.
 
-실제 로컬 TLS로 올바른 발급자/원본 판독 왕복·다른 CA/인증서 없음·같은 CA의 다른 발급자·같은 CA/hostname/키를 재사용한 다른 서버 인증서·공유 앱의 범용 listener와 헤더 위조 차단을 확인한다. AWS 응답/행은 합성 fixture이며 실제 세션·배포·모델 E2E를 뜻하지 않는다. 실행기만 시작해도 Combi 모델 호출이 활성화되는 것은 아니다. 실제 broker/controller/예약·정산·작성자 검증과 배포는 후속이다.
+실제 로컬 TLS로 올바른 발급자/원본 판독 왕복·다른 CA/인증서 없음·같은 CA의 다른 발급자·같은 CA/hostname/키를 재사용한 다른 서버 인증서·공유 앱의 범용 listener와 헤더 위조 차단을 확인한다. AWS 응답/행은 합성 fixture이며 실제 세션·배포·모델 E2E를 뜻하지 않는다. 실행기만 시작해도 Combi 모델 호출이 활성화되는 것은 아니다. 전용 controller와 예약·정산은 아래와 같이 연결되어 있다. 실제 broker 배포·작성자/보존 이력 검증과 서비스 접근 검증은 후속이다.
+
+
+### 보호된 Combi 호출 경로
+
+`POST /internal/ai/combi-recipe-executions/{execution_id}/invoke`는 전용 broker pin TLS listener만 사용한다. 요청 본문은 전용 비공개 프레임이며 기준값·프롬프트·고객 ID·모델 ID 입력 API가 아니다. transport 확인 후 Gateway task 신원으로 새 레지스트리를 구성하고 PENDING snapshot을 읽는다. 프레임의 실행/버전/소유자·역할 ID를 검증하고 snapshot을 다시 확인한 뒤 요청 전용 서비스로 전달한다. 성공·거부·취소에 읽기 위임/SDK 자원을 닫고 늦게 초기화된 자원도 폐기한다.
+
+기본 활성화 값은 설정하지 않는다. 검토된 배포에서만 다음 계약을 제공한다.
+
+| 환경 변수 | 계약 |
+| --- | --- |
+| `FOODTECH_COMBI_LISTENER_ENABLED`, `FOODTECH_COMBI_INVOCATION_ENABLED` | 둘 다 명시적 `true` 필요 |
+| `FOODTECH_PRINCIPAL_PROVISIONING_ENABLED` | 실재 USER/epoch 검사 사용, `true` 필요 |
+| `AWS_EXECUTION_ENV` | `AWS_ECS_FARGATE` |
+| `FOODTECH_STAGE` | 동일 stage의 인증/실행 테이블 및 읽기 역할에 결합 |
+| `FOODTECH_AI_REGISTRY_TABLE`, `FOODTECH_AUTH_TABLE` | `foodtech-ai-execution-registry-<stage>`, `foodtech-auth-sessions-<stage>` |
+| `FOODTECH_COMBI_GATEWAY_TASK_ROLE_ARN`, `FOODTECH_COMBI_GATEWAY_TASK_ROLE_ID` | 실제 container-role STS 신원의 계정·역할·불변 ID 대조 |
+| `FOODTECH_COMBI_SOURCE_READ_ROLE_ARN`, `FOODTECH_COMBI_SOURCE_READ_ROLE_ID` | 별도 `foodtech-combi-source-read-<stage>`의 검토된 ARN/불변 ID |
+
+조건/실행 client는 검증한 Gateway task 신원이고 원본 client는 별도 위임 신원이다. 개발자 자격증명이나 환경 SDK endpoint/proxy로 대체하지 않는다. 활성화 값과 STS 일치 자체는 작성자 전환/보존 이력 검증이나 인라인 세션 정책의 증명이 아니다.
+
+`execute_observed_combi_recipe`는 현재/직전 두 배치의 관찰값으로만 `Evidence`, `CombiBaseline`, 정제된 모델 맥락을 만든다. 기존 feature/Tier·명시적 downgrade 동의·모델 활성 상태·한도 정책을 그대로 적용한다. 각 호출의 예약과 최대 두 번 재시도에 다섯 보호 조건을 같은 트랜잭션으로 묶고, 예약 직후와 모델 응답 후에도 원본을 확인한다. 성공 정산에 조건이 실패하면 후보를 게시하지 않고 실패 정산을 시도한다. 불명확한 SDK 응답은 `INDETERMINATE`이며 자동 모델 재호출·소비 호출 환불을 하지 않는다. 모델 결과는 `NEEDS_REVIEW` 초안이고 안전 승인·장비 제어·자동 적용이 아니다.
+
+검증은 합성 저장 행/SDK/모델 응답과 실제 로컬 TLS를 사용한다. 실제 AWS 원본 서비스·모델 실행이나 전체 작성자 배포의 증거로 사용하지 않는다. 보호된 작성자/전체 이력 검증 기록을 이 코드가 자동 발급하지 않으며 고객 UI·broker 인증 위임·실제 배포는 별도 완료 증거가 필요하다.

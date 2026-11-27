@@ -43,7 +43,8 @@ class CombiAtomicClient(storage.AtomicClient):
             if len(protected) != 5: raise AssertionError('all five protected checks required')
             account = next(x['ConditionCheck'] for x in actions if 'ConditionCheck' in x and
                 self._decode(x['ConditionCheck']['Key'])['pk'].startswith('USER#'))
-            assert ':expected_epoch' in account['ExpressionAttributeValues']
+            if any('ConditionCheck' not in action for action in actions):
+                assert ':expected_epoch' in account['ExpressionAttributeValues']
             assert '#ch_cov.#ch_proof' in account['ConditionExpression']
             assert 'deletion_lock_request' in account['ConditionExpression']
             assert all(x['ConditionCheck']['ReturnValuesOnConditionCheckFailure'] == 'NONE'

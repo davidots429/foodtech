@@ -11,9 +11,11 @@ from foodtech_contracts.combi_recommendation import CombiBaseline
 from foodtech_contracts.recommendation_guard import Evidence
 from foodtech_contracts.recommendation_output import JeyukBaseline, TonkatsuBaseline
 
-from .policy import Caller, Decision, Feature, GatewayPolicy
+from .policy import Caller, Decision, ExecutionSnapshot, Feature, GatewayPolicy
 from .ollama import OllamaClient, OllamaFailure
 from .registry import DynamoRegistry, RegistryConflict
+from .combi_read_handoff import ReceivedCombiReads
+from .combi_recommendation_inputs import build_combi_inputs
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from .prior_history_conditions import DynamoPriorHistoryConditions
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
@@ -46,7 +48,7 @@ class GatewayService:
         self.recipe_source_guard = recipe_source_guard
 
     def prepare(self, caller: Caller, execution_id: str, *, local_recipe: bool = False,
-                disallow_recipe: bool = False) -> Decision:
+                disallow_recipe: bool = False, combi_source_guard: ReceivedCombiReads | None = None) -> Decision:
         # The caller supplies no model, credential, consent or cost fields.
         self.registry.begin_request()
         decision = self.policy.authorize(caller, execution_id)
@@ -68,12 +70,14 @@ class GatewayService:
         if self.registry.snapshot_versions() != authorized_versions:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         try:
-            self.registry.reserve(execution, model.provider)
+            self.registry.reserve(execution, model.provider, **(
+                {"combi_source_guard": combi_source_guard} if combi_source_guard is not None else {}))
         except RegistryConflict:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         return decision
 
-    def prepare_local_recipe_retry(self, caller: Caller, execution_id: str, attempt: int) -> Decision:
+    def prepare_local_recipe_retry(self, caller: Caller, execution_id: str, attempt: int, *,
+                                   combi_source_guard: ReceivedCombiReads | None = None) -> Decision:
         """Reauthorize and reserve a single additional local provider request."""
         self.registry.begin_request()
         decision = self.policy.authorize(caller, execution_id)
@@ -89,7 +93,8 @@ class GatewayService:
         if self.registry.snapshot_versions() != versions:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         try:
-            self.registry.reserve_local_retry(execution, attempt)
+            self.registry.reserve_local_retry(execution, attempt, **(
+                {"combi_source_guard": combi_source_guard} if combi_source_guard is not None else {}))
         except RegistryConflict:
             return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
         return decision
@@ -123,6 +128,38 @@ class GatewayService:
         return await self.execute_local_recipe(caller, execution_id, evidence=evidence,
                                                baseline=baseline, context=context, ollama=ollama)
 
+    async def execute_observed_combi_recipe(self, caller: Caller, execution_id: str, *,
+                                            combi_source_guard: ReceivedCombiReads,
+                                            ollama: OllamaClient) -> ExecutionOutcome:
+        """Derive every model input from one received, stored-execution-bound lease."""
+        execution = await asyncio.to_thread(self.registry.execution, execution_id)
+        if not execution or execution.tenant_id != caller.tenant_id:
+            return ExecutionOutcome(execution_id, 'DENIED', error_code='EXECUTION_NOT_FOUND')
+        if execution.combi_binding is None or type(combi_source_guard) is not ReceivedCombiReads:
+            return ExecutionOutcome(execution_id, 'DENIED', error_code='COMBI_SOURCE_SCOPE_UNAVAILABLE')
+        try:
+            snapshot = await asyncio.to_thread(self.registry.execution_snapshot, execution_id)
+            if type(snapshot) is not ExecutionSnapshot or snapshot.state != 'PENDING' or snapshot.execution != execution or \
+                    not combi_source_guard.matches_transition(execution, version=snapshot.version, completed_calls=0) or \
+                    not await asyncio.to_thread(combi_source_guard.verify, execution):
+                raise ValueError('combi execution or history changed')
+            observed = await asyncio.to_thread(combi_source_guard.observe_inputs)
+            if type(observed) is not tuple or len(observed) != 2 or \
+                    tuple(batch.meal_id for batch in observed) != (execution.combi_binding.current_meal_id,
+                                                                execution.combi_binding.prior_meal_id):
+                raise ValueError('combi observation mismatch')
+            evidence, baseline, context = build_combi_inputs(*observed)
+            if await asyncio.to_thread(self.registry.execution_snapshot, execution_id) != snapshot:
+                raise ValueError('combi execution changed during observation')
+            checks = await asyncio.to_thread(combi_source_guard.settlement_checks,
+                self.registry._active_tenant_guard(execution.tenant_id, expected_epoch=execution.combi_binding.auth_epoch))
+            if any(check['ConditionCheck']['TableName'] == self.registry.table_name for check in checks):
+                raise ValueError('source table conflicts with registry')
+        except (ValueError, TypeError, AttributeError, KeyError, BotoCoreError, ClientError):
+            return ExecutionOutcome(execution_id, 'DENIED', error_code='RECOMMENDATION_EVIDENCE_UNVERIFIED')
+        return await self._execute_prepared_recipe(caller, execution_id, evidence=evidence, baseline=baseline,
+            context=context, ollama=ollama, combi_source_guard=combi_source_guard)
+
     async def execute_local_recipe(self, caller: Caller, execution_id: str, *,
                                    evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline | CombiBaseline,
                                    context: dict, ollama: OllamaClient) -> ExecutionOutcome:
@@ -134,6 +171,14 @@ class GatewayService:
         bare source fixtures are not a registered customer invocation path.
         """
         execution = self.registry.execution(execution_id)
+        if (execution and execution.combi_binding is not None) or isinstance(baseline, CombiBaseline):
+            return ExecutionOutcome(execution_id, 'DENIED', error_code='COMBI_SOURCE_SCOPE_UNAVAILABLE')
+        return await self._execute_prepared_recipe(caller, execution_id, evidence=evidence,
+            baseline=baseline, context=context, ollama=ollama)
+
+    async def _execute_prepared_recipe(self, caller, execution_id, *, evidence, baseline, context, ollama,
+                                       combi_source_guard=None):
+        execution = self.registry.execution(execution_id)
         model = self.registry.model(execution.model_id) if execution else None
         if not execution or execution.tenant_id != caller.tenant_id:
             return ExecutionOutcome(execution_id, "DENIED", error_code="EXECUTION_NOT_FOUND")
@@ -141,10 +186,12 @@ class GatewayService:
                 model.provider != "ollama" or execution.estimated_cost_usd != 0:
             return ExecutionOutcome(execution_id, "DENIED", error_code="LOCAL_RECIPE_REQUIRED")
         if execution.combi_binding is not None or isinstance(baseline, CombiBaseline):
-            # The registered source handoff currently proves Jeyuk records only.
-            # Numeric proposal validation must not substitute for combi ownership,
-            # completeness, transition and current/prior history settlement guards.
-            return ExecutionOutcome(execution_id, "DENIED", error_code="COMBI_SOURCE_SCOPE_UNAVAILABLE")
+            if execution.combi_binding is None or type(baseline) is not CombiBaseline or \
+                    type(combi_source_guard) is not ReceivedCombiReads or \
+                    not await asyncio.to_thread(combi_source_guard.verify, execution):
+                return ExecutionOutcome(execution_id, 'DENIED', error_code='COMBI_SOURCE_SCOPE_UNAVAILABLE')
+        elif combi_source_guard is not None:
+            return ExecutionOutcome(execution_id, 'DENIED', error_code='COMBI_SOURCE_SCOPE_UNAVAILABLE')
         if isinstance(baseline, JeyukBaseline) and self.recipe_source_guard is None:
             return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_GUARD_UNAVAILABLE")
         if isinstance(baseline, JeyukBaseline):
@@ -170,12 +217,13 @@ class GatewayService:
         reserved = False
 
         async def source_current():
-            if not isinstance(baseline, JeyukBaseline):
+            if not isinstance(baseline, JeyukBaseline) and combi_source_guard is None:
                 return True
             try:
                 if await asyncio.to_thread(self.registry.execution, execution_id) != execution:
                     return False
-                if await asyncio.to_thread(self.recipe_source_guard.verify, execution) is not True:
+                guard = combi_source_guard if combi_source_guard is not None else self.recipe_source_guard
+                if await asyncio.to_thread(guard.verify, execution) is not True:
                     return False
                 return await asyncio.to_thread(self.registry.execution, execution_id) == execution
             except Exception:
@@ -187,7 +235,9 @@ class GatewayService:
                                         actual_cost_usd=Decimal('0'), response_text=response_text,
                                         error_code=error_code, expected_execution=execution,
                                         recipe_source_guard=self.recipe_source_guard if succeeded and
-                                            isinstance(baseline, JeyukBaseline) else None)
+                                            isinstance(baseline, JeyukBaseline) else None,
+                                        **({'combi_source_guard': combi_source_guard} if succeeded and
+                                            combi_source_guard is not None else {}))
                 return 'settled'
             except RegistryConflict:
                 return 'conflict'
@@ -200,11 +250,19 @@ class GatewayService:
             if not await source_current():
                 raise _RecommendationDenied("RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE")
             attempts += 1
-            decision = (self.prepare(caller, execution_id, local_recipe=True) if attempts == 1 else
-                        self.prepare_local_recipe_retry(caller, execution_id, attempts))
+            guard_args = {'combi_source_guard': combi_source_guard} if combi_source_guard is not None else {}
+            if combi_source_guard is not None:
+                decision = (await asyncio.to_thread(self.prepare, caller, execution_id, local_recipe=True, **guard_args)
+                    if attempts == 1 else await asyncio.to_thread(self.prepare_local_recipe_retry,
+                        caller, execution_id, attempts, **guard_args))
+            else:
+                decision = (self.prepare(caller, execution_id, local_recipe=True) if attempts == 1 else
+                            self.prepare_local_recipe_retry(caller, execution_id, attempts))
             if not decision.allowed:
                 raise _RecommendationDenied(decision.code)
             reserved = True
+            if combi_source_guard is not None and not await source_current():
+                raise _RecommendationDenied('RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE')
             return (await ollama.structured_chat(decision.model_id, messages, schema)).text
 
         try:
