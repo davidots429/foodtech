@@ -19,6 +19,11 @@ def write_private(directory, name, content):
 
 def main():
     protocol = os.environ.get('FOODTECH_COLLECTION_PROTOCOL', 'rest')
+    run_mode = os.environ.get('FOODTECH_COLLECTION_RUN_MODE', 'collector')
+    if run_mode not in {'collector', 'private-rest-trial'} or (run_mode == 'private-rest-trial' and protocol != 'rest'):
+        raise ValueError('unsupported collection run mode')
+    if run_mode == 'private-rest-trial' and os.environ.get('FOODTECH_REST_TRIAL_ENABLED') != 'true':
+        raise ValueError('private REST trial requires explicit enablement')
     settings = {'rest': ('foodtech_collection_adapter', 'FOODTECH_MOCK_CA_FILE'),
                 'mqtt': ('foodtech_collection_adapter.mqtt', 'FOODTECH_MQTT_CA_FILE'),
                 'opcua-json': ('foodtech_collection_adapter.opcua_json', 'FOODTECH_MOCK_CA'),
@@ -26,6 +31,8 @@ def main():
     if protocol not in settings:
         raise ValueError('unsupported collection protocol')
     module, ca_variable = settings[protocol]
+    if run_mode == 'private-rest-trial':
+        module = 'foodtech_collection_adapter.rest_trial'
     if '--help' not in sys.argv[1:] and '-h' not in sys.argv[1:] and protocol == 'opcua-binary':
         values = [os.environ.pop(name, '') for name in
                   ('FOODTECH_OPCUA_CLIENT_CERT_PEM', 'FOODTECH_OPCUA_CLIENT_KEY_PEM', 'FOODTECH_OPCUA_SERVER_CERT_DER_BASE64')]

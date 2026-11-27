@@ -48,10 +48,10 @@ def failure(raw: str | bytes) -> tuple[str, list[str]] | None:
 
 
 class IngestionQuarantine:
-    def __init__(self, bucket: str, table: str, region: str = "ap-southeast-2"):
+    def __init__(self, bucket: str, table: str, region: str = "ap-southeast-2", *, session=None):
         if not bucket or not table:
             raise ValueError("quarantine bucket and manifest table required")
-        session = boto3.Session(region_name=region)
+        session = boto3.Session(region_name=region) if session is None else session
         self.s3 = session.client("s3")
         self.table = session.resource("dynamodb").Table(table)
         self.bucket = bucket

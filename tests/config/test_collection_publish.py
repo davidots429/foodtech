@@ -107,6 +107,12 @@ class CollectionPublisherTests(unittest.TestCase):
                 '--security-opt no-new-privileges', '1.5.7+dfsg-1+deb13u1'):
             self.assertIn(value, steps[guards]['run'])
         self.assertNotIn('secrets.', json.dumps(workflow))
+        self.assertIn('bash infra/scripts/check_collection_trial_image.sh', steps[guards]['run'])
+        trial_guard = (ROOT / 'infra/scripts/check_collection_trial_image.sh').read_text()
+        subprocess.run(['bash', '-n'], input=trial_guard, text=True, check=True)
+        self.assertIn('--network none --read-only --cap-drop ALL', trial_guard)
+        self.assertIn('FOODTECH_REST_TRIAL_ENABLED=true', trial_guard)
+        self.assertIn('/run/foodtech-collection', trial_guard)
         checkout = next(s for s in steps if s.get('uses', '').startswith('actions/checkout@'))
         self.assertEqual(checkout['with'], {'ref': '${{ github.sha }}', 'persist-credentials': 'false'})
 

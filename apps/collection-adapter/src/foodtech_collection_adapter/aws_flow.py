@@ -15,8 +15,8 @@ from .resequence import Received, Resequencer, StreamState
 
 
 class DynamoOrderedIngestor:
-    def __init__(self, table_name: str, queue_url: str, region: str = "ap-southeast-2"):
-        session = boto3.Session(region_name=region)
+    def __init__(self, table_name: str, queue_url: str, region: str = "ap-southeast-2", *, session=None):
+        session = boto3.Session(region_name=region) if session is None else session
         self.table = session.resource("dynamodb").Table(table_name)
         self.ddb = session.client("dynamodb")
         self.sqs = session.client("sqs")

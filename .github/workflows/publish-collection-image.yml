@@ -79,6 +79,7 @@ jobs:
           for protocol in rest mqtt opcua-json opcua-binary; do
             docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e "FOODTECH_COLLECTION_PROTOCOL=$protocol" "foodtech-collection:$TAG" --help > /dev/null
           done
+          bash infra/scripts/check_collection_trial_image.sh "foodtech-collection:$TAG"
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-collection:$TAG" -c 'import subprocess; version = subprocess.check_output(["dpkg-query", "--show", "--showformat=${Version}", "libzstd1"], text=True).strip(); subprocess.run(["dpkg", "--compare-versions", version, "ge", "1.5.7+dfsg-1+deb13u1"], check=True)'
       - name: Obtain short-lived collection publishing credentials
         uses: aws-actions/configure-aws-credentials@v6.3.1

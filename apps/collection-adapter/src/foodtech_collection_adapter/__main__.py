@@ -17,7 +17,7 @@ from .ingestion_quarantine import IngestionQuarantine, failure
 from foodtech_contracts.collection_evidence import CompletionTracker
 from foodtech_contracts.jeyuk_receipt import JeyukCompletionTracker
 
-def main() -> int:
+def main(argv=None, *, session=None, expected_trial_payload=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--polls", type=int, default=1)
     parser.add_argument("--interval", type=float, default=5.0)
@@ -28,7 +28,7 @@ def main() -> int:
                         default="mockprofile-100")
     parser.add_argument("--instance", choices=tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("100", "101", "111", "121") for vendor in "abc") + tuple(f"mockprofile-{profile}-{vendor}-001" for profile in ("110", "120") for vendor in "bc"),
                         default="mockprofile-100-a-001")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.polls < 1 or args.interval < 0 or args.max_runtime < 1:
         parser.error("polls must be positive and interval must be nonnegative")
     jeyuk_simulation = args.profile == "mockprofile-110" and args.instance == "mockprofile-100-a-001"
@@ -45,6 +45,9 @@ def main() -> int:
         parser.error("missing configuration: " + ", ".join(missing))
     if not jeyuk_simulation and not args.instance.startswith(args.profile + "-"):
         parser.error("instance does not match the requested profile")
+    if expected_trial_payload is not None and (args.profile != "mockprofile-100" or
+            args.instance != "mockprofile-100-a-001" or args.polls != 1 or args.until_complete):
+        raise ValueError("private REST trial requires one basic-profile poll")
     client_kwargs = {"profile_id": args.profile} if args.profile != "mockprofile-100" else {}
     if not jeyuk_simulation and args.profile in {"mockprofile-110", "mockprofile-120"}:
         client_kwargs["preserve_invalid_utf8"] = True
@@ -54,6 +57,8 @@ def main() -> int:
         **client_kwargs,
     )
     if jeyuk_simulation:
+        if session is not None:
+            raise ValueError("session-injected REST trial requires the basic profile")
         ingestor = DynamoJeyukIngestor(os.environ["FOODTECH_DATA_TABLE"],
                                        os.environ["FOODTECH_ORDERED_QUEUE_URL"])
         try:
@@ -84,7 +89,8 @@ def main() -> int:
             return 0
         finally:
             client.close()
-    ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"])
+    sdk = {} if session is None else {"session": session}
+    ingestor = DynamoOrderedIngestor(os.environ["FOODTECH_DATA_TABLE"], os.environ["FOODTECH_ORDERED_QUEUE_URL"], **sdk)
     quarantine = None
     cursor_key = (args.cursor_key if args.instance == "mockprofile-100-a-001" else
                   (f"xml-{args.instance.split('-')[2]}#" if args.profile == "mockprofile-101" else
@@ -95,6 +101,9 @@ def main() -> int:
         completion = CompletionTracker(cursor, args.profile, args.instance)
         for index in range(args.polls):
             result = client.poll(cursor)
+            if expected_trial_payload is not None and (cursor != 0 or result.records != (expected_trial_payload,) or
+                    result.next_cursor != 1 or not result.complete or not result.completion_explicit):
+                raise ValueError("private REST trial response differs from the reviewed single-record fault")
             released = []
             for offset, raw in enumerate(result.records):
                 record = None
@@ -121,7 +130,7 @@ def main() -> int:
                     if not bucket:
                         raise ValueError("ingestion quarantine bucket is required for malformed input")
                     if quarantine is None:
-                        quarantine = IngestionQuarantine(bucket, os.environ["FOODTECH_DATA_TABLE"])
+                        quarantine = IngestionQuarantine(bucket, os.environ["FOODTECH_DATA_TABLE"], **sdk)
                     quarantine.preserve(raw, cursor_key=cursor_key, position=cursor + offset,
                                         reason=invalid[0], missing=invalid[1], instance_id=args.instance, profile_id=args.profile)
                     continue
