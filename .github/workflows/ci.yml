@@ -20,6 +20,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: node --experimental-transform-types tests/frontend/recipe-results.test.mjs
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMinimalDataFlow-dev --strict -c provisionDataFlow=true --output /tmp/foodtech-data-flow-cdk
         working-directory: infra/cdk
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiImagePublishing-dev --strict -c provisionAiImagePublishing=true --output /tmp/foodtech-ai-image-cdk
@@ -247,6 +248,7 @@ jobs:
       - run: uv run --no-sync python -m unittest discover -s tests/config -p test_worker_policy_update.py -v
       - run: uv run --no-sync python -c "from foodtech_business_api.main import app as business; from foodtech_ai_gateway.main import app as gateway; assert business.title and gateway.title"
       - run: uv run --no-sync python -m unittest discover -s apps/business-api/tests -v
+      - run: uv run --no-sync python -m unittest discover -s packages/contracts/tests -p test_recipe_result_view.py -v
       - run: uv run --no-sync python -m unittest discover -s apps/ai-gateway/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/credential-registration/tests -v
       - run: uv run --no-sync python -m unittest discover -s apps/capsule-crypto/tests -v

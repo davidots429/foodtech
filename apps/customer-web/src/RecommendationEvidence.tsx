@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
-import { api, ApiError, jobPath } from "./cookingApi";
+import { api, ApiError, jobPath, postWithoutBody } from "./cookingApi";
+import { canInvokeRecipe, parseRecipeResult, parseRecipeStatus } from "./recipeResult";
+import type { RecipeResult, RecipeStatus } from "./recipeResult";
 
 type FeedTiming = { status: "RECORDED"; vegetable_start_offset_us: number; sauce_start_offset_us: number;
   start_separation_us: number; simultaneous: boolean } | { status: "NOT_RECORDED" | "INCONSISTENT" };
@@ -109,9 +111,6 @@ const downgradeEligible = new Set(["TIER1_MODEL_NOT_CONFIGURED", "MODEL_NOT_ACTI
   "EXTERNAL_TRANSFER_CONSENT_REQUIRED", "EXTERNAL_TRANSFER_BLOCKED", "CREDENTIAL_NOT_USABLE", "LIMIT_ACTION_REQUIRED"]);
 type LocalNotice = { quote_id: string; execution_id: string; notice_version: string; model_id: string; quality_notice: string;
   transmission_location: "LOCAL"; estimated_cost_usd: string; expires_at: string };
-type RecipeStatus = { execution_id: string; job_id: string; job_version: number;
-  state: "PENDING" | "RESERVED" | "SUCCEEDED" | "FAILED"; result_available: boolean;
-  execution_available: false; job_changed: boolean };
 const recipeStateLabels: Record<RecipeStatus["state"], string> = {
   PENDING: "실행 대기", RESERVED: "처리 중", SUCCEEDED: "처리 완료", FAILED: "실패",
 };
@@ -126,6 +125,9 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
   const [confirmed, setConfirmed] = useState(false);
   const [recoveryId, setRecoveryId] = useState("");
   const [recovery, setRecovery] = useState<RecipeStatus | null>(null);
+  const [recipeResult, setRecipeResult] = useState<RecipeResult | null>(null);
+  const [invocationMessage, setInvocationMessage] = useState("");
+  const invocationInFlight = useRef(false);
   const restatementId = useRef<string | null>(null);
   const [restatementStatus, setRestatementStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -140,6 +142,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
   async function load() {
     if (busy) return;
     setBusy(true); setError(""); setValue(null); setRequested(null); setNotice(null); setConfirmed(false); setAcknowledged(false);
+    setRecovery(null); setRecipeResult(null); setInvocationMessage("");
     try {
       const params = new URLSearchParams();
       if (comparisonId) params.set("comparison_id", comparisonId);
@@ -158,7 +161,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
     try {
       const result = await api<RecipeRequest>("/api/customer/ai/recipe-requests", csrf,
         { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null, jeyuk_source_revision: value.jeyuk_collection?.source_revision ?? null, prior_source_revision: value.selected_prior_job?.collection.source_revision ?? null });
-      setRequested(result); setRecoveryId(result.execution_id); setRecovery(null);
+      setRequested(result); setRecoveryId(result.execution_id); setRecovery(null); setRecipeResult(null); setInvocationMessage("");
     }
     catch (cause) { setError(cause instanceof Error ? cause.message : "권고 요청을 기록하지 못했습니다."); }
     finally { setBusy(false); }
@@ -197,7 +200,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
   async function confirm() {
     if (!value || !notice || !acknowledged || busy) return;
     setBusy(true); setError("");
-    setRecoveryId(notice.execution_id); setRecovery(null);
+    setRecoveryId(notice.execution_id); setRecovery(null); setRecipeResult(null); setInvocationMessage("");
     try { await api(`/api/customer/ai/recipe-quotes/${notice.quote_id}/confirm`, csrf,
       { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null, jeyuk_source_revision: value.jeyuk_collection?.source_revision ?? null, prior_source_revision: value.selected_prior_job?.collection.source_revision ?? null, notice_version: notice.notice_version,
         quality_warning_acknowledged: true }); setConfirmed(true); }
@@ -214,14 +217,54 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(identifier)) {
       setError("조회할 권고 실행 ID를 확인해 주세요."); return;
     }
-    setBusy(true); setError(""); setRecovery(null);
+    setBusy(true); setError(""); setRecovery(null); setRecipeResult(null); setInvocationMessage("");
     try {
-      const result = await api<RecipeStatus>(`/api/customer/ai/recipe-executions/${identifier}/status?job_id=${encodeURIComponent(jobId)}`);
-      setRecovery(result);
-      if (notice?.execution_id === identifier) setConfirmed(true);
+      await readRecipeStatus(identifier);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "권고 실행 상태를 조회하지 못했습니다."); }
     finally { setBusy(false); }
   }
+  async function readRecipeStatus(identifier: string) {
+    const raw = await api<unknown>(`/api/customer/ai/recipe-executions/${identifier}/status?job_id=${encodeURIComponent(jobId)}`);
+    const result = parseRecipeStatus(raw, identifier, jobId);
+    setRecovery(result);
+    if (notice?.execution_id === identifier) setConfirmed(true);
+    return result;
+  }
+  async function readRecipeResult(identifier: string) {
+    const raw = await api<unknown>(`/api/customer/ai/recipe-executions/${identifier}/result?job_id=${encodeURIComponent(jobId)}`);
+    const result = parseRecipeResult(raw, identifier, jobId);
+    setRecipeResult(result); setRecovery(result);
+  }
+  async function checkRecipeResult() {
+    if (busy || !recovery) return;
+    setBusy(true); setError(""); setRecipeResult(null);
+    try { await readRecipeResult(recovery.execution_id); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "저장된 권고 내용을 조회하지 못했습니다."); }
+    finally { setBusy(false); }
+  }
+  async function invokeRecipe() {
+    const identifier = recoveryId.trim().toLowerCase();
+    if (busy || invocationInFlight.current || !canInvokeRecipe(recovery, identifier, jobId, menu)) return;
+    invocationInFlight.current = true;
+    setBusy(true); setError(""); setRecovery(null); setRecipeResult(null); setInvocationMessage("");
+    try {
+      const outcome = await postWithoutBody<{ execution_id: string; state: string }>(
+        `/api/customer/ai/recipe-executions/${identifier}/invoke`, csrf);
+      if (outcome.execution_id !== identifier || !["SUCCEEDED", "FAILED", "DENIED", "INDETERMINATE"].includes(outcome.state))
+        throw new Error("실행 응답을 확인하지 못했습니다.");
+      setInvocationMessage(outcome.state === "SUCCEEDED" ? "권고 생성이 끝났습니다. 저장된 검토 대상 내용을 확인해 주세요." :
+        outcome.state === "DENIED" ? "현재 권한 또는 조리 근거가 실행 조건을 충족하지 않습니다." :
+        "실행 결과를 확정하지 못했습니다. 같은 실행 ID로 상태와 저장된 결과를 확인해 주세요.");
+      const status = await readRecipeStatus(identifier);
+      if (status.result_available) await readRecipeResult(identifier);
+    } catch {
+      setRecovery(null);
+      setError("실행 응답을 확인하지 못했습니다. 다시 실행하기 전에 같은 실행 ID로 상태를 조회해 주세요.");
+    } finally { invocationInFlight.current = false; setBusy(false); }
+  }
+  const identifier = recoveryId.trim().toLowerCase();
+  const currentRecovery = recovery?.execution_id === identifier && recovery.job_id === jobId ? recovery : null;
+  const currentResult = recipeResult?.execution_id === identifier && recipeResult.job_id === jobId ? recipeResult : null;
   return <section className="binding-box" aria-labelledby="recommendation-evidence-title">
     <h4 id="recommendation-evidence-title">AI 권고에 사용할 조리 기록 확인</h4>
     <p className="small">기록된 정보와 필수 근거의 일부를 확인합니다. 전체 데이터 완전성과 AI 권고는 아직 판정하지 않습니다.</p>
@@ -343,20 +386,41 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
         <button type="button" disabled={busy || !acknowledged} onClick={() => void confirm()}>전환에 동의</button>
       </div>}
       {confirmed && <p role="status">전환 동의가 기록되었습니다. 원천 데이터 완전성과 실행 전 근거 확인이 끝나야 권고를 생성할 수 있습니다.</p>}
-      <p className="small">이 화면에서 AI를 호출하거나 장비 설정을 변경하지 않습니다.</p>
+      <p className="small">요청 기록과 전환 동의만으로 AI가 호출되지는 않습니다. 실행 조건 확인 후 별도로 생성을 요청합니다.</p>
     </div>}
     <div className="binding-box" aria-label="권고 요청 상태 조회">
       <label>권고 실행 ID
-        <input value={recoveryId} onChange={event => { setRecoveryId(event.target.value); setRecovery(null); }}
+        <input value={recoveryId} disabled={busy} onChange={event => {
+          setRecoveryId(event.target.value); setRecovery(null); setRecipeResult(null); setInvocationMessage(""); setError(""); }}
           autoComplete="off" spellCheck={false} placeholder="확인할 실행 ID" />
       </label>
       <button type="button" disabled={busy || !recoveryId.trim()} onClick={() => void checkRecipeStatus()}>권고 요청 상태 확인</button>
       <p className="small">응답을 확인하지 못한 경우 같은 실행 ID로 조회하세요. 새 AI 호출이나 전환 동의를 실행하지 않습니다.</p>
-      {recovery && <div role="status">
-        <p>권고 요청 상태: {recipeStateLabels[recovery.state]} · 요청 당시 작업 버전 {recovery.job_version}</p>
-        <p>처리 결과 기록: {recovery.result_available ? "있음" : "아직 없음"}</p>
-        {recovery.job_changed && <p>조리 기록이 요청 당시와 달라졌습니다. 새 권고를 요청하기 전에 근거를 다시 확인해 주세요.</p>}
+      {currentRecovery && <div role="status">
+        <p>권고 요청 상태: {recipeStateLabels[currentRecovery.state]} · 요청 당시 작업 버전 {currentRecovery.job_version}</p>
+        <p>처리 결과 기록: {currentRecovery.result_available ? "있음" : "아직 없음"}</p>
+        {currentRecovery.job_changed && <p>조리 기록이 요청 당시와 달라졌습니다. 새 권고를 요청하기 전에 근거를 다시 확인해 주세요.</p>}
+        {!currentRecovery.manual_invocation_enabled && <p>현재 권고 생성 기능은 준비 중입니다. 기존 기록의 조회는 사용할 수 있습니다.</p>}
+        {canInvokeRecipe(currentRecovery, identifier, jobId, menu) &&
+          <button type="button" disabled={busy} onClick={() => void invokeRecipe()}>권고 생성 요청</button>}
+        {currentRecovery.result_available && <button type="button" disabled={busy} onClick={() => void checkRecipeResult()}>저장된 권고 내용 보기</button>}
         <p className="small">처리 완료는 레시피 승인이나 장비 적용을 의미하지 않습니다.</p>
+      </div>}
+      {invocationMessage && <p role="status">{invocationMessage}</p>}
+      {currentResult && <div aria-label="저장된 권고 결과">
+        {currentResult.projection_status === "AVAILABLE" && currentResult.proposal && <>
+          <h5>검토 대상 권고 · {currentResult.proposal.menu === "JEYUK" ? "제육볶음" : "돈까스"}</h5>
+          {currentResult.job_changed && <p>이후 조리 기록이 변경된 과거 제안입니다.</p>}
+          <dl>{([["temperature_c", "조리 온도", "°C"], ["rpm", "교반 속도", "rpm"],
+            ["duration_seconds", "조리 시간", "초"], ["load_kg", "조리량", "kg"],
+            ["vegetable_interval_seconds", "채소 투입 간격", "초"], ["sauce_interval_seconds", "소스 투입 간격", "초"]] as const)
+            .filter(([field]) => field in currentResult.proposal!.data).map(([field, label, unit]) =>
+              <div key={field}><dt>{label}</dt><dd>{currentResult.proposal!.data[field]} {unit}</dd></div>)}</dl>
+          <p className="small">생성 당시 기록에 따른 제안입니다. 현재 공정의 안전 승인이나 장비 자동 적용이 아닙니다.</p>
+        </>}
+        {currentResult.projection_status === "NOT_READY" && <p>저장된 결과가 아직 없습니다. 같은 실행 ID로 상태를 확인해 주세요.</p>}
+        {currentResult.projection_status === "FAILED" && <p>권고 생성이 실패했습니다. 새 호출을 자동으로 시도하지 않습니다.</p>}
+        {currentResult.projection_status === "UNAVAILABLE" && <p>저장된 결과의 형식을 확인할 수 없어 내용을 표시하지 않습니다.</p>}
       </div>}
     </div>
   </section>;

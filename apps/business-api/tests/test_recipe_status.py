@@ -17,7 +17,7 @@ from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app
 
 
-class RecipeStatusTests(unittest.IsolatedAsyncioTestCase):
+class RecipeStatusFixtures(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.subject, self.epoch = 'customer_a', 0
         self.job_id, self.execution_id = str(uuid4()), str(uuid4())
@@ -69,12 +69,14 @@ class RecipeStatusTests(unittest.IsolatedAsyncioTestCase):
             return await client.get(f'/api/customer/ai/recipe-executions/{self.execution_id}/status',
                                     params={'job_id': self.job_id, **params})
 
+
+class RecipeStatusTests(RecipeStatusFixtures):
     async def test_owner_bound_status_has_no_model_call_and_is_not_cached(self):
         result = await self.get(tenant_id='forged')
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.headers['Cache-Control'], 'no-store')
         self.assertEqual(result.json(), {'execution_id': self.execution_id, 'job_id': self.job_id,
-            'job_version': 3, 'state': 'PENDING', 'result_available': False, 'execution_available': False, 'job_changed': False})
+            'job_version': 3, 'state': 'PENDING', 'result_available': False, 'execution_available': False, 'job_changed': False, 'manual_invocation_enabled': False})
         self.assertNotIn('tenant_id=', str(self.requests[0].url))
         self.assertEqual(json.loads(self.requests[0].content)['tenant_id'], 'customer_a')
         self.registry.create_execution.assert_not_called()
