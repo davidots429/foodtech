@@ -58,10 +58,12 @@ def check(path, existing_repository=False):
     s3, = [statement for statement in policies if statement['Action'] == 's3:GetObject']
     assert 'prod-ap-southeast-2-starport-layer-bucket/*' in json.dumps(s3['Resource'])
     dynamo, = [statement for statement in policies if statement is not s3]
-    assert set(dynamo['Action']) == {'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan',
+    assert set(dynamo['Action']) == {'dynamodb:DescribeTable', 'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan',
         'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:ConditionCheckItem'}
     account = dynamo['Condition']['StringEquals']['aws:PrincipalAccount']
     assert account.isdigit() and len(account) == 12
+    assert dynamo['Principal'] == {'AWS': '*'}
+    assert dynamo['Condition'] == {'StringEquals': {'aws:PrincipalAccount': account}}
     def text(value):
         if isinstance(value, str):
             return value
@@ -73,7 +75,7 @@ def check(path, existing_repository=False):
         return separator.join(text(part) for part in parts)
     names = {'auth-sessions', 'cooking-jobs', 'data-flow', 'ai-execution-registry',
         'ai-credential-vault', 'identity-vault', 'link-capsule', 'deletion-registry',
-        'deletion-progress', 'tier-requests'}
+        'deletion-progress', 'tier-requests', 'source-access'}
     expected = {f'arn:aws:dynamodb:ap-southeast-2:{account}:table/foodtech-{name}-dev{suffix}'
                 for name in names for suffix in ('', '/index/*')}
     assert set(map(text, dynamo['Resource'])) == expected
