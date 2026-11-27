@@ -56,6 +56,8 @@ def check(template):
             assert statement['Condition']['StringEquals']['aws:ResourceAccount'] == account
             assert statement['Condition']['StringEquals']['s3:x-amz-server-side-encryption'] == 'AES256'
     parameters = template['Parameters']
+    assert 'Default' not in parameters['MaterialVersionId']
+    assert parameters['MaterialVersionId']['AllowedPattern'] == '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'
     assert parameters['QuarantineWritesEnabled']['Default'] == 'false'
     assert parameters['QuarantineWritesEnabled']['AllowedValues'] == ['false', 'true']
     assert template['Conditions']['QuarantineWritesBlocked'] == {'Fn::Equals': [{'Ref': 'QuarantineWritesEnabled'}, 'false']}
@@ -101,6 +103,7 @@ def check(template):
         assert 'Default' not in parameters[secret_parameter]
         for secret in container['Secrets']:
             assert {'Ref': secret_parameter} in secret['ValueFrom']['Fn::Join'][1]
+            assert secret['ValueFrom']['Fn::Join'][1][-1] == {'Ref': 'MaterialVersionId'}
         if name == 'collector':
             assert {v['Name'] for v in container['Secrets']} == {
                 'FOODTECH_MOCK_CA_PEM', 'FOODTECH_MOCK_CLIENT_ID', 'FOODTECH_MOCK_CLIENT_SECRET'}

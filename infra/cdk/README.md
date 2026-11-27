@@ -273,6 +273,22 @@ Mock은 테스트·시연용 별도 .NET 10 CLI이며 고객/관리자 서비스
 
 게시 역할은 지정 저장소 한 곳의 ECR 게시·메타데이터 확인과 토큰 발급만 허용하며 Task 실행·PassRole·네트워크·장비/업무 데이터 권한을 갖지 않는다. Bash/AWS CLI 게시 흐름의 API를 공식 ECR 단일 저장소 push 정책과 Service Authorization Reference에 대조하며 pull-through cache의 선택적 저장소 생성·import·태그 권한은 포함하지 않는다. 새 저장소/권한 적용·변수 연결·실제 게시에는 구체적인 별도 승인이 필요하다. fixture 해시 통과는 모든 Mock 프로토콜의 서버 호환성이나 실제 AWS 실행 검증이 아니다.
 
+## Private REST Secret preparation
+
+`provisionPrivateRestSecrets=true`는 dev·검토한 계정·ap-southeast-2에서만 `FoodtechPrivateRestSecrets-dev`의 별도 고객 관리 KMS 키 2개와 빈 Secret 2개를 정의한다. 이름은 `foodtech/dev/private-rest-mock`와 `foodtech/dev/private-rest-collector`다. [CloudFormation의 빈 Secret 계약](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-secretsmanager-secret.html)에 따라 SecretString·GenerateSecretString을 모두 생략하며 임의 비밀번호나 개인키를 템플릿에 생성하지 않는다. 키와 Secret은 Retain이고 Task·역할·네트워크·복제·예약은 만들지 않는다. 적용에는 별도 승인이 필요하며 KMS/Secret 보관·요청 비용을 검토해야 한다.
+
+키는 단일 리전·대칭 암호화·회전 활성화로 정의한다. 계정의 관리 권한 위임과 데이터 암호 연산을 분리한다. Decrypt/GenerateDataKey는 같은 계정·Secrets Manager ViaService·각 Secret 이름의 ARN namespace 조건으로 제한하며 두 namespace는 겹치지 않는다. 실제 ARN의 자동 접미사는 생성 후에 정해지므로 키 정책의 접미사는 `*`이고, PR265의 실행 역할은 생성 후 확인한 **정확한 Secret ARN·키 ARN·SecretARN 암호화 문맥**으로 다시 제한한다. ARN namespace만으로 정확한 객체 한 개에 제한됐다고 표현하지 않는다. 다른 이름/계정·직접 KMS 호출은 이 데이터 연산 조건을 충족하지 못하며 애플리케이션에는 키 관리 권한을 주지 않는다.
+
+`infra/scripts/private_rest_material.py`는 합성 TLS/OAuth 자료를 메모리에서만 생성한다. 3시간 유효 CA·서버 인증서는 사설 시험 서브넷의 사용 가능한 27개 IPv4만 SAN에 넣으며 wildcard DNS나 공인 IP를 넣지 않는다. CA와 서버의 RSA 키는 분리하고 CA 개인키는 직렬화하지 않는다. Mock에는 공개 CA·서버 인증서/키·OAuth 쌍, 수집기에는 공개 CA·같은 OAuth 쌍만 제공한다. 공개 CA를 Mock 값에도 보관해 첫 업로드 뒤 중단되어도 CA 개인키를 직렬화하거나 서버 값을 다시 만들지 않고 수집기 값을 복원한다. fixture seed를 보안 키 생성에 쓰지 않으며 기본 repr과 metadata는 값 대신 만료·공개 인증서 지문만 포함한다. Python 메모리 복사본의 완전한 소거를 보장하지 않는다. 이는 2시간 한정 시험의 준비안이며 운영 인증서 수명·회전 정책을 확정한 것이 아니다.
+
+생성기는 AWS 업로드나 파일 출력을 수행하지 않는다. 별도 운영자 명령 `infra/scripts/private_rest_initialize.py`의 기본 모드는 메타데이터 조회만 수행한다. 명시한 요청 UUID, 검토한 템플릿 해시와 실제 Secret/키 ARN을 받고 `foodtech` login 프로파일·지정 계정의 AccountFullAccessRole·스택 소유권/출력·키 상태/정책·폐기 버전까지 확인한다. 템플릿 해시는 원본 파일 바이트가 아니라 `canonical_hash()`의 키 정렬·compact JSON·ASCII 직렬화 SHA-256이다. 정책 파일 `infra/containers/private-rest-key-policy.json`은 CDK와 실제 정책 검사에서 공유한다.
+
+`--apply`는 승인 후 운영자가 선택하는 쓰기 모드이며 자체적으로 배포 승인을 뜻하지 않는다. 두 빈 Secret에 메모리에서 생성한 값을 같은 UUID의 VersionId로 순차 기록하고 두 값을 다시 읽어 일치를 검사한다. 두 Secret의 쓰기는 원자적이지 않다. 첫 업로드만 성공했으면 같은 UUID로 재실행할 때 해당 Mock 값을 검증·복원해 수집기만 기록하며, 완료된 같은 요청은 다시 쓰지 않는다. 다른 요청의 버전·역순 부분 상태·만료/변조 자료는 덮어쓰거나 자동 회전하지 않고 실패한다. 오류 출력은 단계·예외 종류·시도/확인 건수만 포함하고 값·SDK 오류 본문은 포함하지 않는다. POSIX 호스트에서 전체 실행 상한은 10~120초이며 실패 후 진행 건수를 보고 실제 버전을 조정 확인해야 한다. 중복 운영자 실행을 잠그는 명령은 아니므로 한 명의 승인된 운영자가 순차 실행한다.
+
+생성된 민감 값을 도구 인수나 파일로 전달하지 않도록 이 명령만 로컬 SDK 프로세스 안에서 생성·업로드·검증을 연결한다. 일반 AWS 검토/적용에는 공식 AWS MCP를 우선한다. 메모리 복사본 완전 소거를 보장하지 않는다. Task 템플릿의 기본값 없는 `MaterialVersionId`에 같은 요청 UUID를 지정하면 모든 필드가 그 버전에 고정되며 AWSCURRENT로 암묵적으로 전환하지 않는다.
+
+이 명령의 SDK Stubber/실제 인증서 검증 결과는 실제 서비스 검증이 아니다. Secret 자동 회전·추가 CloudTrail trail·알람도 이 빈 저장소 정의에는 포함하지 않으며 production Secret 관리 완료로 표시하지 않는다. Guard의 자동 회전 지적과 한정 시험의 갱신·감사·보관/정리 조건을 실제 적용 전에 검토하고 별도 실행 승인을 받아야 한다.
+
 ## Private REST trial preparation
 
 `provisionPrivateRestTrial=true`는 `FoodtechPrivateRestTrial-dev`에 서로 독립적인 Mock·수집기 Fargate Task 정의와 역할 4개(Task/실행 역할 각각), 7일 로그 그룹 2개, 전용 격리 버킷을 준비한다. Task·서비스·예약을 실행하거나 네트워크를 생성하지 않는다. 기존 `foodtech-data-flow-dev`와 `foodtech-ordered-dev.fifo`는 참조만 한다. legacy 수집 인프라와 중복 생성하지 않도록 `provisionDataFlow=true`를 함께 선택하려면 `collectionInfrastructureMode=deferred`가 필요하다. 기본 앱에서는 선택되지 않는다.
