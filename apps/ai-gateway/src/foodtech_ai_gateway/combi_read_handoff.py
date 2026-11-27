@@ -62,6 +62,15 @@ class ReceivedCombiReads:
             return True
         except (ValueError, TypeError, AttributeError, ArithmeticError, BotoCoreError, ClientError): return False
 
+    def matches_transition(self, execution, *, version, completed_calls):
+        """Bind one PENDING lease to the expected reserve/retry progression."""
+        self._live()
+        scope = self.__handoff.scope
+        return type(execution) is Execution and execution == self.__execution and \
+            scope.execution_state == 'PENDING' and type(version) is int and \
+            type(completed_calls) is int and 0 <= completed_calls <= 3 and \
+            version == scope.execution_version + completed_calls and version < 2**63
+
     def observe_inputs(self):
         self._live()
         result = self.__guard.observe_inputs(self.__execution)
