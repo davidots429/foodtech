@@ -19,6 +19,7 @@ from boto3.dynamodb.conditions import Attr, Key
 from boto3.dynamodb.types import TypeSerializer
 
 from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, Model, Tier, UNCONFIGURED_TIER1
+from .combi_read_handoff import ReceivedCombiReads
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from .prior_history_conditions import DynamoPriorHistoryConditions
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
@@ -441,13 +442,48 @@ class DynamoRegistry:
             raise ValueError("invalid active execution checkpoint")
         return {"keys": keys, "next_cursor": next_key["sk"] if next_key else None}
 
-    def reserve(self, execution: Execution, provider: str) -> None:
+    def _check_stored_combi(self, execution, *, version, state):
+        # Determine Combi from storage too: omitting the caller binding must not
+        # turn a protected execution into an ordinary reservation.
+        item = self._get('EXEC', execution.execution_id)
+        if execution.combi_binding is not None or (item and item.get('combi_binding') is not None):
+            try:
+                matches = item is not None and item['state'] == state and item['version'] == version and \
+                    self._execution_from_item(item) == execution
+            except (KeyError, ValueError, TypeError):
+                matches = False
+            if not matches:
+                raise RegistryConflict('stored combi execution changed')
+
+    def _combi_checks(self, execution, guard, *, version, completed_calls):
+        if type(guard) is not ReceivedCombiReads or execution.combi_binding is None:
+            raise RegistryConflict('protected combi reads required')
+        try:
+            if not guard.matches_transition(execution, version=version, completed_calls=completed_calls):
+                raise ValueError('combi execution transition changed')
+            checks = guard.settlement_checks(self._active_tenant_guard(
+                execution.tenant_id, expected_epoch=execution.combi_binding.auth_epoch))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise RegistryConflict('combi source authorization changed') from error
+        if any(check['ConditionCheck']['TableName'] == self.table_name for check in checks):
+            raise ValueError('combi source tables must differ from execution registry')
+        return checks
+
+    def reserve(self, execution: Execution, provider: str, *,
+                combi_source_guard: ReceivedCombiReads | None = None) -> None:
         """Claim one execution and all three limits in one DynamoDB transaction."""
         cost = execution.estimated_cost_usd
         key = _key("EXEC", execution.execution_id)
         version = self._read_versions.get(key["pk"])
         if version is None:
             raise RegistryConflict("execution was not read consistently")
+        self._check_stored_combi(execution, version=version, state='PENDING')
+        if execution.combi_binding is not None:
+            if provider != 'ollama' or execution.estimated_cost_usd != 0:
+                raise RegistryConflict('combi execution requires local zero-cost provider')
+            combi_checks = self._combi_checks(execution, combi_source_guard, version=version, completed_calls=0)
+        elif combi_source_guard is not None:
+            raise ValueError('unexpected combi source guard')
         items = [self._active_tenant_guard(execution.tenant_id, expected_epoch=(
                     execution.combi_binding.auth_epoch if execution.combi_binding else None)),
                  {"Update": {"TableName": self.table_name, "Key": self._av(key),
@@ -488,6 +524,8 @@ class DynamoRegistry:
             if key in self._read_versions and key not in checked:
                 items.append(self._condition(kind, identifier))
                 checked.add(key)
+        if execution.combi_binding is not None:
+            items[0:1] = combi_checks
         try:
             # A retry after a known conditional failure has fresh versions and
             # therefore different transaction parameters. Preserve the token
@@ -497,7 +535,8 @@ class DynamoRegistry:
         except self.client.exceptions.TransactionCanceledException as error:
             raise RegistryConflict("execution or authorization record changed, or limit exhausted") from error
 
-    def reserve_local_retry(self, execution: Execution, attempt: int) -> None:
+    def reserve_local_retry(self, execution: Execution, attempt: int, *,
+                            combi_source_guard: ReceivedCombiReads | None = None) -> None:
         """Atomically record a local recipe retry and consume one additional call.
 
         Authorization, model, consent and budget must have been read through a
@@ -513,6 +552,12 @@ class DynamoRegistry:
         tenant_version = self._read_versions.get(tenant_key["pk"])
         if execution_version is None or tenant_version is None:
             raise RegistryConflict("execution or tenant limit was not read consistently")
+        self._check_stored_combi(execution, version=execution_version, state='RESERVED')
+        if execution.combi_binding is not None:
+            combi_checks = self._combi_checks(execution, combi_source_guard,
+                version=execution_version, completed_calls=attempt - 1)
+        elif combi_source_guard is not None:
+            raise ValueError('unexpected combi source guard')
         values = {":v": execution_version, ":reserved": "RESERVED", ":tenant": execution.tenant_id,
                   ":provider": "ollama", ":feature": Feature.RECIPE_CORRECTION.value,
                   ":retry": attempt - 1, ":one": 1}
@@ -545,6 +590,8 @@ class DynamoRegistry:
                                  ("LIMIT", self._limit_id("PROJECT", "GLOBAL"))):
             if identifier:
                 items.append(self._condition(kind, identifier))
+        if execution.combi_binding is not None:
+            items[0:1] = combi_checks
         try:
             self.client.transact_write_items(TransactItems=items, ClientRequestToken=str(uuid4()))
         except self.client.exceptions.TransactionCanceledException as error:
@@ -553,7 +600,8 @@ class DynamoRegistry:
     def finish(self, execution_id: str, *, succeeded: bool, actual_cost_usd: Decimal,
                response_text: str | None = None, error_code: str | None = None,
                expected_execution: Execution | None = None,
-               recipe_source_guard: BoundRecipeSourceGuard | None = None) -> None:
+               recipe_source_guard: BoundRecipeSourceGuard | None = None,
+               combi_source_guard: ReceivedCombiReads | None = None) -> None:
         """Persist result, settle cost and terminal state in one transaction."""
         if succeeded != (response_text is not None) or (not succeeded and not error_code):
             raise ValueError("success requires a response; failure requires an error code")
@@ -583,6 +631,17 @@ class DynamoRegistry:
                 matches = False
             if not matches:
                 raise RegistryConflict("execution changed before settlement")
+        stored_execution = self._execution_from_item(item)
+        combi_checks = []
+        if stored_execution.combi_binding is not None and succeeded:
+            retry_count = item.get('retry_count', 0)
+            if type(retry_count) not in (int, Decimal) or retry_count not in (0, 1, 2) or \
+                    item['reserved_provider'] != 'ollama' or recipe_source_guard is not None:
+                raise RegistryConflict('invalid combi settlement progression')
+            combi_checks = self._combi_checks(stored_execution, combi_source_guard,
+                version=self._read_versions[_key('EXEC', execution_id)['pk']], completed_calls=1 + int(retry_count))
+        elif combi_source_guard is not None:
+            raise ValueError('unexpected combi settlement guard')
         provider = item["reserved_provider"]
         tenant_id = item["tenant_id"]
         if self.budget(tenant_id, provider) is None:
@@ -635,6 +694,7 @@ class DynamoRegistry:
                             "ExpressionAttributeValues": self._av(values)}})
         changes.append({"Delete": {"TableName": self.table_name,
                                     "Key": self._av({"pk": f"ACTIVE#{tenant_id}", "sk": f"EXEC#{execution_id}"})}})
+        changes.extend(combi_checks)
         if recipe_source_guard is not None:
             try:
                 checks = recipe_source_guard.settlement_checks()
