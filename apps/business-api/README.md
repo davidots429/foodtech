@@ -690,7 +690,7 @@ separate from the local tests.
 
 반환 위임은 repr/pickle/deepcopy로 자격증명을 내보내지 않으며 정확한 scope·명시적 자격증명·리전/공식 endpoint·만료를 확인해 client를 만든다. 로컬 유효기간은 STS 만료와 보호된 작성자 관찰 만료 중 이른 값이다. 인증 재확인 실패/취소와 발급 중 비동기 취소 후의 늦은 결과도 폐기한다. 로컬 `close`는 이미 발급된 STS 자격증명의 서버 측 폐기가 아니므로 소비자는 계속 계정/전체 이력/시간 조건을 검사해야 한다.
 
-기본 AWS 자격증명·환경 기반 활성화·공개 발급 API·브라우저 응답·Gateway 전달은 추가하지 않는다. opt-in CDK 후보 `FoodtechCombiRecipeReadAccess-dev`는 별도 읽기 역할/권한 경계·브로커 이력 조회/AssumeRole·Gateway 조건 검사만 정의하며 기본 비활성이다. 역할/신뢰/정책의 실제 적용과 IAM 검증, 비공개 전달·수신 검증, 보호된 작성자/기존 자료 검증 및 실행/정산 연결은 후속이다. 실제 역할이 만들어졌거나 Combi 모델 실행이 활성화되었다고 표시하지 않는다.
+개발자/기본 자격증명으로 발급하는 경로·공개 발급 API·브라우저 자격증명 응답은 제공하지 않는다. 별도 broker runner는 아래의 명시적 opt-in과 실제 container-role 신원 검증을 요구한다. opt-in CDK 후보 `FoodtechCombiRecipeReadAccess-dev`는 별도 읽기 역할/권한 경계·브로커 이력 조회/AssumeRole·Gateway 조건 검사만 정의하며 기본 비활성이다. 역할/신뢰/정책의 실제 적용과 IAM 검증, 실제 배포/서비스 접근, 보호된 작성자/기존 자료 검증은 별도 완료 증거가 필요하다. 로컬 비공개 전달/수신과 원자적 실행/정산은 전용 경로에 연결되어 있다. 실제 역할이 만들어졌거나 Combi 모델 실행이 활성화되었다고 표시하지 않는다.
 
 ### Combi 비공개 전달 프레임 준비
 
@@ -702,4 +702,24 @@ separate from the local tests.
 
 `CombiDeliverySettings`는 운영자가 구성한 명시적 HTTPS 주소·검토된 서버 leaf·발급자 인증서/키만 받는다. 사용자 요청의 URL·인증서 경로를 받는 공개 API는 없다. URL userinfo/경로/query/fragment를 허용하지 않으며 hostname 검증을 끄거나 전체 서버 CA로 fallback하지 않는다. 단일 서버Auth leaf에 native partial-chain trust를 고정하고 클라이언트 인증서를 제공한다. 환경 proxy와 keylog는 사용하지 않는다.
 
-`deliver_internal_combi_handoff`는 Combi 전용 경로로 한 번만 POST하며 리다이렉트·자동 재시도하지 않는다. JSON/no-store·비압축·본문 크기·정확한 실행 결과를 확인하고 자격증명 값이 들어간 응답을 고객에게 반환하지 않는다. 오류에 upstream 본문·키·주소를 복사하지 않는다. 고객 라우트나 실제 모델 호출은 아직 연결하지 않는다. 실제 발급자 배포·IAM/session·원자적 예약/정산 검증은 별도다.
+`deliver_internal_combi_handoff`는 Combi 전용 경로로 한 번만 POST하며 리다이렉트·자동 재시도하지 않는다. JSON/no-store·비압축·본문 크기·정확한 실행 결과를 확인하고 자격증명 값이 들어간 응답을 고객에게 반환하지 않는다. 오류에 upstream 본문·키·주소를 복사하지 않는다. 고객 전용 경로는 아래의 별도 BFF→broker 위임으로만 연결하며 기본 비활성이다. 실제 발급자 배포·IAM/session·실제 서비스 접근 검증은 별도다.
+
+
+### 독립 Combi broker와 BFF 인증 위임
+
+`POST /api/customer/ai/combi-recipe-executions/{execution_id}/invoke`는 요청 본문을 받지 않는다. BFF는 새 고객 세션·CSRF·실재 계정을 확인한 후 `subject`, `epoch`, `execution_id`, `session_expires`와 프레임 버전만 전달한다. 쿠키·이메일·CSRF·액세스/갱신 토큰·자격증명·조리 기준값은 위임에 없다. 응답 전 세션·CSRF·실재 계정을 다시 확인하고 변경되면 결과를 반환하지 않는다. `FOODTECH_COMBI_CUSTOMER_INVOCATION_ENABLED=true` 및 실재 계정 초기화가 있어야 하며 기본 비활성이다. 고객 결과/검토 UI와 실제 배포 준비가 끝났다는 뜻은 아니다.
+
+BFF→broker는 별도 `/internal/combi/invocations/{execution_id}` mTLS 경로다. broker는 정확한 BFF leaf를 native TLS 뒤 HTTP 파싱 전에 확인하고 연결별 state를 사용한다. 같은 CA/서비스 URI의 다른 leaf, broker 자신의 Gateway 호출 인증서, 범용 listener의 상태/헤더 위조로 통과하지 않는다. 전용 runner는 이 POST 외의 경로·query·WebSocket을 제공하지 않는다. BFF는 검토된 broker 서버 leaf만 신뢰하며 hostname/chain/기간 검사를 유지하고 proxy·redirect·자동 재시도·keylog를 사용하지 않는다.
+
+broker는 위임을 브라우저 Session으로 꾸미거나 토큰을 조회하지 않는다. `DynamoCombiExecutionReader`가 명시적 client로 `EXEC#<UUID>/META`를 강한 일관성으로 읽고 정확한 메타데이터 projection·소유자·epoch·PENDING 상태·정수 버전·Combi 참조를 확인한다. 모델/자격증명·동의·결과·세션 필드를 읽지 않는다. 보호된 전체 이력과 저장 실행을 발급 전후에 대조하고 네 파티션 STS 세션 정책으로 제한한 위임을 broker가 Gateway로 직접 보낸다. BFF/브라우저에는 위임이나 프레임을 돌려주지 않고 정제된 실행 결과만 반환한다. 응답 후에는 예상된 실행의 terminal 전이를 재발급 사유로 삼지 않고 보호된 계정/이력을 확인한다. SDK 초기화와 STS 발급의 취소 후 늦은 결과도 정리하며 실제 세션 폐기로 표시하지 않는다.
+
+독립 프로세스는 `python -m foodtech_business_api.serve_combi_broker`로 실행한다. 기본 비활성이며 고객/관리자 웹 서비스와 별도 프로세스·실행 역할이다. HTTP 기본 주소는 loopback:8445다.
+
+| 경계 | 운영자가 제공하는 설정 |
+| --- | --- |
+| BFF 발송 | `FOODTECH_COMBI_BROKER_URL`, `FOODTECH_COMBI_BROKER_SERVER_CERT`, `FOODTECH_COMBI_BFF_CERT`, `FOODTECH_COMBI_BFF_KEY` |
+| broker listener | `FOODTECH_COMBI_BROKER_ENABLED=true`, `FOODTECH_COMBI_BROKER_SERVER_CERT`, `FOODTECH_COMBI_BROKER_SERVER_KEY`, `FOODTECH_COMBI_BFF_CA`, `FOODTECH_COMBI_BFF_CERT`; 선택 `FOODTECH_COMBI_BROKER_BIND_HOST`, `FOODTECH_COMBI_BROKER_PORT` |
+| broker 실행 역할 | `AWS_EXECUTION_ENV=AWS_ECS_FARGATE`, `FOODTECH_PRINCIPAL_PROVISIONING_ENABLED=true`, `FOODTECH_STAGE`, `FOODTECH_COMBI_BROKER_TASK_ROLE_ARN`, `FOODTECH_COMBI_BROKER_TASK_ROLE_ID`, 동일 stage의 `FOODTECH_AI_REGISTRY_TABLE`·`FOODTECH_AUTH_TABLE` |
+| broker→Gateway | `FOODTECH_COMBI_GATEWAY_URL`, `FOODTECH_COMBI_GATEWAY_SERVER_CERT`, `FOODTECH_COMBI_BROKER_CLIENT_CERT`, `FOODTECH_COMBI_BROKER_CLIENT_KEY` |
+
+BFF clientAuth 인증서의 SAN URI는 `urn:foodtech:service:business-api`, Gateway 호출용 broker 인증서는 `urn:foodtech:service:combi-read-broker`다. broker factory는 실제 STS 계정·역할·불변 RoleId와 container-role provider 및 고정 SDK endpoint를 확인한다. 실제 실행 레지스트리의 최소 속성 GetItem 권한은 별도 검토·적용 대상이며 이 코드를 추가한 것으로 권한이 생기지 않는다. 실제 작성자/보존 이력 검증 기록을 자동 발급하지 않는다. 로컬 저장/SDK/모델 응답 fixture와 TLS 시험을 실제 AWS session policy·보존 이력·모델 실행 증거로 표시하지 않는다.

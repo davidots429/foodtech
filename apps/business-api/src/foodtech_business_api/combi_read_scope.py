@@ -40,27 +40,33 @@ def resolve_combi_read_scope(session, execution_id, *, execution_reader, history
                 raise ValueError
             return now
 
-        started = account_time()
-        first = deepcopy(execution_reader(execution_id))
-        execution = getattr(first, 'execution', None)
-        binding = getattr(execution, 'combi_binding', None)
-        if type(binding) is not CombiExecutionBinding or binding.auth_epoch != epoch or \
-                getattr(execution, 'tenant_id', None) != owner or getattr(execution, 'execution_id', None) != execution_id:
-            raise ValueError
-        validate_combi_execution(execution)
-        if type(getattr(first, 'state', None)) is not str or first.state not in ('PENDING', 'RESERVED') or \
-                type(getattr(first, 'version', None)) is not int or not 1 <= first.version < 2**63:
-            raise ValueError
-        history = history_authority.observe(owner=owner, binding=binding)
-        scope = CombiReadScope(owner, execution_id, binding, history, getattr(first, 'state', None), getattr(first, 'version', None))
-        if not scope.matches_snapshot(first) or not scope.matches_snapshot(deepcopy(execution_reader(execution_id))):
-            raise ValueError
-        history_authority.revalidate(history)
-        if not scope.matches_snapshot(deepcopy(execution_reader(execution_id))) or account_time() < started:
-            raise ValueError
-        return scope
+        return _resolve_observed_combi_scope(owner, epoch, execution_id, execution_reader=execution_reader,
+            history_authority=history_authority, account_time=account_time)
     except (ValueError, TypeError, AttributeError, KeyError, ArithmeticError, PriorHistoryUnavailable, BotoCoreError, ClientError):
         raise RecipeScopeDenied('verified combi read scope unavailable') from None
+
+
+def _resolve_observed_combi_scope(owner, epoch, execution_id, *, execution_reader, history_authority, account_time):
+    """Shared ordering algorithm; callers establish browser or BFF transport identity."""
+    started = account_time()
+    first = deepcopy(execution_reader(execution_id))
+    execution = getattr(first, 'execution', None)
+    binding = getattr(execution, 'combi_binding', None)
+    if type(binding) is not CombiExecutionBinding or binding.auth_epoch != epoch or \
+            getattr(execution, 'tenant_id', None) != owner or getattr(execution, 'execution_id', None) != execution_id:
+        raise ValueError
+    validate_combi_execution(execution)
+    if type(getattr(first, 'state', None)) is not str or first.state not in ('PENDING', 'RESERVED') or \
+            type(getattr(first, 'version', None)) is not int or not 1 <= first.version < 2**63:
+        raise ValueError
+    history = history_authority.observe(owner=owner, binding=binding)
+    scope = CombiReadScope(owner, execution_id, binding, history, getattr(first, 'state', None), getattr(first, 'version', None))
+    if not scope.matches_snapshot(first) or not scope.matches_snapshot(deepcopy(execution_reader(execution_id))):
+        raise ValueError
+    history_authority.revalidate(history)
+    if not scope.matches_snapshot(deepcopy(execution_reader(execution_id))) or account_time() < started:
+        raise ValueError
+    return scope
 
 
 async def authenticated_combi_read_scope(request, execution_id, *, execution_reader, history_authority):
