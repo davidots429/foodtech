@@ -1,5 +1,11 @@
 # Business API 인증과 첫 조리 업무 흐름
 
+## 콤비오븐 소유 자료 관찰 경계
+
+내부 `read_owned_combi_observation`은 인증된 고객 세션과 신뢰할 수 있는 실행에서 얻은 배치 ID·버전·원본 해시로 소유자별 `COMBI_MEAL` 업무 파티션과 그 파티션에 연결된 `#SOURCE` 원본 청크를 조회한다. 조회 전후 계정 존재·epoch·정지·삭제 잠금·세션 만료를 확인하고, 두 번 읽은 전체 저장 행과 연속된 원본 청크를 대조한 뒤 공정·안전·적재 관찰 검증기에 전달한다. 호출자가 전달하는 reader는 신뢰된 강한 일관성 저장소여야 한다. 이 함수는 HTTP 인증, AWS 자격증명 발급이나 저장소 권한 격리를 구현하지 않는다.
+
+같은 버전에서 내용이 바뀐 자료도 거부하지만 마지막 확인 이후의 쓰기를 막지는 않는다. 직전 작업 선정·전체 이력 coverage·실행 및 정산 시 조건 검사는 별도 경계로 남는다. 고객이 제공한 자료나 `history_verified` 같은 Boolean을 신뢰하는 공개 경로는 없고, 등록된 Combi Gateway 실행의 기존 차단도 유지한다. 실제 AWS 권한 추가·배포 및 모델 호출은 포함하지 않는다.
+
 ## 식사배치 재집계 실행 경계
 
 `combi_refresh_worker`의 실행 명령은 `meal_refresh_runtime`을 사용한다. 표 이름만 설정한 기존 실행 방식은 더 이상 허용하지 않는다. `FOODTECH_MEAL_REFRESH_ENABLED=true`, Fargate의 `container-role` 자격증명, `FOODTECH_MEAL_REFRESH_TASK_ROLE_ARN=arn:aws:iam::<account>:role/foodtech-meal-refresh-task-<stage>`와 실제 STS 역할 일치를 요구한다. 인증·조리 표는 같은 stage여야 하며 초기화 모드 `FOODTECH_PRINCIPAL_PROVISIONING_ENABLED`도 true/false로 명시한다. ACTIVE 표의 ARN·문자열 키와 ACTIVE/백필 중이 아닌 `MealAggregatePending` 인덱스의 shard/pk 키·KEYS_ONLY projection을 확인한 뒤 조회를 시작한다. 이는 기존 writer 정지나 백필 완료를 증명하는 검사가 아니다.
