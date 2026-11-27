@@ -23,12 +23,21 @@ import { SourceGrantDeletionAccessStack } from "./source-grant-deletion-access.j
 import { RecipeSourceAccessStack, RecipeSourceCatalogStack } from "./recipe-source-access.js";
 import { RecipeHistoryAccessStack } from "./recipe-history-access.js";
 import { SourceGrantRuntimeStack } from "./source-grant-runtime.js";
+import { CollectionPublishingStack } from "./collection-publishing.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
 if (!/^[a-z0-9-]+$/.test(stage)) throw new Error("stage must be lowercase letters, numbers or hyphens");
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: "ap-southeast-2" };
 const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
+if (app.node.tryGetContext("provisionCollectionPublishing") === "true") {
+  if (app.node.tryGetContext("provisionCollectionImagePublishing") === "true") {
+    throw new Error("manual OIDC collection publishing and legacy CodeBuild publishing must not be selected together");
+  }
+  const publishing = new CollectionPublishingStack(app, `FoodtechCollectionPublishing-${stage}`, { env }, stage);
+  Tags.of(publishing).add("Project", "foodtech");
+  Tags.of(publishing).add("Environment", stage);
+}
 if (principalProvisioning !== "true" && principalProvisioning !== "false") {
   throw new Error("principalProvisioningEnabled must be true or false");
 }

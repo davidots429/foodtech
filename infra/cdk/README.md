@@ -8,9 +8,9 @@
 
 빌드는 공개 저장소의 `main`을 받아 시작 요청의 40자리 `SOURCE_SHA`와 정확히 일치할 때만 진행한다. 이미지는 `sha-<커밋 앞 12자리>` 태그로 게시한다. 프로젝트 생성만으로 빌드가 시작되지 않는다. 병합된 main의 검사 결과와 합성·차이를 확인한 뒤 `StartBuild` 요청에 `SOURCE_SHA`를 지정해 한 번 실행한다. 게시 후 두 ECR 저장소에 해당 태그와 digest가 있는지 확인한다. 이미지에 고객 자격증명·TLS 개인키를 포함하지 않는다.
 
-현재 계정의 `iam:ListOpenIDConnectProviders` 및 `iam:GetOpenIDConnectProvider`는 조직 정책의 명시적 거부로 확인되었고 GitHub용 배포 역할도 없다. 따라서 GitHub Actions에는 AWS 자격증명을 추가하지 않는다. CodeBuild의 명시적 일회성 게시로 개발용 이미지를 준비하고, 조직 정책이 OIDC 공급자 설정을 허용하면 승인된 GitHub Actions OIDC 방식으로 전환한다. 공개 GitHub 소스 다운로드에는 배포 비밀값을 사용하지 않는다.
+과거 OIDC 조회 제한 당시에는 아래 CodeBuild 후보를 준비했다. 이후 개발용 GitHub main 전용 OIDC provider·유지보수 게시 역할과 실제 게시 검증을 완료했으므로 이 제한을 현재 상태로 취급하지 않는다. 새 수집기 게시 준비는 아래의 GitHub Actions 수동 경로를 따른다. 기존 CodeBuild 후보는 자동 선택하거나 이번 경로와 함께 적용하지 않으며 실제 새 자원·권한 적용에는 별도 검토와 승인이 필요하다. 공개 GitHub 소스 다운로드에는 배포 비밀값을 사용하지 않는다.
 
-`-c provisionCollectionImagePublishing=true`는 수집기 전용 불변 태그 ECR 저장소와 별도의 명시적 CodeBuild 프로젝트를 합성한다. 이 프로젝트도 `main`의 HEAD가 지정한 40자리 `SOURCE_SHA`와 일치할 때만 `sha-<앞 12자리>` 이미지를 빌드·게시하며 자동 트리거는 없다. AI 이미지 게시와 독립적으로 실행한다. 아직 배포·실행되지 않았으며 ECR 저장, CodeBuild 실행과 로그 암호화 KMS 키에 비용이 발생할 수 있다. OIDC 제약 해소 시 승인된 GitHub Actions 배포 방식으로 전환한다.
+`-c provisionCollectionImagePublishing=true`는 수집기 전용 불변 태그 ECR 저장소와 별도의 명시적 CodeBuild 프로젝트를 합성한다. 이 프로젝트도 `main`의 HEAD가 지정한 40자리 `SOURCE_SHA`와 일치할 때만 `sha-<앞 12자리>` 이미지를 빌드·게시하며 자동 트리거는 없다. AI 이미지 게시와 독립적으로 실행한다. 아직 배포·실행되지 않았으며 ECR 저장, CodeBuild 실행과 로그 암호화 KMS 키에 비용이 발생할 수 있다. 이 CodeBuild 후보는 과거 제약을 위한 준비본이며, 현재의 승인된 GitHub Actions 전환 후보는 이 문서의 수집기 이미지 수동 게시 준비 절을 따른다.
 
 ## AI 서비스 Task Definition 초안
 
@@ -250,3 +250,14 @@ python3 ../../tests/config/check_maintenance_publishing.py /tmp/foodtech-mainten
 인증 상태 조건 검사는 `USER#*` LeadingKeys와 필수 키 존재 조건을 사용하고 `dynamodb:ReturnValues=NONE`(IfExists)을 요구한다. 세션 키의 조건 검사와 `ALL_OLD` 실패 응답으로 인증 항목을 읽는 경로를 허용하지 않는다. [AWS의 ConditionCheck 실패 반환 제한 예시](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html)를 따르며 기존 배포에는 인증 ConditionCheck 권한 자체가 없어 이번 후보는 기존 인증 권한을 제거하는 변경이 아니다. 실제 역할 검증에서는 조건 통과·실패 및 반환 금지를 함께 확인해야 한다.
 
 수집기 REST·MQTT·OPC UA JSON/Binary Task는 모두 검토한 ECR digest를 요구한다. 태그 입력 `collectionImageTag`는 거부한다. 합성 성공은 해당 digest의 존재·스캔·실제 역할·격리 경로 실행 증거가 아니며 게시/배포는 별도로 검토한다.
+## 수집기 이미지 수동 게시 준비
+
+`provisionCollectionPublishing=true`로 선택하는 `FoodtechCollectionPublishing-dev`는 수집 전용 ECR `foodtech/collection-dev`와 main 전용 게시 역할 `foodtech-collection-publish-dev`의 후보다. 기존 유지보수 저장소·역할을 확장하지 않고, 검토한 기존 GitHub OIDC provider ARN과 실제 inspect 결과의 정확한 subject를 매개변수로 받는다. 기본 앱 실행에서는 선택되지 않는다. 새 저장소는 AES256·불변 태그·게시 시 스캔·Retain이며, `collectionImageRepositoryMode=existing`은 보존된 저장소를 참조만 한다. 기존 모드는 import·설정 변경·정책 변경을 하지 않으므로 실제 저장소 설정을 별도로 대조해야 한다.
+
+게시 역할은 ECR 인증 토큰과 이 저장소 하나의 layer/manifest 게시·읽기 및 저장소/digest 메타데이터 확인만 허용한다. 토큰 발급만 Resource=*가 필요하며 모든 statement는 선택 리전을 제한한다. IAM·PassRole·배포·Task·업무 데이터·저장소 생성/삭제·태그 변경·pull-through cache 권한은 부여하지 않는다. Bash/AWS CLI 경로는 IAM Policy Autopilot 0.4.0의 SDK 소스 지원 목록에 없어 공식 서비스 권한 참조와 [단일 저장소 push 정책](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html)을 대조했다. `BatchGetImage`의 추가 권한 중 [pull-through cache](https://docs.aws.amazon.com/AmazonECR/latest/userguide/pull-through-cache-iam.html)용 생성/import·태그 경로는 이 일반 저장소 게시 기능에 포함하지 않는다.
+
+수동 workflow `.github/workflows/publish-collection-image.yml`의 기본 동작은 inspect다. 이 동작은 공개 OIDC claim만 기록하고 AWS 역할을 인수하거나 이미지를 게시하지 않는다. 코드 병합 뒤 main에서 inspect하여 저장소 ID·소유자 ID·main·workflow·subject를 대조한다. 디코딩한 claim은 인증을 대신하지 않으며 실제 역할 인수에서는 AWS STS가 서명된 토큰을 검증한다. 역할의 IAM 신뢰는 지정 저장소 main에 한정하며 같은 main의 다른 workflow를 IAM 수준에서 구분한다고 주장하지 않는다.
+
+실제 새 스택 적용·역할 검증을 별도 승인받은 뒤 `FOODTECH_COLLECTION_PUBLISH_ROLE_ARN` 및 기존 `FOODTECH_AWS_ACCOUNT_ID` 변수를 연결하고, 검토한 main 커밋의 publish를 명시적으로 실행한다. 빌드와 네트워크 차단 네 프로토콜 `--help`·libzstd 보안 하한 검사가 AWS 자격증명 획득보다 먼저다. 이후 실제 저장소의 ARN·불변 태그·AES256·게시 시 스캔을 확인한 뒤 Docker 로그인/게시하며, 커밋·run·attempt를 포함한 태그와 ECR digest manifest를 남긴다. digest·source·플랫폼·ZIP 체크섬·실제 스캔을 대조하기 전에는 런타임 후보를 확정하지 않는다. 이미지 게시 성공이나 `--help` 통과는 실제 AWS 수집·권한·프로토콜 통신·취약점 비영향을 증명하지 않는다.
+
+수집기 이미지는 Debian 13 trixie 기반 builder/runtime을 공유하고 stable libzstd 보안 하한을 검사한다. 이 하한이 모든 패키지 취약점 수정을 보장하지는 않는다. 실제 배포에서는 `collectionImageRepository`에 위 저장소 URI, `collectionImageDigest`에 검토한 digest를 전달한다. 게시 스택에는 Task·네트워크·스케줄이 없고 수집 실행 권한·기존 Guard 지적 및 이슈 #236의 실제 격리 시험은 별도다.
