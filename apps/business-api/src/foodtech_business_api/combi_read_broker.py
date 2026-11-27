@@ -16,6 +16,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from foodtech_contracts.combi_read_scope import CombiReadScope
+from foodtech_contracts.combi_read_handoff import CombiReadHandoff
 from .combi_read_scope import authenticated_combi_read_scope
 from .combi_prior_history import DynamoCombiPriorHistoryAuthority
 from .prior_history_authority import PriorHistoryUnavailable
@@ -28,12 +29,13 @@ READ_ACTIONS = ('dynamodb:GetItem', 'dynamodb:Query')
 
 
 class CombiReadLease:
-    __slots__ = ('__scope', '__expires', '__session', '__config', '__clock', '__closed', '__clients', '__last_time')
+    __slots__ = ('__scope', '__expires', '__session', '__config', '__clock', '__closed', '__clients', '__last_time', '__role', '__assumed')
 
-    def __init__(self, scope, expires, session, config, clock):
+    def __init__(self, scope, expires, session, config, clock, *, read_role_arn, assumed_role_arn):
         self.__scope, self.__expires, self.__session = scope, expires, session
         self.__config, self.__clock, self.__closed, self.__clients = config, clock, False, []
         self.__last_time = clock()
+        self.__role, self.__assumed = read_role_arn, assumed_role_arn
 
     def __repr__(self): return 'CombiReadLease()'
     def __reduce_ex__(self, _protocol): raise TypeError('combi read leases cannot be serialized')
@@ -43,7 +45,7 @@ class CombiReadLease:
     @property
     def expires_at(self): return self.__expires
 
-    def client(self, expected_scope):
+    def _scoped_session(self, expected_scope):
         now = self.__clock()
         if self.__closed or type(expected_scope) is not CombiReadScope or expected_scope != self.__scope or \
                 type(now) is not datetime or now.utcoffset() is None or now >= self.__expires or \
@@ -53,10 +55,35 @@ class CombiReadLease:
         credentials = self.__session.get_credentials()
         if credentials is None or credentials.method != 'explicit':
             raise RecipeScopeDenied('explicit combi lease credentials required')
-        client = self.__session.client('dynamodb', region_name=REGION, config=self.__config,
+        return self.__session
+
+    def client(self, expected_scope):
+        session = self._scoped_session(expected_scope)
+        client = session.client('dynamodb', region_name=REGION, config=self.__config,
             endpoint_url=f'https://dynamodb.{REGION}.amazonaws.com')
         self.__clients.append(client)
         return client
+
+    def _internal_handoff(self, expected_scope, *, execution_reader, history_authority):
+        """Explicit private TLS encoding only, never a customer return value."""
+        try:
+            match = re.fullmatch(r'arn:aws:iam::([0-9]{12}):role/foodtech-combi-source-read-([a-z0-9-]{1,32})', self.__role)
+            if not match or type(history_authority) is not DynamoCombiPriorHistoryAuthority or \
+                    history_authority.auth != 'foodtech-auth-sessions-'+match[2] or \
+                    history_authority.cooking_arn != f'arn:aws:dynamodb:{REGION}:{match[1]}:table/foodtech-cooking-jobs-{match[2]}' or \
+                    not callable(execution_reader): raise ValueError
+            def revalidate():
+                if not self.scope.matches_snapshot(execution_reader(self.scope.execution_id)) or \
+                        history_authority.revalidate(self.scope.history) != self.scope.history:
+                    raise ValueError
+                return self._scoped_session(expected_scope)
+            session = revalidate()
+            frozen = session.get_credentials().get_frozen_credentials()
+            revalidate()
+            return CombiReadHandoff(self.scope, self.__role, self.__assumed, self.expires_at,
+                frozen.access_key, frozen.secret_key, frozen.token, clock=self.__clock)
+        except (ValueError, TypeError, AttributeError, ArithmeticError, PriorHistoryUnavailable, BotoCoreError, ClientError):
+            raise RecipeScopeDenied('combi read handoff unavailable') from None
 
     def close(self):
         self.__closed = True
@@ -127,7 +154,8 @@ class CombiReadBroker:
             session = self.session_factory(region_name=REGION, aws_access_key_id=credentials['AccessKeyId'],
                 aws_secret_access_key=credentials['SecretAccessKey'], aws_session_token=credentials['SessionToken'])
             if session.get_credentials() is None or session.get_credentials().method != 'explicit': raise ValueError
-            return CombiReadLease(scope, expires, session, self.config, self.clock)
+            return CombiReadLease(scope, expires, session, self.config, self.clock,
+                read_role_arn=self.role, assumed_role_arn=identity['Arn'])
         except (ValueError, TypeError, AttributeError, KeyError, ArithmeticError, PriorHistoryUnavailable, BotoCoreError, ClientError):
             raise RecipeScopeDenied('verified combi read lease unavailable') from None
 
