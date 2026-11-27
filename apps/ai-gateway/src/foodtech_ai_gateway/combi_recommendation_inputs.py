@@ -1,8 +1,9 @@
 """Adapt trusted combi observations after independent ownership/history checks.
 
 No HTTP handler accepts these objects. Constructing observations alone never
-establishes the immediately prior job or authorizes a provider call. Registered
-Combi Gateway execution stays disabled until its own guarded scope is available.
+establishes the immediately prior job or authorizes a provider call. The dedicated
+Combi invocation service additionally requires a live received read lease and
+atomic history conditions; this adapter alone never authorizes a model call.
 """
 from foodtech_contracts.combi_observed_inputs import ObservedCombiBatch
 from foodtech_contracts.combi_recommendation import CombiBaseline

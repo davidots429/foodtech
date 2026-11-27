@@ -411,3 +411,15 @@ async def execution_status(request: Request, execution_id: str, tenant_id: str) 
             "error_code": result.get("error_code") if result else None,
             "actual_cost_usd": str(result["actual_cost_usd"]) if result else None,
             "settlement_status": result.get("settlement_status") if result else None}, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/internal/ai/combi-recipe-executions/{execution_id}/invoke')
+async def invoke_combi_recipe_execution(request: Request, execution_id: UUID):
+    from .combi_read_handoff import require_combi_transport
+    from .combi_invocation import invoke_observed_combi
+    require_combi_transport(request)
+    if os.getenv('FOODTECH_COMBI_INVOCATION_ENABLED') != 'true':
+        raise HTTPException(503, 'COMBI_INVOCATION_UNAVAILABLE', headers={'Cache-Control':'no-store'})
+    ollama = getattr(request.app.state, 'ollama_client', None) or OllamaClient(
+        os.getenv('FOODTECH_OLLAMA_BASE_URL', 'http://127.0.0.1:11434'))
+    return await invoke_observed_combi(request, execution_id, ollama=ollama)
