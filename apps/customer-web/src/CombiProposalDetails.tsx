@@ -15,4 +15,3 @@ export function CombiProposalDetails({ proposal, reviewed = false }: { proposal:
       <tbody>{d.pan_positions.map(p => <tr key={`${p.rack}-${p.shelf}`}><td>{p.rack}</td><td>{p.shelf}</td></tr>)}</tbody></table>
   </div>;
 }
-
