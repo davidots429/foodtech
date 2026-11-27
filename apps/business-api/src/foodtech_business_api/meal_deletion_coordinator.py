@@ -40,6 +40,19 @@ class MealDeletionCoordinator:
                     item['state'] != ('VERIFYING' if state['phase'] == 'VERIFYING' else 'IN_PROGRESS'):
                 raise ValueError('invalid meal deletion checkpoint')
         phase = state['phase']
+        if phase in {'FINAL', 'SOURCES', 'VERIFYING'}:
+            # Old/resumed checkpoints may have passed LISTINGS before a history
+            # counter was introduced or restored. Do not hide those residuals.
+            listing = clean_one_meal_listing(source_table=self.meals.source_table, progress_store=self.store,
+                cipher=self.cipher, subject=subject, request_id=request_id)
+            if listing == {'state': 'IN_PROGRESS', 'removed': True}:
+                state.update(phase='LISTINGS', index=state['total'])
+                raw = json.dumps(state, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('ascii')
+                self.store.save_checkpoint(cipher=self.cipher, **scope, expected_version=version,
+                                           state='IN_PROGRESS', checkpoint=raw)
+                return {'phase': 'LISTINGS'}
+            if listing != {'state': 'VERIFYING', 'removed': False}:
+                raise ValueError('invalid resumed meal listing cleanup result')
         if phase == 'VERIFYING':
             return {'phase': 'VERIFYING'}
         if phase == 'CAPTURE':

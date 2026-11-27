@@ -350,6 +350,7 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(observations.unresolved, ())
                 self.assertEqual(observations.sampled_safety_status, 'PASSED')
                 self.assertEqual(observations.model_context()['quality']['score_percent'], '80.00')
+                self.assertEqual(store.meal_history_revision('test-customer'), graded.json()['meal']['version'])
                 self.assertEqual(observations.baseline.ingredient_kg, Decimal('.39'))
                 self.assertIs(observations.baseline.humidity_available, False)
                 self.assertIs(observations.baseline.transition_ready, True)

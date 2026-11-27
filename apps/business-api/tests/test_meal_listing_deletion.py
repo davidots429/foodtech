@@ -4,6 +4,8 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 from botocore.exceptions import ClientError
+from botocore.session import get_session
+from botocore.validate import validate_parameters
 from foodtech_business_api.condition_profile_deletion import ProfileDeletionConflict
 from foodtech_business_api.meal_listing_deletion import clean_one_meal_listing
 
@@ -49,6 +51,38 @@ class MealListingDeletionTests(unittest.TestCase):
             'CancellationReasons': [{'Code': 'ConditionalCheckFailed'}]}, 'TransactWriteItems')
         with self.assertRaises(ProfileDeletionConflict):
             clean_one_meal_listing(**self.args)
+
+    def test_history_counter_is_removed_only_under_the_same_deletion_guards(self):
+        counter = {'pk': self.row['pk'], 'sk': 'HISTORY#REVISION', 'revision': 7}
+        self.source.query.side_effect = [{'Items': []}, {'Items': [counter]}]
+        self.assertEqual(clean_one_meal_listing(**self.args), {'removed': True, 'state': 'IN_PROGRESS'})
+        operations = self.client.transact_write_items.call_args.kwargs['TransactItems']
+        self.assertEqual(operations[0]['ConditionCheck']['TableName'], 'auth')
+        self.assertIn('deletion_lock_request = :request', operations[0]['ConditionCheck']['ConditionExpression'])
+        self.assertEqual(operations[1]['ConditionCheck']['TableName'], 'registry')
+        self.assertEqual(operations[2]['Delete']['Key']['sk'], {'S': 'HISTORY#REVISION'})
+        self.assertEqual(operations[2]['Delete']['ExpressionAttributeValues'], {':revision': {'N': '7'}})
+        shape = get_session().get_service_model('dynamodb').operation_model('TransactWriteItems').input_shape
+        validate_parameters({'TransactItems': operations}, shape)
+        self.source.query.side_effect = [{'Items': []}, {'Items': []}]
+        self.assertEqual(clean_one_meal_listing(**self.args), {'removed': False, 'state': 'VERIFYING'})
+
+    def test_unknown_malformed_or_uncertain_listing_residual_never_claims_empty(self):
+        for page in ({'Items': [{'pk': self.row['pk'], 'sk': 'UNKNOWN'}]},
+                     {'Items': [{'pk': 'SCOPE#USER#new-account#COMBI_MEALS', 'sk': 'HISTORY#REVISION', 'revision': 7}]},
+                     {'Items': [{'pk': self.row['pk'], 'sk': 'HISTORY#REVISION', 'revision': True}]},
+                     {'Items': [], 'LastEvaluatedKey': {'pk': self.row['pk'], 'sk': 'HISTORY#REVISION'}}):
+            with self.subTest(page=page):
+                self.source.query.side_effect = [{'Items': []}, page]
+                with self.assertRaises(ValueError): clean_one_meal_listing(**self.args)
+        self.client.transact_write_items.assert_not_called()
+
+    def test_changed_counter_or_lost_deletion_lock_cannot_be_reported_removed(self):
+        self.source.query.side_effect = [{'Items': []}, {'Items': [
+            {'pk': self.row['pk'], 'sk': 'HISTORY#REVISION', 'revision': 7}]}]
+        self.client.transact_write_items.side_effect = ClientError({'Error': {'Code': 'TransactionCanceledException'},
+            'CancellationReasons': [{'Code': 'ConditionalCheckFailed'}]}, 'TransactWriteItems')
+        with self.assertRaises(ProfileDeletionConflict): clean_one_meal_listing(**self.args)
 
 
 if __name__ == '__main__':
