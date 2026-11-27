@@ -18,6 +18,7 @@ from .vault import DynamoCredentialVault
 from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 from .downgrade_flow import DowngradeFlow, DowngradeError
 from foodtech_contracts.recipe_execution_scope import recipe_execution_observation_payload, recipe_execution_status_payload
+from foodtech_contracts.recipe_result_view import recipe_execution_result_payload
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -230,6 +231,16 @@ async def invoke_recipe_execution(request: Request, execution_id: UUID):
 @app.post('/internal/ai/recipe-status/{execution_id}')
 async def recipe_execution_status(request: Request, execution_id: UUID, body: RecipeStatusRequest):
     _internal(request)
+    before, result = await _stable_recipe_result(request, execution_id, body)
+    try:
+        payload = recipe_execution_status_payload(before, result, execution_id=str(execution_id),
+                                                  tenant_id=body.tenant_id, job_id=str(body.job_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(409, 'EXECUTION_STATUS_CHANGED', headers={'Cache-Control': 'no-store'}) from None
+    return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
+
+
+async def _stable_recipe_result(request: Request, execution_id: UUID, body: RecipeStatusRequest):
     registry = _service(request).registry
     identifier, job_id = str(execution_id), str(body.job_id)
     try:
@@ -241,7 +252,18 @@ async def recipe_execution_status(request: Request, execution_id: UUID, body: Re
         stable = await asyncio.to_thread(registry.execution_status_snapshot, identifier, body.tenant_id)
         if stable is None or stable[0] != before:
             raise RegistryConflict('execution changed during status lookup')
-        payload = recipe_execution_status_payload(*stable, execution_id=identifier, tenant_id=body.tenant_id, job_id=job_id)
+        return stable
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(409, 'EXECUTION_STATUS_CHANGED', headers={'Cache-Control': 'no-store'}) from None
+
+
+@app.post('/internal/ai/recipe-results/{execution_id}')
+async def recipe_execution_result(request: Request, execution_id: UUID, body: RecipeStatusRequest):
+    _internal(request)
+    before, result = await _stable_recipe_result(request, execution_id, body)
+    try:
+        payload = recipe_execution_result_payload(before, result, execution_id=str(execution_id),
+                                                  tenant_id=body.tenant_id, job_id=str(body.job_id))
     except (ValueError, TypeError, AttributeError):
         raise HTTPException(409, 'EXECUTION_STATUS_CHANGED', headers={'Cache-Control': 'no-store'}) from None
     return JSONResponse(payload, headers={'Cache-Control': 'no-store'})

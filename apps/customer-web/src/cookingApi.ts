@@ -168,12 +168,21 @@ function errorMessage(status: number, detail: unknown): string {
 }
 
 export async function api<T>(path: string, csrf?: string, body?: unknown): Promise<T> {
+  return requestJson<T>(path, body === undefined ? "GET" : "POST", csrf, body);
+}
+
+export async function postWithoutBody<T>(path: string, csrf: string): Promise<T> {
+  return requestJson<T>(path, "POST", csrf);
+}
+
+async function requestJson<T>(path: string, method: "GET" | "POST", csrf?: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
-      method: body === undefined ? "GET" : "POST",
+      method,
       credentials: "same-origin",
-      headers: body === undefined ? undefined : { "Content-Type": "application/json", "X-CSRF-Token": csrf ?? "" },
+      headers: method === "GET" ? undefined : { "X-CSRF-Token": csrf ?? "",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {

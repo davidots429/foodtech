@@ -125,6 +125,8 @@ AI 실행 관찰은 보존된 인벤토리의 실행 META를 강한 일관성으
 
 ### 요청별 권고 실행 경계
 
+`POST /internal/ai/recipe-results/{execution_id}`는 상태 조회와 같은 mTLS·고객·작업·실행 snapshot 대조 후 저장 결과만 투영한다. 알려진 검토 대상 출력의 수치 필드만 반환하며 원문 응답·자격증명·공급자 오류를 노출하지 않는다. 미완료·실패·지원하지 않는 형식을 구분하고 현재 안전 판정이나 승인 상태를 새로 만들지 않는다. 조회 자체는 모델·원천 broker·STS를 호출하지 않는다.
+
 `POST /internal/ai/recipe-executions/{execution_id}/invoke`는 전용 mTLS listener에서만 받으며 기본 `FOODTECH_RECIPE_INVOCATION_ENABLED=false`다. 활성화 설정은 Fargate container-role provider, 실제 STS Gateway 역할, 동일 계정·stage의 read role/엄격한 DynamoRegistry를 요구한다. `FOODTECH_RECIPE_GATEWAY_TASK_ROLE_ARN`과 `FOODTECH_RECIPE_SOURCE_READ_ROLE_ARN`은 검토한 서로 다른 역할이어야 한다.
 
 실행 레지스트리와 condition 검사에는 동일하게 검증한 task Session의 regional SDK 클라이언트를 사용한다. bounded handoff를 해석한 뒤 실행 snapshot을 재조회하며, 검증된 원천·이력 조건이 있는 요청별 GatewayService에서 로컬 권고만 실행한다. 공유 서비스의 guard를 변경하거나 Gateway 역할로 원천 payload 읽기를 대체하지 않는다. 모든 결과는 no-store이고 자격증명은 응답하지 않는다. 이 경로 추가는 실제 권한·writer fencing·coverage·서비스 연결 검증이나 모델 호출의 승인이 아니다.
