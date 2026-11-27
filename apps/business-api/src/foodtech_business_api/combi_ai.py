@@ -1,4 +1,4 @@
-"""Customer combi request/notice records; invocation remains unavailable."""
+"""Owned Combi request, notice and stored-result reads; no automatic execution."""
 import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
@@ -128,3 +128,82 @@ async def confirm(request: Request, quote_id: UUID, body: CombiRecipeConfirm):
     return await _forward(request, session, f'/internal/ai/recipe-downgrades/{quote_id}/confirm',
         {'tenant_id': session.subject, 'notice_version': body.notice_version,
          'quality_warning_acknowledged': body.quality_warning_acknowledged, **binding})
+
+
+async def _owned_result_meta(store, subject, meal_id, menu):
+    """Read owned batch references, never synthesize a standalone cooking job."""
+    from copy import deepcopy
+    pk = f'SCOPE#USER#{subject}#COMBI_MEAL#{meal_id}'
+    meta, _ = await _store_call(store, store.read, pk)
+    meta = deepcopy(meta)
+    field = 'rice_cooking_job_id' if menu == 'RICE' else 'mackerel_cooking_job_id'
+    try:
+        if type(meta) is not dict or meta.get('pk') != pk or meta.get('sk') != 'META' or \
+                meta.get('meal_batch_id') != meal_id or meta.get('provenance') != 'SYNTHETIC' or \
+                type(meta.get('version')) is not int or not 1 <= meta['version'] <= 10**18 or \
+                type(meta.get(field)) is not str or str(UUID(meta[field])) != meta[field]:
+            raise ValueError
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(404, '해당 식사배치의 조리작업을 찾을 수 없습니다.',
+                            headers={'Cache-Control': 'no-store'}) from None
+    return meta, meta[field]
+
+
+async def _combi_record(request, execution_id, meal_id, menu, *, result_view):
+    from .ai import _gateway_settings, _client
+    from .combi_owned_observations import _identical
+    from foodtech_contracts.recipe_execution_scope import validate_recipe_status_payload
+    from foodtech_contracts.recipe_result_view import validate_recipe_result_payload
+    import httpx
+    session, store = await _context(request)
+    # An in-memory session can mutate during I/O; preserve authenticated facts.
+    session = Session(session.surface, session.subject, None, session.csrf, session.expires, session.epoch)
+    try:
+        await _require_principal_record(session)
+        meta, job_id = await _owned_result_meta(store, session.subject, str(meal_id), menu)
+        url, ca, cert, key = _gateway_settings()
+        resource = 'combi-recipe-results' if result_view else 'combi-recipe-status'
+        async with _client(ca, cert, key) as client:
+            response = await client.post(f'{url}/internal/ai/{resource}/{execution_id}',
+                json={'tenant_id': session.subject, 'job_id': job_id, 'meal_id': str(meal_id), 'menu': menu})
+            if response.status_code == 404:
+                raise HTTPException(404, '해당 식사배치의 권고 실행 기록을 찾을 수 없습니다.',
+                                    headers={'Cache-Control': 'no-store'})
+            if response.status_code == 409:
+                raise HTTPException(409, '권고 실행 상태가 변경되었습니다. 다시 조회해 주세요.',
+                                    headers={'Cache-Control': 'no-store'})
+            response.raise_for_status()
+            validate = validate_recipe_result_payload if result_view else validate_recipe_status_payload
+            payload = validate(response.json(), execution_id=str(execution_id), job_id=job_id)
+        await _same_session(request, session)
+        after, after_job = await _owned_result_meta(store, session.subject, str(meal_id), menu)
+        await _same_session(request, session)
+        if not _identical(meta, after) or after_job != job_id:
+            raise HTTPException(409, '식사배치가 변경되었습니다. 다시 조회해 주세요.',
+                                headers={'Cache-Control': 'no-store'})
+        if result_view and payload['proposal'] is not None and payload['proposal']['menu'] != menu:
+            raise ValueError('stored proposal menu mismatch')
+        return JSONResponse({**payload, 'meal_id': str(meal_id), 'menu': menu,
+            'job_changed': payload['job_version'] != meta['version'], 'manual_invocation_enabled': False},
+            headers={'Cache-Control': 'no-store'})
+    except RecipeScopeDenied:
+        raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.',
+                            headers={'Cache-Control': 'no-store'}) from None
+    except (ValueError, TypeError, KeyError, AttributeError, OSError, httpx.HTTPError):
+        raise HTTPException(502, '콤비 권고 실행 기록을 확인하지 못했습니다.',
+                            headers={'Cache-Control': 'no-store'}) from None
+    except (BotoCoreError, ClientError):
+        raise HTTPException(503, '콤비오븐 저장 자료를 확인하지 못했습니다.',
+                            headers={'Cache-Control': 'no-store'}) from None
+
+
+@router.get('/recipe-executions/{execution_id}/status')
+async def combi_execution_status(request: Request, execution_id: UUID, meal_id: UUID,
+                                 menu: Literal['RICE', 'MACKEREL']):
+    return await _combi_record(request, execution_id, meal_id, menu, result_view=False)
+
+
+@router.get('/recipe-executions/{execution_id}/result')
+async def combi_execution_result(request: Request, execution_id: UUID, meal_id: UUID,
+                                 menu: Literal['RICE', 'MACKEREL']):
+    return await _combi_record(request, execution_id, meal_id, menu, result_view=True)
