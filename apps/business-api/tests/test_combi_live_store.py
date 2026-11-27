@@ -127,4 +127,5 @@ class CombiLiveStoreTests(unittest.TestCase):
         self.assertIn('deletion_lock_request', operations[0]['ConditionCheck']['ConditionExpression'])
         self.assertEqual(operations[1]['ConditionCheck']['Key']['pk'], {'S': 'SCOPE#USER#alice#COMBI_MEAL#old'})
         self.assertIn('meal_batch_id = :id', operations[1]['ConditionCheck']['ConditionExpression'])
-        self.assertIn('Update', operations[2])
+        self.assertIn('Put', operations[2])
+        self.assertEqual(operations[3]['Update']['Key']['sk'], {'S': 'HISTORY#REVISION'})

@@ -152,6 +152,12 @@ def _history_number(item: dict | None) -> int | None:
     return int(value)
 
 
+def _meal_history_pk(meal_pk: str) -> str:
+    subject = _meal_subject(meal_pk)
+    _meal_page_args(subject, 1, None)
+    return f'SCOPE#USER#{subject}#COMBI_MEALS'
+
+
 def _history_relevant(event: dict | None) -> bool:
     """Track changes that can alter a job's reusable safety evidence."""
     return bool(event and (event.get("trigger") == "COOKING_STARTED" or event.get("domain") in {
@@ -249,6 +255,7 @@ class CookingStore(Protocol):
     def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None: ...
     def list_jobs(self, subject: str, limit: int, cursor: str | None) -> dict: ...
     def history_revision(self, subject: str) -> int | None: ...
+    def meal_history_revision(self, subject: str) -> int | None: ...
     def ensure_listed(self, pk: str, meta: dict) -> None: ...
     def bind_stream(self, pk: str, expected_version: int, meta: dict, stream_pk: str, expected_epoch: int = 0) -> None: ...
     def create_recook(self, parent_pk: str, expected_parent_version: int,
@@ -373,6 +380,7 @@ class MemoryCookingStore:
         with self.lock:
             if listing_key in self.items or any((pk, row["sk"]) in self.items for row in records):
                 raise Conflict
+            self._advance_meal_history(pk)
             for row in records:
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
             self.items[listing_key] = listing
@@ -398,6 +406,7 @@ class MemoryCookingStore:
                     (current is not None and current.get('meal_batch_id') != meal_id):
                 raise Conflict
             if current is None:
+                self._advance_meal_history(pk)
                 self.items[listing_key] = listing
 
     def read_meal(self, pk: str) -> list[dict]:
@@ -481,6 +490,7 @@ class MemoryCookingStore:
             if (not current or current["version"] != expected_version or
                     (pk, step["sk"]) not in self.items or (pk, event["sk"]) in self.items):
                 raise Conflict
+            self._advance_meal_history(pk)
             for row in (meta, step, event):
                 self.items[(pk, row["sk"])] = {"pk": pk, **row}
             self.items[(pk, dirty['sk'])] = {'pk': pk, **dirty}
@@ -496,6 +506,7 @@ class MemoryCookingStore:
                     (int(live["count"]) if live else None) != live_count or
                     any((source_pk, row["sk"]) in self.items for row in chunks)):
                 raise Conflict
+            self._advance_meal_history(pk)
             self.items[(pk, "META")] = {"pk": pk, **meta}
             self.items[(pk, event["sk"])] = {"pk": pk, **event}
             self.items[(pk, dirty['sk'])] = {'pk': pk, **dirty}
@@ -557,7 +568,13 @@ class MemoryCookingStore:
             return result.copy() if result else None
 
     def _advance_history(self, job_pk: str) -> None:
-        key = (_history_pk(job_pk), "HISTORY#REVISION")
+        self._advance_history_counter(_history_pk(job_pk))
+
+    def _advance_meal_history(self, meal_pk: str) -> None:
+        self._advance_history_counter(_meal_history_pk(meal_pk))
+
+    def _advance_history_counter(self, history_pk: str) -> None:
+        key = (history_pk, "HISTORY#REVISION")
         revision = _history_number(self.items.get(key)) or 0
         if revision >= 10**18:
             raise ValueError("job history revision limit reached")
@@ -566,6 +583,11 @@ class MemoryCookingStore:
     def history_revision(self, subject: str) -> int | None:
         with self.lock:
             return _history_number(self.items.get((f"SCOPE#USER#{subject}#JOBS", "HISTORY#REVISION")))
+
+    def meal_history_revision(self, subject: str) -> int | None:
+        _meal_page_args(subject, 1, None)
+        with self.lock:
+            return _history_number(self.items.get((f'SCOPE#USER#{subject}#COMBI_MEALS', 'HISTORY#REVISION')))
 
     def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None:
         with self.lock:
@@ -958,8 +980,9 @@ class DynamoCookingStore:
                       for row in records]
         operations.append({'Put': {'TableName': self.table.name, 'Item': self._item(listing),
                                     'ConditionExpression': 'attribute_not_exists(pk)'}})
+        operations.append(self._meal_history_update(pk))
         try:
-            self.client.transact_write_items(TransactItems=operations)
+            self._history_transact(operations)
         except self.client.exceptions.TransactionCanceledException as exc:
             if any(reason.get("Code") == "ConditionalCheckFailed"
                    for reason in exc.response.get("CancellationReasons", [])):
@@ -983,17 +1006,22 @@ class DynamoCookingStore:
         listing = _meal_listing(pk, [{'sk': 'META', 'meal_batch_id': meal_id}])
         values = self._item({':id': meal_id})
         try:
-            self.client.transact_write_items(TransactItems=[
+            self._history_transact([
                 self._derived_owner_guard(subject, None),
                 {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'META'}),
                                     'ConditionExpression': 'meal_batch_id = :id', 'ExpressionAttributeValues': values}},
-                {'Update': {'TableName': self.table.name,
-                            'Key': self._item({'pk': listing['pk'], 'sk': listing['sk']}),
-                            'UpdateExpression': 'SET meal_batch_id = :id',
-                            'ConditionExpression': 'attribute_not_exists(pk) OR meal_batch_id = :id',
-                            'ExpressionAttributeValues': values}},
+                {'Put': {'TableName': self.table.name, 'Item': self._item(listing),
+                         'ConditionExpression': 'attribute_not_exists(pk)'}},
+                self._meal_history_update(pk),
             ])
         except self.client.exceptions.TransactionCanceledException as exc:
+            reasons = exc.response.get('CancellationReasons', [])
+            if len(reasons) == 4 and reasons[2].get('Code') == 'ConditionalCheckFailed' and \
+                    all(reason.get('Code') in (None, 'None') for i, reason in enumerate(reasons) if i != 2):
+                existing = self.table.get_item(Key={'pk': listing['pk'], 'sk': listing['sk']},
+                                               ConsistentRead=True).get('Item')
+                if existing and all(existing.get(field) == listing[field] for field in ('pk', 'sk', 'meal_batch_id')):
+                    return
             if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
@@ -1147,12 +1175,12 @@ class DynamoCookingStore:
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **event}),
                      "ConditionExpression": "attribute_not_exists(pk)"}},
             {"Put": {"TableName": self.table.name, "Item": self._item({"pk": pk, **dirty})}},
+            self._meal_history_update(pk),
         ]
         try:
-            self.client.transact_write_items(TransactItems=operations)
+            self._history_transact(operations)
         except self.client.exceptions.TransactionCanceledException as exc:
-            if any(reason.get("Code") == "ConditionalCheckFailed"
-                   for reason in exc.response.get("CancellationReasons", [])):
+            if _is_transaction_contention(exc):
                 raise Conflict from exc
             raise
 
@@ -1177,8 +1205,9 @@ class DynamoCookingStore:
         operations.extend({"Put": {"TableName": self.table.name,
                                    "Item": self._item({"pk": pk + "#SOURCE", **row}),
                                    "ConditionExpression": "attribute_not_exists(pk)"}} for row in chunks)
+        operations.append(self._meal_history_update(pk))
         try:
-            self.client.transact_write_items(TransactItems=operations)
+            self._history_transact(operations)
         except self.client.exceptions.TransactionCanceledException as exc:
             if _is_transaction_contention(exc):
                 raise Conflict from exc
@@ -1288,8 +1317,19 @@ class DynamoCookingStore:
                 time.sleep(0.05 * (2 ** attempt) + random.uniform(0, 0.05))
 
     def _history_update(self, job_pk: str) -> dict:
+        return self._history_counter_update(_history_pk(job_pk))
+
+    def _meal_history_update(self, meal_pk: str) -> dict:
+        operation = self._history_counter_update(_meal_history_pk(meal_pk))
+        update = operation['Update']
+        update['ConditionExpression'] = ('attribute_not_exists(pk) OR '
+            '(attribute_type(revision, :number) AND revision >= :one AND revision < :max)')
+        update['ExpressionAttributeValues'][':number'] = {'S': 'N'}
+        return operation
+
+    def _history_counter_update(self, history_pk: str) -> dict:
         return {"Update": {"TableName": self.table.name,
-            "Key": self._item({"pk": _history_pk(job_pk), "sk": "HISTORY#REVISION"}),
+            "Key": self._item({"pk": history_pk, "sk": "HISTORY#REVISION"}),
             "UpdateExpression": "ADD revision :one",
             "ConditionExpression": "attribute_not_exists(revision) OR revision < :max",
             "ExpressionAttributeValues": {":one": {"N": "1"}, ":max": {"N": "1000000000000000000"}}}}
@@ -1351,6 +1391,12 @@ class DynamoCookingStore:
     def history_revision(self, subject: str) -> int | None:
         item = self.table.get_item(Key={"pk": f"SCOPE#USER#{subject}#JOBS", "sk": "HISTORY#REVISION"},
                                    ConsistentRead=True).get("Item")
+        return _history_number(item)
+
+    def meal_history_revision(self, subject: str) -> int | None:
+        _meal_page_args(subject, 1, None)
+        item = self.table.get_item(Key={'pk': f'SCOPE#USER#{subject}#COMBI_MEALS', 'sk': 'HISTORY#REVISION'},
+                                   ConsistentRead=True).get('Item')
         return _history_number(item)
 
     def create(self, pk: str, meta: dict, expected_epoch: int = 0) -> None:
