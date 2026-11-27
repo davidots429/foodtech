@@ -19,6 +19,8 @@
 
 ## 로컬 확인
 
+- 저장된 권고는 고객 화면에서 별도로 승인·거절 검토하고 사유와 당시 수치를 이력으로 남길 수 있다. 검토는 조리·안전 상태나 장비 설정을 자동 변경하지 않으며, 원천 완전성·정식 레시피 확정은 별도 검증이 필요하다.
+
 - Node.js 24에서 `npm ci && npm run check`를 실행한다. npm workspaces와 `package-lock.json`을 사용한다.
 - Python 3.12와 uv 0.12.17에서 `uv sync --all-packages --locked`를 실행한다. 버전은 `uv.lock`에 고정되어 있다.
 - `uv run --no-sync python -m unittest discover -s apps/business-api/tests -v`로 인증 경계 테스트를 실행한다.

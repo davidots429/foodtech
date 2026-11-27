@@ -21,12 +21,14 @@ class JobPartitionDeletionTests(unittest.TestCase):
         self.meta={'pk':self.pk,'sk':'META','owner_subject':self.subject,'job_id':'job'}
 
     def test_deletes_one_non_meta_with_lock_and_owner_checks(self):
-        self.table.query.return_value={'Items':[{'pk':self.pk,'sk':'EVENT#1'},self.meta]}
-        self.assertEqual(delete_one_job_record(**self.args),{'state':'IN_PROGRESS','removed':True})
-        ops=self.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(ops[2]['ConditionCheck']['Key']['sk'], {'S':'META'})
-        self.assertEqual(ops[3]['Delete']['Key']['sk'], {'S':'EVENT#1'})
-        self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':active'],{'S':'DELETING'})
+        for sk in ('EVENT#1','RECIPE_REVIEW#CURRENT','RECIPE_REVIEW#VERSION#0000000000000000001'):
+            with self.subTest(sk=sk):
+                self.table.query.return_value={'Items':[{'pk':self.pk,'sk':sk},self.meta]}
+                self.assertEqual(delete_one_job_record(**self.args),{'state':'IN_PROGRESS','removed':True})
+                ops=self.client.transact_write_items.call_args.kwargs['TransactItems']
+                self.assertEqual(ops[2]['ConditionCheck']['Key']['sk'], {'S':'META'})
+                self.assertEqual(ops[3]['Delete']['Key']['sk'], {'S':sk})
+                self.assertEqual(ops[1]['ConditionCheck']['ExpressionAttributeValues'][':active'],{'S':'DELETING'})
 
     def test_meta_only_never_claims_completion_or_deletes(self):
         self.table.query.return_value={'Items':[self.meta]}

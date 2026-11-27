@@ -4,7 +4,9 @@ This checks the persisted wire schema, not current cooking safety or adoption.
 Historical proposals remain proposals; it does not execute or approve a model.
 """
 from decimal import Decimal, InvalidOperation
+import hashlib
 import json
+import rfc8785
 
 from .recipe_execution_scope import recipe_execution_status_payload, validate_recipe_status_payload
 from .recommendation_guard import RULE_VERSION
@@ -59,6 +61,24 @@ def _proposal(raw):
             'menu': menu, 'data': data}
 
 
+def validated_recipe_proposal(proposal):
+    """Copy the supported review proposal without arbitrary model content."""
+    if not isinstance(proposal, dict) or set(proposal) != {'status', 'schema_version', 'guard_version', 'menu', 'data'} or \
+            proposal['status'] != 'NEEDS_REVIEW' or proposal['schema_version'] != SCHEMA_VERSION or \
+            proposal['guard_version'] != RULE_VERSION:
+        raise ValueError('recipe proposal unavailable')
+    menu, data = _data(proposal['data'])
+    if proposal['menu'] != menu:
+        raise ValueError('recipe proposal unavailable')
+    return {**proposal, 'data': data}
+
+
+def recipe_proposal_digest(proposal):
+    """Bind a human review to the exact displayed proposal and schema versions."""
+    return hashlib.sha256(rfc8785.dumps({'schema_version': 'recipe-proposal-review-v1',
+                                       'proposal': validated_recipe_proposal(proposal)})).hexdigest()
+
+
 def validate_recipe_result_payload(payload, *, execution_id, job_id):
     if not isinstance(payload, dict) or not _VIEW <= set(payload):
         raise ValueError('recipe result unavailable')
@@ -70,14 +90,9 @@ def validate_recipe_result_payload(payload, *, execution_id, job_id):
     if not isinstance(status, str) or status not in expected or base['state'] not in expected[status]:
         raise ValueError('recipe result unavailable')
     if status == 'AVAILABLE':
-        if not isinstance(proposal, dict) or set(proposal) != {'status', 'schema_version', 'guard_version', 'menu', 'data'} or \
-                proposal['status'] != 'NEEDS_REVIEW' or proposal['schema_version'] != SCHEMA_VERSION or \
-                proposal['guard_version'] != RULE_VERSION or error is not None:
+        if error is not None:
             raise ValueError('recipe proposal unavailable')
-        menu, data = _data(proposal['data'])
-        if proposal['menu'] != menu:
-            raise ValueError('recipe proposal unavailable')
-        proposal = {**proposal, 'data': data}
+        proposal = validated_recipe_proposal(proposal)
     elif proposal is not None or error != {'NOT_READY': None, 'FAILED': 'RECIPE_EXECUTION_FAILED',
                                           'UNAVAILABLE': 'RECIPE_RESULT_UNAVAILABLE'}[status]:
         raise ValueError('recipe result unavailable')

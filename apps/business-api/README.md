@@ -532,7 +532,7 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 
 `recipe_read_delivery`는 검증된 관찰과 explicit 임시 키가 있는 lease만 전용 mTLS 요청 본문으로 인코딩한다. 일반 JSON 변환·repr·pickle에는 키를 내보내지 않는다. 요청 목적지는 기존 loopback Gateway 설정과 고정 실행 URI로 제한하고 cookie·proxy 환경·redirect·자동 재시도를 사용하지 않는다. 키는 URL·헤더·고객 응답에 포함하지 않는다. 응답은 같은 실행의 네 필드(`execution_id/state/response_text/error_code`)만 허용하고, 오류 본문이나 예상하지 않은 필드는 일반화된 실패로 처리한다. 전송용 요청 바이트와 SDK의 메모리 복사본 전체가 영구적으로 소거된다고 주장하지 않는다.
 
-전송 함수와 Gateway 수신 함수를 실제 로컬 mTLS 시험 서버로 연결한 시험은 통과했다. 이 서버는 합성 키·모의 STS/DynamoDB와 명시적인 권고 차단 응답만 사용한다. production의 `/internal/ai/recipe-executions/{execution_id}/invoke`는 아직 등록하지 않았으며, 고객 화면에서 이 전송 함수를 호출하지 않는다. 실제 AWS 범위 검증과 authoritative 근거가 연결되기 전에는 실행을 활성화하지 않는다.
+전송 함수와 Gateway 수신 함수를 실제 로컬 mTLS 시험 서버로 연결한 시험은 통과했다. 이 서버는 합성 키·모의 STS/DynamoDB와 명시적인 권고 차단 응답만 사용한다. 고객의 명시적 생성 요청과 `/internal/ai/recipe-executions/{execution_id}/invoke`도 연결돼 있다. 실제 AWS 범위·역할과 authoritative 근거의 종단간 검증 전에는 기본 실행 비활성을 유지한다.
 
 기존 근거 조회의 제육볶음 투입 시간 계산은 공통 `jeyuk_feed_timing` 계약을 사용한다. Gateway의 관측 입력 추출도 같은 고기 투입 완료 기준·투입 그룹·30초 동시성 계산을 사용하며, 고객 API의 시간 계산이나 권고 가능 상태를 바꾸지 않는다.
 
@@ -545,6 +545,14 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 고객 화면은 같은 작업의 변경되지 않은 `PENDING` 실행에만 별도 생성 버튼을 제공한다. `manual_invocation_enabled`는 설정 상태 안내이며 실행 권한을 대신하지 않는다. 생성 요청은 CSRF가 있는 본문 없는 POST로 전송하고 중복 클릭을 차단한다. 응답 유실 시 자동 재시도 없이 같은 ID의 상태와 저장 결과를 조회한다. 조회 API는 모델을 호출하지 않으며 생성 완료도 레시피 승인·장비 적용을 의미하지 않는다.
 
 현재는 모의 SDK 시험을 통과한 구현 후보다. 등록자 API·실행 역할, 고객 요청→Gateway의 credential 전달, 고객 실행 경로에서의 모델 전후 재인가·원자적 정산 연결, catalog의 계정 삭제·복원 체크포인트 및 실제 AWS 허용/거부 검증은 후속 작업이다. 기존 권고 차단을 해제하거나 고객에게 credential 응답을 추가하지 않는다. 읽기 권한은 독점 삭제 소유권이 아니며, STS 세션 발급 뒤 권한을 회수해도 발급된 AWS 자격증명이 즉시 폐기되는 것은 아니다. 두 opt-in CDK 후보는 기본 배포에서 제외된다.
+
+## 저장 권고의 운영자 검토 기록
+
+`GET /api/customer/ai/recipe-executions/{execution_id}/review?job_id=...`는 고객·작업·저장 결과의 연결을 다시 확인하고 표시할 제안, 그 제안의 RFC8785/SHA-256 digest, 현재 검토 버전을 반환한다. 고객 화면은 그 제안이 현재 표시된 수치와 같은지도 확인한다. 작업이 생성 당시 버전과 달라졌으면 새 검토 저장을 막는다. 검토 자체는 새 모델 호출, 현재 원천의 완전성 판정, 식품 안전 승인이나 레시피 버전 확정이 아니다.
+
+같은 경로의 POST는 세션·CSRF·명시적 확인·승인/거절 선택·사유와 기대 버전을 요구한다. 서버가 저장 제안을 다시 조회해 digest를 대조하며 브라우저에서 제안 내용을 받아 저장하지 않는다. DynamoDB의 계정/epoch/정지·삭제 잠금, 현재 작업 버전·소유자, 검토 포인터 갱신과 불변 기록 생성을 한 트랜잭션으로 묶는다. 동일 요청의 재시도는 같은 기록만 반환하고 경쟁 제출은 충돌로 처리한다. 응답 직전에도 세션을 확인하며 응답을 잃었으면 조회로 복구한다.
+
+검토 포인터 `RECIPE_REVIEW#CURRENT`와 이력 `RECIPE_REVIEW#VERSION#<version>`은 기존 소유 작업 partition에 둔다. 조리 META·조리 버전·안전 상태를 바꾸지 않으므로 다른 조리 갱신이 검토 포인터를 덮어쓰지 않는다. `GET /api/customer/ai/recipe-reviews?job_id=...`는 작업별 이력을 순서대로 페이지 조회하며, 당시 수치·작업 버전·결정·사유를 보존한다. 일반 조회·저장 응답은 no-store다. 기존 작업 partition 삭제는 두 종류 행을 포함하지만 전체 작성자 중지·삭제/복원 검증 완료를 뜻하지 않는다. 모든 검토 기록도 기존 subject 기반 저장소의 후속 가명 전환·보존·삭제 범위에 포함한다.
 
 ## 일반 탈퇴의 7일 취소 유예 내부 전이
 
