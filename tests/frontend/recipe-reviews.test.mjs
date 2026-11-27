@@ -1,3 +1,4 @@
+import { parseRecipeCandidate } from "../../apps/customer-web/src/recipeCandidate.ts";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseRecipeResult} from '../../apps/customer-web/src/recipeResult.ts';
@@ -37,4 +38,25 @@ test('history keeps ascending versions and rejects repeated or malformed continu
   for(const changed of [{items:[],next_cursor:1},{next_cursor:2},{items:[review,review]},
     {job_id:execution},{current_job_version:true}]) assert.throws(()=>parseReviewPage({...page,...changed},job,null));
   assert.throws(()=>parseReviewPage(page,job,1));
+});
+
+const candidate={schema_version:'recipe-candidate-v1',candidate_id:`recipe-candidate-${job}-r1`,
+  status:'CANDIDATE_NOT_APPLIED',provenance:'SYNTHETIC',base_recipe_version:'baseline-v1',equipment_profile:'jeyuk-medium',
+  review_version:1,review_request_id:review.request_id,execution_id:execution,job_id:job,job_version:3,
+  proposal_digest:review.proposal_digest,proposal,created_at:review.reviewed_at};
+test('candidate stays un-applied and retains lineage after later cooking or review changes',()=>{
+  const value=parseRecipeCandidate({candidate,current_job_version:4,current_review_version:2},review);
+  assert.equal(value.candidate.base_recipe_version,'baseline-v1');
+  assert.equal(value.candidate.status,'CANDIDATE_NOT_APPLIED');
+  assert.equal(value.current_review_version,2);
+});
+test('candidate rejects altered content, linkage, applied state and untrusted fields',()=>{
+  const payload={candidate,current_job_version:3,current_review_version:1};
+  for(const changed of [{candidate_id:'other'},{status:'APPLIED'},{job_id:execution},{review_version:2},
+    {base_recipe_version:' '},{equipment_profile:''},{private:'private-marker'},{created_at:'2026-12-01T00:00:00Z'},
+    {proposal:{...proposal,data:{...proposal.data,temperature_c:'250'}}}])
+    assert.throws(()=>parseRecipeCandidate({...payload,candidate:{...candidate,...changed}},review));
+  for(const changed of [{current_job_version:2},{current_review_version:0},{current_review_version:true}])
+    assert.throws(()=>parseRecipeCandidate({...payload,...changed},review));
+  assert.throws(()=>parseRecipeCandidate(payload,{...review,decision:'REJECT'}));
 });

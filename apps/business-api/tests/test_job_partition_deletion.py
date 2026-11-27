@@ -21,7 +21,8 @@ class JobPartitionDeletionTests(unittest.TestCase):
         self.meta={'pk':self.pk,'sk':'META','owner_subject':self.subject,'job_id':'job'}
 
     def test_deletes_one_non_meta_with_lock_and_owner_checks(self):
-        for sk in ('EVENT#1','RECIPE_REVIEW#CURRENT','RECIPE_REVIEW#VERSION#0000000000000000001'):
+        for sk in ('EVENT#1','RECIPE_REVIEW#CURRENT','RECIPE_REVIEW#VERSION#0000000000000000001',
+                   'RECIPE_CANDIDATE#REVIEW#0000000000000000001'):
             with self.subTest(sk=sk):
                 self.table.query.return_value={'Items':[{'pk':self.pk,'sk':sk},self.meta]}
                 self.assertEqual(delete_one_job_record(**self.args),{'state':'IN_PROGRESS','removed':True})

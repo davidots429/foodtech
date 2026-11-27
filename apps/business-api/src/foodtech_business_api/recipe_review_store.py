@@ -116,6 +116,27 @@ class RecipeReviewStore:
             raise ValueError('recipe review page did not advance')
         return {'items': values, 'next_cursor': values[-1]['version'] if more else None}
 
+    def candidate(self, pk, review_version):
+        from .recipe_candidate import CANDIDATE_PREFIX, validate_candidate
+        _scope(pk)
+        _integer(review_version, minimum=1)
+        raw = self._get(pk, CANDIDATE_PREFIX + f'{review_version:019d}')
+        if raw is None:
+            return None
+        review = _record(self._get(pk, PREFIX + f'{review_version:019d}'), pk=pk, version=review_version)
+        if type(raw) is not dict or raw.get('pk') != pk or raw.get('sk') != CANDIDATE_PREFIX + f'{review_version:019d}':
+            raise ValueError('invalid stored recipe candidate')
+        return validate_candidate({k: v for k, v in raw.items() if k not in {'pk', 'sk'}}, review)
+
+    def _approved_candidate(self, pk, record):
+        from .recipe_candidate import build_candidate
+        if record['decision'] != 'APPROVE':
+            return None
+        job = self._get(pk, 'META')
+        if not job or job.get('owner_subject') != _scope(pk)[0] or job.get('version') != record['job_version']:
+            raise Conflict
+        return build_candidate(record, job)
+
     def save(self, pk, expected_job_version, expected_review_version, record, expected_epoch):
         subject, job_id = _scope(pk)
         _integer(expected_job_version, minimum=1)
@@ -125,7 +146,9 @@ class RecipeReviewStore:
         if record['job_id'] != job_id or record['job_version'] != expected_job_version or \
                 record['version'] != expected_review_version + 1:
             raise ValueError('invalid recipe review binding')
+        from .recipe_candidate import CANDIDATE_PREFIX
         sk = PREFIX + f"{record['version']:019d}"
+        candidate_sk = CANDIDATE_PREFIX + f"{record['version']:019d}"
         if isinstance(self.store, MemoryCookingStore):
             with self.store.lock:
                 meta = self.store.items.get((pk, 'META'))
@@ -135,20 +158,31 @@ class RecipeReviewStore:
                 if existing is not None:
                     value = _record(existing, pk=pk, version=record['version'])
                     if _same(value, record):
+                        if value['decision'] == 'APPROVE' and self.candidate(pk, value['version']) is None:
+                            raise Conflict
                         return value
                     raise Conflict
                 pointer = self.current(pk)
                 if pointer['version'] != expected_review_version:
                     raise Conflict
+                candidate = self._approved_candidate(pk, record)
+                if (pk, candidate_sk) in self.store.items:
+                    raise Conflict
                 self.store.items[pk, sk] = copy.deepcopy({'pk': pk, 'sk': sk, **record})
                 self.store.items[pk, CURRENT] = {'pk': pk, 'sk': CURRENT, 'version': record['version']}
+                if candidate is not None:
+                    self.store.items[pk, candidate_sk] = copy.deepcopy({'pk': pk, 'sk': candidate_sk, **candidate})
                 return copy.deepcopy(record)
+        candidate = self._approved_candidate(pk, record)
         encode = self.store._item
         auth = self.store._owner_guard(subject, expected_epoch)
         auth['ConditionCheck']['ReturnValuesOnConditionCheckFailure'] = 'NONE'
         pointer_values = {':next': record['version']}
         if expected_review_version:
             pointer_values[':expected'] = expected_review_version
+        candidate_actions = [] if candidate is None else [{'Put': {'TableName': self.store.table.name,
+            'Item': encode({'pk': pk, 'sk': candidate_sk, **candidate}),
+            'ConditionExpression': 'attribute_not_exists(pk)', 'ReturnValuesOnConditionCheckFailure': 'NONE'}}]
         try:
             self.store.client.transact_write_items(TransactItems=[auth,
                 {'ConditionCheck': {'TableName': self.store.table.name, 'Key': encode({'pk': pk, 'sk': 'META'}),
@@ -163,17 +197,19 @@ class RecipeReviewStore:
                     'ExpressionAttributeValues': encode(pointer_values), 'ReturnValuesOnConditionCheckFailure': 'NONE'}},
                 {'Put': {'TableName': self.store.table.name, 'Item': encode({'pk': pk, 'sk': sk, **record}),
                     'ConditionExpression': 'attribute_not_exists(pk)', 'ReturnValuesOnConditionCheckFailure': 'NONE'}},
-            ])
+            ] + candidate_actions)
         except self.store.client.exceptions.TransactionCanceledException as error:
             if not _is_transaction_contention(error):
                 raise
             reasons = error.response.get('CancellationReasons') or []
-            if len(reasons) != 4 or any(reason.get('Code') not in {None, 'None'} for reason in reasons[:2]):
+            if len(reasons) != 4 + len(candidate_actions) or any(reason.get('Code') not in {None, 'None'} for reason in reasons[:2]):
                 raise Conflict from None
             existing = self._get(pk, sk)
             if existing is not None:
                 value = _record(existing, pk=pk, version=record['version'])
                 if _same(value, record):
+                    if value['decision'] == 'APPROVE' and self.candidate(pk, value['version']) is None:
+                        raise Conflict from None
                     return value
             raise Conflict from None
         return copy.deepcopy(record)

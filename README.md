@@ -43,3 +43,5 @@
 
 
 - 합성 MQTT CSV 기본 장비 프로파일 `mockprofile-302`는 vendor-a/b/c 열 계약으로 수집한다. CSV 셀이 `=`, `+`, `-`, `@`, 탭 또는 CR로 시작하면 음수 표기를 포함해 격리하며 원본과 격리 결과를 보존한 후에만 MQTT 메시지를 확인한다.
+
+Approved AI proposal reviews preserve a separate immutable recipe candidate with its original baseline; candidates are never applied to equipment or existing recipes automatically.

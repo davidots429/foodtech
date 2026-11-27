@@ -1,3 +1,4 @@
+import { RecipeCandidateView } from "./RecipeCandidateView";
 import { useRef, useState } from "react";
 import { api, ApiError } from "./cookingApi";
 import { parseRecipeReview, parseReviewContext, parseReviewPage } from "./recipeReview";
@@ -44,7 +45,8 @@ export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal,
         saved.decision !== decision || saved.reason !== reason.trim()) throw new Error("검토 응답을 확인하지 못했습니다.");
       setContext({ ...context, review_version: saved.version, latest_review: saved, can_review: !raw.job_changed });
       setDecision(""); setReason(""); setAcknowledged(false); setHistory([]); setNextCursor(null);
-      setMessage("검토 결과를 기록했습니다. 이 기록은 조리 조건을 자동 적용하지 않습니다.");
+      setMessage(saved.decision === "APPROVE" ? "검토 승인과 미적용 후보 버전을 함께 저장했습니다." :
+        "검토 거절을 기록했습니다. 이전 후보 버전은 이력으로 보존됩니다.");
     } catch (cause) {
       setContext(null); setAcknowledged(false);
       setError(cause instanceof ApiError && cause.status !== 0 ? cause.message :
@@ -71,12 +73,13 @@ export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal,
     ["vegetable_interval_seconds", "채소 투입 간격", "초"], ["sauce_interval_seconds", "소스 투입 간격", "초"]] as const;
   return <section className="binding-box recipe-review" aria-label="권고 내용 검토">
     <h5>권고 내용 검토</h5>
-    <p>표시된 권고의 검토 결과와 사유를 기록합니다. 조리 조건 적용과 레시피 확정은 별도 확인이 필요합니다.</p>
+    <p>승인 시 기존 레시피를 덮어쓰지 않는 후보 버전을 함께 보존합니다. 조리 조건 적용과 레시피 확정은 별도 확인이 필요합니다.</p>
     <button type="button" disabled={busy} onClick={() => void loadContext()}>현재 검토 기록 확인</button>
     {context && <>
       <p>검토 기록 버전: {context.review_version}</p>
       {latest && <p>{latestMatches ? "이 권고" : "현재 표시 내용과 다른 권고"}의 최근 검토:
         {latest.decision === "APPROVE" ? "검토 승인" : "검토 거절"} · {latest.reason} · {latest.reviewed_at}</p>}
+      {latest && <RecipeCandidateView key={latest.version} review={latest} />}
       {!context.can_review && <p>권고 생성 이후 조리 기록이 변경되어 새 검토를 저장할 수 없습니다.</p>}
       <label>검토 결과<select value={decision} disabled={busy || !context.can_review}
         onChange={event => { setDecision(event.target.value as "" | "APPROVE" | "REJECT"); setAcknowledged(false); }}>
@@ -96,6 +99,7 @@ export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal,
         {item.execution_id === executionId ? "같은 실행의 기록" : "다른 실행의 기록"} · 작업 버전 {item.job_version} ·
         {item.decision === "APPROVE" ? "검토 승인" : "검토 거절"} · {item.reason} · {item.reviewed_at}
         {historyJobVersion !== null && item.job_version !== historyJobVersion && <p>조리 기록 변경 이전의 검토입니다.</p>}
+        <RecipeCandidateView review={item} />
         <details><summary>검토 당시 권고 값</summary><dl>{fields.filter(([field]) => field in item.proposal.data)
           .map(([field, label, unit]) => <div key={field}><dt>{label}</dt><dd>{item.proposal.data[field]} {unit}</dd></div>)}</dl></details>
       </li>)}</ol>}

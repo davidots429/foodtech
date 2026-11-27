@@ -624,3 +624,15 @@ Cognito의 `sub`는 [AWS 문서](https://docs.aws.amazon.com/cognito/latest/deve
 `POST /api/customer/ai/recipe-executions/{execution_id}/invoke`는 요청 본문 없이 실행 ID만 받는다. 고객 세션·CSRF·계정 상태를 확인하고 Gateway가 저장한 실행 바인딩, 강한 일관성의 고객 작업 조회, 독립된 원천 grant와 직전 작업 이력 검증을 연결한다. 브라우저의 tenant/source/권한/임시 AWS 자격증명은 입력으로 받지 않는다. 서버의 한정 읽기 lease만 전용 mTLS 경로로 전달하고 실행 후 세션 회수를 다시 검사한다. 결과 불명확 시 자동 재호출하지 않고 기존 실행 상태를 조회한다.
 
 `FOODTECH_RECIPE_INVOCATION_ENABLED=false`가 기본이다. 활성화에는 엄격한 principal 모드와 기존 broker의 Fargate 역할·동일 stage 자원 설정이 필요하다. 검증된 broker Session의 DynamoDB 클라이언트/resource를 작업·이력 조회에도 주입한다. 역할·grant/이력 작성자 보호·초기화/coverage·네트워크와 mTLS의 실제 검증이 끝나기 전에는 활성화하지 않는다. 코드 병합은 배포 또는 이 관문들의 완료를 의미하지 않는다. 고객 화면의 실행 가능 표시와 현재 내부 URL 허용 규약은 실제 배포 검증과 함께 연결해야 한다.
+
+
+Approval of a stored recipe proposal atomically creates a separate immutable
+`recipe-candidate-v1` row alongside the review and its pointer. The candidate
+retains the baseline recipe version, equipment profile and exact numeric proposal;
+its status is always `CANDIDATE_NOT_APPLIED`. Rejection creates no candidate.
+`GET /api/customer/ai/recipe-candidates/{review_version}?job_id=...` reads that
+owner's stored candidate without calling a model, rechecks the session and returns
+current job/review versions so later changes remain visible. Older approvals with
+no candidate return 404; reads and retries never backfill them. The candidate uses
+the existing job partition and deletion inventory. This does not select a candidate
+for a new cooking job, approve food safety or certify recipe improvement.
