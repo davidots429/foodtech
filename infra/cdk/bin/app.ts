@@ -827,20 +827,29 @@ class CredentialVaultStack extends Stack {
 class AiServiceTasksStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps, vault: CredentialVaultStack) {
     super(scope, id, props);
+    this.templateOptions.description = "Separate credential registration and AI gateway task definitions with reviewed image digests; no running services";
+    this.templateOptions.metadata = { AWSToolsMetrics: { AWSAgentToolkit: "aws-cloudformation@3" },
+      "com.aws.cloudformation.Context": { ref: [{ at: "infra/cdk/README.md", has: "AI task image, role and TLS boundaries" }] } };
     const required = (name: string): string => {
       const value = app.node.tryGetContext(name);
       if (typeof value !== "string" || !value.trim()) throw new Error(`${name} context is required`);
       return value.trim();
     };
     const image = (name: string): ecs.ContainerImage => {
+      if (app.node.tryGetContext(`${name}Tag`) !== undefined) {
+        throw new Error(`${name}Tag is not supported; use an immutable sha256 digest`);
+      }
       const repositoryName = required(`${name}Repository`);
-      const tag = required(`${name}Tag`);
+      const digest = required(`${name}Digest`);
       if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repositoryName) ||
-          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
-        throw new Error(`${name} requires a valid ECR repository and immutable version tag`);
+          /^(?:[0-9]{12}[.]dkr[.]ecr(?:-fips)?[.]|public[.]ecr[.]aws\/)/.test(repositoryName)) {
+        throw new Error(`${name}Repository requires an ECR repository name, not a registry URI`);
+      }
+      if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
+        throw new Error(`${name} requires an immutable sha256 digest`);
       }
       const repository = ecr.Repository.fromRepositoryName(this, `${name}Ecr`, repositoryName);
-      return ecs.ContainerImage.fromEcrRepository(repository, tag);
+      return ecs.ContainerImage.fromEcrRepository(repository, digest);
     };
     const registrationImage = image("registrationImage");
     const gatewayImage = image("gatewayImage");
@@ -858,6 +867,10 @@ class AiServiceTasksStack extends Stack {
         cpu: 512, memoryLimitMiB: memory, taskRole: role,
         runtimePlatform: { operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
           cpuArchitecture: ecs.CpuArchitecture.X86_64 },
+      });
+      (task.node.defaultChild as ecs.CfnTaskDefinition).addMetadata("com.aws.cloudformation.Context", {
+        why: "Bind each service to reviewed image content while keeping registration and gateway authority separate",
+        must: ["Reviewed immutable ECR digest", "Separate task roles and TLS secret injection", "No workload starts from this template"],
       });
       const logGroup = new logs.LogGroup(this, `${name}Logs`, {
         logGroupName: `/foodtech/${stage}/${name.toLowerCase()}`,
