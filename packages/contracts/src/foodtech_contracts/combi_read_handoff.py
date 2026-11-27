@@ -17,6 +17,8 @@ from .combi_read_scope import CombiReadScope
 SCHEMA = 'combi-source-read-handoff-v1'
 CONTENT_TYPE = 'application/vnd.foodtech.combi-source-read+json'
 MAX_BYTES = 65536
+TLS_PEER_STATE_KEY = 'foodtech_combi_peer_sha256'
+TLS_PIN_APP_STATE_KEY = 'combi_broker_peer_sha256'
 
 
 def _unique(pairs):

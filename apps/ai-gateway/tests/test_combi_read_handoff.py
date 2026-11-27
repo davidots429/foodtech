@@ -98,10 +98,11 @@ class CombiReceiverTests(unittest.TestCase):
 
 
 class CombiReceiverHttpTests(unittest.IsolatedAsyncioTestCase):
-    def request(self, body=b'frame', *, tls=True, listener=True, combi_listener=True, headers=None):
+    def request(self, body=b'frame', *, tls=True, listener=True, combi_listener=True, peer_pin='a'*64, headers=None):
         receive=AsyncMock(return_value={'type':'http.request','body':body,'more_body':False})
         request=Request({'type':'http','scheme':'https' if tls else 'http',
-            'app':SimpleNamespace(state=SimpleNamespace(mtls_listener=listener,combi_broker_listener=combi_listener)),
+            'app':SimpleNamespace(state=SimpleNamespace(mtls_listener=listener,combi_broker_listener=combi_listener,combi_broker_peer_sha256='a'*64)),
+            'state':{'foodtech_combi_peer_sha256':peer_pin},
             'headers':headers if headers is not None else [(b'content-type',CONTENT_TYPE.encode())]}, receive)
         return request,receive
 
@@ -110,7 +111,7 @@ class CombiReceiverHttpTests(unittest.IsolatedAsyncioTestCase):
             expected_read_role_id='unused',condition_client=object())
 
     async def test_untrusted_listener_or_scheme_is_rejected_before_reading_body(self):
-        for changes in ({'tls':False},{'listener':False},{'combi_listener':False}):
+        for changes in ({'tls':False},{'listener':False},{'combi_listener':False},{'peer_pin':None},{'peer_pin':'b'*64}):
             request,body=self.request(**changes)
             with self.assertRaises(HTTPException) as caught: await self.call(request)
             self.assertEqual(caught.exception.status_code,401)
