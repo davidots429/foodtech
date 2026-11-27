@@ -119,6 +119,15 @@ jobs:
           if [ "$WORKLOAD" = maintenance ]; then
             docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" - < tests/config/source_grant_target_image_probe.py
           fi
+      - name: Verify meal refresh target dispatch before obtaining AWS credentials
+        if: inputs.operation == 'publish'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          WORKLOAD: ${{ steps.target.outputs.workload }}
+        run: |
+          if [ "$WORKLOAD" = maintenance ]; then
+            docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" - < tests/config/meal_refresh_target_image_probe.py
+          fi
       - name: Verify disabled standardization runtime before obtaining AWS credentials
         if: inputs.operation == 'publish'
         env:

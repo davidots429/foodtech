@@ -13,7 +13,7 @@ from contextlib import contextmanager
 import boto3
 from botocore.config import Config
 
-from .combi_refresh_worker import sweep_pending
+from .combi_refresh_worker import parse_refresh_targets, refresh_targets, sweep_pending
 from .cooking_store import DynamoCookingStore
 
 
@@ -90,7 +90,15 @@ def main():
         seconds = int(os.getenv('FOODTECH_MEAL_REFRESH_MAX_SECONDS', '600'))
         if not 1 <= page_size <= 100 or not 1 <= pages <= 10000 or not 10 <= seconds <= 600:
             raise ValueError
-    except ValueError:
+        mode = os.getenv('FOODTECH_MEAL_REFRESH_MODE', 'sweep')
+        raw_targets = os.getenv('FOODTECH_MEAL_REFRESH_TARGETS')
+        if mode == 'targets':
+            if os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED') != 'true':
+                raise ValueError
+            targets = parse_refresh_targets(raw_targets)
+        elif mode != 'sweep' or raw_targets is not None:
+            raise ValueError
+    except (ValueError, RecursionError):
         print('Explicit valid meal refresh bounds are required.', file=sys.stderr)
         return 2
     try:
@@ -100,7 +108,8 @@ def main():
             except ValueError:
                 print('Explicit valid meal refresh configuration is required.', file=sys.stderr)
                 return 2
-            result = sweep_pending(store, auth, page_size=page_size, max_pages_per_shard=pages)
+            result = refresh_targets(store, auth, targets) if mode == 'targets' else \
+                sweep_pending(store, auth, page_size=page_size, max_pages_per_shard=pages)
     except (MealRefreshDeadline, Exception):
         print('Meal refresh pass failed; reconcile before retrying.', file=sys.stderr)
         return 1

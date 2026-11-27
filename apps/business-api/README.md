@@ -8,6 +8,12 @@
 
 비활성 예약 후보는 전용 작업 역할·실행 한도·초기화 모드를 전달하며 컨테이너의 capability를 제거한다. 이 코드 변경은 역할·인덱스·네트워크·예약을 실제로 배포하거나 활성화하지 않는다. 일반 작성자 권한/중지·대기 항목 백필·동일 모드 전환·실제 역할의 허용/거부·삭제/복원 경계·관찰/알림 시험 후 명시적으로 배포한다. 이슈 #237의 전체 완료로 취급하지 않는다.
 
+수동 복구에는 `FOODTECH_MEAL_REFRESH_MODE=targets`와 `FOODTECH_MEAL_REFRESH_TARGETS`의 JSON 목록을 명시할 수 있다. 항목은 `subject`와 정규 소문자 UUID `meal_id`만 가지며 1~16개·8,192바이트 이내로 제한한다. 전체 목록·중복·계정 초기화 엄격 모드를 자격증명 조회 전에 검사한다. 잘못된 모드나 빈 목록, 기본 전체 순회와 대상 목록의 혼용은 거부하며 전체 순회로 대체하지 않는다. 설정을 생략한 기존 일반 실행은 전체 shard 순회를 유지한다.
+
+대상 모드는 GSI의 shard와 정확한 식사배치 partition을 함께 조회한다. 대기 원본이 있는데 인덱스가 비어 있거나 예상 밖 항목·후속 페이지가 반환되면 실패 건수로 남긴다. 현재 계정·잠금·epoch와 기존 집계 트랜잭션 조건은 그대로 적용한다. 선택한 배치에 연결된 집계 그룹과 그 그룹의 다른 배치 참조도 기존 도메인 규칙에 따라 처리하므로, 시험 전 해당 계정과 의존성 전체의 소유 범위를 확인해야 한다. 이 선택은 IAM 격리나 전역 백필·작성자 중단의 증거가 아니다.
+
+수동 Task를 대상 모드로 등록하려면 `mealRefreshTargets`에 공백 없는 정규 JSON 목록, `mealRefreshImageUri`에 이 기능이 포함된 검토 이미지 digest URI를 전달한다. CloudFormation의 `RefreshTargets`와 `ImageUri`는 합성 시 검토한 값 하나로 제한한다. 이전 이미지는 새 설정을 무시할 수 있으므로 재사용하지 않는다. 등록만으로 Task를 실행하거나 권한·네트워크·예약을 변경하지 않는다. 실제 게시·정의 적용·실행·정리는 별도로 검토한다.
+
 `FoodtechSourceGrantRuntime-dev`는 기존 `source_grant_deletion_worker`를 위한 수동 Fargate Task 정의다. `provisionSourceGrantRuntime=true`, `principalProvisioningEnabled=true`, `sourceGrantTargetSubject`와 검토한 유지보수 이미지의 정확한 digest URI를 `sourceGrantImageUri`에 명시해야 합성할 수 있다. 배포 매개변수 `ImageUri`도 그 URI 하나만 허용하며, 별도 catalog 정리 역할과 ECR/로그 실행 역할을 지정한다. 이 스택의 자원은 Task 정의와 선택적인 7일 보존 로그 그룹이다.
 
 수동 Task는 `TargetSubject`를 합성 시 검토한 대상 하나로 제한하며 작업자는 Scan 필터와 반환 행을 모두 검사한다. 대상 식별자는 로그에 남기지 않는다. 새 대상 기능을 포함해 검증·게시한 이미지 digest가 필요하며 기존 이미지는 해당 환경변수를 무시할 수 있으므로 재사용하지 않는다. 직접 CLI에서 대상 설정을 생략한 기존 전체 순회 기능은 유지하지만 이 수동 Task 계약은 단일 대상만 허용한다.

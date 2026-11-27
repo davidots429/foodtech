@@ -6,7 +6,7 @@ import re
 import sys
 
 
-def check(path, mode='create'):
+def check(path, mode='create', targets=None, reviewed_image=None):
     assert mode in {'create', 'existing'}
     template = json.loads(Path(path).read_text())
     resources = template['Resources']
@@ -27,12 +27,16 @@ def check(path, mode='create'):
     assert container['Privileged'] is False and container['StopTimeout'] == 30
     assert container['LinuxParameters'] == {'Capabilities': {'Drop': ['ALL']}}
     assert not any(container.get(k) for k in ('Secrets', 'MountPoints', 'PortMappings', 'Command'))
-    assert {v['Name']: v['Value'] for v in container['Environment']} == {
+    expected_environment = {
         'FOODTECH_MEAL_REFRESH_ENABLED': 'true', 'FOODTECH_PRINCIPAL_PROVISIONING_ENABLED': 'true',
         'FOODTECH_MEAL_REFRESH_TASK_ROLE_ARN': {'Ref': 'TaskRoleArn'},
         'FOODTECH_MEAL_REFRESH_PAGE_SIZE': '25', 'FOODTECH_MEAL_REFRESH_MAX_PAGES_PER_SHARD': '100',
         'FOODTECH_MEAL_REFRESH_MAX_SECONDS': '600', 'FOODTECH_COOKING_TABLE': 'foodtech-cooking-jobs-dev',
         'FOODTECH_AUTH_TABLE': 'foodtech-auth-sessions-dev'}
+    if targets is not None:
+        expected_environment.update(FOODTECH_MEAL_REFRESH_MODE='targets',
+                                    FOODTECH_MEAL_REFRESH_TARGETS={'Ref': 'RefreshTargets'})
+    assert {v['Name']: v['Value'] for v in container['Environment']} == expected_environment
     params = template['Parameters']
     pattern = params['TaskRoleArn']['AllowedPattern']
     account = re.search(r'::([0-9]{12}):', pattern).group(1)
@@ -40,12 +44,18 @@ def check(path, mode='create'):
         assert params[name]['AllowedPattern'] == f'^arn:aws:iam::{account}:role/foodtech-meal-refresh-{kind}-dev$'
         assert 'Default' not in params[name]
     image = f'{account}.dkr.ecr.ap-southeast-2.amazonaws.com/foodtech/maintenance-dev'
-    image_pattern = params['ImageUri']['AllowedPattern']
     assert 'Default' not in params['ImageUri']
-    assert re.fullmatch(image_pattern, image + '@sha256:' + 'a' * 64)
-    for bad in (image + ':latest', image.replace(account, '999999999999') + '@sha256:' + 'a' * 64,
-                image.replace('maintenance-dev', 'collection-dev') + '@sha256:' + 'a' * 64):
-        assert not re.fullmatch(image_pattern, bad)
+    if targets is not None:
+        assert params['ImageUri']['AllowedValues'] == [reviewed_image]
+        assert params['RefreshTargets']['AllowedValues'] == [targets]
+        assert 'Default' not in params['RefreshTargets']
+    else:
+        assert 'RefreshTargets' not in params
+        image_pattern = params['ImageUri']['AllowedPattern']
+        assert re.fullmatch(image_pattern, image + '@sha256:' + 'a' * 64)
+        for bad in (image + ':latest', image.replace(account, '999999999999') + '@sha256:' + 'a' * 64,
+                    image.replace('maintenance-dev', 'collection-dev') + '@sha256:' + 'a' * 64):
+            assert not re.fullmatch(image_pattern, bad)
     options = container['LogConfiguration']['Options']
     assert options['awslogs-region'] == 'ap-southeast-2' and options['awslogs-stream-prefix'] == 'worker'
     if mode == 'existing':
