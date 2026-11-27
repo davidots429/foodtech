@@ -46,6 +46,17 @@ jobs:
               python3 ../../tests/config/check_maintenance_publishing.py "/tmp/foodtech-maintenance-publish-$provider/FoodtechMaintenancePublishing-dev.template.json"
             fi
           done
+      - name: Check manual collection publishing boundaries
+        working-directory: infra/cdk
+        run: |
+          for mode in create existing; do
+            CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCollectionPublishing-dev --strict --no-lookups -c provisionCollectionPublishing=true -c collectionImageRepositoryMode="$mode" --output "/tmp/foodtech-collection-publish-$mode" > /dev/null
+            python3 ../../tests/config/check_collection_manual_publishing.py "/tmp/foodtech-collection-publish-$mode/FoodtechCollectionPublishing-dev.template.json" "$mode"
+          done
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCollectionPublishing-dev --strict --no-lookups -c provisionCollectionPublishing=true -c provisionCollectionImagePublishing=true --output /tmp/foodtech-collection-double-publish > /tmp/foodtech-collection-double-publish.log 2>&1; then exit 1; fi
+          python3 -c "from pathlib import Path; assert 'must not be selected together' in Path('/tmp/foodtech-collection-double-publish.log').read_text()"
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCollectionPublishing-dev --strict --no-lookups -c provisionCollectionPublishing=true -c collectionImageRepositoryMode=unknown --output /tmp/foodtech-collection-invalid-mode > /tmp/foodtech-collection-invalid-mode.log 2>&1; then exit 1; fi
+          python3 -c "from pathlib import Path; assert 'collectionImageRepositoryMode must be create or existing' in Path('/tmp/foodtech-collection-invalid-mode.log').read_text()"
       - name: Check opt-in runtime foundation
         working-directory: infra/cdk
         run: |
@@ -175,6 +186,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --all-packages --locked
       - run: uv run --no-sync python -m unittest discover -s tests/config -p test_maintenance_publish.py -v
+      - run: uv run --no-sync python -m unittest discover -s tests/config -p test_collection_publish.py -v
       - run: uv run --no-sync python -m unittest discover -s tests/config -p test_worker_policy_update.py -v
       - run: uv run --no-sync python -c "from foodtech_business_api.main import app as business; from foodtech_ai_gateway.main import app as gateway; assert business.title and gateway.title"
       - run: uv run --no-sync python -m unittest discover -s apps/business-api/tests -v
@@ -263,13 +275,16 @@ jobs:
           load: true
           tags: foodtech-ci/collection-adapter:test
       - name: Verify REST collection entrypoint
-        run: docker run --rm foodtech-ci/collection-adapter:test --help
+        run: docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges foodtech-ci/collection-adapter:test --help
       - name: Verify MQTT collection entrypoint
-        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=mqtt foodtech-ci/collection-adapter:test --help
+        run: docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e FOODTECH_COLLECTION_PROTOCOL=mqtt foodtech-ci/collection-adapter:test --help
       - name: Verify OPC UA JSON collection entrypoint
-        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=opcua-json foodtech-ci/collection-adapter:test --help
+        run: docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e FOODTECH_COLLECTION_PROTOCOL=opcua-json foodtech-ci/collection-adapter:test --help
       - name: Verify OPC UA Binary collection entrypoint
-        run: docker run --rm -e FOODTECH_COLLECTION_PROTOCOL=opcua-binary foodtech-ci/collection-adapter:test --help
+        run: docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e FOODTECH_COLLECTION_PROTOCOL=opcua-binary foodtech-ci/collection-adapter:test --help
+      - name: Verify collection libzstd security floor
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/collection-adapter:test -c 'import subprocess; version = subprocess.check_output(["dpkg-query", "--show", "--showformat=${Version}", "libzstd1"], text=True).strip(); subprocess.run(["dpkg", "--compare-versions", version, "ge", "1.5.7+dfsg-1+deb13u1"], check=True)'
 
 
   combi-refresh-worker-image:

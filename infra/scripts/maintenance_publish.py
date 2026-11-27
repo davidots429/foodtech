@@ -36,7 +36,7 @@ def context(env):
     return sha
 
 
-def inspect_claims(token, env, now=None):
+def inspect_claims(token, env, now=None, *, expected_workflow=WORKFLOW):
     sha = context(env)
     if not isinstance(token, str) or len(token) > 65536 or token.count('.') != 2:
         raise ValueError('invalid token response')
@@ -46,7 +46,7 @@ def inspect_claims(token, env, now=None):
     claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
     expected = {'iss': 'https://token.actions.githubusercontent.com', 'aud': 'sts.amazonaws.com',
         'repository': REPOSITORY, 'repository_id': REPOSITORY_ID, 'repository_owner_id': OWNER_ID,
-        'ref': 'refs/heads/main', 'sha': sha, 'event_name': 'workflow_dispatch', 'workflow_ref': WORKFLOW}
+        'ref': 'refs/heads/main', 'sha': sha, 'event_name': 'workflow_dispatch', 'workflow_ref': expected_workflow}
     if any(claims.get(key) != value for key, value in expected.items()):
         raise ValueError('workflow claims do not match context')
     legacy = f'repo:{REPOSITORY}:ref:refs/heads/main'
