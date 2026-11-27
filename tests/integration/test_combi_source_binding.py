@@ -1,6 +1,7 @@
 """C# synthetic source attaches to the authenticated customer's combi meal."""
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -22,7 +23,7 @@ from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app
 from foodtech_collection_adapter.combi_import import import_meal
 from foodtech_collection_adapter.rest import RestMockClient
-from foodtech_contracts.combi_observed_inputs import observe_combi_batch
+from foodtech_business_api.combi_owned_observations import read_owned_combi_observation
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "fixtures/combi-normal-medium-v1.json"
@@ -333,8 +334,11 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                     'expected_version': confirmed.json()['meal']['version'], 'measured_at': unloaded.isoformat(),
                     'probes': probes})
                 self.assertEqual(checked.status_code, 200, checked.text)
-                observations = observe_combi_batch({r['sk']: r for r in store.read_meal(meal_pk)},
-                    records, 'MACKEREL', now=datetime.now(timezone.utc))
+                observations = read_owned_combi_observation(await session(None, None),
+                    meal_id=meal['meal_batch_id'], expected_version=checked.json()['meal']['version'],
+                    source_digest=hashlib.sha256(('\n'.join(records) + '\n').encode()).hexdigest(),
+                    menu='MACKEREL', meal_reader=store.read_meal, source_reader=store.read_meal_source_chunk,
+                    principal_reader=lambda owner: {'pk': 'USER#' + owner, 'epoch': 0})
                 self.assertEqual(observations.unresolved, ())
                 self.assertEqual(observations.sampled_safety_status, 'PASSED')
                 self.assertEqual(observations.baseline.ingredient_kg, Decimal('.39'))
