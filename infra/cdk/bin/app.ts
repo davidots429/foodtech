@@ -29,12 +29,23 @@ import { MockPublishingStack } from "./mock-publishing.js";
 import { PrivateRestTrialStack } from "./private-rest-trial.js";
 import { PrivateRestSecretsStack } from "./private-rest-secrets.js";
 import { MealRefreshAccessStack, mealRefreshRuleName } from "./meal-refresh-access.js";
+import { MealRefreshRuntimeStack, mealRefreshLogs } from "./meal-refresh-runtime.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
 if (!/^[a-z0-9-]+$/.test(stage)) throw new Error("stage must be lowercase letters, numbers or hyphens");
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: "ap-southeast-2" };
 const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
+if (app.node.tryGetContext("provisionMealRefreshRuntime") === "true" &&
+    app.node.tryGetContext("provisionMealRefreshSchedule") === "true" &&
+    app.node.tryGetContext("mealRefreshLogGroupMode") !== "existing") {
+  throw new Error("Manual meal refresh and schedule must not both create the shared log group; use existing mode after separate creation");
+}
+if (app.node.tryGetContext("provisionMealRefreshRuntime") === "true") {
+  const runtime = new MealRefreshRuntimeStack(app, `FoodtechMealRefreshRuntime-${stage}`, { env }, stage);
+  Tags.of(runtime).add("Project", "foodtech");
+  Tags.of(runtime).add("Environment", stage);
+}
 if (app.node.tryGetContext("provisionMealRefreshAccess") === "true") {
   const access = new MealRefreshAccessStack(app, `FoodtechMealRefreshAccess-${stage}`, { env }, stage);
   Tags.of(access).add("Project", "foodtech");
@@ -622,8 +633,7 @@ class MaintenanceScheduleStack extends Stack {
     const interval = param("IntervalMinutes", "^([1-9]|[1-9][0-9]|[1-9][0-9]{2}|1[0-3][0-9]{2}|14[0-3][0-9]|1440)$",
       "Validated sweep interval in whole minutes, from 1 to 1440");
     const oneMinute = new CfnCondition(this, "OneMinute", { expression: Fn.conditionEquals(interval.valueAsString, "1") });
-    const logGroup = identityRelease ? identityWorkerLogs(this, stage) : new logs.LogGroup(this, "WorkerLogs", { logGroupName: `/foodtech/${stage}/${workload}`,
-      retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN });
+    const logGroup = identityRelease ? identityWorkerLogs(this, stage) : mealRefreshLogs(this, stage);
     const task = new ecs.CfnTaskDefinition(this, "WorkerTask", {
       family: `foodtech-${workload}-${stage}`, requiresCompatibilities: ["FARGATE"], networkMode: "awsvpc",
       cpu: "256", memory: "512", taskRoleArn: taskRole.valueAsString, executionRoleArn: executionRole.valueAsString,
