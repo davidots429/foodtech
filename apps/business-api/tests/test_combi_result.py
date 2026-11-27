@@ -16,7 +16,7 @@ from foodtech_contracts.combi_execution_binding import CombiExecutionBinding
 from foodtech_contracts.combi_recommendation import SCHEMA_VERSION, RULE_VERSION
 
 
-class CombiResultTests(RecipeStatusFixtures):
+class CombiResultFixtures(RecipeStatusFixtures):
     def setUp(self):
         super().setUp()
         self.store.items.clear()  # Combi has no standalone JOB partition.
@@ -54,6 +54,8 @@ class CombiResultTests(RecipeStatusFixtures):
             return await client.get(f'/api/customer/ai/combi/recipe-executions/{self.execution_id}/{resource}',
                 params={'meal_id': self.meal_id, 'menu':'RICE', **params})
 
+
+class CombiResultTests(CombiResultFixtures):
     async def test_owned_rice_result_without_fake_job_or_raw_output(self):
         self.succeed()
         response = await self.get(tenant_id='forged')

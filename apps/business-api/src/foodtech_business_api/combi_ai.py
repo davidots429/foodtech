@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
 from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
@@ -149,7 +149,7 @@ async def _owned_result_meta(store, subject, meal_id, menu):
     return meta, meta[field]
 
 
-async def _combi_record(request, execution_id, meal_id, menu, *, result_view):
+async def _combi_record_data(request, execution_id, meal_id, menu, *, result_view):
     from .ai import _gateway_settings, _client
     from .combi_owned_observations import _identical
     from foodtech_contracts.recipe_execution_scope import validate_recipe_status_payload
@@ -183,9 +183,9 @@ async def _combi_record(request, execution_id, meal_id, menu, *, result_view):
                                 headers={'Cache-Control': 'no-store'})
         if result_view and payload['proposal'] is not None and payload['proposal']['menu'] != menu:
             raise ValueError('stored proposal menu mismatch')
-        return JSONResponse({**payload, 'meal_id': str(meal_id), 'menu': menu,
+        return ({**payload, 'meal_id': str(meal_id), 'menu': menu,
             'job_changed': payload['job_version'] != meta['version'], 'manual_invocation_enabled': False},
-            headers={'Cache-Control': 'no-store'})
+            session, store, meta, job_id)
     except RecipeScopeDenied:
         raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.',
                             headers={'Cache-Control': 'no-store'}) from None
@@ -195,6 +195,11 @@ async def _combi_record(request, execution_id, meal_id, menu, *, result_view):
     except (BotoCoreError, ClientError):
         raise HTTPException(503, '콤비오븐 저장 자료를 확인하지 못했습니다.',
                             headers={'Cache-Control': 'no-store'}) from None
+
+
+async def _combi_record(request, execution_id, meal_id, menu, *, result_view):
+    payload, *_ = await _combi_record_data(request, execution_id, meal_id, menu, result_view=result_view)
+    return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
 
 
 @router.get('/recipe-executions/{execution_id}/status')
@@ -207,3 +212,110 @@ async def combi_execution_status(request: Request, execution_id: UUID, meal_id: 
 async def combi_execution_result(request: Request, execution_id: UUID, meal_id: UUID,
                                  menu: Literal['RICE', 'MACKEREL']):
     return await _combi_record(request, execution_id, meal_id, menu, result_view=True)
+
+
+class CombiRecipeReview(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    meal_id: UUID
+    menu: Literal['RICE', 'MACKEREL']
+    expected_meal_version: int = Field(strict=True, ge=1, le=10**18)
+    expected_review_version: int = Field(strict=True, ge=0, lt=2**63 - 2)
+    request_id: UUID
+    proposal_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
+    decision: Literal['APPROVE', 'REJECT']
+    reason: str = Field(min_length=1, max_length=1000)
+    acknowledged: StrictBool
+
+    @model_validator(mode='after')
+    def explicit_review(self):
+        if not self.acknowledged or not self.reason.strip() or self.reason != self.reason.strip():
+            raise ValueError('explicit trimmed review required')
+        return self
+
+
+async def _review_recheck(request, expected, store, meta, meal_id, menu):
+    from .combi_owned_observations import _identical
+    await _same_session(request, expected)
+    after, _ = await _owned_result_meta(store, expected.subject, meal_id, menu)
+    await _same_session(request, expected)
+    if not _identical(meta, after):
+        raise HTTPException(409, '식사배치가 변경되었습니다. 다시 조회해 주세요.', headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/recipe-executions/{execution_id}/review')
+async def combi_review_context(request: Request, execution_id: UUID, meal_id: UUID, menu: Literal['RICE', 'MACKEREL']):
+    from foodtech_contracts.recipe_result_view import recipe_proposal_digest
+    from .combi_review_store import CombiReviewStore
+    payload, session, store, meta, job_id = await _combi_record_data(request, execution_id, meal_id, menu, result_view=True)
+    if payload['projection_status'] != 'AVAILABLE':
+        raise HTTPException(409, '검토할 저장 권고가 없습니다.', headers={'Cache-Control': 'no-store'})
+    pk = f'SCOPE#USER#{session.subject}#COMBI_MEAL#{meal_id}'
+    try:
+        current = await _store_call(store, CombiReviewStore(store).current, pk, menu)
+        await _review_recheck(request, session, store, meta, str(meal_id), menu)
+    except RecipeScopeDenied:
+        raise HTTPException(401, '로그인 상태가 변경되었습니다.', headers={'Cache-Control': 'no-store'}) from None
+    except (ValueError, BotoCoreError, ClientError):
+        raise HTTPException(503, '검토 기록을 확인하지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
+    return JSONResponse({'execution_id': str(execution_id), 'meal_id': str(meal_id), 'menu': menu,
+        'job_id': job_id, 'job_version': payload['job_version'], 'proposal': payload['proposal'],
+        'proposal_digest': recipe_proposal_digest(payload['proposal']), 'review_version': current['version'],
+        'latest_review': current['review'], 'can_review': not payload['job_changed']}, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/recipe-executions/{execution_id}/review', status_code=201)
+async def combi_save_review(request: Request, execution_id: UUID, body: CombiRecipeReview):
+    from .cooking import _now
+    from .cooking_store import Conflict
+    from .combi_review_store import CombiReviewStore
+    from foodtech_contracts.recipe_result_view import recipe_proposal_digest
+    before, _ = await _context(request, write=True)
+    before = Session(before.surface, before.subject, None, before.csrf, before.expires, before.epoch)
+    payload, session, store, meta, job_id = await _combi_record_data(
+        request, execution_id, body.meal_id, body.menu, result_view=True)
+    if (before.subject, before.epoch, before.csrf) != (session.subject, session.epoch, session.csrf):
+        raise HTTPException(401, '로그인 상태가 변경되었습니다.', headers={'Cache-Control': 'no-store'})
+    if payload['projection_status'] != 'AVAILABLE' or payload['job_changed'] or \
+            payload['job_version'] != body.expected_meal_version or \
+            recipe_proposal_digest(payload['proposal']) != body.proposal_digest:
+        raise HTTPException(409, '권고 또는 식사배치가 변경되었습니다. 다시 조회해 주세요.',
+                            headers={'Cache-Control': 'no-store'})
+    record = {'schema_version': 'combi-recipe-review-v1', 'version': body.expected_review_version + 1,
+        'request_id': str(body.request_id), 'execution_id': str(execution_id), 'meal_id': str(body.meal_id),
+        'menu': body.menu, 'job_id': job_id, 'job_version': body.expected_meal_version,
+        'proposal_digest': body.proposal_digest, 'proposal': payload['proposal'], 'decision': body.decision,
+        'reason': body.reason, 'reviewed_at': _now()}
+    pk = f'SCOPE#USER#{session.subject}#COMBI_MEAL#{body.meal_id}'
+    try:
+        saved = await _store_call(store, CombiReviewStore(store).save, pk, body.menu,
+            body.expected_meal_version, body.expected_review_version, record, session.epoch)
+        await _review_recheck(request, session, store, meta, str(body.meal_id), body.menu)
+    except Conflict:
+        raise HTTPException(409, '검토 또는 식사배치가 변경되었습니다. 검토 이력을 확인해 주세요.',
+                            headers={'Cache-Control': 'no-store'}) from None
+    except RecipeScopeDenied:
+        raise HTTPException(401, '로그인 상태가 변경되었습니다.', headers={'Cache-Control': 'no-store'}) from None
+    except (ValueError, BotoCoreError, ClientError):
+        raise HTTPException(503, '검토 저장 여부를 확인하지 못했습니다. 같은 요청으로 다시 확인해 주세요.',
+                            headers={'Cache-Control': 'no-store'}) from None
+    return JSONResponse({'review': saved, 'adoption_available': False}, status_code=201, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/recipe-reviews')
+async def combi_review_history(request: Request, meal_id: UUID, menu: Literal['RICE', 'MACKEREL'],
+                                limit: int = Query(20, ge=1, le=50),
+                                cursor: int | None = Query(None, ge=1, lt=2**63 - 1)):
+    from .combi_review_store import CombiReviewStore
+    session, store = await _context(request)
+    session = Session(session.surface, session.subject, None, session.csrf, session.expires, session.epoch)
+    try:
+        await _require_principal_record(session)
+        meta, _ = await _owned_result_meta(store, session.subject, str(meal_id), menu)
+        pk = f'SCOPE#USER#{session.subject}#COMBI_MEAL#{meal_id}'
+        result = await _store_call(store, CombiReviewStore(store).history, pk, menu, limit, cursor)
+        await _review_recheck(request, session, store, meta, str(meal_id), menu)
+    except RecipeScopeDenied:
+        raise HTTPException(401, '로그인 상태가 변경되었습니다.', headers={'Cache-Control': 'no-store'}) from None
+    except (ValueError, BotoCoreError, ClientError):
+        raise HTTPException(503, '검토 이력을 확인하지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})

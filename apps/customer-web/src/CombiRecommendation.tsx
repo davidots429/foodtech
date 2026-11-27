@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CombiProposalReview } from "./CombiProposalReview";
 import { api } from "./cookingApi";
 import { readCombiRecord } from "./combiRecipeResult";
 import type { CombiMenu, CombiProposal, CombiResult, CombiStatus } from "./combiRecipeResult";
@@ -21,7 +22,7 @@ export function CombiProposalDetails({ proposal }: { proposal: CombiProposal }) 
 
 const stateLabel = { PENDING: "실행 대기", RESERVED: "실행 중", SUCCEEDED: "실행 완료", FAILED: "실행 실패" };
 
-export function CombiRecommendation({ mealId, jobId, menu }: { mealId: string; jobId: string; menu: CombiMenu }) {
+export function CombiRecommendation({ mealId, jobId, menu, csrf }: { mealId: string; jobId: string; menu: CombiMenu; csrf: string }) {
   const [executionId, setExecutionId] = useState("");
   const [status, setStatus] = useState<CombiStatus | null>(null);
   const [result, setResult] = useState<CombiResult | null>(null);
@@ -63,7 +64,9 @@ export function CombiRecommendation({ mealId, jobId, menu }: { mealId: string; j
     {error && <p role="alert">{error}</p>}
     {status && <div aria-live="polite"><p>실행 상태: {stateLabel[status.state]}</p>
       {status.job_changed && <p role="status">이 권고 이후 식사배치가 변경되었습니다. 과거 기록이며 현재 작업에 적용하지 마세요.</p>}
-      {result?.proposal && <CombiProposalDetails proposal={result.proposal} />}
+      {result?.proposal && <><CombiProposalDetails proposal={result.proposal} />
+        <CombiProposalReview key={`${result.execution_id}-${result.job_version}`} csrf={csrf}
+          scope={{ executionId: result.execution_id, mealId, jobId, menu }} version={result.job_version} proposal={result.proposal} /></>}
       {result?.projection_status === "UNAVAILABLE" && <p>저장된 결과의 형식을 확인할 수 없어 권고를 표시하지 않습니다.</p>}
       {result?.projection_status === "FAILED" && <p>실행이 실패하여 표시할 권고가 없습니다.</p>}
     </div>}
