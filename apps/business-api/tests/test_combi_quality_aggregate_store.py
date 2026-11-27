@@ -1,10 +1,12 @@
 import unittest
+
+import boto3
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
 
 from boto3.dynamodb.types import TypeSerializer
-from foodtech_business_api.cooking_store import DynamoCookingStore
+from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
 
 
 class MealAggregateStoreTests(unittest.TestCase):
@@ -74,6 +76,48 @@ class MealAggregateStoreTests(unittest.TestCase):
             store.checkpoint_meal_aggregate_dirty(pk, 3, subject, 7, 'b' * 64, 'a' * 64)
         with self.assertRaises(ValueError):
             store.checkpoint_meal_aggregate_dirty(pk, 3, subject, 7, None, None)
+
+    def test_strict_owner_fence_is_shared_by_result_checkpoint_and_acknowledgement(self):
+        store = object.__new__(DynamoCookingStore)
+        store.table = SimpleNamespace(name='cooking')
+        store.client = MagicMock()
+        store.serializer = TypeSerializer()
+        store.auth_table_name = 'auth'
+        subject = 'customer'
+        meal = f'SCOPE#USER#{subject}#COMBI_MEAL#{uuid4()}'
+        record = {'group_id': 'b' * 64, 'result_id': 'a' * 64, 'selection': {}, 'references': []}
+        group = f"SCOPE#USER#{subject}#MEAL_AGGREGATE#{record['group_id']}"
+        actions = [lambda: store.save_meal_aggregate(group, [(meal, 3)], record, subject, 0),
+                   lambda: store.checkpoint_meal_aggregate_dirty(meal, 3, subject, 0, None, 'a' * 64),
+                   lambda: store.acknowledge_meal_aggregate_dirty(meal, 3, subject, 0)]
+        # Check both modes: legacy omission remains compatible only when opted out.
+        for strict in (False, True):
+            store.require_principal = strict
+            for action in actions:
+                with self.subTest(strict=strict, action=action):
+                    action()
+                    guard = store.client.transact_write_items.call_args.kwargs['TransactItems'][0]['ConditionCheck']
+                    self.assertEqual(guard['Key'], {'pk': {'S': 'USER#customer'}})
+                    self.assertIn('attribute_exists(pk)', guard['ConditionExpression'])
+                    self.assertIn('deletion_lock_request', guard['ConditionExpression'])
+                    self.assertIn('suspended', guard['ConditionExpression'])
+                    self.assertEqual('attribute_not_exists(#epoch)' in guard['ConditionExpression'], not strict)
+                    self.assertEqual(':zero' in guard['ExpressionAttributeValues'], not strict)
+        # An account changed after the worker read must cancel the whole write.
+        client = boto3.client('dynamodb', region_name='ap-southeast-2',
+                              aws_access_key_id='testing', aws_secret_access_key='testing')
+        canceled = client.exceptions.TransactionCanceledException
+        store.client.exceptions.TransactionCanceledException = canceled
+        for action, count in zip(actions, (5, 3, 3)):
+            store.client.transact_write_items.reset_mock()
+            store.client.transact_write_items.side_effect = canceled(
+                {'Error': {'Code': 'TransactionCanceledException', 'Message': 'owner changed'},
+                 'CancellationReasons': [{'Code': 'ConditionalCheckFailed'},
+                                         *[{'Code': 'None'} for _ in range(count - 1)]]},
+                'TransactWriteItems')
+            with self.assertRaises(Conflict):
+                action()
+            store.client.transact_write_items.assert_called_once()
 
 
 if __name__ == '__main__':

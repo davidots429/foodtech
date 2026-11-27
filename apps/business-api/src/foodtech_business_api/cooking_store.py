@@ -1016,13 +1016,7 @@ class DynamoCookingStore:
         _meal_aggregate_scope(pk, snapshots, record, subject, expected_epoch)
         if not self.auth_table_name or self.auth_table_name == self.table.name:
             raise ValueError('separate authentication table is required')
-        operations = [{'ConditionCheck': {'TableName': self.auth_table_name,
-            'Key': self._item({'pk': f'USER#{subject}'}),
-            'ConditionExpression': 'attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR '
-                '#epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) '
-                'AND attribute_not_exists(deletion_lock_request)',
-            'ExpressionAttributeNames': {'#epoch': 'epoch'},
-            'ExpressionAttributeValues': self._item({':expected': expected_epoch, ':zero': 0, ':false': False})}}]
+        operations = [self._owner_guard(subject, expected_epoch)]
         operations += [
             {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': meal_pk, 'sk': 'META'}),
                 'ConditionExpression': '#version = :version', 'ExpressionAttributeNames': {'#version': 'version'},
@@ -1126,12 +1120,7 @@ class DynamoCookingStore:
         if not self.auth_table_name or self.auth_table_name == self.table.name:
             raise ValueError('separate authentication table is required')
         operations = [
-            {'ConditionCheck': {'TableName': self.auth_table_name, 'Key': self._item({'pk': f'USER#{subject}'}),
-                'ConditionExpression': 'attribute_exists(pk) AND ((attribute_not_exists(#epoch) AND :expected = :zero) OR '
-                    '#epoch = :expected) AND (attribute_not_exists(suspended) OR suspended = :false) '
-                    'AND attribute_not_exists(deletion_lock_request)',
-                'ExpressionAttributeNames': {'#epoch': 'epoch'},
-                'ExpressionAttributeValues': self._item({':expected': expected_epoch, ':zero': 0, ':false': False})}},
+            self._owner_guard(subject, expected_epoch),
             {'ConditionCheck': {'TableName': self.table.name, 'Key': self._item({'pk': pk, 'sk': 'META'}),
                 'ConditionExpression': '#version = :version', 'ExpressionAttributeNames': {'#version': 'version'},
                 'ExpressionAttributeValues': self._item({':version': version})}},
