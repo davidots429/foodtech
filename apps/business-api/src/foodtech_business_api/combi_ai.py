@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 from foodtech_contracts.combi_execution_binding import CombiExecutionBinding, combi_binding_payload
 from .ai import _recipe_gateway
 from .auth import _session
-from .auth_store import get_store
+from .auth_store import Session, get_store
 from .combi_owned_observations import CombiObservationUnavailable, read_owned_combi_observation
 from .cooking import _context, _store_call
 from .recipe_scope import _require_principal_record, RecipeScopeDenied
@@ -42,6 +42,9 @@ class CombiRecipeConfirm(CombiRecipeRequest):
 
 async def _request_binding(request, body):
     session, store = await _context(request, write=True)
+    # Keep only the authenticated metadata, independent of a mutable store
+    # Session object; do not copy access/refresh tokens into this boundary.
+    session = Session(session.surface, session.subject, None, session.csrf, session.expires, session.epoch)
     try:
         await _require_principal_record(session)
         auth_store = get_store()

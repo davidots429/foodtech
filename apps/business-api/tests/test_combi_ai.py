@@ -108,6 +108,15 @@ class CombiAiRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 201, result.text)
         self.assertEqual(self.remote.call_args.args[1]['combi_binding']['prior_meal_id'], self.ids[1])
 
+    async def test_shared_mutable_session_cannot_replace_the_initial_authenticated_reference(self):
+        async def changed(*args):
+            self.session.epoch = 4
+            self.principal['epoch'] = 4
+            return {'execution_id': str(uuid4()), 'state': 'BLOCKED'}
+        self.remote.side_effect = changed
+        result = await self.client.post(self.path, json=self.body, headers=self.headers)
+        self.assertEqual(result.status_code, 401, result.text)
+
 
 if __name__ == '__main__':
     unittest.main()
