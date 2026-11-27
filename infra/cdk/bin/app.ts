@@ -28,7 +28,7 @@ import { CollectionPublishingStack } from "./collection-publishing.js";
 import { MockPublishingStack } from "./mock-publishing.js";
 import { PrivateRestTrialStack } from "./private-rest-trial.js";
 import { PrivateRestSecretsStack } from "./private-rest-secrets.js";
-import { MealRefreshAccessStack } from "./meal-refresh-access.js";
+import { MealRefreshAccessStack, mealRefreshRuleName } from "./meal-refresh-access.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
@@ -654,7 +654,7 @@ class MaintenanceScheduleStack extends Stack {
           "awslogs-region": this.region, "awslogs-stream-prefix": "worker" } } }],
     });
     const rule = new events.CfnRule(this, "Schedule", { state: "DISABLED",
-      ...(identityRelease ? { name: `foodtech-withdrawal-identity-${stage}` } : {}),
+      name: identityRelease ? `foodtech-withdrawal-identity-${stage}` : mealRefreshRuleName(stage),
       description: identityRelease ? "Disabled until withdrawal identity IAM, enrollment and rollout safeguards are verified" : "Disabled until meal refresh deployment and deletion safeguards are verified",
       scheduleExpression: Token.asString(Fn.conditionIf(oneMinute.logicalId, "rate(1 minute)", `rate(${interval.valueAsString} minutes)`)),
       targets: [{ id: identityRelease ? "IdentityRelease" : "MealRefresh", arn: cluster.valueAsString, roleArn: invokeRole.valueAsString,

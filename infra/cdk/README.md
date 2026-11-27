@@ -311,8 +311,9 @@ Mock Task 역할에는 업무 AWS 권한이 없다. 수집기 역할은 지정 �
 `-c provisionMealRefreshAccess=true` opts into `FoodtechMealRefreshAccess-dev`.
 An explicit account and `ap-southeast-2` are required. This creates only three
 role definitions and their policies: business refresh, image/log execution,
-and EventBridge invocation. `ClusterArn` and `ScheduleRuleArn` must be supplied
-at deployment review; no schedule, Task, table, index or network is created.
+and EventBridge invocation. `ClusterArn` must be supplied at deployment review;
+the disabled schedule and invoke trust share the fixed
+`foodtech-meal-refresh-dev` rule name to avoid a first-deployment cycle; no schedule, Task, table, index or network is created.
 
 The source-derived baseline in `bin/meal-refresh-baseline.json` was generated
 by IAM Policy Autopilot 0.4 from `meal_refresh_runtime.py`,
@@ -339,7 +340,7 @@ specific sort key inside an allowed meal partition. DIRTY-only cursor mutations
 and version/epoch checks remain runtime responsibilities.
 
 The execution role can pull only the existing maintenance repository and write
-its own log streams. Invocation is limited to one supplied rule/cluster, the
+its own log streams. Invocation is limited to one fixed rule and supplied cluster, the
 meal-refresh task family and passing the two named ECS roles. Do not enable
 managed Task tags or add target overrides without reviewing any new permissions.
 Actual IAM deployment, pending-index/backfill, coordinated strict-mode writer

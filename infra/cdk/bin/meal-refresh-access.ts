@@ -5,6 +5,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
+export const mealRefreshRuleName = (stage: string) => `foodtech-meal-refresh-${stage}`;
+
 /** IAM definitions only. No table/index, Task, network or schedule activation. */
 export class MealRefreshAccessStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps, stage: string) {
@@ -69,11 +71,9 @@ export class MealRefreshAccessStack extends Stack {
       conditions: { StringEquals: regional } }));
     const cluster = new CfnParameter(this, "ClusterArn", { type: "String",
       allowedPattern: `^arn:aws:ecs:${region}:${this.account}:cluster/[A-Za-z0-9_-]+$`, description: "Exact reviewed existing cluster" });
-    const rule = new CfnParameter(this, "ScheduleRuleArn", { type: "String",
-      allowedPattern: `^arn:aws:events:${region}:${this.account}:rule/[A-Za-z0-9_.-]+$`, description: "Exact reviewed default-bus meal refresh rule; activation is separate" });
     const invoke = new iam.Role(this, "InvokeRole", { roleName: `foodtech-meal-refresh-invoke-${stage}`,
       assumedBy: new iam.ServicePrincipal("events.amazonaws.com", { conditions: {
-        StringEquals: { "aws:SourceAccount": this.account }, ArnEquals: { "aws:SourceArn": rule.valueAsString },
+        StringEquals: { "aws:SourceAccount": this.account }, ArnEquals: { "aws:SourceArn": `arn:aws:events:${region}:${this.account}:rule/${mealRefreshRuleName(stage)}` },
       } }) });
     invoke.addToPolicy(new iam.PolicyStatement({ actions: ["ecs:RunTask"],
       resources: [`arn:aws:ecs:${region}:${this.account}:task-definition/foodtech-meal-refresh-${stage}:*`],

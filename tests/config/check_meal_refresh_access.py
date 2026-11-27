@@ -37,7 +37,7 @@ def check(template, account):
         expected = {'StringEquals': {'aws:SourceAccount': account}}
         if kind == 'invoke':
             assert trust['Principal'] == {'Service': 'events.amazonaws.com'}
-            expected['ArnEquals'] = {'aws:SourceArn': {'Ref': 'ScheduleRuleArn'}}
+            expected['ArnEquals'] = {'aws:SourceArn': f'arn:aws:events:ap-southeast-2:{account}:rule/foodtech-meal-refresh-dev'}
         else:
             assert trust['Principal'] == {'Service': 'ecs-tasks.amazonaws.com'}
             expected['ArnLike'] = {'aws:SourceArn': f'arn:aws:ecs:ap-southeast-2:{account}:*'}
@@ -92,11 +92,11 @@ def check(template, account):
         'Condition': {'StringEquals': {'iam:PassedToService': 'ecs-tasks.amazonaws.com'}}}
     for name, good, bad in [
         ('ClusterArn', f'arn:aws:ecs:ap-southeast-2:{account}:cluster/reviewed', f'arn:aws:ecs:us-east-1:{account}:cluster/foreign'),
-        ('ScheduleRuleArn', f'arn:aws:events:ap-southeast-2:{account}:rule/reviewed', f'arn:aws:events:ap-southeast-2:{account}:rule/custom-bus/unreviewed'),
     ]:
         param = template['Parameters'][name]
         assert 'Default' not in param and re.fullmatch(param['AllowedPattern'], good)
         assert not re.fullmatch(param['AllowedPattern'], bad)
+    assert 'ScheduleRuleArn' not in template['Parameters']
     return role_ids, by_role
 
 
