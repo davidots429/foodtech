@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +22,7 @@ from foodtech_business_api.cooking_store import MemoryCookingStore
 from foodtech_business_api.main import app
 from foodtech_collection_adapter.combi_import import import_meal
 from foodtech_collection_adapter.rest import RestMockClient
+from foodtech_contracts.combi_observed_inputs import observe_combi_batch
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "fixtures/combi-normal-medium-v1.json"
@@ -325,3 +326,17 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
                 self.assertEqual(confirmed.json()["step"]["safety_status"], "PASSED")
                 self.assertFalse(confirmed.json()["step"]["quality_current"]["usable"])
+                unloaded = started_at + timedelta(seconds=2700)
+                probes = [{"probe_id": f"probe-{n}", "product_id": f"fish-{n}", "calibration_status": "OK",
+                    "readings": [{"second": second, "celsius": "75"} for second in range(60)]} for n in (1, 2, 3)]
+                checked = await client.post(path + '/mackerel-safety', headers=headers, json={
+                    'expected_version': confirmed.json()['meal']['version'], 'measured_at': unloaded.isoformat(),
+                    'probes': probes})
+                self.assertEqual(checked.status_code, 200, checked.text)
+                observations = observe_combi_batch({r['sk']: r for r in store.read_meal(meal_pk)},
+                    records, 'MACKEREL', now=datetime.now(timezone.utc))
+                self.assertEqual(observations.unresolved, ())
+                self.assertEqual(observations.sampled_safety_status, 'PASSED')
+                self.assertEqual(observations.baseline.ingredient_kg, Decimal('.39'))
+                self.assertIs(observations.baseline.humidity_available, False)
+                self.assertIs(observations.baseline.transition_ready, True)
