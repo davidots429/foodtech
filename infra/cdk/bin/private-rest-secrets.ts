@@ -2,6 +2,8 @@ import { CfnOutput, RemovalPolicy, Stack, StackProps, Token } from "aws-cdk-lib"
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Empty, isolated TLS/OAuth stores; no material generation or Task execution. */
 export class PrivateRestSecretsStack extends Stack {
@@ -18,24 +20,15 @@ export class PrivateRestSecretsStack extends Stack {
       const name = `foodtech/dev/private-rest-${kind}`;
       // SM assigns an ARN suffix at creation. The key policy constrains its
       // name namespace; the separate execution IAM policy binds the exact ARN.
-      const secretArnPattern = `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${name}-*`;
-      const root = `arn:aws:iam::${this.account}:root`;
+      const keyPolicy = JSON.parse(readFileSync(join(__dirname, "../../containers/private-rest-key-policy.json"), "utf8")
+        .replaceAll("__ACCOUNT__", this.account).replaceAll("__REGION__", this.region).replaceAll("__SECRET_NAME__", name));
       const key = new kms.CfnKey(this, `${prefix}Key`, {
         description: `Dedicated synthetic private REST ${kind} Secret storage key`,
         enabled: true, enableKeyRotation: true, multiRegion: false,
         keySpec: "SYMMETRIC_DEFAULT", keyUsage: "ENCRYPT_DECRYPT", pendingWindowInDays: 7,
-        keyPolicy: { Version: "2012-10-17", Statement: [
-          { Sid: "AccountAdministration", Effect: "Allow", Principal: { AWS: root },
-            // Resource=* in a KMS key policy means this key. Account-principal
-            // delegation still requires matching IAM permissions on the caller.
-            Action: ["kms:Create*", "kms:Describe*", "kms:Enable*", "kms:List*", "kms:Put*", "kms:Update*",
-              "kms:Revoke*", "kms:Disable*", "kms:Get*", "kms:Delete*", "kms:TagResource", "kms:UntagResource",
-              "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"], Resource: "*" },
-          { Sid: "CryptographyThroughOwnSecretNamespace", Effect: "Allow", Principal: { AWS: root },
-            Action: ["kms:Decrypt", "kms:GenerateDataKey"], Resource: "*",
-            Condition: { StringEquals: { "kms:ViaService": `secretsmanager.${this.region}.amazonaws.com`,
-              "kms:CallerAccount": this.account }, StringLike: { "kms:EncryptionContext:SecretARN": secretArnPattern } } },
-        ] },
+        // Shared with the initializer's live policy check. Resource=* in a
+        // KMS key policy means this key, not every key in the account.
+        keyPolicy,
       });
       key.applyRemovalPolicy(RemovalPolicy.RETAIN);
       const secret = new secretsmanager.CfnSecret(this, `${prefix}Secret`, {

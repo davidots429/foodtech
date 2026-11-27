@@ -45,7 +45,7 @@ class PrivateRestMaterialTests(unittest.TestCase):
 
     def test_secret_boundaries_key_match_and_safe_metadata(self):
         value = self.value
-        self.assertEqual(set(value.mock), {'server_cert_pem', 'server_key_pem', 'client_id', 'client_secret'})
+        self.assertEqual(set(value.mock), {'ca_pem', 'server_cert_pem', 'server_key_pem', 'client_id', 'client_secret'})
         self.assertEqual(set(value.collector), {'ca_pem', 'client_id', 'client_secret'})
         self.assertTrue(value.mock['client_secret'] == value.collector['client_secret'], 'OAuth pair differs')
         key = serialization.load_pem_private_key(value.mock['server_key_pem'].encode(), password=None)
@@ -65,6 +65,15 @@ class PrivateRestMaterialTests(unittest.TestCase):
     def test_ambiguous_naive_clock_is_rejected(self):
         with self.assertRaises(ValueError):
             material.generate(datetime(2026, 11, 27))
+
+    def test_resume_recovers_same_pair_without_a_ca_private_key(self):
+        recovered = material.restore(self.value.mock, self.now)
+        self.assertTrue(recovered.collector == self.value.collector, 'resumed client material differs')
+        self.assertEqual(recovered.metadata(), self.value.metadata())
+        for key, value in (('client_id', 'other'), ('client_secret', ''), ('server_key_pem', 'invalid'),
+                           ('ca_pem', material.generate(self.now).collector['ca_pem'])):
+            with self.subTest(key=key), self.assertRaises((ValueError, TypeError, VerificationError)):
+                material.restore({**self.value.mock, key: value}, self.now)
 
 
 if __name__ == '__main__':

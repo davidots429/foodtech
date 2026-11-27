@@ -50,6 +50,10 @@ export class PrivateRestTrialStack extends Stack {
       description: "Exact customer-managed key protecting the matching Secret; decrypt context is restricted",
     });
     const mockSecret = secret("MockSecretArn", "mock"), collectorSecret = secret("CollectorSecretArn", "collector");
+    const materialVersion = new CfnParameter(this, "MaterialVersionId", { type: "String",
+      allowedPattern: "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$",
+      description: "Verified initializer request UUID used as the exact VersionId in BOTH Secrets; no AWSCURRENT fallback",
+    });
     const mockKey = key("MockSecretKeyArn"), collectorKey = key("CollectorSecretKeyArn");
     const writes = new CfnParameter(this, "QuarantineWritesEnabled", {
       type: "String", allowedValues: ["false", "true"], default: "false",
@@ -131,7 +135,7 @@ export class PrivateRestTrialStack extends Stack {
           mountPoints: name === "collector" ? [{ sourceVolume: "collector-ca", containerPath: "/run/foodtech-collection", readOnly: false }] : undefined,
           portMappings: name === "mock" ? [{ containerPort: 8443, protocol: "tcp" }] : undefined,
           environment: Object.entries(environment).map(([name, value]) => ({ name, value })),
-          secrets: Object.entries(secrets).map(([name, field]) => ({ name, valueFrom: `${secretArn}:${field}::` })),
+          secrets: Object.entries(secrets).map(([name, field]) => ({ name, valueFrom: `${secretArn}:${field}::${materialVersion.valueAsString}` })),
           logConfiguration: { logDriver: "awslogs", options: { "awslogs-group": group.logGroupName,
             "awslogs-region": region, "awslogs-stream-prefix": "trial" } },
         }],
