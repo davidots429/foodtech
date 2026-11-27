@@ -94,3 +94,5 @@ label input:not([type="checkbox"]), label select { display: block; width: 100%; 
 code { overflow-wrap: anywhere; }
 @media (max-width: 1050px) { .workspace-grid { grid-template-columns: 1fr; } .workflow-aside { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; } .workflow-aside .subcard { margin: 0; } }
 @media (max-width: 680px) { .shell { padding: 24px 14px 48px; } section { padding: 18px; } .score-row { grid-template-columns: 1fr; } .score-row label { width: 100%; } .status-grid { grid-template-columns: 1fr 1fr; } .lookup-row { flex-wrap: wrap; } .lookup-row label { flex-basis: 100%; } }
+
+.recipe-candidate { margin: 0.75rem 0; overflow-wrap: anywhere; }

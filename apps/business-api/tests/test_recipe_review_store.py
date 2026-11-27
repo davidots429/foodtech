@@ -32,7 +32,8 @@ class RecipeReviewStoreTests(unittest.TestCase):
     def setUp(self):
         self.cooking = MemoryCookingStore()
         self.meta = {'pk': PK, 'sk': 'META', 'owner_subject': 'customer', 'job_id': JOB, 'version': 3,
-                     'status': 'COMPLETED', 'safety_status': 'PASSED'}
+                     'status': 'COMPLETED', 'safety_status': 'PASSED', 'menu': 'JEYUK',
+                     'recipe_version': 'baseline-v1', 'equipment_profile': 'jeyuk-medium', 'provenance': 'SYNTHETIC'}
         self.cooking.items[PK, 'META'] = copy.deepcopy(self.meta)
         self.reviews = RecipeReviewStore(self.cooking)
 
@@ -45,7 +46,7 @@ class RecipeReviewStoreTests(unittest.TestCase):
         self.assertEqual(self.reviews.current(PK)['review']['proposal']['data']['temperature_c'], '200')
         retry = {**value, 'reviewed_at': '2026-11-27T02:00:00Z'}
         self.assertEqual(self.reviews.save(PK, 3, 0, retry, 0), value)
-        self.assertEqual(len(self.cooking.items), 3)
+        self.assertEqual(len(self.cooking.items), 4)
         changed = {**value, 'reason': '다른 사유'}
         with self.assertRaises(Conflict):
             self.reviews.save(PK, 3, 0, changed, 0)
@@ -88,12 +89,56 @@ class RecipeReviewStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.reviews.current(PK)
 
+    def test_approval_creates_candidate_with_original_lineage_without_applying_it(self):
+        approved = record()
+        self.reviews.save(PK, 3, 0, approved, 0)
+        candidate = self.reviews.candidate(PK, 1)
+        self.assertEqual(candidate['status'], 'CANDIDATE_NOT_APPLIED')
+        self.assertEqual(candidate['base_recipe_version'], 'baseline-v1')
+        self.assertEqual(candidate['candidate_id'], 'recipe-candidate-' + JOB + '-r1')
+        self.assertEqual(candidate['proposal'], approved['proposal'])
+        self.assertEqual(self.cooking.items[PK, 'META'], self.meta)
+        self.reviews.save(PK, 3, 1, {**record(2), 'decision': 'REJECT'}, 0)
+        self.assertEqual(self.reviews.candidate(PK, 1), candidate)
+        self.assertIsNone(self.reviews.candidate(PK, 2))
+        self.cooking.items[PK, 'META'].update(version=4, recipe_version='new-baseline')
+        self.assertEqual(self.reviews.candidate(PK, 1), candidate)
+
+    def test_missing_or_invalid_lineage_never_saves_partial_approval(self):
+        for changed in ({'recipe_version': None}, {'recipe_version': ' '}, {'provenance': 'REAL'},
+                        {'menu': 'TONKATSU'}, {'equipment_profile': ''}):
+            with self.subTest(changed=changed):
+                self.cooking.items = {(PK, 'META'): {**self.meta, **changed}}
+                before = copy.deepcopy(self.cooking.items)
+                with self.assertRaises(ValueError): self.reviews.save(PK, 3, 0, record(), 0)
+                self.assertEqual(self.cooking.items, before)
+
+    def test_legacy_approval_is_readable_but_retry_does_not_invent_candidate(self):
+        value = record()
+        self.cooking.items[PK, PREFIX + f'{1:019d}'] = {'pk': PK, 'sk': PREFIX + f'{1:019d}', **value}
+        self.cooking.items[PK, CURRENT] = {'pk': PK, 'sk': CURRENT, 'version': 1}
+        self.assertEqual(self.reviews.current(PK)['review'], value)
+        self.assertIsNone(self.reviews.candidate(PK, 1))
+        before = copy.deepcopy(self.cooking.items)
+        with self.assertRaises(Conflict): self.reviews.save(PK, 3, 0, value, 0)
+        self.assertEqual(self.cooking.items, before)
+
+    def test_corrupt_candidate_does_not_become_successful_retry_or_leak_fields(self):
+        from foodtech_business_api.recipe_candidate import CANDIDATE_PREFIX
+        value = record()
+        self.reviews.save(PK, 3, 0, value, 0)
+        key = (PK, CANDIDATE_PREFIX + f'{1:019d}')
+        self.cooking.items[key]['credential'] = 'private-marker'
+        with self.assertRaises(ValueError): self.reviews.candidate(PK, 1)
+        with self.assertRaises(ValueError): self.reviews.save(PK, 3, 0, value, 0)
+
     def dynamo(self):
         cooking = object.__new__(DynamoCookingStore)
         cooking.table, cooking.client = MagicMock(), MagicMock()
         cooking.table.name = 'cooking'
         cooking.auth_table_name, cooking.require_principal = 'auth', True
         cooking.serializer = TypeSerializer()
+        cooking.table.get_item.return_value = {'Item': copy.deepcopy(self.meta)}
         class Canceled(ClientError):
             pass
         cooking.client.exceptions.TransactionCanceledException = Canceled
@@ -104,8 +149,13 @@ class RecipeReviewStoreTests(unittest.TestCase):
         value = record()
         self.assertEqual(RecipeReviewStore(cooking).save(PK, 3, 0, value, 5), value)
         actions = cooking.client.transact_write_items.call_args.kwargs['TransactItems']
-        self.assertEqual(len(actions), 4)
-        auth, job, pointer, saved = (next(iter(action.values())) for action in actions)
+        self.assertEqual(len(actions), 5)
+        auth, job, pointer, saved, candidate = (next(iter(action.values())) for action in actions)
+        self.assertEqual(candidate['Item']['status'], {'S': 'CANDIDATE_NOT_APPLIED'})
+        import botocore.session
+        from botocore.validate import validate_parameters
+        model = botocore.session.get_session().get_service_model('dynamodb').operation_model('TransactWriteItems')
+        validate_parameters({'TransactItems': actions}, model.input_shape)
         self.assertEqual(auth['Key'], {'pk': {'S': 'USER#customer'}})
         self.assertIn('attribute_exists(pk)', auth['ConditionExpression'])
         self.assertIn('deletion_lock_request', auth['ConditionExpression'])
@@ -120,20 +170,28 @@ class RecipeReviewStoreTests(unittest.TestCase):
         value = record()
         cooking.client.transact_write_items.side_effect = Canceled({'Error': {'Code': 'TransactionCanceledException'},
             'CancellationReasons': [{'Code': 'ConditionalCheckFailed'}, {'Code': 'None'},
-                                    {'Code': 'ConditionalCheckFailed'}, {'Code': 'ConditionalCheckFailed'}]}, 'TransactWriteItems')
+                                    {'Code': 'ConditionalCheckFailed'}, {'Code': 'ConditionalCheckFailed'}, {'Code': 'ConditionalCheckFailed'}]}, 'TransactWriteItems')
         with self.assertRaises(Conflict):
             RecipeReviewStore(cooking).save(PK, 3, 0, value, 0)
-        cooking.table.get_item.assert_not_called()
+        cooking.table.get_item.assert_called_once_with(Key={'pk': PK, 'sk': 'META'}, ConsistentRead=True)
 
     def test_dynamo_duplicate_reconciles_exact_immutable_record_only(self):
         cooking, Canceled = self.dynamo()
         value = record()
         cooking.client.transact_write_items.side_effect = Canceled({'Error': {'Code': 'TransactionCanceledException'},
             'CancellationReasons': [{'Code': 'None'}, {'Code': 'None'},
-                                    {'Code': 'ConditionalCheckFailed'}, {'Code': 'ConditionalCheckFailed'}]}, 'TransactWriteItems')
-        cooking.table.get_item.return_value = {'Item': {'pk': PK, 'sk': PREFIX + f'{1:019d}', **value}}
+                                    {'Code': 'ConditionalCheckFailed'}, {'Code': 'ConditionalCheckFailed'}, {'Code': 'ConditionalCheckFailed'}]}, 'TransactWriteItems')
+        from foodtech_business_api.recipe_candidate import CANDIDATE_PREFIX, build_candidate
+        candidate = build_candidate(value, self.meta)
+        def get(**args):
+            sk = args['Key']['sk']
+            row = (self.meta if sk == 'META' else
+                   {'pk': PK, 'sk': sk, **candidate} if sk.startswith(CANDIDATE_PREFIX) else
+                   {'pk': PK, 'sk': sk, **value})
+            return {'Item': row}
+        cooking.table.get_item.side_effect = get
         self.assertEqual(RecipeReviewStore(cooking).save(PK, 3, 0, value, 0), value)
-        cooking.table.get_item.assert_called_once_with(Key={'pk': PK, 'sk': PREFIX + f'{1:019d}'}, ConsistentRead=True)
+        self.assertEqual(cooking.table.get_item.call_count, 4)
 
 
 if __name__ == '__main__':

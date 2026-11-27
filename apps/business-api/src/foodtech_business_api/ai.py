@@ -307,6 +307,26 @@ async def recipe_review_history(request: Request, job_id: UUID, limit: int = Que
                         headers={'Cache-Control': 'no-store'})
 
 
+@router.get('/recipe-candidates/{review_version}')
+async def recipe_candidate(request: Request, review_version: int, job_id: UUID):
+    from .cooking import _read, _store_call
+    from .recipe_review_store import RecipeReviewStore
+    if not 1 <= review_version < 2**63 - 1:
+        raise HTTPException(422, '후보 버전이 올바르지 않습니다.', headers={'Cache-Control': 'no-store'})
+    session, store, pk, _, _ = await _read(request, str(job_id))
+    try:
+        reviews = RecipeReviewStore(store)
+        candidate = await _store_call(store, reviews.candidate, pk, review_version)
+        current = await _store_call(store, reviews.current, pk)
+    except ValueError:
+        raise HTTPException(503, '후보 버전을 확인하지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
+    job = await _review_session(request, job_id, session)
+    if candidate is None:
+        raise HTTPException(404, '이 검토에 저장된 후보 버전이 없습니다.', headers={'Cache-Control': 'no-store'})
+    return JSONResponse({'candidate': candidate, 'current_job_version': job['version'],
+        'current_review_version': current['version']}, headers={'Cache-Control': 'no-store'})
+
+
 @router.post('/recipe-executions/{execution_id}/invoke')
 async def invoke_recipe_execution(request: Request, execution_id: UUID):
     from .recipe_invocation import invoke_customer_recipe

@@ -14,7 +14,8 @@ from foodtech_contracts.recipe_result_view import recipe_proposal_digest
 class RecipeReviewApiTests(RecipeStatusFixtures):
     def setUp(self):
         super().setUp()
-        self.store.items[self.pk, 'META'].update(owner_subject=self.subject, menu='JEYUK', safety_status='PASSED')
+        self.store.items[self.pk, 'META'].update(owner_subject=self.subject, menu='JEYUK', safety_status='PASSED',
+                                                  provenance='SYNTHETIC', equipment_profile='jeyuk-medium', recipe_version='baseline-v1')
         self.state = 'SUCCEEDED'
         self.proposal = {'status': 'NEEDS_REVIEW', 'schema_version': 'synthetic-recommendation-output-v1',
             'guard_version': 'synthetic-recommendation-guard-v1', 'menu': 'JEYUK', 'data': {
@@ -49,6 +50,51 @@ class RecipeReviewApiTests(RecipeStatusFixtures):
         self.assertNotIn('private-marker', history.text)
         self.assertNotIn('response_text', history.text)
         self.registry.create_execution.assert_not_called()
+
+    async def candidate(self, version=1, job_id=None):
+        return await self.request(path=f'/api/customer/ai/recipe-candidates/{version}',
+                                  params={'job_id': job_id or self.job_id})
+
+    async def test_approved_candidate_is_readable_without_gateway_and_keeps_original_baseline(self):
+        self.assertEqual((await self.request('POST', self.body)).status_code, 201)
+        self.requests.clear()
+        response = await self.candidate()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+        candidate = response.json()['candidate']
+        self.assertEqual(candidate['status'], 'CANDIDATE_NOT_APPLIED')
+        self.assertEqual(candidate['base_recipe_version'], 'baseline-v1')
+        self.assertEqual(candidate['proposal'], self.proposal)
+        self.assertEqual(self.requests, [])
+        self.store.items[self.pk, 'META'].update(version=4, recipe_version='new-baseline')
+        historical = await self.candidate()
+        self.assertEqual(historical.json()['candidate'], candidate)
+        self.assertEqual(historical.json()['current_job_version'], 4)
+
+    async def test_rejection_or_legacy_missing_candidate_is_never_synthesized_on_read(self):
+        self.assertEqual((await self.request('POST', {**self.body, 'decision': 'REJECT'})).status_code, 201)
+        self.assertEqual((await self.candidate()).status_code, 404)
+        self.assertEqual((await self.candidate(job_id=str(uuid4()))).status_code, 404)
+        self.assertEqual((await self.candidate(0)).status_code, 422)
+        self.assertEqual((await self.candidate(2**63)).status_code, 422)
+
+    async def test_candidate_read_rechecks_auth_after_storage_and_hides_corruption(self):
+        from foodtech_business_api.recipe_candidate import CANDIDATE_PREFIX
+        self.assertEqual((await self.request('POST', self.body)).status_code, 201)
+        original = RecipeReviewStore.candidate
+        owner = self
+        def changed(store, *args):
+            value = original(store, *args)
+            owner.epoch = 1
+            return value
+        with patch.object(RecipeReviewStore, 'candidate', changed):
+            response = await self.candidate()
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn('proposal', response.text)
+        self.store.items[self.pk, CANDIDATE_PREFIX + f'{1:019d}']['private'] = 'private-marker'
+        response = await self.candidate()
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn('private-marker', response.text)
 
     async def test_csrf_invalid_acknowledgement_and_injected_fields_never_reach_gateway(self):
         self.assertEqual((await self.request('POST', self.body, csrf='wrong')).status_code, 403)
