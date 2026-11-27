@@ -1,0 +1,120 @@
+name: Publish mock image
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect public OIDC claims, or publish the checked main commit
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, publish]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foodtech-mock-image
+  cancel-in-progress: false
+
+jobs:
+  mock-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-southeast-2
+      PUBLISH_ROLE_ARN: ${{ vars.FOODTECH_MOCK_PUBLISH_ROLE_ARN }}
+      PUBLISH_ACCOUNT_ID: ${{ vars.FOODTECH_AWS_ACCOUNT_ID }}
+      OPERATION: ${{ inputs.operation }}
+    steps:
+      - name: Require manual trusted main context
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = davidots429/foodtech
+          test "$GITHUB_REF" = refs/heads/main
+          test "$OPERATION" = inspect || test "$OPERATION" = publish
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Inspect public OIDC claims without printing tokens
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 infra/scripts/mock_publish.py inspect --output "$RUNNER_TEMP/mock-oidc-inspection.json"
+      - name: Record OIDC inspection
+        uses: actions/upload-artifact@v7
+        with:
+          name: mock-oidc-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mock-oidc-inspection.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Validate reviewed publishing target
+        id: target
+        if: inputs.operation == 'publish'
+        run: python3 infra/scripts/mock_publish.py target
+      - uses: docker/setup-buildx-action@v3
+        if: inputs.operation == 'publish'
+      - name: Build trusted source before obtaining AWS credentials
+        uses: docker/build-push-action@v6
+        if: inputs.operation == 'publish'
+        with:
+          context: .
+          file: infra/containers/mock-control.Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: foodtech-mock:${{ steps.target.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/davidots429/foodtech
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Verify installed C# Mock without network before obtaining AWS credentials
+        if: inputs.operation == 'publish'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e DOTNET_EnableDiagnostics=0 "foodtech-mock:$TAG" hash --fixture fixtures/mockprofile-100-a-001.json > "$RUNNER_TEMP/mock-hash.txt"
+          grep -Fx 'rec-a-001 f76cb5275bb85fc7c0c0da0309dc96cb5b64d29588d902cf28b6c5140e8d5ff2' "$RUNNER_TEMP/mock-hash.txt"
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "foodtech-mock:$TAG" -c '. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 24.04'
+      - name: Obtain short-lived mock publishing credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.1
+        if: inputs.operation == 'publish'
+        with:
+          aws-region: ap-southeast-2
+          role-to-assume: ${{ vars.FOODTECH_MOCK_PUBLISH_ROLE_ARN }}
+          allowed-account-ids: ${{ vars.FOODTECH_AWS_ACCOUNT_ID }}
+          role-duration-seconds: 900
+          role-session-name: mock-${{ github.run_id }}-${{ github.run_attempt }}
+          unset-current-credentials: true
+      - name: Verify reviewed repository before Docker login
+        if: inputs.operation == 'publish'
+        run: |
+          aws ecr describe-repositories --repository-names foodtech/mock-dev --region "$AWS_REGION" --output json > "$RUNNER_TEMP/mock-repository.json"
+          python3 infra/scripts/mock_publish.py verify-repository --input "$RUNNER_TEMP/mock-repository.json"
+      - name: Publish immutable image and record registry digest
+        if: inputs.operation == 'publish'
+        env:
+          REGISTRY: ${{ steps.target.outputs.registry }}
+          REPOSITORY: ${{ steps.target.outputs.repository }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/foodtech-mock-docker"
+          mkdir -p "$DOCKER_CONFIG"
+          trap 'docker logout "$REGISTRY" >/dev/null 2>&1 || true; rm -f "$DOCKER_CONFIG/config.json"' EXIT
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+          docker tag "foodtech-mock:$TAG" "$REPOSITORY:$TAG"
+          docker push "$REPOSITORY:$TAG"
+          export IMAGE_DIGEST="$(aws ecr describe-images --repository-name foodtech/mock-dev --image-ids "imageTag=$TAG" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)"
+          python3 infra/scripts/mock_publish.py manifest --output "$RUNNER_TEMP/mock-image-manifest.json"
+      - name: Record immutable image manifest
+        uses: actions/upload-artifact@v7
+        if: inputs.operation == 'publish'
+        with:
+          name: mock-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mock-image-manifest.json
+          if-no-files-found: error
+          retention-days: 7

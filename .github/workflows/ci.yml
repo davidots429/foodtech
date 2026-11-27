@@ -57,6 +57,15 @@ jobs:
           python3 -c "from pathlib import Path; assert 'must not be selected together' in Path('/tmp/foodtech-collection-double-publish.log').read_text()"
           if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCollectionPublishing-dev --strict --no-lookups -c provisionCollectionPublishing=true -c collectionImageRepositoryMode=unknown --output /tmp/foodtech-collection-invalid-mode > /tmp/foodtech-collection-invalid-mode.log 2>&1; then exit 1; fi
           python3 -c "from pathlib import Path; assert 'collectionImageRepositoryMode must be create or existing' in Path('/tmp/foodtech-collection-invalid-mode.log').read_text()"
+      - name: Check manual mock publishing boundaries
+        working-directory: infra/cdk
+        run: |
+          for mode in create existing; do
+            CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMockPublishing-dev --strict --no-lookups -c provisionMockPublishing=true -c mockImageRepositoryMode="$mode" --output "/tmp/foodtech-mock-publish-$mode" > /dev/null
+            python3 ../../tests/config/check_mock_manual_publishing.py "/tmp/foodtech-mock-publish-$mode/FoodtechMockPublishing-dev.template.json" "$mode"
+          done
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMockPublishing-dev --strict --no-lookups -c provisionMockPublishing=true -c mockImageRepositoryMode=unknown --output /tmp/foodtech-mock-invalid-mode > /tmp/foodtech-mock-invalid-mode.log 2>&1; then exit 1; fi
+          python3 -c "from pathlib import Path; assert 'mockImageRepositoryMode must be create or existing' in Path('/tmp/foodtech-mock-invalid-mode.log').read_text()"
       - name: Check opt-in runtime foundation
         working-directory: infra/cdk
         run: |
@@ -187,6 +196,7 @@ jobs:
       - run: uv sync --all-packages --locked
       - run: uv run --no-sync python -m unittest discover -s tests/config -p test_maintenance_publish.py -v
       - run: uv run --no-sync python -m unittest discover -s tests/config -p test_collection_publish.py -v
+      - run: uv run --no-sync python -m unittest discover -s tests/config -p test_mock_publish.py -v
       - run: uv run --no-sync python -m unittest discover -s tests/config -p test_worker_policy_update.py -v
       - run: uv run --no-sync python -c "from foodtech_business_api.main import app as business; from foodtech_ai_gateway.main import app as gateway; assert business.title and gateway.title"
       - run: uv run --no-sync python -m unittest discover -s apps/business-api/tests -v
@@ -259,8 +269,12 @@ jobs:
           push: false
           load: true
           tags: foodtech-ci/mock-control:test
-      - name: Verify synthetic fixture hash
-        run: docker run --rm foodtech-ci/mock-control:test hash --fixture fixtures/mockprofile-100-a-001.json | grep -Fx 'rec-a-001 f76cb5275bb85fc7c0c0da0309dc96cb5b64d29588d902cf28b6c5140e8d5ff2'
+      - name: Verify synthetic fixture hash in isolated C# runtime
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e DOTNET_EnableDiagnostics=0 foodtech-ci/mock-control:test hash --fixture fixtures/mockprofile-100-a-001.json > "$RUNNER_TEMP/mock-hash.txt"
+          grep -Fx 'rec-a-001 f76cb5275bb85fc7c0c0da0309dc96cb5b64d29588d902cf28b6c5140e8d5ff2' "$RUNNER_TEMP/mock-hash.txt"
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh foodtech-ci/mock-control:test -c '. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 24.04'
 
   collection-adapter-image:
     runs-on: ubuntu-latest
