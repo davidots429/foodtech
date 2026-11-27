@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from decimal import Decimal
 
+from .combi_recommendation import CombiBaseline, SCHEMA_VERSION as COMBI_SCHEMA_VERSION, proposal as combi_proposal
 from .recommendation_guard import Evidence, JeyukProposal, TonkatsuProposal, jeyuk, tonkatsu
 
 SCHEMA_VERSION = "synthetic-recommendation-output-v1"
@@ -54,8 +55,9 @@ def _integer(value):
     return value
 
 
-def validate(raw: str, evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline) -> dict:
+def validate(raw: str, evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline | CombiBaseline) -> dict:
     """Return an empty data object on invalid, indeterminate, or rejected output."""
+    schema_version = COMBI_SCHEMA_VERSION if isinstance(baseline, CombiBaseline) else SCHEMA_VERSION
     try:
         if not isinstance(evidence, Evidence) or not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_OUTPUT_BYTES:
             raise ValueError("invalid output size")
@@ -85,13 +87,15 @@ def validate(raw: str, evidence: Evidence, baseline: TonkatsuBaseline | JeyukBas
             candidate = {"temperature_c": str(temperature), "rpm": str(rpm), "duration_seconds": duration,
                          "load_kg": str(load), "vegetable_interval_seconds": vegetable,
                          "sauce_interval_seconds": sauce}
+        elif isinstance(baseline, CombiBaseline):
+            result, candidate = combi_proposal(value, evidence, baseline)
         else:
             raise ValueError("unknown authoritative baseline")
     except (ValueError, TypeError, RecursionError, UnicodeError, OverflowError):
         return {"status": "FAILED", "error_code": "STRUCTURED_OUTPUT_INVALID", "data": {},
-                "schema_version": SCHEMA_VERSION, "fallback_used": False}
+                "schema_version": schema_version, "fallback_used": False}
     if result.status != "WITHIN_ENCODED_LIMITS":
         return {"status": result.status, "error_code": "LIMIT_CHECK_FAILED", "data": {},
-                "reasons": list(result.reasons), "schema_version": SCHEMA_VERSION, "fallback_used": False}
+                "reasons": list(result.reasons), "schema_version": schema_version, "fallback_used": False}
     return {"status": "NEEDS_REVIEW", "error_code": None, "data": candidate,
-            "schema_version": SCHEMA_VERSION, "guard_version": result.rule_version, "fallback_used": False}
+            "schema_version": schema_version, "guard_version": result.rule_version, "fallback_used": False}

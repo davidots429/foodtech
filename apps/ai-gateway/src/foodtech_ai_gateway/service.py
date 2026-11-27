@@ -7,6 +7,7 @@ from decimal import Decimal
 import json
 from botocore.exceptions import BotoCoreError, ClientError
 
+from foodtech_contracts.combi_recommendation import CombiBaseline
 from foodtech_contracts.recommendation_guard import Evidence
 from foodtech_contracts.recommendation_output import JeyukBaseline, TonkatsuBaseline
 
@@ -123,7 +124,7 @@ class GatewayService:
                                                baseline=baseline, context=context, ollama=ollama)
 
     async def execute_local_recipe(self, caller: Caller, execution_id: str, *,
-                                   evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline,
+                                   evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline | CombiBaseline,
                                    context: dict, ollama: OllamaClient) -> ExecutionOutcome:
         """Internal only: caller supplies verified, tenant-scoped server records.
 
@@ -139,6 +140,11 @@ class GatewayService:
         if execution.feature != Feature.RECIPE_CORRECTION or not model or not model.local or \
                 model.provider != "ollama" or execution.estimated_cost_usd != 0:
             return ExecutionOutcome(execution_id, "DENIED", error_code="LOCAL_RECIPE_REQUIRED")
+        if isinstance(baseline, CombiBaseline):
+            # The registered source handoff currently proves Jeyuk records only.
+            # Numeric proposal validation must not substitute for combi ownership,
+            # completeness, transition and current/prior history settlement guards.
+            return ExecutionOutcome(execution_id, "DENIED", error_code="COMBI_SOURCE_SCOPE_UNAVAILABLE")
         if isinstance(baseline, JeyukBaseline) and self.recipe_source_guard is None:
             return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_GUARD_UNAVAILABLE")
         if isinstance(baseline, JeyukBaseline):

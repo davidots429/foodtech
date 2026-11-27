@@ -660,5 +660,22 @@ class RegistryTests(unittest.TestCase):
         self.assertIn(marker, self.resource.table.items)
 
 
+    def test_combi_generation_cannot_activate_without_authenticated_source_handoff(self):
+        import copy
+        from unittest.mock import AsyncMock
+        from test_combi_recommendation import baseline
+        self.recipe_execution()
+        self.registry.create_execution(Execution("recipe-combi", "tenant-a", Feature.RECIPE_CORRECTION,
+                                                  "synthetic-tier1", None, "SYNTHETIC", Decimal("0")))
+        before = copy.deepcopy(self.resource.table.items)
+        model = AsyncMock()
+        for menu in ('RICE', 'MACKEREL'):
+            result = asyncio.run(self.service.execute_local_recipe(Caller('business-api','tenant-a'), 'recipe-combi',
+                evidence=Evidence('COMPLETE','PASSED',True,False), baseline=baseline(menu), context={}, ollama=model))
+            self.assertEqual((result.state,result.error_code),('DENIED','COMBI_SOURCE_SCOPE_UNAVAILABLE'))
+            self.assertEqual(self.resource.table.items,before)
+        model.structured_chat.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
