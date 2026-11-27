@@ -38,8 +38,8 @@ class MealCoordinatorTests(unittest.TestCase):
         with patch('foodtech_business_api.meal_deletion_coordinator.clean_one_meal_listing',
                    return_value={'state': 'VERIFYING', 'removed': False}):
             phases = [self.coordinator.step(**self.scope)['phase'] for _ in range(7)]
+            self.assertEqual(self.coordinator.step(**self.scope), {'phase': 'VERIFYING'})
         self.assertEqual(phases, ['RECORDS', 'RESIDUAL', 'META', 'LISTINGS', 'FINAL', 'SOURCES', 'VERIFYING'])
-        self.assertEqual(self.coordinator.step(**self.scope), {'phase': 'VERIFYING'})
 
     def test_residual_and_source_ownership_block_forward_progress(self):
         self.residual.observe_page.return_value = {'scan_complete': False, 'residual_found': True}
@@ -52,7 +52,23 @@ class MealCoordinatorTests(unittest.TestCase):
         with patch('foodtech_business_api.meal_deletion_coordinator.clean_one_meal_listing',
                    return_value={'state': 'VERIFYING', 'removed': False}):
             for _ in range(4): self.coordinator.step(**self.scope)
-        self.assertEqual(self.coordinator.step(**self.scope), {'phase': 'SOURCES', 'source_ownership_required': True})
+            self.assertEqual(self.coordinator.step(**self.scope), {'phase': 'SOURCES', 'source_ownership_required': True})
+
+    def test_resumed_final_source_or_verifying_checkpoint_rechecks_listing_residuals(self):
+        for phase in ('FINAL', 'SOURCES', 'VERIFYING'):
+            with self.subTest(phase=phase):
+                self.store.items[(self.subject, self.request, 'MEAL_COORDINATOR')] = {
+                    'version': 1, 'state': 'VERIFYING' if phase == 'VERIFYING' else 'IN_PROGRESS',
+                    'checkpoint': json.dumps({'schema': 1, 'phase': phase, 'index': 1, 'total': 1}).encode('ascii')}
+                self.sources.inspect_batch.reset_mock(); self.final.observe_page.reset_mock()
+                with patch('foodtech_business_api.meal_deletion_coordinator.clean_one_meal_listing',
+                           return_value={'state': 'IN_PROGRESS', 'removed': True}) as clean:
+                    self.assertEqual(self.coordinator.step(**self.scope), {'phase': 'LISTINGS'})
+                    clean.assert_called_once()
+                self.sources.inspect_batch.assert_not_called(); self.final.observe_page.assert_not_called()
+                saved = self.store.items[(self.subject, self.request, 'MEAL_COORDINATOR')]
+                self.assertEqual(saved['state'], 'IN_PROGRESS')
+                self.assertEqual(json.loads(saved['checkpoint'])['phase'], 'LISTINGS')
 
     def test_final_check_domain_must_be_distinct(self):
         with self.assertRaises(ValueError):
