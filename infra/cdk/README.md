@@ -386,3 +386,11 @@ when moving to scheduling, review and pin the intended revision explicitly.
 생성한 역할은 같은 프로젝트·리전의 ECS Task만 신뢰하고 Gateway와 분리합니다. 읽기 역할과 정책이 브로커 역할보다 먼저 생성되지 않도록 의존성을 둡니다. 기존 원천 읽기 역할의 범위와 호출별 정확한 키의 session policy, Gateway의 AssumeRole 거부·TagSession 금지는 유지합니다. 새 역할에 직접 원천 조회·쓰기·KMS·Cognito·이미지·로그 권한을 추가하지 않습니다.
 
 이 옵션은 브로커의 실행 신원을 준비합니다. 고객 인증/세션·일반 업무 API 저장 권한·이력 정책·작성자 잠금·Task 정의·실제 로그인과 권고 종단간 연결은 별도 검토 대상입니다. 이 역할만으로 업무 API 전체를 배포할 수 있다고 간주하지 않습니다. 기존/생성 모드 전환은 역할의 소유권과 삭제 영향을 확인한 뒤 변경 세트로 검토하며, 같은 이름의 외부 역할을 자동으로 인수하지 않습니다. 실제 적용은 명시적 배포 승인을 거칩니다.
+
+### Combi 원본 읽기 위임 권한 후보
+
+`provisionCombiRecipeReadAccess=true`는 개발용 `FoodtechCombiRecipeReadAccess-dev` 정의만 opt-in 한다. 기존 broker/Gateway ARN은 서로 다른 같은 계정의 경로 없는 역할로 별도 전달한다. 새 source read 역할과 하나의 관리형 정책을 만들고, 같은 정책을 양의 읽기 허용과 permissions boundary로 사용한다. 기존 broker에는 별도 AssumeRole·보호된 이력 조회 정책, Gateway에는 실패 반환 NONE인 조건 검사 정책을 추가하는 후보이다. IAM 자원은 RETAIN이다.
+
+Autopilot의 원본/발급기·이력/조건 기준을 `combi-read-baseline.json`으로 분리하고 액션을 좁힌다. 원본 역할은 조리 표의 Combi UUID 배치/원본 파티션만 읽으며 auth·전체 목록·LIVE·전역 Jeyuk·다른 표·write·KMS/복제 권한은 없다. 역할의 기본 사용자 범위는 개별 고객 위임이 아니며 발급기는 매번 네 개의 정확한 키로 세션 정책을 전달해야 한다. broker의 이력 조회와 Gateway의 ConditionCheck는 source client로 합치지 않는다.
+
+로컬 타입/합성·cfn-lint·정의/7개 안전조건 훼손 검사를 제공한다. Guard의 고정 역할명 지적은 검토 대상으로 남기며, 이 문서는 해당 예외를 승인하거나 실제 계정 정책을 증명하지 않는다. 기본 app 실행은 이 스택을 생성하지 않는다. 실제 적용 전 원격 동결·서비스/정책 검사·기존 역할의 모든 정책/신뢰/경계와 교집합을 검토하고 명시적 승인을 받는다. Task·네트워크·예약·보호된 coverage 발급·고객 실행/모델 호출은 활성화하지 않는다.
