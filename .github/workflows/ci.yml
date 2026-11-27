@@ -134,6 +134,7 @@ jobs:
       - name: Check manual meal refresh registration
         working-directory: infra/cdk
         run: |
+          python3 ../../tests/config/check_meal_refresh_targets.py
           for mode in create existing; do
             CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshRuntime-dev --strict --no-lookups -c provisionMealRefreshRuntime=true -c principalProvisioningEnabled=true -c mealRefreshLogGroupMode="$mode" --output "/tmp/foodtech-meal-manual-$mode" > /dev/null
             python3 ../../tests/config/check_meal_refresh_runtime.py "/tmp/foodtech-meal-manual-$mode/FoodtechMealRefreshRuntime-dev.template.json" "$mode"
@@ -404,3 +405,6 @@ jobs:
       - name: Verify installed source grant target isolation without network
         if: matrix.workload == 'maintenance'
         run: docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test - < tests/config/source_grant_target_image_probe.py
+      - name: Verify installed meal refresh target dispatch without network
+        if: matrix.workload == 'maintenance'
+        run: docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test - < tests/config/meal_refresh_target_image_probe.py
