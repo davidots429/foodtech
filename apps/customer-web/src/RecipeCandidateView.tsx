@@ -1,15 +1,16 @@
+import { CandidateCookingJob } from "./CandidateCookingJob";
 import { useState } from "react";
 import { api } from "./cookingApi";
 import { parseRecipeCandidate } from "./recipeCandidate";
 import type { RecipeReview } from "./recipeReview";
 
-export function RecipeCandidateView({ review }: { review: RecipeReview }) {
+export function RecipeCandidateView({ review, csrf, onCreated }: { review: RecipeReview; csrf: string; onCreated?: (jobId: string) => void }) {
   const [view, setView] = useState<ReturnType<typeof parseRecipeCandidate> | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function load() {
     if (busy) return;
-    setBusy(true); setError(""); setView(null);
+    setBusy(true); setError("");
     try {
       const raw = await api<unknown>(`/api/customer/ai/recipe-candidates/${review.version}?job_id=${encodeURIComponent(review.job_id)}`);
       setView(parseRecipeCandidate(raw, review));
@@ -24,6 +25,8 @@ export function RecipeCandidateView({ review }: { review: RecipeReview }) {
         <div><dt>기준 레시피 버전</dt><dd>{view.candidate.base_recipe_version}</dd></div>
         <div><dt>장비 프로파일</dt><dd>{view.candidate.equipment_profile}</dd></div></dl>
       <p>합성 권고의 미적용 후보입니다. 기존 레시피와 조리·안전 상태를 변경하지 않습니다.</p>
+      <CandidateCookingJob key={view.candidate.candidate_id} candidate={view.candidate} review={review} csrf={csrf} onCreated={onCreated}
+        eligible={!busy && !error && view.current_job_version === review.job_version && view.current_review_version === review.version} />
       {view.current_job_version !== review.job_version && <p>후보 저장 이후 조리 기록이 변경되었습니다.</p>}
       {view.current_review_version !== review.version && <p>이 승인 이후 다른 검토가 기록되었습니다. 검토 이력을 확인해 주세요.</p>}
     </>}

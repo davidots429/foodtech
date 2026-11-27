@@ -116,7 +116,7 @@ const recipeStateLabels: Record<RecipeStatus["state"], string> = {
   PENDING: "실행 대기", RESERVED: "처리 중", SUCCEEDED: "처리 완료", FAILED: "실패",
 };
 
-export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jobId: string; csrf: string; comparisonId?: string; menu: string }) {
+export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCreated }: { jobId: string; csrf: string; comparisonId?: string; menu: string; onCreated?: (jobId: string) => void }) {
   const [value, setValue] = useState<Evidence | null>(null);
   const [priorJobId, setPriorJobId] = useState("");
   const [priorCandidate, setPriorCandidate] = useState<PriorCandidate | null>(null);
@@ -420,7 +420,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
           <p className="small">생성 당시 기록에 따른 제안입니다. 현재 공정의 안전 승인이나 장비 자동 적용이 아닙니다.</p>
           <RecipeProposalReview key={`${currentResult.execution_id}:${currentResult.job_version}:${JSON.stringify(currentResult.proposal)}`}
             jobId={jobId} executionId={currentResult.execution_id} jobVersion={currentResult.job_version}
-            proposal={currentResult.proposal} csrf={csrf} />
+            proposal={currentResult.proposal} csrf={csrf} onCreated={onCreated} />
         </>}
         {currentResult.projection_status === "NOT_READY" && <p>저장된 결과가 아직 없습니다. 같은 실행 ID로 상태를 확인해 주세요.</p>}
         {currentResult.projection_status === "FAILED" && <p>권고 생성이 실패했습니다. 새 호출을 자동으로 시도하지 않습니다.</p>}

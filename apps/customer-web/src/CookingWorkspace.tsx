@@ -889,9 +889,15 @@ export function CookingWorkspace({ csrf }: Props) {
                 refreshDisabled={busy || loadingJob}
                 onRefresh={() => { void refresh(job.job_id).catch(() => setError("최신 작업을 불러오지 못했습니다.")); }} />}
             <p className="small">작업 ID: <code>{job.job_id}</code> · 이 주소를 저장하면 다시 불러올 수 있습니다.</p>
+            {job.recipe_candidate_selection && <div className="binding-box">
+              <h5>이 작업에 연결한 권고 후보</h5>
+              <p>후보 버전: <code>{job.recipe_candidate_selection.candidate.candidate_id}</code></p>
+              <p>원본 작업: <code>{job.recipe_candidate_selection.source_job_id}</code> · 승인 버전 {job.recipe_candidate_selection.review_version}</p>
+              <p>권고 조건은 계획 참조입니다. 장비 설정·공정 판정 기준을 자동 변경하지 않으며 이 작업의 안전·평가는 별도로 확인합니다.</p>
+            </div>}
             <LocalChat key={job.job_id} csrf={csrf} jobId={job.job_id} />
             <RecommendationEvidence key={`${job.job_id}-${job.version}-${comparisonFreshness === "CURRENT" ? comparison?.comparison_id ?? "" : ""}`}
-              jobId={job.job_id} csrf={csrf} menu={job.menu} comparisonId={comparisonFreshness === "CURRENT" ? comparison?.comparison_id : undefined} />
+              jobId={job.job_id} csrf={csrf} menu={job.menu} onCreated={id => { void refresh(id).catch(() => setError("생성된 작업을 불러오지 못했습니다. 작업 ID로 다시 조회해 주세요.")); }} comparisonId={comparisonFreshness === "CURRENT" ? comparison?.comparison_id : undefined} />
             {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuBatch key={job.job_id} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}
             {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuInitialContext
               key={`${job.job_id}-${job.tonkatsu_batch_version ?? 0}`} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}

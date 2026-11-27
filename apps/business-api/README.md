@@ -636,3 +636,23 @@ current job/review versions so later changes remain visible. Older approvals wit
 no candidate return 404; reads and retries never backfill them. The candidate uses
 the existing job partition and deletion inventory. This does not select a candidate
 for a new cooking job, approve food safety or certify recipe improvement.
+
+
+`POST /api/customer/ai/recipe-candidates/{review_version}/cooking-jobs?job_id=...`
+explicitly links a candidate to a new synthetic job. The client supplies a UUIDv4
+request ID and new portion/thickness/load inputs; that UUID is the new job ID.
+The server reuses the normal new-job validator and atomically joins the account
+epoch/lock, source job, current approved review, immutable review/candidate, new
+META/listing and history revision. A request hash normalizes decimal inputs and
+uses RFC 8785/SHA-256 to reject reuse with different inputs. Same-ID retries
+recover the existing job without a second listing or history increment.
+
+The new job is PENDING with safety NOT_MEASURED, no validation context/source
+binding, and evaluation blocked. Candidate values are linked as a planning
+reference; process thresholds and equipment settings are not automatically
+changed. This is separate from a recook and does not certify applicability to a
+new batch. The UI requires confirmation, blocks duplicate submissions and uses
+an owned-job GET to reconcile an uncertain response without automatically
+resubmitting. New lineage stays in the existing owner/job deletion inventory.
+Actual runtime-role/AWS storage and complete deletion/restore verification remain
+separate from the local tests.
