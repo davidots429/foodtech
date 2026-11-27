@@ -1,5 +1,13 @@
 # Business API 인증과 첫 조리 업무 흐름
 
+## 식사배치 재집계 실행 경계
+
+`combi_refresh_worker`의 실행 명령은 `meal_refresh_runtime`을 사용한다. 표 이름만 설정한 기존 실행 방식은 더 이상 허용하지 않는다. `FOODTECH_MEAL_REFRESH_ENABLED=true`, Fargate의 `container-role` 자격증명, `FOODTECH_MEAL_REFRESH_TASK_ROLE_ARN=arn:aws:iam::<account>:role/foodtech-meal-refresh-task-<stage>`와 실제 STS 역할 일치를 요구한다. 인증·조리 표는 같은 stage여야 하며 초기화 모드 `FOODTECH_PRINCIPAL_PROVISIONING_ENABLED`도 true/false로 명시한다. ACTIVE 표의 ARN·문자열 키와 ACTIVE/백필 중이 아닌 `MealAggregatePending` 인덱스의 shard/pk 키·KEYS_ONLY projection을 확인한 뒤 조회를 시작한다. 이는 기존 writer 정지나 백필 완료를 증명하는 검사가 아니다.
+
+검증한 세션의 고정 regional endpoint·짧은 timeout/retry 설정으로 만든 DynamoDB resource/client를 실제 조리 저장소에도 주입한다. 별도 기본 프로파일로 다시 클라이언트를 만들지 않는다. 기본 한도는 페이지 25건, shard당 100페이지, 실행 600초이며 각각 1~100건·1~10,000페이지·10~600초로 제한한다. 알람은 자격증명 초기화와 전체 순회를 포함하고 처리 중 시간 초과를 실패로 전달한다. 종료 시 이미 진행 중인 SDK/스레드 정리를 위한 시간이 추가될 수 있어 외부 관찰·중지 한도도 별도로 적용해야 한다. 페이지 한도·오류는 성공으로 보고하지 않고 출력에는 건수만 포함한다. GSI의 최종 일관성과 재시도 동작은 기존 계약을 유지한다.
+
+비활성 예약 후보는 전용 작업 역할·실행 한도·초기화 모드를 전달하며 컨테이너의 capability를 제거한다. 이 코드 변경은 역할·인덱스·네트워크·예약을 실제로 배포하거나 활성화하지 않는다. 일반 작성자 권한/중지·대기 항목 백필·동일 모드 전환·실제 역할의 허용/거부·삭제/복원 경계·관찰/알림 시험 후 명시적으로 배포한다. 이슈 #237의 전체 완료로 취급하지 않는다.
+
 `FoodtechSourceGrantRuntime-dev`는 기존 `source_grant_deletion_worker`를 위한 수동 Fargate Task 정의다. `provisionSourceGrantRuntime=true`, `principalProvisioningEnabled=true`, `sourceGrantTargetSubject`와 검토한 유지보수 이미지의 정확한 digest URI를 `sourceGrantImageUri`에 명시해야 합성할 수 있다. 배포 매개변수 `ImageUri`도 그 URI 하나만 허용하며, 별도 catalog 정리 역할과 ECR/로그 실행 역할을 지정한다. 이 스택의 자원은 Task 정의와 선택적인 7일 보존 로그 그룹이다.
 
 수동 Task는 `TargetSubject`를 합성 시 검토한 대상 하나로 제한하며 작업자는 Scan 필터와 반환 행을 모두 검사한다. 대상 식별자는 로그에 남기지 않는다. 새 대상 기능을 포함해 검증·게시한 이미지 digest가 필요하며 기존 이미지는 해당 환경변수를 무시할 수 있으므로 재사용하지 않는다. 직접 CLI에서 대상 설정을 생략한 기존 전체 순회 기능은 유지하지만 이 수동 Task 계약은 단일 대상만 허용한다.
@@ -478,7 +486,7 @@ Capsule 사용자 키 META에는 tenant 범위의 목적·기간·HMAC 키 버�
 
 새 배치 변경은 대기 항목에 16개 샤드 중 하나를 기록한다. CDK는 대기 항목만 표시되는 `MealAggregatePending` sparse GSI를 정의하며 `process_pending_page`는 샤드별 페이지를 조회해 각 항목을 처리하고 실패 수와 다음 커서를 반환한다. GSI는 결과 반영이 지연될 수 있으므로 호출자는 전 샤드의 모든 페이지를 반복 순회해야 하며, 실패한 항목은 남아 다음 순회에서 다시 시도된다. 인덱스 생성 이전에 저장된 대기 항목은 샤드 속성이 없어 발견되지 않으므로 배포 전 별도의 안전한 백필과 검증이 필요하다. 이 코드는 인덱스 배포나 주기 실행을 설정하지 않는다.
 
-`python -m foodtech_business_api.combi_refresh_worker`는 `FOODTECH_COOKING_TABLE`과 `FOODTECH_AUTH_TABLE`이 명시된 경우 16개 샤드의 모든 페이지를 한 차례 순회한다. 각 실패는 합계에 포함하고 대기 항목을 남기며 실패가 하나라도 있으면 비정상 종료한다. 반복 커서와 샤드당 페이지 한도 초과도 실패다. 정기 실행·경보·실행 역할 연결은 별도다. `combi_refresh_backfill.backfill_pending_page`는 이전 대기 항목을 페이지 단위로 스캔하고 같은 버전·대기 상태·샤드 속성 부재를 조건으로 인덱스 속성만 추가한다. 누락 없이 전환하려면 이전 버전의 모든 작성자를 중단한 뒤 전체 페이지를 반복 확인하고, 스캔 비용과 실행 권한을 검토해야 한다. 실행 명령이나 자동 배포에는 연결하지 않았다.
+`python -m foodtech_business_api.combi_refresh_worker`는 위의 식사배치 재집계 실행 경계를 통과한 Fargate 작업에서 16개 샤드를 한 차례 순회한다. 표 이름만 설정한 실행은 거부하며 전용 역할·동일 stage·인덱스 및 시간/페이지 한도를 요구한다. 각 실패는 합계에 포함하고 대기 항목을 남기며 실패가 하나라도 있으면 비정상 종료한다. 반복 커서와 샤드당 페이지 한도 초과도 실패다. 실제 정기 실행·경보·역할 배포는 별도다. `combi_refresh_backfill.backfill_pending_page`는 이전 대기 항목을 페이지 단위로 스캔하고 같은 버전·대기 상태·샤드 속성 부재를 조건으로 인덱스 속성만 추가한다. 누락 없이 전환하려면 이전 버전의 모든 작성자를 중단한 뒤 전체 페이지를 반복 확인하고, 스캔 비용과 실행 권한을 검토해야 한다. 백필은 실행 명령이나 자동 배포에 연결하지 않았다.
 
 개발 DynamoDB의 단일 합성 대기 항목으로 오래된 버전의 백필 거부, 현재 버전 백필과 시험 항목 정리를 확인했다. 실제 테이블의 전체 스캔이나 백필은 수행하지 않았다.
 

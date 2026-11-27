@@ -811,12 +811,18 @@ class MemoryCookingStore:
 
 
 class DynamoCookingStore:
-    def __init__(self, table_name: str, auth_table_name: str | None = None) -> None:
+    def __init__(self, table_name: str, auth_table_name: str | None = None, *,
+                 dynamodb_resource=None, dynamodb_client=None) -> None:
         import boto3
 
-        session = boto3.Session(region_name="ap-southeast-2")
-        self.table = session.resource("dynamodb").Table(table_name)
-        self.client = session.client("dynamodb")
+        if (dynamodb_resource is None) != (dynamodb_client is None):
+            raise ValueError('both verified DynamoDB dependencies are required')
+        if dynamodb_resource is None:
+            session = boto3.Session(region_name="ap-southeast-2")
+            dynamodb_resource = session.resource("dynamodb")
+            dynamodb_client = session.client("dynamodb")
+        self.table = dynamodb_resource.Table(table_name)
+        self.client = dynamodb_client
         self.serializer = TypeSerializer()
         self.auth_table_name = auth_table_name or os.getenv("FOODTECH_AUTH_TABLE", "")
         self.require_principal = os.getenv('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED', 'false') == 'true'
