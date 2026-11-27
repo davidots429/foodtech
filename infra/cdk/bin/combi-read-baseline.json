@@ -1,0 +1,120 @@
+{
+  "source": {
+    "Policies": [
+      {
+        "Policy": {
+          "Id": "IamPolicyAutopilot",
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:Query",
+                "dynamodb:ReadDataForReplication"
+              ],
+              "Resource": [
+                "arn:aws:dynamodb:ap-southeast-2:573693340100:table/*"
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kms:Decrypt"
+              ],
+              "Resource": [
+                "arn:aws:kms:ap-southeast-2:573693340100:key/*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": [
+                    "dynamodb.ap-southeast-2.amazonaws.com"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "PolicyType": "Identity"
+      }
+    ]
+  },
+  "issuer_history": {
+    "Policies": [
+      {
+        "Policy": {
+          "Id": "IamPolicyAutopilot",
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:Query"
+              ],
+              "Resource": [
+                "arn:aws:dynamodb:ap-southeast-2:573693340100:table/*"
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "kms:Decrypt"
+              ],
+              "Resource": [
+                "arn:aws:kms:ap-southeast-2:573693340100:key/*"
+              ],
+              "Condition": {
+                "StringEquals": {
+                  "kms:ViaService": [
+                    "dynamodb.ap-southeast-2.amazonaws.com"
+                  ]
+                }
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "sts:AssumeRole",
+                "sts:SetContext",
+                "sts:SetSourceIdentity",
+                "sts:TagSession"
+              ],
+              "Resource": [
+                "arn:aws:iam::573693340100:role/*",
+                "arn:aws:sts::573693340100:self"
+              ]
+            }
+          ]
+        },
+        "PolicyType": "Identity"
+      }
+    ]
+  },
+  "conditions": {
+    "Policies": [
+      {
+        "Policy": {
+          "Id": "IamPolicyAutopilot",
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:ConditionCheckItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:PutItem",
+                "dynamodb:UpdateItem"
+              ],
+              "Resource": [
+                "arn:aws:dynamodb:ap-southeast-2:573693340100:table/*"
+              ]
+            }
+          ]
+        },
+        "PolicyType": "Identity"
+      }
+    ]
+  },
+  "generator": "iam-policy-autopilot 0.4.0; local static analysis; telemetry disabled; no upload/apply"
+}

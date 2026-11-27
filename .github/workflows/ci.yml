@@ -177,6 +177,11 @@ jobs:
           python3 ../../tests/config/check_recipe_source_access.py /tmp/foodtech-recipe-owned-broker-cdk/FoodtechRecipeSourceAccess-dev.template.json 123456789012 create
           if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRecipeSourceAccess-dev --strict --no-lookups -c provisionRecipeSourceAccess=true -c recipeBrokerRoleMode=unknown --output /tmp/foodtech-recipe-invalid-broker-cdk > /tmp/foodtech-recipe-invalid-broker.log 2>&1; then exit 1; fi
           python3 -c "from pathlib import Path; assert 'recipeBrokerRoleMode must be existing or create' in Path('/tmp/foodtech-recipe-invalid-broker.log').read_text()"
+      - name: Check isolated combi source read access
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCombiRecipeReadAccess-dev --strict --no-lookups -c provisionCombiRecipeReadAccess=true --output /tmp/foodtech-combi-read-access-cdk > /dev/null
+          python3 ../../tests/config/check_combi_read_access.py /tmp/foodtech-combi-read-access-cdk/FoodtechCombiRecipeReadAccess-dev.template.json 123456789012
       - name: Check incremental recipe history access
         working-directory: infra/cdk
         run: |

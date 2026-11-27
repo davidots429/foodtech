@@ -22,6 +22,7 @@ import { StandardizationRuntimeStack, StandardizationExecutionAccessStack } from
 import { SourceGrantDeletionAccessStack } from "./source-grant-deletion-access.js";
 import { RecipeSourceAccessStack, RecipeSourceCatalogStack } from "./recipe-source-access.js";
 import { RecipeHistoryAccessStack } from "./recipe-history-access.js";
+import { CombiRecipeReadAccessStack } from "./combi-read-access.js";
 import { SourceGrantRuntimeStack } from "./source-grant-runtime.js";
 import { CollectionPublishingStack } from "./collection-publishing.js";
 
@@ -92,6 +93,12 @@ if (app.node.tryGetContext("provisionSourceGrantDeletionAccess") === "true") {
 
 if (app.node.tryGetContext("provisionRecipeHistoryAccess") === "true") {
   const access = new RecipeHistoryAccessStack(app, `FoodtechRecipeHistoryAccess-${stage}`, { env }, stage);
+  Tags.of(access).add("Project", "foodtech");
+  Tags.of(access).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionCombiRecipeReadAccess") === "true") {
+  const access = new CombiRecipeReadAccessStack(app, `FoodtechCombiRecipeReadAccess-${stage}`, { env }, stage);
   Tags.of(access).add("Project", "foodtech");
   Tags.of(access).add("Environment", stage);
 }
