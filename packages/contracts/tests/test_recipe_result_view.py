@@ -5,12 +5,23 @@ from types import SimpleNamespace
 import unittest
 from uuid import uuid4
 
-from foodtech_contracts.recipe_result_view import recipe_execution_result_payload, validate_recipe_result_payload
+from foodtech_contracts.recipe_result_view import recipe_execution_result_payload, recipe_proposal_digest, validate_recipe_result_payload
 from foodtech_contracts.recommendation_output import SCHEMA_VERSION
 from foodtech_contracts.recommendation_guard import RULE_VERSION
 
 
 class RecipeResultViewTests(unittest.TestCase):
+    def test_review_digest_is_order_independent_and_changes_with_exact_proposal(self):
+        proposal = self.view()['proposal']
+        reordered = dict(reversed(list(proposal.items())))
+        reordered['data'] = dict(reversed(list(proposal['data'].items())))
+        self.assertEqual(recipe_proposal_digest(proposal), recipe_proposal_digest(reordered))
+        changed = copy.deepcopy(proposal)
+        changed['data']['temperature_c'] = '201'
+        self.assertNotEqual(recipe_proposal_digest(proposal), recipe_proposal_digest(changed))
+        with self.assertRaises(ValueError):
+            recipe_proposal_digest({**proposal, 'credential': 'private-marker'})
+
     def setUp(self):
         self.execution_id,self.job_id=str(uuid4()),str(uuid4())
         self.snapshot=SimpleNamespace(execution=SimpleNamespace(execution_id=self.execution_id,tenant_id='owner',

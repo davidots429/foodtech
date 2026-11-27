@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { api, ApiError, jobPath, postWithoutBody } from "./cookingApi";
 import { canInvokeRecipe, parseRecipeResult, parseRecipeStatus } from "./recipeResult";
 import type { RecipeResult, RecipeStatus } from "./recipeResult";
+import { RecipeProposalReview } from "./RecipeProposalReview";
 
 type FeedTiming = { status: "RECORDED"; vegetable_start_offset_us: number; sauce_start_offset_us: number;
   start_separation_us: number; simultaneous: boolean } | { status: "NOT_RECORDED" | "INCONSISTENT" };
@@ -417,6 +418,9 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu }: { jo
             .filter(([field]) => field in currentResult.proposal!.data).map(([field, label, unit]) =>
               <div key={field}><dt>{label}</dt><dd>{currentResult.proposal!.data[field]} {unit}</dd></div>)}</dl>
           <p className="small">생성 당시 기록에 따른 제안입니다. 현재 공정의 안전 승인이나 장비 자동 적용이 아닙니다.</p>
+          <RecipeProposalReview key={`${currentResult.execution_id}:${currentResult.job_version}:${JSON.stringify(currentResult.proposal)}`}
+            jobId={jobId} executionId={currentResult.execution_id} jobVersion={currentResult.job_version}
+            proposal={currentResult.proposal} csrf={csrf} />
         </>}
         {currentResult.projection_status === "NOT_READY" && <p>저장된 결과가 아직 없습니다. 같은 실행 ID로 상태를 확인해 주세요.</p>}
         {currentResult.projection_status === "FAILED" && <p>권고 생성이 실패했습니다. 새 호출을 자동으로 시도하지 않습니다.</p>}

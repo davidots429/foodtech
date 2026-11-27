@@ -8,13 +8,13 @@ from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from .auth import _csrf, _session
 from foodtech_contracts.recipe_execution_scope import validate_recipe_status_payload
-from foodtech_contracts.recipe_result_view import validate_recipe_result_payload
+from foodtech_contracts.recipe_result_view import recipe_proposal_digest, validate_recipe_result_payload
 
 
 router = APIRouter(prefix="/api/customer/ai", tags=["ai"])
@@ -179,6 +179,11 @@ async def recipe_execution_result(request: Request, execution_id: UUID, job_id: 
 
 
 async def _read_recipe_record(request: Request, execution_id: UUID, job_id: UUID, *, result_view: bool):
+    payload, *_ = await _recipe_record_data(request, execution_id, job_id, result_view=result_view)
+    return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
+
+
+async def _recipe_record_data(request: Request, execution_id: UUID, job_id: UUID, *, result_view: bool):
     from .cooking import _read
     before, _, _, _, _ = await _read(request, str(job_id))
     url, ca, cert, key = _gateway_settings()
@@ -196,7 +201,7 @@ async def _read_recipe_record(request: Request, execution_id: UUID, job_id: UUID
             payload = validate(result.json(), execution_id=str(execution_id), job_id=str(job_id))
     except (httpx.HTTPError, ValueError, OSError):
         raise HTTPException(502, '권고 실행 상태를 읽지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
-    after, _, _, job, _ = await _read(request, str(job_id))
+    after, store, pk, job, _ = await _read(request, str(job_id))
     if (before.subject, getattr(before, 'epoch', None), before.csrf) != \
             (after.subject, getattr(after, 'epoch', None), after.csrf):
         raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.', headers={'Cache-Control': 'no-store'})
@@ -206,8 +211,99 @@ async def _read_recipe_record(request: Request, execution_id: UUID, job_id: UUID
     manual_enabled = job.get('menu') == 'JEYUK' and all(os.getenv(name) == 'true' for name in (
         'FOODTECH_RECIPE_INVOCATION_ENABLED', 'FOODTECH_PRINCIPAL_PROVISIONING_ENABLED',
         'FOODTECH_RECIPE_SOURCE_BROKER_ENABLED'))
-    return JSONResponse({**payload, 'job_changed': payload['job_version'] != job['version'],
-                         'manual_invocation_enabled': manual_enabled},
+    return ({**payload, 'job_changed': payload['job_version'] != job['version'],
+             'manual_invocation_enabled': manual_enabled}, after, store, pk, job)
+
+
+class RecipeReviewRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    job_id: UUID
+    expected_job_version: int = Field(strict=True, ge=1, le=10**18)
+    expected_review_version: int = Field(strict=True, ge=0, lt=2**63 - 2)
+    request_id: UUID
+    proposal_digest: str = Field(pattern=r'^[0-9a-f]{64}$')
+    decision: Literal['APPROVE', 'REJECT']
+    reason: str = Field(min_length=1, max_length=1000)
+    acknowledged: StrictBool
+
+    @model_validator(mode='after')
+    def explicit_review(self):
+        if not self.acknowledged or not self.reason.strip() or self.reason != self.reason.strip():
+            raise ValueError('explicit review acknowledgement and trimmed reason required')
+        return self
+
+
+async def _review_session(request, job_id, before):
+    from .cooking import _read
+    after, _, _, job, _ = await _read(request, str(job_id))
+    if (before.subject, before.epoch, before.csrf) != (after.subject, after.epoch, after.csrf):
+        raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.', headers={'Cache-Control': 'no-store'})
+    return job
+
+
+@router.get('/recipe-executions/{execution_id}/review')
+async def recipe_review_context(request: Request, execution_id: UUID, job_id: UUID):
+    from .cooking import _store_call
+    from .recipe_review_store import RecipeReviewStore
+    payload, session, store, pk, _ = await _recipe_record_data(request, execution_id, job_id, result_view=True)
+    if payload['projection_status'] != 'AVAILABLE':
+        raise HTTPException(409, '검토할 저장 권고가 없습니다.', headers={'Cache-Control': 'no-store'})
+    try:
+        reviews = RecipeReviewStore(store)
+        current = await _store_call(store, reviews.current, pk)
+    except ValueError:
+        raise HTTPException(503, '검토 기록을 확인하지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
+    job = await _review_session(request, job_id, session)
+    digest = recipe_proposal_digest(payload['proposal'])
+    return JSONResponse({'execution_id': str(execution_id), 'job_id': str(job_id),
+        'job_version': payload['job_version'], 'proposal_digest': digest, 'review_version': current['version'],
+        'proposal': payload['proposal'],
+        'can_review': payload['job_version'] == job['version'],
+        'latest_review': current['review']}, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/recipe-executions/{execution_id}/review', status_code=201)
+async def recipe_review(request: Request, execution_id: UUID, body: RecipeReviewRequest):
+    from .cooking import _now, _read, _store_call
+    from .cooking_store import Conflict
+    from .recipe_review_store import RecipeReviewStore
+    before, _, _, _, _ = await _read(request, str(body.job_id), write=True)
+    payload, session, store, pk, job = await _recipe_record_data(request, execution_id, body.job_id, result_view=True)
+    if (before.subject, before.epoch, before.csrf) != (session.subject, session.epoch, session.csrf):
+        raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.', headers={'Cache-Control': 'no-store'})
+    if payload['projection_status'] != 'AVAILABLE' or payload['job_version'] != body.expected_job_version or \
+            job['version'] != body.expected_job_version or recipe_proposal_digest(payload['proposal']) != body.proposal_digest:
+        raise HTTPException(409, '권고 또는 작업이 변경되었습니다. 다시 조회해 주세요.', headers={'Cache-Control': 'no-store'})
+    value = {'schema_version': 'recipe-review-v1', 'version': body.expected_review_version + 1,
+        'request_id': str(body.request_id), 'execution_id': str(execution_id), 'job_id': str(body.job_id),
+        'job_version': body.expected_job_version, 'proposal_digest': body.proposal_digest,
+        'proposal': payload['proposal'], 'decision': body.decision, 'reason': body.reason, 'reviewed_at': _now()}
+    try:
+        reviews = RecipeReviewStore(store)
+        saved = await _store_call(store, reviews.save, pk, body.expected_job_version,
+                                  body.expected_review_version, value, session.epoch)
+    except Conflict:
+        raise HTTPException(409, '검토 또는 작업 상태가 변경되었습니다. 검토 이력을 확인해 주세요.', headers={'Cache-Control': 'no-store'}) from None
+    except ValueError:
+        raise HTTPException(503, '검토 기록을 저장하지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
+    current_job = await _review_session(request, body.job_id, session)
+    return JSONResponse({'review': saved, 'job_changed': current_job['version'] != saved['job_version']},
+                        status_code=201, headers={'Cache-Control': 'no-store'})
+
+
+@router.get('/recipe-reviews')
+async def recipe_review_history(request: Request, job_id: UUID, limit: int = Query(20, ge=1, le=50),
+                                cursor: int | None = Query(None, ge=1, lt=2**63 - 1)):
+    from .cooking import _read, _store_call
+    from .recipe_review_store import RecipeReviewStore
+    session, store, pk, job, _ = await _read(request, str(job_id))
+    try:
+        reviews = RecipeReviewStore(store)
+        page = await _store_call(store, reviews.history, pk, limit, cursor)
+    except ValueError:
+        raise HTTPException(503, '검토 이력을 확인하지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
+    current_job = await _review_session(request, job_id, session)
+    return JSONResponse({**page, 'job_id': str(job_id), 'current_job_version': current_job['version']},
                         headers={'Cache-Control': 'no-store'})
 
 
