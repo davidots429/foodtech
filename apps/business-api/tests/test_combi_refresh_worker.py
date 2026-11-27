@@ -1,6 +1,7 @@
 import unittest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
 from uuid import UUID
 
 from foodtech_business_api.combi_refresh_worker import process_pending_marker, process_pending_page, RefreshNotAuthorized
@@ -40,6 +41,19 @@ class CombiRefreshWorkerTests(unittest.TestCase):
                 with self.assertRaises(RefreshNotAuthorized):
                     process_pending_marker(self.store, self.auth, self.marker)
                 refresh.assert_not_awaited()
+
+    def test_strict_worker_rejects_missing_epoch_before_starting_refresh(self):
+        self.store = SimpleNamespace(require_principal=True)
+        self.auth.get_item.return_value = {'Item': {}}
+        with patch('foodtech_business_api.combi_refresh_worker.refresh_pending_for_subject',
+                   new_callable=AsyncMock) as refresh:
+            with self.assertRaises(RefreshNotAuthorized):
+                process_pending_marker(self.store, self.auth, self.marker)
+            refresh.assert_not_awaited()
+            for epoch in (0, Decimal('3')):
+                self.auth.get_item.return_value = {'Item': {'epoch': epoch}}
+                process_pending_marker(self.store, self.auth, self.marker)
+            self.assertEqual(refresh.await_count, 2)
 
     def test_refresh_failure_is_propagated_for_retry(self):
         self.auth.get_item.return_value = {'Item': {}}

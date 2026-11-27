@@ -31,10 +31,12 @@ def _scope(marker: dict) -> tuple[str, UUID]:
     return match.group(1), meal_id
 
 
-def _authorized_epoch(principal: dict | None) -> int:
+def _authorized_epoch(principal: dict | None, *, require_principal: bool = False) -> int:
     if not isinstance(principal, dict) or principal.get('suspended', False) is not False or \
             'deletion_lock_request' in principal:
         raise RefreshNotAuthorized('account cannot be processed')
+    if require_principal and 'epoch' not in principal:
+        raise RefreshNotAuthorized('account epoch is required')
     epoch = principal.get('epoch', 0)
     if isinstance(epoch, bool) or not isinstance(epoch, (int, Decimal)) or \
             (isinstance(epoch, Decimal) and not epoch.is_finite()) or \
@@ -52,7 +54,8 @@ def process_pending_marker(store, auth_table, marker: dict) -> dict:
     """
     subject, meal_id = _scope(marker)
     response = auth_table.get_item(Key={'pk': f'USER#{subject}'}, ConsistentRead=True)
-    epoch = _authorized_epoch(response.get('Item'))
+    epoch = _authorized_epoch(response.get('Item'),
+                              require_principal=getattr(store, 'require_principal', False) is True)
     return asyncio.run(refresh_pending_for_subject(store, subject, epoch, meal_id))
 
 
