@@ -88,6 +88,17 @@ jobs:
           status=0
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" -m foodtech_business_api.withdrawal_identity_probe || status=$?
           test "$status" -eq 2
+      - name: Verify disabled source grant cleanup before obtaining AWS credentials
+        if: inputs.operation == 'publish'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          WORKLOAD: ${{ steps.target.outputs.workload }}
+        run: |
+          if [ "$WORKLOAD" = maintenance ]; then
+            status=0
+            docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" -m foodtech_business_api.source_grant_deletion_worker || status=$?
+            test "$status" -eq 2
+          fi
       - name: Verify disabled standardization runtime before obtaining AWS credentials
         if: inputs.operation == 'publish'
         env:
