@@ -404,3 +404,11 @@ Autopilot의 원본/발급기·이력/조건 기준을 `combi-read-baseline.json
 속성 allowlist는 Python 조회 코드와 검증기에서 대조한다. 식별자·상태·Combi 참조를 읽기 위한 범위이며 모델/자격증명/동의/결과/브라우저 세션 필드는 포함하지 않는다. IAM의 파티션 키 조건은 sort key나 소유자를 제한하지 않는다. 따라서 이 grant를 META 전용 또는 고객별 물리 격리로 표시하지 않는다. 애플리케이션은 실제 `META` 키·canonical UUID·owner/epoch/PENDING/버전/완전한 참조를 별도로 검증해야 한다. UUID 모양 IAM 패턴 자체가 UUID 검증은 아니다.
 
 새 권한은 보호된 작성자/보존 이력 검증을 발급하지 않고 고객·broker·모델을 활성화하지 않는다. 실제 역할/리소스 정책·암호화 키·상위 정책과 서비스 호출은 별도로 확인하며 모의 정책 평가를 실제 실행 증거로 사용하지 않는다.
+
+### Combi 실행 조회 probe 수동 Task 후보
+
+`provisionCombiExecutionReadProbe=true`는 개발용 `FoodtechCombiExecutionReadProbe-dev`의 Task 정의만 opt-in 한다. 실행·서비스·예약·네트워크·IAM·새 로그 그룹을 만들지 않는다. 기존 broker task role과 maintenance image/log execution role, 검토한 불변 broker RoleId·새 UUIDv4·digest 고정 maintenance 이미지가 모두 필수 parameter이며 기본값이 없다. 이미지의 실제 main 소스·설치된 probe 명령·scan은 게시 후 따로 확인한다.
+
+Task는 Fargate/awsvpc/x64 Linux, 0.25vCPU/512MiB, 비root·읽기 전용 파일 시스템·전체 capability 제거·privileged=false로 제한한다. 전용 probe 모듈을 entryPoint로 사용하고 포트·secret·volume·임의 command를 제공하지 않는다. 기존 execution role의 검토 대상인 `/foodtech/dev/meal-refresh` / `worker` 로그 경로만 사용한다. role permission은 이 정의로 생기지 않으며 실제 GetItem 후보 적용과 실서비스 접근 검증은 별도 단계다.
+
+probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재 이미지 finding·비용·네트워크/Task 정리를 구체화한 뒤 실제 실행 승인을 받아야 한다. CLI 자체는 180초 기한과 SDK 재시도 없는 허용2/거부6개의 유한 호출만 한다. 테스트 fixture나 모의 정책 결과를 실제 Task/서비스 접근 증거로 표시하지 않는다.

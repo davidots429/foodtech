@@ -188,6 +188,11 @@ jobs:
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCombiExecutionReadAccess-dev --strict --no-lookups -c provisionCombiExecutionReadAccess=true --output /tmp/foodtech-combi-execution-access-cdk > /dev/null
           python3 ../../tests/config/check_combi_execution_access.py /tmp/foodtech-combi-execution-access-cdk/FoodtechCombiExecutionReadAccess-dev.template.json 123456789012
           python3 ../../tests/config/check_combi_execution_access_mutations.py /tmp/foodtech-combi-execution-access-cdk/FoodtechCombiExecutionReadAccess-dev.template.json 123456789012
+      - name: Check manual combi execution read probe definition
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCombiExecutionReadProbe-dev --strict --no-lookups -c provisionCombiExecutionReadProbe=true --output /tmp/foodtech-combi-execution-probe-cdk > /dev/null
+          python3 ../../tests/config/check_combi_execution_probe.py /tmp/foodtech-combi-execution-probe-cdk/FoodtechCombiExecutionReadProbe-dev.template.json 123456789012
       - name: Check incremental recipe history access
         working-directory: infra/cdk
         run: |
@@ -416,6 +421,12 @@ jobs:
         run: |
           status=0
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.withdrawal_identity_probe || status=$?
+          test "$status" -eq 2
+      - name: Verify Combi execution read probe guard without network
+        if: matrix.workload == 'maintenance'
+        run: |
+          status=0
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.combi_execution_read_probe || status=$?
           test "$status" -eq 2
       - name: Verify source grant deletion command stays disabled without configuration
         run: |
