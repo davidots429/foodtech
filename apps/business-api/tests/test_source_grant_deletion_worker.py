@@ -7,12 +7,56 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
+from boto3.dynamodb.conditions import ConditionExpressionBuilder
 
 from foodtech_business_api import source_grant_deletion_worker as runtime
 from foodtech_business_api.source_read_registrar import SourceGrantConflict
 
 
 class SourceGrantWorkerTests(unittest.TestCase):
+    def test_target_filters_every_page_and_preserves_cursor_and_counter_only_result(self):
+        table, deletion = MagicMock(), MagicMock()
+        table.scan.side_effect = [
+            {'Items': [], 'LastEvaluatedKey': {'pk': 'SESSION#synthetic-secret'}},
+            {'Items': [self.candidate()]}]
+        deletion.step.return_value = self.result(0, 'CATALOG_EMPTY_OBSERVED')
+        result = runtime.sweep_grants(table, deletion, clock=lambda: 1000, target_subject='opaque_subject')
+        self.assertEqual(result['pages'], 2)
+        self.assertEqual(result['empty_observed'], 1)
+        self.assertNotIn('opaque_subject', repr(result))
+        for call in table.scan.call_args_list:
+            condition = ConditionExpressionBuilder().build_expression(call.kwargs['FilterExpression'])
+            self.assertIn('USER#opaque_subject', condition.attribute_value_placeholders.values())
+        self.assertEqual(deletion.step.call_args.kwargs['subject'], 'opaque_subject')
+
+    def test_foreign_target_response_or_invalid_target_never_reaches_mutation(self):
+        table, deletion = MagicMock(), MagicMock()
+        table.scan.return_value = {'Items': [self.candidate()]}
+        with self.assertRaises(ValueError):
+            runtime.sweep_grants(table, deletion, clock=lambda: 1000, target_subject='different_subject')
+        deletion.step.assert_not_called()
+        for target in ('', 'USER#opaque_subject', 'a' * 129, 'opaque_subject\n', True):
+            table.reset_mock()
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                runtime.sweep_grants(table, deletion, clock=lambda: 1000, target_subject=target)
+            table.scan.assert_not_called()
+        deletion.step.assert_not_called()
+
+    def test_main_validates_target_before_aws_and_passes_it_to_the_sweep(self):
+        for target in ('', 'invalid#subject', 'a' * 129, 'opaque_subject\n'):
+            with patch.dict(os.environ, {'FOODTECH_SOURCE_GRANT_TARGET_SUBJECT': target}, clear=True), \
+                    patch.object(runtime.boto3, 'Session') as session, redirect_stderr(io.StringIO()):
+                self.assertEqual(runtime.main(), 2)
+            session.assert_not_called()
+        table, deletion, output = MagicMock(), MagicMock(), io.StringIO()
+        table.scan.return_value = {'Items': [self.candidate()]}
+        deletion.step.return_value = self.result(0, 'CATALOG_EMPTY_OBSERVED')
+        with patch.dict(os.environ, {'FOODTECH_SOURCE_GRANT_TARGET_SUBJECT': 'opaque_subject'}, clear=True), \
+                patch.object(runtime, 'configured_worker', return_value=(table, deletion)), redirect_stdout(output):
+            self.assertEqual(runtime.main(), 0)
+        self.assertNotIn('opaque_subject', output.getvalue())
+        self.assertEqual(deletion.step.call_args.kwargs['subject'], 'opaque_subject')
+
     def candidate(self):
         return {'pk': 'USER#opaque_subject', 'epoch': Decimal(3), 'withdrawal_request_id': str(uuid4())}
 
