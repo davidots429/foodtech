@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CombiCandidateView } from "./CombiCandidateView";
 import { api } from "./cookingApi";
 import { parseCombiReviewReceipt, parseCombiReviewContext, parseCombiReviewPage } from "./combiReview";
 import type { CombiReview, CombiReviewContext } from "./combiReview";
@@ -77,6 +78,10 @@ export function CombiProposalReview({ scope, version, proposal, csrf }: {
     {context && <><p>메뉴별 검토 버전: {context.review_version}</p>
       {context.latest_review && <p>최근 검토: {context.latest_review.decision === "APPROVE" ? "승인" : "반려"} · {context.latest_review.reason}
         {context.latest_review.execution_id !== scope.executionId && " (다른 실행의 검토)"}</p>}
+      {context.latest_review?.decision === "APPROVE" && <CombiCandidateView
+        key={`current-${context.latest_review.version}`} scope={scope} csrf={csrf} review={context.latest_review}
+        canPreserve={context.can_review && context.latest_review.execution_id === scope.executionId &&
+          context.latest_review.proposal_digest === context.proposal_digest} />}
       {!context.can_review && <p>식사배치가 변경되어 과거 권고에 새 검토를 저장할 수 없습니다.</p>}
       <label>검토 결과<select value={decision} disabled={busy || !context.can_review} onChange={event => {
         setDecision(event.target.value as "" | "APPROVE" | "REJECT"); setAcknowledged(false);
@@ -93,7 +98,8 @@ export function CombiProposalReview({ scope, version, proposal, csrf }: {
       <button type="button" disabled={busy} onClick={() => void loadHistory()}>검토 이력 조회</button>
       <ol>{history.map(item => <li key={item.version}>검토 버전 {item.version} · 식사배치 버전 {item.job_version} ·
         {item.decision === "APPROVE" ? "승인" : "반려"} · {item.reason} · {item.reviewed_at}
-        {item.execution_id !== scope.executionId && " (다른 실행의 검토)"}</li>)}</ol>
+        {item.execution_id !== scope.executionId && " (다른 실행의 검토)"}
+        {item.decision === "APPROVE" && <CombiCandidateView scope={scope} review={item} csrf={csrf} />}</li>)}</ol>
       {cursor !== null && <button type="button" disabled={busy} onClick={() => void loadHistory(true)}>다음 검토 이력</button>}
     </details>
   </section>;

@@ -95,3 +95,24 @@ models batch/review conflicts without a cross-store principal transaction.
 Review rows stay in the owned COMBI_MEAL partition and participate in its existing
 full-partition withdrawal cleanup. All-writer/history rollout, food safety and
 actual AWS review transactions remain separate validation requirements.
+
+### Combi programme candidate preservation
+
+After human approval, the customer can explicitly preserve the exact reviewed
+programme as an immutable `CANDIDATE_NOT_APPLIED` version. The menu/meal/review
+version is the idempotency key; a retry preserves the original record time.
+`POST /api/customer/ai/combi/recipe-candidates/{review_version}` requires CSRF,
+acknowledgement, expected meal version and the stored proposal digest. The server
+checks the current approved pointer, complete immutable review, current batch
+references/equipment/base label and active account in the same DynamoDB
+transaction as the candidate insert. A later rejection or changed batch blocks
+preservation from that old review. `GET` keeps existing candidates available as
+historical, unapplied records and reports the current meal/review versions.
+
+Candidates preserve source recipe labels when present; an unlabeled batch has
+`base_recipe_version=null` rather than an invented version. They carry programme
+values and review lineage, not inherited food-safety or evaluation results.
+Nothing changes the source meal, recipe label, review or history revision. New
+meal selection/adoption and fresh loading/preparation/safety checks remain
+separate work. Candidate rows share the owned meal partition and its existing
+withdrawal cleanup. The memory-store authentication limitation also applies.
