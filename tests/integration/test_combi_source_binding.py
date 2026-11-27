@@ -289,7 +289,7 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                     step = await client.post(path + "/events", headers=headers, json={
                         "expected_version": version, "event": event,
                         "observed_at": (started_at + timedelta(seconds=offset)).isoformat(),
-                        **({"products": products} if event == "MACKEREL_STARTED" else {})})
+                        **({"products": products, "pan_tare_kg": "3"} if event == "MACKEREL_STARTED" else {})})
                     self.assertEqual(step.status_code, 200, step.text)
                 fish = await client.post(path + "/source-assessment/mackerel", headers=headers,
                                          json={"expected_version": 11})

@@ -9,7 +9,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
-from foodtech_contracts.combi_cooking import cooking_durations, cooking_time_status, oven_load, rice_water
+from foodtech_contracts.combi_cooking import (RULE_VERSION as LOAD_RULE_VERSION, cooking_durations,
+                                            cooking_time_status, oven_load, rice_water)
 from foodtech_contracts.combi_transition import TransitionSample, assess_transition
 from foodtech_contracts.combi_mackerel_process import Sample, assess as assess_mackerel_process
 from foodtech_contracts.combi_rice_process import Sample as RiceSample, assess as assess_rice_process
@@ -84,6 +85,7 @@ class MealEvent(BaseModel):
                    "MACKEREL_STARTED", "MACKEREL_PROGRAM_COMPLETED", "MACKEREL_UNLOADED"]
     observed_at: datetime
     products: list[MackerelProduct] | None = Field(default=None, min_length=1, max_length=200)
+    pan_tare_kg: Decimal | None = Field(default=None, ge=0, max_digits=7, decimal_places=2)
 
 
 class TransitionObservation(BaseModel):
@@ -810,6 +812,8 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
     updated = {**step}
     if body.event != "MACKEREL_STARTED" and body.products is not None:
         raise HTTPException(422, "고등어 투입 단계에서만 제품을 기록할 수 있습니다.")
+    if body.event != "MACKEREL_STARTED" and body.pan_tare_kg is not None:
+        raise HTTPException(422, "고등어 투입 단계에서만 팬 총중량을 기록할 수 있습니다.")
     if body.event == "MACKEREL_STARTED":
         transition = rows.get(f"TRANSITION#{old['mode_transition_id']}")
         if not transition or transition.get("status") != "DRY_HEAT_READY" or not transition.get("mackerel_load_allowed"):
@@ -828,8 +832,21 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
                     shelf_pans[(p.rack_id, p.shelf)] != p.pan_id for p in products) or
                 any(sum(p.pan_id == pan for p in products) > 10 for pan in pan_locations)):
             raise HTTPException(422, "장비의 랙·선반·팬 위치 또는 팬당 제품 수를 확인해 주세요.")
+        if body.pan_tare_kg is None:
+            raise HTTPException(422, "고등어 적재에 사용하는 빈 팬의 총중량(kg)이 필요합니다.")
+        rack_tare = Decimal(15) * len(racks) if old['equipment_size'] == 'LARGE_ROLL_IN_RACK_20' else Decimal(0)
+        load = oven_load(old['equipment_size'], len(racks), len(pan_locations),
+                        sum((item.mass_kg for item in products), Decimal(0)), body.pan_tare_kg, rack_tare)
+        if load.violations:
+            raise HTTPException(422, {"code": "PROFILE_REJECTED", "violations": load.violations})
+        snapshot = {"rule_version": LOAD_RULE_VERSION, "size": load.size,
+                    "rack_count": load.rack_count, "pan_count": load.pan_count,
+                    **{name: str(getattr(load, name)) for name in
+                       ('ingredient_kg', 'pan_tare_kg', 'rack_tare_kg', 'payload_kg', 'gross_kg',
+                        'rated_capacity_kg', 'load_ratio')}, "load_basis": load.load_basis,
+                    "observed_at": at}
         updated.update(status="RUNNING", active_cooking_started_at=at,
-                       products=[item.model_dump(mode="json") for item in products])
+                       products=[item.model_dump(mode="json") for item in products], load_snapshot=snapshot)
     elif body.event == "RICE_STARTED":
         preparation = step.get("rice_preparation") or {}
         if preparation.get("draining_completed_at") and observed < datetime.fromisoformat(preparation["draining_completed_at"].replace("Z", "+00:00")):
@@ -852,6 +869,8 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
     meta = {**old, "status": next_status, "version": version, "last_observed_at": at, "updated_at": _now()}
     event = {"sk": f"EVENT#{version:012d}", "event": body.event, "from_status": old["status"],
              "to_status": next_status, "observed_at": at, "recorded_at": _now(), "actor": session.subject}
+    if body.event == 'MACKEREL_STARTED':
+        event['load_snapshot'] = updated['load_snapshot'].copy()
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
