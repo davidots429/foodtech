@@ -79,6 +79,11 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e DOTNET_EnableDiagnostics=0 "foodtech-mock:$TAG" hash --fixture fixtures/mockprofile-100-a-001.json > "$RUNNER_TEMP/mock-hash.txt"
           grep -Fx 'rec-a-001 f76cb5275bb85fc7c0c0da0309dc96cb5b64d29588d902cf28b6c5140e8d5ff2' "$RUNNER_TEMP/mock-hash.txt"
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "foodtech-mock:$TAG" -c '. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 24.04'
+          if docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e DOTNET_EnableDiagnostics=0 -e FOODTECH_MOCK_CLIENT_ID=synthetic-guard -e FOODTECH_MOCK_CLIENT_SECRET=synthetic-guard-value "foodtech-mock:$TAG" serve --fixture fixtures/rest-invalid-utf8-single-v1.json --certificate-source injected --max-runtime 0 --port 8443 > "$RUNNER_TEMP/mock-runtime-guard.txt" 2>&1; then
+            echo 'Unbounded or invalid Mock runtime was accepted' >&2
+            exit 1
+          fi
+          grep -F 'REST Mock --max-runtime must be 1 to 600 seconds.' "$RUNNER_TEMP/mock-runtime-guard.txt"
       - name: Obtain short-lived mock publishing credentials
         uses: aws-actions/configure-aws-credentials@v6.3.1
         if: inputs.operation == 'publish'

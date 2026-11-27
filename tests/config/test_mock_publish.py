@@ -110,6 +110,8 @@ class MockPublisherTests(unittest.TestCase):
             self.assertIn(value, steps[guards]['run'])
         self.assertIn('test "$ID" = ubuntu', steps[guards]['run'])
         self.assertIn('test "$VERSION_ID" = 24.04', steps[guards]['run'])
+        for value in ('--certificate-source injected', '--max-runtime 0', 'fixtures/rest-invalid-utf8-single-v1.json', 'REST Mock --max-runtime must be 1 to 600 seconds.'):
+            self.assertIn(value, steps[guards]['run'])
         dockerfile = (ROOT / 'infra/containers/mock-control.Dockerfile').read_text()
         self.assertIn('sdk:10.0.402-noble AS builder', dockerfile)
         self.assertIn('aspnet:10.0-noble', dockerfile)

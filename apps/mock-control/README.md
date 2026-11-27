@@ -138,3 +138,14 @@ MQTT `serve-mqtt`는 `fixtures/mockprofile-300-b-001.json`과 `fixtures/mockprof
 
 `infra/containers/mock-control.Dockerfile`은 잠금된 NuGet 의존성으로 C# Mock을 게시하고, 테스트용 합성 fixture와 함께 비관리자 계정으로 실행하는 이미지를 만든다. 기본 명령은 `dotnet MockControl.dll`이며 실행할 때 `hash`, `serve`, `serve-mqtt`, `serve-ua-json`, `serve-opcua` 등 기존 CLI 인수를 명시한다. 인증서·개인키·인증정보는 이미지에 포함하지 않으며 실행 환경에서 별도로 제공한다. 이 이미지는 고객 서비스가 아니라 시험·시연용 독립 프로그램이다.
 
+
+
+## 제한된 REST 서버의 인증서 주입
+
+REST `serve --certificate-source injected --max-runtime 600`은 `FOODTECH_MOCK_SERVER_CERT_PEM`·`FOODTECH_MOCK_SERVER_KEY_PEM`과 기존 OAuth 환경 변수를 ECS Secrets Manager 주입으로 받는다. 주입 모드는 명시적인 1~600초 제한을 요구하고 파일 경로 `--cert`나 `FOODTECH_MOCK_CERT_PASSWORD`와 혼용하지 않는다. 현재 유효한 인증서와 일치하는 개인키를 메모리에서 읽고 주입 변수는 로딩 뒤 제거한다. managed 문자열·네이티브 복사본의 완전한 메모리 소거를 보장한다는 뜻은 아니다. 기존 PFX 파일 방식은 기본값으로 유지하며 선택적으로 같은 시간 제한을 지정할 수 있다.
+
+`fixtures/rest-invalid-utf8-single-v1.json`에 `--fault invalid-utf8`를 함께 지정하면 한 건의 잘못된 UTF-8을 내보낸다. 원본 fixture의 정상 스키마·기존 63개 논리 인스턴스는 바꾸지 않는 별도 합성 오류 시나리오다. 실제 저장 실패 후 커서 정지·격리 성공 검증을 위한 입력이며 Mock이 AWS 저장이나 장비 제어를 수행하지 않는다.
+
+실제 서버 실행에서는 별도 Task·업무 권한 없는 Mock 역할과 수집기 역할을 분리해야 한다. Mock 서버 키가 있는 Secret을 수집기 실행 역할과 공유하지 않는다. 수집기에는 CA·OAuth 자격증명만 별도로 주입하고, 접속 주소와 인증서 SAN의 일치·사설 보안 그룹·공인 IP 차단·실행 제한을 검토한다. 이 코드/CI 변경만으로 Task·네트워크가 생성되거나 AWS 시험이 실행되지 않는다.
+
+CI와 수동 게시 전 검사는 실제 이미지에서 새 주입 모드의 잘못된 시간 제한 거부까지 확인한다. 이전 게시 이미지가 새 계약을 지원한다고 간주하지 않으며, 실제 실행 전 새 source·digest·스캔과 TLS 기능 시험 결과를 대조해야 한다.
