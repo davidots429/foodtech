@@ -65,5 +65,7 @@ bindings. Only bounded, schema/guard-version-matched rice or mackerel proposals
 are displayed; raw responses and credentials are never returned. These views
 remain `NEEDS_REVIEW`, with execution and manual invocation unavailable. A
 historical display does not establish current safety, authorize adoption, or
-satisfy protected writer/history rollout requirements. Real deployment and
-customer screen/review/adoption integration remain separate work.
+satisfy protected writer/history rollout requirements. The customer meal screen offers a separate rice/mackerel execution-ID lookup,
+with typed proposal fields, units and pan layout. Changing the batch clears the
+previous display; stale responses are discarded. Real deployment and human
+review/adoption integration remain separate work.

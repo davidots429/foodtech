@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { api } from "./cookingApi";
 import { CombiQuality } from "./CombiQuality";
 import { CombiWindows } from "./CombiWindows";
+import { CombiRecommendation } from "./CombiRecommendation";
 import { CombiLive } from "./CombiLive";
 import { RicePreparation, type RicePreparationRecord } from "./RicePreparation";
 import { CombiQualityAggregate } from "./CombiQualityAggregate";
@@ -458,6 +459,9 @@ export function CombiMeal({ csrf }: { csrf: string }) {
           meal[menu].monitored_process_source?.phase === (menu === "rice" ? "RICE" : "MACKEREL"))}
         csrf={csrf} busy={busy} onBusy={setBusy} onUpdated={async () =>
           setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`))} />)}
+      {(["RICE", "MACKEREL"] as const).map(menu => <CombiRecommendation
+        key={`combi-recommendation-${meal.meal.meal_batch_id}-${menu}-${meal.meal.version}`}
+        mealId={meal.meal.meal_batch_id} jobId={menu === "RICE" ? meal.rice.job_id : meal.mackerel.job_id} menu={menu} />)}
       <CombiLive mealId={meal.meal.meal_batch_id} />
       <p>고등어 투입: {meal.transition.mackerel_load_allowed ? "허용" : "차단"}
         {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>
