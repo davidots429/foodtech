@@ -175,8 +175,8 @@ jobs:
           for mode in false true; do
             CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiServiceTasks-dev --strict \
               -c provisionCredentialVault=true -c credentialKeyPeriod=2026-11 -c provisionAiServiceTasks=true \
-              -c registrationImageRepository=foodtech/credential-registration -c registrationImageTag=synthetic-test \
-              -c gatewayImageRepository=foodtech/ai-gateway -c gatewayImageTag=synthetic-test \
+              -c registrationImageRepository=foodtech/credential-registration -c registrationImageDigest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+              -c gatewayImageRepository=foodtech/ai-gateway -c gatewayImageDigest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
               -c registrationTlsSecretArn=arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:synthetic-registration-aaaaaa \
               -c gatewayTlsSecretArn=arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:synthetic-gateway-bbbbbb \
               -c credentialHmacVersion=synthetic-v1 -c principalProvisioningEnabled="$mode" \
@@ -184,6 +184,8 @@ jobs:
             python3 ../../tests/config/check_ai_principal_mode.py "/tmp/foodtech-ai-principal-$mode/FoodtechAiServiceTasks-dev.template.json" "$mode"
             python3 ../../tests/config/check_gateway_policy.py "/tmp/foodtech-ai-principal-$mode/FoodtechCredentialVault-dev.template.json"
           done
+      - name: Reject ambiguous AI service image inputs
+        run: python3 tests/config/check_ai_task_images.py
 
   python:
     runs-on: ubuntu-latest
