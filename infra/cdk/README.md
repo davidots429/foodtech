@@ -34,6 +34,8 @@
 
 `FoodtechAuthSessions-dev`는 만료 시각(`expires`)이 있는 인증 흐름·세션과 관리자 권한 회수 상태를 저장하는 DynamoDB 테이블을 만든다. 앱은 `FOODTECH_AUTH_TABLE=foodtech-auth-sessions-dev`로 연결한다. TTL은 물리 삭제용이며 애플리케이션이 만료를 직접 검사한다.
 
+Vault의 등록기·Gateway 기본 정책은 인증 표의 `USER#*` 조건 검사만 지정 리전에서 허용하고 `LeadingKeys`의 존재와 실패 반환 `NONE`을 요구한다. 두 서비스의 인증 조건 검사 요청도 `ReturnValuesOnConditionCheckFailure=NONE`을 명시한다. 별도 이력 정책의 보호된 `CONTROL` 검사는 그 정책에서만 승인하며, 기본 정책의 광범위한 Allow로 제한을 무효화하지 않는다. 이는 CDK 배포 후보의 계약이며 실제 적용·실행 검증을 뜻하지 않는다.
+
 `provisionAuthRefreshKey=true`를 명시하면 별도 `FoodtechAuthRefreshKey-dev` 스택에 세션 갱신 토큰용 대칭 KMS 키와 ARN 출력을 합성한다. 이 키는 기존 AI 자격증명 키와 분리되며 자동 회전과 삭제 시 보존을 사용한다. 키를 실제 배포하면 KMS 비용이 발생한다. 현재 업무 API 실행 역할·키 사용 권한 및 환경 변수 연결은 구성되지 않았고, 합성은 실제 배포나 역할 검증이 아니다.
 
 새 Cognito Identity 스택의 고객·관리자 App Client는 갱신 토큰 회전과 10초 재시도 유예를 정의한다. 회전과 호환되지 않는 `REFRESH_TOKEN_AUTH`는 사용하지 않는다. 이는 CDK 정의이며 기존 시험 Pool의 App Client 설정을 변경하지 않는다.
