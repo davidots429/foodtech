@@ -1,6 +1,8 @@
 # Business API 인증과 첫 조리 업무 흐름
 
-`FoodtechSourceGrantRuntime-dev`는 기존 `source_grant_deletion_worker`를 위한 수동 Fargate Task 정의다. `provisionSourceGrantRuntime=true`, `principalProvisioningEnabled=true`와 검토한 유지보수 이미지의 정확한 digest URI를 `sourceGrantImageUri`에 명시해야 합성할 수 있다. 배포 매개변수 `ImageUri`도 그 URI 하나만 허용하며, 별도 catalog 정리 역할과 ECR/로그 실행 역할을 지정한다. 이 스택의 자원은 Task 정의와 선택적인 7일 보존 로그 그룹이다.
+`FoodtechSourceGrantRuntime-dev`는 기존 `source_grant_deletion_worker`를 위한 수동 Fargate Task 정의다. `provisionSourceGrantRuntime=true`, `principalProvisioningEnabled=true`, `sourceGrantTargetSubject`와 검토한 유지보수 이미지의 정확한 digest URI를 `sourceGrantImageUri`에 명시해야 합성할 수 있다. 배포 매개변수 `ImageUri`도 그 URI 하나만 허용하며, 별도 catalog 정리 역할과 ECR/로그 실행 역할을 지정한다. 이 스택의 자원은 Task 정의와 선택적인 7일 보존 로그 그룹이다.
+
+수동 Task는 `TargetSubject`를 합성 시 검토한 대상 하나로 제한하며 작업자는 Scan 필터와 반환 행을 모두 검사한다. 대상 식별자는 로그에 남기지 않는다. 새 대상 기능을 포함해 검증·게시한 이미지 digest가 필요하며 기존 이미지는 해당 환경변수를 무시할 수 있으므로 재사용하지 않는다. 직접 CLI에서 대상 설정을 생략한 기존 전체 순회 기능은 유지하지만 이 수동 Task 계약은 단일 대상만 허용한다.
 
 정의 등록 후 실제 `RunTask`에는 별도의 실행 검토·승인이 필요하다. 실제 역할·catalog·enrollment fence, fixture 소유 범위·부재/차단 사례, 네트워크·클러스터·관찰·중단·정리 계획과 이미지 적합성을 먼저 확인한다. 기존 IAM 후보는 Auth/Registry의 투영 조회·조건 검사와 catalog 삭제만 허용하며 Auth 참조·Registry 완료·Cognito·원천 데이터는 갱신하지 않는다. 로그는 건수만 남긴다. 기본 스택 선택에는 이 정의가 포함되지 않고 서비스·예약은 생성하지 않는다.
 

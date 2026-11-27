@@ -22,11 +22,13 @@ from .subject_identity import valid_subject
 from .withdrawal_identity_worker import deadline
 
 
-def sweep_grants(table, deletion, *, page_size=20, max_pages=50, max_changes=20, clock):
+def sweep_grants(table, deletion, *, page_size=20, max_pages=50, max_changes=20, clock, target_subject=None):
     if type(page_size) is not int or not 1 <= page_size <= 100 or \
             type(max_pages) is not int or not 1 <= max_pages <= 1000 or \
             type(max_changes) is not int or not 1 <= max_changes <= 100:
         raise ValueError('invalid source grant worker bounds')
+    if target_subject is not None and not valid_subject(target_subject):
+        raise ValueError('invalid source grant worker target')
     totals = {'pages': 0, 'delete_acknowledged': 0, 'empty_observed': 0, 'blocked': 0,
               'scan_finished': False, 'budget_exhausted': False, 'deletion_complete': False}
     cursor, seen = None, set()
@@ -41,6 +43,8 @@ def sweep_grants(table, deletion, *, page_size=20, max_pages=50, max_changes=20,
                 Attr('withdrawal_status').eq('DELETING') & Attr('withdrawal_deadline').lte(now) &
                 Attr('deletion_lock_request').exists() & Attr('source_read_grants').exists() &
                 Attr('source_read_grants').ne({})}
+        if target_subject is not None:
+            args['FilterExpression'] &= Attr('pk').eq('USER#' + target_subject)
         if cursor is not None:
             args['ExclusiveStartKey'] = cursor
         page = table.scan(**args)
@@ -53,6 +57,8 @@ def sweep_grants(table, deletion, *, page_size=20, max_pages=50, max_changes=20,
                     not isinstance(row['pk'], str) or not row['pk'].startswith('USER#') or \
                     not valid_subject(row['pk'][5:]) or _integer(row['epoch'], 1) is None:
                 raise ValueError('invalid source grant discovery candidate')
+            if target_subject is not None and row['pk'] != 'USER#' + target_subject:
+                raise ValueError('source grant discovery outside target')
             while totals['delete_acknowledged'] < max_changes:
                 try:
                     result = deletion.step(subject=row['pk'][5:], request_id=row['withdrawal_request_id'],
@@ -138,10 +144,13 @@ def main():
             ('FOODTECH_SOURCE_GRANT_PAGE_SIZE', '20'), ('FOODTECH_SOURCE_GRANT_MAX_PAGES', '50'),
             ('FOODTECH_SOURCE_GRANT_MAX_CHANGES', '20'), ('FOODTECH_SOURCE_GRANT_MAX_SECONDS', '600'))]
         page_size, max_pages, max_changes, seconds = bounds
+        target = os.getenv('FOODTECH_SOURCE_GRANT_TARGET_SUBJECT')
+        if target is not None and not valid_subject(target):
+            raise ValueError
         if not 1 <= page_size <= 100 or not 1 <= max_pages <= 1000 or not 1 <= max_changes <= 100 or not 10 <= seconds <= 600:
             raise ValueError
     except ValueError:
-        print('Explicit valid source grant worker bounds are required.', file=sys.stderr)
+        print('Explicit valid source grant worker bounds and target are required.', file=sys.stderr)
         return 2
     try:
         with deadline(seconds):
@@ -151,7 +160,7 @@ def main():
                 print('Explicit valid source grant worker configuration is required.', file=sys.stderr)
                 return 2
             result = sweep_grants(table, deletion, page_size=page_size, max_pages=max_pages,
-                                  max_changes=max_changes, clock=lambda: int(time.time()))
+                                  max_changes=max_changes, clock=lambda: int(time.time()), target_subject=target)
     except Exception:
         print('Source grant cleanup failed; reconcile before retrying.', file=sys.stderr)
         return 1

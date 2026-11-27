@@ -18,6 +18,10 @@ export class SourceGrantRuntimeStack extends Stack {
     if (typeof reviewedImage !== "string" || !imagePattern.test(reviewedImage)) {
       throw new Error("sourceGrantImageUri must be the reviewed immutable maintenance workload image");
     }
+    const reviewedSubject = this.node.tryGetContext("sourceGrantTargetSubject");
+    if (typeof reviewedSubject !== "string" || !reviewedSubject.length || reviewedSubject.length > 128 || /[^A-Za-z0-9_-]/.test(reviewedSubject)) {
+      throw new Error("sourceGrantTargetSubject must be an explicit valid reviewed subject");
+    }
     this.templateOptions.description = "Manual finite source grant catalog cleanup definition; execution requires separate review and approval";
     this.templateOptions.metadata = { AWSToolsMetrics: { AWSAgentToolkit: "aws-cloudformation@3" },
       "com.aws.cloudformation.Context": {
@@ -31,6 +35,8 @@ export class SourceGrantRuntimeStack extends Stack {
     const taskRole = role("TaskRoleArn", "task"), executionRole = role("ExecutionRoleArn", "execution");
     const image = new CfnParameter(this, "ImageUri", { type: "String", allowedValues: [reviewedImage],
       description: "Exact reviewed maintenance image manifest URI; no mutable tag or implicit latest image" });
+    const target = new CfnParameter(this, "TargetSubject", { type: "String", allowedValues: [reviewedSubject],
+      description: "Exact reviewed principal for this manual pass; requires a target-aware worker image" });
     const logMode = this.node.tryGetContext("sourceGrantLogGroupMode") ?? "create";
     if (logMode !== "create" && logMode !== "existing") throw new Error("sourceGrantLogGroupMode must be create or existing");
     const logName = `/foodtech/${stage}/source-grant-deletion`;
@@ -44,6 +50,7 @@ export class SourceGrantRuntimeStack extends Stack {
     const variables = {
       FOODTECH_SOURCE_GRANT_DELETION_ENABLED: "true",
       FOODTECH_SOURCE_GRANT_DELETION_ROLE_ARN: taskRole.valueAsString,
+      FOODTECH_SOURCE_GRANT_TARGET_SUBJECT: target.valueAsString,
       FOODTECH_AUTH_TABLE: `foodtech-auth-sessions-${stage}`,
       FOODTECH_SOURCE_ACCESS_TABLE: `foodtech-source-access-${stage}`,
       FOODTECH_DELETION_REGISTRY_TABLE: `foodtech-deletion-registry-${stage}`,

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-def main(path, account, mode='create'):
+def main(path, account, mode='create', target='synthetic-source-grant-fixture'):
     template = json.loads(Path(path).read_text())
     resources = list(template['Resources'].values())
     allowed = {'AWS::ECS::TaskDefinition', 'AWS::CDK::Metadata'} | ({'AWS::Logs::LogGroup'} if mode == 'create' else set())
@@ -27,6 +27,7 @@ def main(path, account, mode='create'):
     assert len(env) == len(worker['Environment'])
     assert env == {'FOODTECH_SOURCE_GRANT_DELETION_ENABLED':'true',
         'FOODTECH_SOURCE_GRANT_DELETION_ROLE_ARN':{'Ref':'TaskRoleArn'},
+        'FOODTECH_SOURCE_GRANT_TARGET_SUBJECT':{'Ref':'TargetSubject'},
         'FOODTECH_AUTH_TABLE':'foodtech-auth-sessions-dev','FOODTECH_SOURCE_ACCESS_TABLE':'foodtech-source-access-dev',
         'FOODTECH_DELETION_REGISTRY_TABLE':'foodtech-deletion-registry-dev',
         'FOODTECH_SOURCE_GRANT_PAGE_SIZE':'20','FOODTECH_SOURCE_GRANT_MAX_PAGES':'50',
@@ -52,6 +53,8 @@ def main(path, account, mode='create'):
         for bad in [good.replace(account,'000000000000'),good+'-other',good.replace('-'+suffix+'-','-other-')]:
             assert not re.fullmatch(p['AllowedPattern'],bad)
     image = template['Parameters']['ImageUri']
+    subject = template['Parameters']['TargetSubject']
+    assert 'Default' not in subject and subject['AllowedValues'] == [target]
     assert 'Default' not in image and len(image['AllowedValues']) == 1
     assert re.fullmatch(rf'{account}\.dkr\.ecr\.ap-southeast-2\.amazonaws\.com/foodtech/maintenance-dev@sha256:[a-f0-9]{{64}}',image['AllowedValues'][0])
     assert template['Metadata']['AWSToolsMetrics']['AWSAgentToolkit'] == 'aws-cloudformation@3'
