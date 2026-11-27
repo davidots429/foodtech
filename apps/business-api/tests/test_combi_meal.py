@@ -1,6 +1,7 @@
 import os
 import unittest
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -37,6 +38,98 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         for item in reversed(self.patches):
             item.stop()
+
+    async def ready_mackerel_load(self, *, large=False):
+        body = {**self.body, **({'equipment_size': 'LARGE_ROLL_IN_RACK_20', 'rack_count': 2,
+                               'rack_tare_kg': '30'} if large else {})}
+        created = await self.client.post('/api/customer/combi-meals', json=body,
+                                         headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(created.status_code, 201, created.text)
+        meal = created.json()['meal']
+        pk = f"SCOPE#USER#{self.subject}#COMBI_MEAL#{meal['meal_batch_id']}"
+        self.store.items[(pk, 'META')]['status'] = 'MACKEREL_READY'
+        self.store.items[(pk, f"TRANSITION#{meal['mode_transition_id']}")].update(
+            status='DRY_HEAT_READY', mackerel_load_allowed=True)
+        products = [{'product_id': 'fish-' + str(n), 'rack_id': 'rack-' + str(2 if large and n == 3 else 1),
+                     'shelf': n, 'pan_id': 'pan-' + str(n), 'mass_kg': '0.13', 'thickness_cm': '1.5'}
+                    for n in (1, 2, 3)]
+        request = {'expected_version': 1, 'event': 'MACKEREL_STARTED',
+                   'observed_at': datetime.now(timezone.utc).isoformat(), 'products': products, 'pan_tare_kg': '3'}
+        return '/api/customer/combi-meals/' + meal['meal_batch_id'], pk, request
+
+    async def test_mackerel_load_uses_own_products_and_tares_with_audit_snapshot(self):
+        for large in (False, True):
+            with self.subTest(large=large):
+                path, pk, body = await self.ready_mackerel_load(large=large)
+                result = await self.client.post(path + '/events', json=body, headers={'X-CSRF-Token': 'csrf'})
+                self.assertEqual(result.status_code, 200, result.text)
+                snapshot = result.json()['step']['load_snapshot']
+                self.assertEqual(snapshot['ingredient_kg'], '0.39')
+                self.assertEqual(snapshot['pan_tare_kg'], '3')
+                self.assertEqual(snapshot['rack_tare_kg'], '30' if large else '0')
+                self.assertEqual(snapshot['pan_count'], 3)
+                self.assertEqual(snapshot['rack_count'], 2 if large else 1)
+                self.assertEqual(snapshot['payload_kg'], '3.39')
+                self.assertEqual(snapshot['gross_kg'], '33.39' if large else '3.39')
+                self.assertEqual(snapshot['rated_capacity_kg'], '160' if large else '60')
+                self.assertEqual(snapshot['load_basis'], 'GROSS_WITH_REMOVABLE_RACK' if large else 'PAYLOAD_ONLY')
+                self.assertEqual(result.json()['event']['load_snapshot'], snapshot)
+                read = await self.client.get(path)
+                self.assertEqual(read.json()['mackerel']['load_snapshot'], snapshot)
+                self.assertEqual(read.json()['rice']['pan_tare_kg'], '10')
+
+    async def test_mackerel_load_missing_invalid_and_overweight_are_atomic_rejections(self):
+        for tare in (None, '-1', '1.001', 'NaN', True, '60'):
+            with self.subTest(tare=tare):
+                path, pk, body = await self.ready_mackerel_load()
+                if tare is None:
+                    del body['pan_tare_kg']
+                else:
+                    body['pan_tare_kg'] = tare
+                before = deepcopy(self.store.items)
+                result = await self.client.post(path + '/events', json=body, headers={'X-CSRF-Token': 'csrf'})
+                self.assertEqual(result.status_code, 422, result.text)
+                self.assertEqual(self.store.items, before)
+                if tare == '60':
+                    self.assertIn('RATED_LOAD_EXCEEDED', result.json()['detail']['violations'])
+
+    async def test_mackerel_load_exact_rated_boundary_and_stale_request(self):
+        path, pk, body = await self.ready_mackerel_load()
+        body['pan_tare_kg'] = '59.61'
+        result = await self.client.post(path + '/events', json=body, headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()['step']['load_snapshot']['payload_kg'], '60.00')
+        before = deepcopy(self.store.items)
+        retry = await self.client.post(path + '/events', json=body, headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(retry.status_code, 409)
+        self.assertEqual(self.store.items, before)
+
+    async def test_pan_tare_is_not_accepted_for_another_event(self):
+        created = (await self.client.post('/api/customer/combi-meals', json=self.body,
+                    headers={'X-CSRF-Token': 'csrf'})).json()
+        path = '/api/customer/combi-meals/' + created['meal']['meal_batch_id']
+        before = deepcopy(self.store.items)
+        result = await self.client.post(path + '/events', json={'expected_version': 1,
+            'event': 'RICE_STARTED', 'observed_at': datetime.now(timezone.utc).isoformat(), 'pan_tare_kg': '3'},
+            headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(result.status_code, 422, result.text)
+        self.assertEqual(self.store.items, before)
+
+    async def test_large_mackerel_rated_limit_includes_both_removable_racks(self):
+        path, pk, body = await self.ready_mackerel_load(large=True)
+        body['pan_tare_kg'] = '129.62'
+        before = deepcopy(self.store.items)
+        rejected = await self.client.post(path + '/events', json=body, headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(rejected.status_code, 422, rejected.text)
+        self.assertIn('RATED_LOAD_EXCEEDED', rejected.json()['detail']['violations'])
+        self.assertEqual(self.store.items, before)
+        body['pan_tare_kg'] = '129.61'
+        accepted = await self.client.post(path + '/events', json=body, headers={'X-CSRF-Token': 'csrf'})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        snapshot = accepted.json()['step']['load_snapshot']
+        self.assertEqual(snapshot['gross_kg'], '160.00')
+        self.assertEqual(snapshot['payload_kg'], '130.00')
+        self.assertEqual(snapshot['rack_tare_kg'], '30')
 
     async def test_rice_preparation_is_versioned_and_precedes_cooking(self):
         headers = {"X-CSRF-Token": "csrf"}
@@ -879,7 +972,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post(path + "/events", headers=headers,
                 json={"expected_version": version, "event": event,
                       "observed_at": (start + timedelta(seconds=offset)).isoformat(),
-                      **({"products": products} if event == "MACKEREL_STARTED" else {})})
+                      **({"products": products, "pan_tare_kg": "3"} if event == "MACKEREL_STARTED" else {})})
             self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["step"]["thermal_exposure_duration"], 750)
         probes = [{"probe_id": f"probe-{n}", "product_id": f"fish-{n}", "calibration_status": "OK",
@@ -1028,7 +1121,7 @@ class CombiMealTests(unittest.IsolatedAsyncioTestCase):
                      "mass_kg": "0.13", "thickness_cm": "2.0" if n == 4 else "1.5"} for n in range(1, 5)]
         start = datetime.now(timezone.utc) - timedelta(seconds=1000)
         added = await self.client.post(path + "/events", headers=headers, json={"expected_version": 1,
-            "event": "MACKEREL_STARTED", "observed_at": start.isoformat(), "products": products})
+            "event": "MACKEREL_STARTED", "observed_at": start.isoformat(), "products": products, "pan_tare_kg": "2"})
         self.assertEqual(added.status_code, 200, added.text)
         for version, event, offset in ((2, "MACKEREL_PROGRAM_COMPLETED", 720), (3, "MACKEREL_UNLOADED", 720)):
             result = await self.client.post(path + "/events", headers=headers, json={"expected_version": version,
