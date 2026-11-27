@@ -548,11 +548,11 @@ async def get_combi_source_windows(meal_id: UUID, request: Request,
             "next_cursor": cursor + len(page) if cursor + len(page) < len(windows) else None}
 
 
-@router.post("", status_code=201)
-async def create_meal(request: Request, body: CreateMeal) -> dict:
-    session, store = await _context(request, write=True)
+def new_meal_records(body: CreateMeal, identifiers: tuple[str, str, str, str], now: str, *,
+                     water_target_ratio: Decimal = Decimal("1.20")) -> list[dict]:
+    """Build fresh records through the shared load/water rules; no storage or control."""
     try:
-        water = rice_water(body.dry_rice_kg, body.drained_rice_kg, body.added_water_kg)
+        water = rice_water(body.dry_rice_kg, body.drained_rice_kg, body.added_water_kg, target_ratio=water_target_ratio)
         load = oven_load(body.equipment_size, body.rack_count, body.pan_count,
                          body.drained_rice_kg + body.added_water_kg,
                          body.pan_tare_kg, body.rack_tare_kg)
@@ -560,8 +560,7 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
         raise HTTPException(422, str(exc)) from exc
     if load.violations:
         raise HTTPException(422, {"code": "PROFILE_REJECTED", "violations": load.violations})
-    meal_id, rice_id, transition_id, fish_id = (str(uuid4()) for _ in range(4))
-    now = _now()
+    meal_id, rice_id, transition_id, fish_id = identifiers
     records = [
         {"sk": "META", "meal_batch_id": meal_id, "rice_cooking_job_id": rice_id,
          "mode_transition_id": transition_id, "mackerel_cooking_job_id": fish_id,
@@ -595,6 +594,15 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
         value = getattr(body, name)
         if value is not None:
             records[0][name] = value
+    return records
+
+
+@router.post("", status_code=201)
+async def create_meal(request: Request, body: CreateMeal) -> dict:
+    session, store = await _context(request, write=True)
+    identifiers = tuple(str(uuid4()) for _ in range(4))
+    records = new_meal_records(body, identifiers, _now())
+    meal_id = identifiers[0]
     try:
         await _store_call(store, store.create_meal, _pk(session.subject, meal_id), records, session.epoch)
     except Conflict as exc:
