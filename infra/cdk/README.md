@@ -178,7 +178,7 @@ NAT Gateway와 공인 IPv4는 Task가 없어도 비용이 발생한다. `runtime
 
 두 서브넷 모두 자동 공인 IP 할당을 끈다. 인터넷 기본 경로는 공개 egress 서브넷의 IGW와 프라이빗 서브넷의 NAT로 분리한다. Task 보안 그룹에는 인바운드 규칙이 없고 TCP 443 송신만 허용한다. 이는 포트 제한이며 목적지 호스트 allowlist나 외부 AI 전송 승인, MQTT·OPC UA 수집기 네트워크를 제공하지 않는다.
 
-DynamoDB Endpoint는 같은 계정의 명시된 프로젝트 테이블/인덱스와 항목 작업만 통과시킨다. 서비스별 역할·사용자 키 범위는 별도로 제한해야 한다. S3 Endpoint는 지역 ECR 이미지 계층 버킷의 GetObject만 허용하므로 애플리케이션 격리 버킷 읽기/쓰기를 제공하지 않는다. 수집기를 이 서브넷에 연결하려면 실제 격리 버킷과 권한을 검토해 Endpoint 정책을 확장해야 한다. Endpoint 정책은 역할 권한을 부여하지 않는다.
+DynamoDB Endpoint는 같은 계정의 명시된 프로젝트 테이블/인덱스와 항목 작업 및 시작 시 검증에 필요한 `DescribeTable`만 통과시킨다. 원천 권한 정리 작업의 `foodtech-source-access-dev`도 명시된 목록에 포함한다. `ListTables`·테이블 생성/삭제·다른 계정/임의 테이블은 허용하지 않는다. [Gateway Endpoint 정책](https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-ddb.html)은 추가 접근 경계이며 역할 권한을 부여하지 않는다. 서비스별 역할·사용자 키 범위는 별도로 제한해야 한다. 합성 검사 통과는 실제 프라이빗 Task의 접근 검증이 아니며 적용·실행은 별도 승인 대상이다. S3 Endpoint는 지역 ECR 이미지 계층 버킷의 GetObject만 허용하므로 애플리케이션 격리 버킷 읽기/쓰기를 제공하지 않는다. 수집기를 이 서브넷에 연결하려면 실제 격리 버킷과 권한을 검토해 Endpoint 정책을 확장해야 한다.
 
 Cognito 도메인을 사용하는 기존 호스팅 로그인과의 호환성을 유지하기 위해 Cognito Interface Endpoint를 자동 추가하지 않는다. [Cognito PrivateLink 공식 제약](https://docs.aws.amazon.com/cognito/latest/developerguide/vpc-interface-endpoints.html)을 배포 때 다시 확인한다. ECR 이미지 계층의 S3 Gateway Endpoint 사용은 [ECR 공식 문서](https://docs.aws.amazon.com/AmazonECR/latest/userguide/vpc-endpoints.html)를 따른다.
 
@@ -260,4 +260,4 @@ python3 ../../tests/config/check_maintenance_publishing.py /tmp/foodtech-mainten
 
 실제 새 스택 적용·역할 검증을 별도 승인받은 뒤 `FOODTECH_COLLECTION_PUBLISH_ROLE_ARN` 및 기존 `FOODTECH_AWS_ACCOUNT_ID` 변수를 연결하고, 검토한 main 커밋의 publish를 명시적으로 실행한다. 빌드와 네트워크 차단 네 프로토콜 `--help`·libzstd 보안 하한 검사가 AWS 자격증명 획득보다 먼저다. 이후 실제 저장소의 ARN·불변 태그·AES256·게시 시 스캔을 확인한 뒤 Docker 로그인/게시하며, 커밋·run·attempt를 포함한 태그와 ECR digest manifest를 남긴다. digest·source·플랫폼·ZIP 체크섬·실제 스캔을 대조하기 전에는 런타임 후보를 확정하지 않는다. 이미지 게시 성공이나 `--help` 통과는 실제 AWS 수집·권한·프로토콜 통신·취약점 비영향을 증명하지 않는다.
 
-수집기 이미지는 Debian 13 trixie 기반 builder/runtime을 공유하고 stable libzstd 보안 하한을 검사한다. 이 하한이 모든 패키지 취약점 수정을 보장하지는 않는다. 실제 배포에서는 `collectionImageRepository`에 위 저장소 URI, `collectionImageDigest`에 검토한 digest를 전달한다. 게시 스택에는 Task·네트워크·스케줄이 없고 수집 실행 권한·기존 Guard 지적 및 이슈 #236의 실제 격리 시험은 별도다.
+수집기 이미지는 Debian 13 trixie 기반 builder/runtime을 공유하고 stable libzstd 보안 하한을 검사한다. 이 하한이 모든 패키지 취약점 수정을 보장하지는 않는다. 실제 배포에서는 `collectionImageRepository=foodtech/collection-dev`처럼 저장소 이름을 전달한다. 레지스트리 호스트가 포함된 URI가 아니며 CDK가 같은 계정·리전의 URI를 구성한다. `collectionImageDigest`에는 검토한 digest를 전달한다. 게시 스택에는 Task·네트워크·스케줄이 없고 수집 실행 권한·기존 Guard 지적 및 이슈 #236의 실제 격리 시험은 별도다.

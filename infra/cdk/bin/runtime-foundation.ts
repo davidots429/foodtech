@@ -13,6 +13,9 @@ export class RuntimeFoundationStack extends Stack {
 
   constructor(scope: Construct, id: string, props: StackProps, stage: string) {
     super(scope, id, props);
+    this.templateOptions.description = "Temporary development runtime network and image destination; explicit NAT selection, no workloads";
+    this.templateOptions.metadata = { AWSToolsMetrics: { AWSAgentToolkit: "aws-cloudformation@3" },
+      "com.aws.cloudformation.Context": { ref: [{ at: "infra/cdk/README.md", has: "Development runtime constraints and endpoint boundaries" }] } };
     if (Token.isUnresolved(this.account) || !/^\d{12}$/.test(this.account)) {
       throw new Error("runtime foundation requires an explicit verified CDK account");
     }
@@ -50,17 +53,23 @@ export class RuntimeFoundationStack extends Stack {
       subnets: [{ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }],
     });
     const tableNames = ["auth-sessions", "cooking-jobs", "data-flow", "ai-execution-registry",
-      "ai-credential-vault", "identity-vault", "link-capsule", "deletion-registry", "deletion-progress", "tier-requests"];
+      "ai-credential-vault", "identity-vault", "link-capsule", "deletion-registry", "deletion-progress", "tier-requests",
+      "source-access"];
     // Endpoint resource policies are an additional boundary, not role grants.
     dynamo.addToPolicy(new iam.PolicyStatement({
       principals: [new iam.AnyPrincipal()],
-      actions: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:PutItem",
+      // Runtime startup verifies table metadata before any workload processing.
+      actions: ["dynamodb:DescribeTable", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:PutItem",
         "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
       resources: tableNames.flatMap(name => {
         const arn = this.formatArn({ service: "dynamodb", resource: "table", resourceName: `foodtech-${name}-${stage}` });
         return [arn, `${arn}/index/*`];
       }), conditions: { StringEquals: { "aws:PrincipalAccount": this.account } },
     }));
+    (dynamo.node.defaultChild as ec2.CfnVPCEndpoint).addMetadata("com.aws.cloudformation.Context", {
+      why: "Permit runtime table verification and reviewed work through the private route without granting role permissions",
+      must: ["Same-account named project tables only; no table administration", "Keep task IAM and principal-key restrictions independent"],
+    });
     const s3 = vpc.addGatewayEndpoint("ImageLayerEndpoint", {
       service: ec2.GatewayVpcEndpointAwsService.S3,
       subnets: [{ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }],
