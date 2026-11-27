@@ -140,7 +140,7 @@ class GatewayService:
         if execution.feature != Feature.RECIPE_CORRECTION or not model or not model.local or \
                 model.provider != "ollama" or execution.estimated_cost_usd != 0:
             return ExecutionOutcome(execution_id, "DENIED", error_code="LOCAL_RECIPE_REQUIRED")
-        if isinstance(baseline, CombiBaseline):
+        if execution.combi_binding is not None or isinstance(baseline, CombiBaseline):
             # The registered source handoff currently proves Jeyuk records only.
             # Numeric proposal validation must not substitute for combi ownership,
             # completeness, transition and current/prior history settlement guards.

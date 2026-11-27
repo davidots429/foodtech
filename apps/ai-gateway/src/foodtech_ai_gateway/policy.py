@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
+from foodtech_contracts.combi_execution_binding import CombiExecutionBinding, validate_combi_execution
 
 
 class Feature(StrEnum):
@@ -61,6 +62,10 @@ class Execution:
     prior_job_version: int | None = None
     jeyuk_source_revision: int | None = None
     prior_source_revision: int | None = None
+    combi_binding: CombiExecutionBinding | None = None
+
+    def __post_init__(self):
+        validate_combi_execution(self)
 
 
 @dataclass(frozen=True)

@@ -105,6 +105,9 @@ class AtomicClient:
                         raise TransactionCanceledException()
                 if state.get("suspended") or "deletion_lock_request" in state:
                     raise TransactionCanceledException()
+                expected = self._decode(spec['ExpressionAttributeValues']).get(':expected_epoch')
+                if expected is not None and state.get('epoch') != expected:
+                    raise TransactionCanceledException()
                 continue
             if spec.get("ConditionExpression") == "attribute_not_exists(pk)":
                 if (key["pk"], key["sk"]) in self.table.items:

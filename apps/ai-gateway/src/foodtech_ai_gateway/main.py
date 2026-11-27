@@ -19,6 +19,7 @@ from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 from .downgrade_flow import DowngradeFlow, DowngradeError
 from foodtech_contracts.recipe_execution_scope import recipe_execution_observation_payload, recipe_execution_status_payload
 from foodtech_contracts.recipe_result_view import recipe_execution_result_payload
+from foodtech_contracts.combi_execution_binding import parse_combi_binding, combi_binding_payload
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -83,6 +84,7 @@ class PriorBinding(StrictBody):
     prior_job_version: int | None = Field(default=None, strict=True, ge=1)
     jeyuk_source_revision: int | None = Field(default=None, strict=True, ge=1, le=10**18)
     prior_source_revision: int | None = Field(default=None, strict=True, ge=1, le=10**18)
+    combi_binding: dict | None = None
 
     @model_validator(mode="after")
     def validate_prior(self):
@@ -91,6 +93,13 @@ class PriorBinding(StrictBody):
                 (self.prior_source_revision is not None and self.prior_job_id is None) or \
                 (self.jeyuk_source_revision is not None and getattr(self, "job_id", None) is None):
             raise ValueError("invalid prior job binding")
+        binding = parse_combi_binding(self.combi_binding)
+        if binding is not None and (self.jeyuk_source_revision is not None or self.prior_source_revision is not None or
+                getattr(self, 'comparison_id', None) is not None or
+                (str(getattr(self, 'job_id', None)), getattr(self, 'job_version', None),
+                 str(self.prior_job_id), self.prior_job_version) !=
+                (binding.current_job_id, binding.current_meal_version, binding.prior_job_id, binding.prior_meal_version)):
+            raise ValueError('combi and recipe references differ')
         return self
 
 
@@ -276,18 +285,21 @@ async def downgrade_preview(request: Request, body: DowngradePreview) -> dict:
         registry = _service(request).registry
         expected = (str(body.job_id) if body.job_id else None, body.job_version, body.comparison_id,
                     str(body.prior_job_id) if body.prior_job_id else None, body.prior_job_version,
-                    body.jeyuk_source_revision, body.prior_source_revision)
+                    body.jeyuk_source_revision, body.prior_source_revision,
+                    combi_binding_payload(parse_combi_binding(body.combi_binding)))
         parent = registry.execution(str(body.parent_execution_id))
         if not parent or parent.tenant_id != body.tenant_id or (parent.job_id, parent.job_version, parent.comparison_id, parent.prior_job_id, parent.prior_job_version,
-                parent.jeyuk_source_revision, parent.prior_source_revision) != expected:
+                parent.jeyuk_source_revision, parent.prior_source_revision, combi_binding_payload(parent.combi_binding)) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         result = DowngradeFlow(registry).preview(body.tenant_id, str(body.parent_execution_id))
         if (result["job_id"], result["job_version"], result["comparison_id"], result["prior_job_id"], result["prior_job_version"],
-                result["jeyuk_source_revision"], result["prior_source_revision"]) != expected:
+                result["jeyuk_source_revision"], result["prior_source_revision"], result.get('combi_binding')) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         return result
     except DowngradeError as error:
         raise HTTPException(409, error.code) from None
+    except ValueError:
+        raise HTTPException(409, 'JOB_BINDING_MISMATCH') from None
 
 
 @app.post("/internal/ai/recipe-requests", status_code=201)
@@ -311,7 +323,8 @@ async def recipe_request(request: Request, body: RecipeRequest) -> dict:
         model_id, None, "SYNTHETIC", Decimal("0"),
         job_id=str(body.job_id), job_version=body.job_version, comparison_id=body.comparison_id,
         prior_job_id=str(body.prior_job_id) if body.prior_job_id else None, prior_job_version=body.prior_job_version,
-        jeyuk_source_revision=body.jeyuk_source_revision, prior_source_revision=body.prior_source_revision))
+        jeyuk_source_revision=body.jeyuk_source_revision, prior_source_revision=body.prior_source_revision,
+        combi_binding=parse_combi_binding(body.combi_binding)))
     if model_id == UNCONFIGURED_TIER1:
         reason = "TIER1_MODEL_NOT_CONFIGURED"
     else:
@@ -319,6 +332,7 @@ async def recipe_request(request: Request, body: RecipeRequest) -> dict:
         decision = service.policy.authorize(Caller("business-api", body.tenant_id), execution_id)
         reason = "RECOMMENDATION_EVIDENCE_UNVERIFIED" if decision.allowed else decision.code
     return {"execution_id": execution_id, "state": "BLOCKED", "reason": reason,
+            **({'combi_binding': body.combi_binding} if body.combi_binding is not None else {}),
             "execution_available": False,
             "job_id": str(body.job_id), "job_version": body.job_version, "comparison_id": body.comparison_id,
             "prior_job_id": str(body.prior_job_id) if body.prior_job_id else None, "prior_job_version": body.prior_job_version,
@@ -333,17 +347,20 @@ async def downgrade_confirm(request: Request, quote_id: UUID, body: DowngradeCon
         quote = registry.quote(str(quote_id))
         expected = (str(body.job_id) if body.job_id else None, body.job_version, body.comparison_id,
                     str(body.prior_job_id) if body.prior_job_id else None, body.prior_job_version,
-                    body.jeyuk_source_revision, body.prior_source_revision)
+                    body.jeyuk_source_revision, body.prior_source_revision,
+                    combi_binding_payload(parse_combi_binding(body.combi_binding)))
         if not quote or quote.get("tenant_id") != body.tenant_id or \
                 (quote.get("job_id"), quote.get("job_version"), quote.get("comparison_id"),
                  quote.get("prior_job_id"), quote.get("prior_job_version"), quote.get("jeyuk_source_revision"),
-                 quote.get("prior_source_revision")) != expected:
+                 quote.get("prior_source_revision"), combi_binding_payload(parse_combi_binding(quote.get('combi_binding')))) != expected:
             raise DowngradeError("JOB_BINDING_MISMATCH")
         execution_id = DowngradeFlow(registry).confirm(
             body.tenant_id, str(quote_id), body.notice_version, body.quality_warning_acknowledged)
         return {"execution_id": execution_id, "state": "PENDING"}
     except DowngradeError as error:
         raise HTTPException(409, error.code) from None
+    except ValueError:
+        raise HTTPException(409, 'JOB_BINDING_MISMATCH') from None
 
 
 @app.post("/internal/ai/external/preview", status_code=201)

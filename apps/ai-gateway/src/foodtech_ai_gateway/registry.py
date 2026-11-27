@@ -22,6 +22,7 @@ from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, F
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from .prior_history_conditions import DynamoPriorHistoryConditions
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
+from foodtech_contracts.combi_execution_binding import parse_combi_binding
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -96,7 +97,8 @@ class DynamoRegistry:
         item = {**_key(kind, identifier), **fields, "version": 1}
         try:
             self.client.transact_write_items(TransactItems=[
-                self._active_tenant_guard(tenant),
+                self._active_tenant_guard(tenant, expected_epoch=(
+                    parse_combi_binding(fields['combi_binding']).auth_epoch if fields.get('combi_binding') is not None else None)),
                 {"Put": {"TableName": self.table_name, "Item": self._av(item),
                          "ConditionExpression": "attribute_not_exists(pk)"}},
             ], ClientRequestToken=str(uuid4()))
@@ -160,7 +162,9 @@ class DynamoRegistry:
         execution_fields["feature"] = execution.feature.value
         execution_fields["state"] = "PENDING"
         now = int(datetime.now(timezone.utc).timestamp())
-        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
+        items = [self._active_tenant_guard(execution.tenant_id, expected_epoch=(
+                    execution.combi_binding.auth_epoch if execution.combi_binding else None)),
+                 {"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
                   "UpdateExpression": "SET #s = :used, #v = #v + :one",
                   "ConditionExpression": "#s = :open AND #v = :v AND expires > :now AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
@@ -196,6 +200,7 @@ class DynamoRegistry:
                 quote.get("prior_job_id") != execution.prior_job_id or quote.get("prior_job_version") != execution.prior_job_version or \
                 quote.get("jeyuk_source_revision") != execution.jeyuk_source_revision or \
                 quote.get("prior_source_revision") != execution.prior_source_revision or \
+                parse_combi_binding(quote.get('combi_binding')) != execution.combi_binding or \
                 not execution.parent_execution_id or execution.parent_execution_id == execution.execution_id or \
                 consent.model_id != execution.model_id or quote.get("model_id") != execution.model_id or \
                 execution.feature != Feature.RECIPE_CORRECTION or execution.downgrade_consent_id != consent.consent_id or \
@@ -213,7 +218,9 @@ class DynamoRegistry:
         execution_fields = asdict(execution)
         execution_fields["feature"] = execution.feature.value
         execution_fields["state"] = "PENDING"
-        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
+        items = [self._active_tenant_guard(execution.tenant_id, expected_epoch=(
+                    execution.combi_binding.auth_epoch if execution.combi_binding else None)),
+                 {"Update": {"TableName": self.table_name, "Key": self._av(quote_key),
                   "UpdateExpression": "SET #s = :used, #v = #v + :one",
                   "ConditionExpression": "#s = :open AND #v = :v AND expires > :now AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},
@@ -276,7 +283,7 @@ class DynamoRegistry:
 
     @staticmethod
     def _execution_from_item(item: dict) -> Execution:
-        fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"} else item[name]
+        fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version", "jeyuk_source_revision", "prior_source_revision", "combi_binding"} else item[name]
                   for name in Execution.__dataclass_fields__}
         for name in ("job_version", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"):
             value = fields[name]
@@ -287,6 +294,7 @@ class DynamoRegistry:
                     raise ValueError('invalid execution binding version')
                 fields[name] = int(value)
         fields["feature"] = Feature(fields["feature"])
+        fields['combi_binding'] = parse_combi_binding(fields['combi_binding'])
         return Execution(**fields)
 
     def execution_snapshot(self, execution_id: str) -> ExecutionSnapshot | None:
@@ -387,7 +395,7 @@ class DynamoRegistry:
                 "ConditionExpression": "#v = :v", "ExpressionAttributeNames": {"#v": "version"},
                 "ExpressionAttributeValues": self._av({":v": version})}}
 
-    def _active_tenant_guard(self, tenant_id: str) -> dict:
+    def _active_tenant_guard(self, tenant_id: str, *, expected_epoch: int | None = None) -> dict:
         if not self.auth_table or not isinstance(tenant_id, str) or not tenant_id or len(tenant_id) > 128:
             raise RegistryConflict("tenant authentication state unavailable")
         condition = "(attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)"
@@ -396,6 +404,12 @@ class DynamoRegistry:
         if self.require_principal:
             condition = 'attribute_exists(pk) AND #epoch >= :zero AND #epoch < :max AND ' + condition
             values.update({':zero': 0, ':max': 2**63})
+            names['#epoch'] = 'epoch'
+        if expected_epoch is not None:
+            if type(expected_epoch) is not int or not 0 <= expected_epoch < 2**63:
+                raise RegistryConflict('invalid authenticated epoch')
+            condition = 'attribute_exists(pk) AND #epoch = :expected_epoch AND ' + condition
+            values[':expected_epoch'] = expected_epoch
             names['#epoch'] = 'epoch'
         check = {"TableName": self.auth_table,
                 "Key": self._av({"pk": f"USER#{tenant_id}"}),
@@ -434,7 +448,9 @@ class DynamoRegistry:
         version = self._read_versions.get(key["pk"])
         if version is None:
             raise RegistryConflict("execution was not read consistently")
-        items = [self._active_tenant_guard(execution.tenant_id), {"Update": {"TableName": self.table_name, "Key": self._av(key),
+        items = [self._active_tenant_guard(execution.tenant_id, expected_epoch=(
+                    execution.combi_binding.auth_epoch if execution.combi_binding else None)),
+                 {"Update": {"TableName": self.table_name, "Key": self._av(key),
                   "UpdateExpression": "SET #s = :reserved, #v = #v + :one, reserved_provider = :provider",
                   "ConditionExpression": "#s = :pending AND #v = :v AND tenant_id = :tenant",
                   "ExpressionAttributeNames": {"#s": "state", "#v": "version"},

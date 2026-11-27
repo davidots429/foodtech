@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
+from foodtech_contracts.combi_execution_binding import combi_binding_payload, parse_combi_binding
 
 from .policy import Caller, Consent, Execution, Feature, GatewayPolicy, Tier, UNCONFIGURED_TIER1, _active
 from .registry import RegistryConflict
@@ -23,7 +24,10 @@ class DowngradeFlow:
         self.registry = registry
 
     def _check(self, tenant: str, parent_id: str):
-        parent = self.registry.execution(parent_id)
+        try:
+            parent = self.registry.execution(parent_id)
+        except ValueError:
+            raise DowngradeError('PARENT_CONFIGURATION_INVALID') from None
         first_versions = self.registry.snapshot_versions()
         if not parent or parent.tenant_id != tenant or parent.feature != Feature.RECIPE_CORRECTION or \
                 parent.data_classification != "SYNTHETIC" or self.registry.execution_state(parent_id) != "PENDING":
@@ -67,7 +71,9 @@ class DowngradeFlow:
         now = datetime.now(timezone.utc)
         quote_id, execution_id = str(uuid4()), str(uuid4())
         expires = now + timedelta(minutes=5)
+        binding = {'combi_binding': combi_binding_payload(parent.combi_binding)} if parent.combi_binding else {}
         self.registry.create_quote(quote_id, {"quote_id": quote_id, "execution_id": execution_id,
+            **binding,
             "parent_execution_id": parent_id, "tenant_id": tenant, "purpose": PURPOSE,
             "source_model_id": parent.model_id,
             "job_id": parent.job_id, "job_version": parent.job_version, "comparison_id": parent.comparison_id,
@@ -76,6 +82,7 @@ class DowngradeFlow:
             "model_id": MODEL_ID, "notice_version": NOTICE_VERSION, "estimated_cost_usd": Decimal("0"),
             "created_at": now.isoformat(), "expires": int(expires.timestamp())})
         return {"quote_id": quote_id, "parent_execution_id": parent_id, "execution_id": execution_id,
+                **binding,
                 "job_id": parent.job_id, "job_version": parent.job_version, "comparison_id": parent.comparison_id,
             "prior_job_id": parent.prior_job_id, "prior_job_version": parent.prior_job_version,
             "jeyuk_source_revision": parent.jeyuk_source_revision, "prior_source_revision": parent.prior_source_revision,
@@ -94,6 +101,12 @@ class DowngradeFlow:
                 quote.get("expires", 0) <= int(datetime.now(timezone.utc).timestamp()):
             raise DowngradeError("NOTICE_UNAVAILABLE")
         parent = self._check(tenant, quote["parent_execution_id"])
+        try:
+            quoted_combi = parse_combi_binding(quote.get('combi_binding'))
+        except ValueError:
+            raise DowngradeError('NOTICE_UNAVAILABLE') from None
+        if quoted_combi != parent.combi_binding:
+            raise DowngradeError('PARENT_CHANGED')
         if (parent.job_id, parent.job_version, parent.comparison_id, parent.prior_job_id, parent.prior_job_version, parent.jeyuk_source_revision, parent.prior_source_revision) != (quote.get("job_id"), quote.get("job_version"), quote.get("comparison_id"), quote.get("prior_job_id"), quote.get("prior_job_version"), quote.get("jeyuk_source_revision"), quote.get("prior_source_revision")) or \
                 (quote.get("source_model_id") is not None and parent.model_id != quote["source_model_id"]):
             raise DowngradeError("PARENT_CHANGED")
@@ -102,7 +115,8 @@ class DowngradeFlow:
                               parent_execution_id=quote["parent_execution_id"],
                               job_id=parent.job_id, job_version=parent.job_version, comparison_id=parent.comparison_id,
                               prior_job_id=parent.prior_job_id, prior_job_version=parent.prior_job_version,
-                              jeyuk_source_revision=parent.jeyuk_source_revision, prior_source_revision=parent.prior_source_revision)
+                              jeyuk_source_revision=parent.jeyuk_source_revision, prior_source_revision=parent.prior_source_revision,
+                              combi_binding=parent.combi_binding)
         consent = Consent(quote_id, execution.execution_id, tenant, MODEL_ID, "TIER_DOWNGRADE", NOTICE_VERSION,
                           datetime.now(timezone.utc), parent_execution_id=execution.parent_execution_id,
                           quality_warning_acknowledged=True, transmission_location="LOCAL", estimated_cost_usd=Decimal("0"))
