@@ -261,3 +261,14 @@ python3 ../../tests/config/check_maintenance_publishing.py /tmp/foodtech-mainten
 실제 새 스택 적용·역할 검증을 별도 승인받은 뒤 `FOODTECH_COLLECTION_PUBLISH_ROLE_ARN` 및 기존 `FOODTECH_AWS_ACCOUNT_ID` 변수를 연결하고, 검토한 main 커밋의 publish를 명시적으로 실행한다. 빌드와 네트워크 차단 네 프로토콜 `--help`·libzstd 보안 하한 검사가 AWS 자격증명 획득보다 먼저다. 이후 실제 저장소의 ARN·불변 태그·AES256·게시 시 스캔을 확인한 뒤 Docker 로그인/게시하며, 커밋·run·attempt를 포함한 태그와 ECR digest manifest를 남긴다. digest·source·플랫폼·ZIP 체크섬·실제 스캔을 대조하기 전에는 런타임 후보를 확정하지 않는다. 이미지 게시 성공이나 `--help` 통과는 실제 AWS 수집·권한·프로토콜 통신·취약점 비영향을 증명하지 않는다.
 
 수집기 이미지는 Debian 13 trixie 기반 builder/runtime을 공유하고 stable libzstd 보안 하한을 검사한다. 이 하한이 모든 패키지 취약점 수정을 보장하지는 않는다. 실제 배포에서는 `collectionImageRepository=foodtech/collection-dev`처럼 저장소 이름을 전달한다. 레지스트리 호스트가 포함된 URI가 아니며 CDK가 같은 계정·리전의 URI를 구성한다. `collectionImageDigest`에는 검토한 digest를 전달한다. 게시 스택에는 Task·네트워크·스케줄이 없고 수집 실행 권한·기존 Guard 지적 및 이슈 #236의 실제 격리 시험은 별도다.
+
+
+## C# Mock 이미지의 수동 게시
+
+Mock은 테스트·시연용 별도 .NET 10 CLI이며 고객/관리자 서비스나 수집기 이미지에 포함하지 않는다. `provisionMockPublishing=true`로 선택하는 `FoodtechMockPublishing-dev`는 별도 ECR `foodtech/mock-dev`와 main 전용 게시 역할 `foodtech-mock-publish-dev`만 준비한다. 기존 GitHub OIDC provider와 실제 main inspect subject를 기본값 없는 매개변수로 받으며 다른 게시 역할을 확장하지 않는다. `mockImageRepositoryMode=create`는 AES256·불변 태그·게시 시 스캔·Retain 저장소를 생성한다. `existing`은 그 이름의 저장소를 참조만 하고 소유권·설정·정책을 변경하지 않는다. 기본 앱 실행에서는 선택되지 않는다.
+
+`publish-mock-image.yml`은 수동 실행 전용이고 기본 operation은 `inspect`다. main의 공개 OIDC claim 확인은 AWS 자격증명을 획득하거나 이미지를 빌드/게시하지 않는다. 게시 전 검토한 `FOODTECH_AWS_ACCOUNT_ID`와 `FOODTECH_MOCK_PUBLISH_ROLE_ARN` 변수를 연결해야 한다. `publish`는 신뢰한 main source를 linux/amd64로 빌드한 뒤 네트워크·쓰기·capability를 제한한 컨테이너에서 실제 C# fixture 해시와 OS를 검사한다. 그 후 단기 AWS 자격증명을 얻어 실제 저장소 ARN·URI·암호화·태그 불변성·스캔 설정을 검증하고 source/run/attempt 태그로 게시한다. manifest의 source/digest를 실제 ECR과 대조하고 새 이미지 스캔을 확인해야 한다.
+
+.NET 10의 [기본 Linux 이미지는 Ubuntu 24.04이며 Debian 이미지는 제공되지 않는다](https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/10.0/default-images-use-ubuntu). 기존 Mock 이미지도 이 기본값을 사용해 왔으며 `10.0.402-noble` SDK와 `10.0-noble` 런타임으로 명시해 암묵적 OS 선택을 없앤다. 프로젝트 업무 서버의 Debian 13 기준을 Mock 이미지가 충족한다고 표현하지 않는다. 실제 Mock 서버 시험은 이 OS·스캔 결과·네트워크·인증서/비밀 주입을 포함해 별도로 검토한다. Debian 13이 필요한 배포에 이 이미지를 그대로 사용하지 않는다.
+
+게시 역할은 지정 저장소 한 곳의 ECR 게시·메타데이터 확인과 토큰 발급만 허용하며 Task 실행·PassRole·네트워크·장비/업무 데이터 권한을 갖지 않는다. Bash/AWS CLI 게시 흐름의 API를 공식 ECR 단일 저장소 push 정책과 Service Authorization Reference에 대조하며 pull-through cache의 선택적 저장소 생성·import·태그 권한은 포함하지 않는다. 새 저장소/권한 적용·변수 연결·실제 게시에는 구체적인 별도 승인이 필요하다. fixture 해시 통과는 모든 Mock 프로토콜의 서버 호환성이나 실제 AWS 실행 검증이 아니다.

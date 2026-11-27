@@ -25,6 +25,8 @@ import { RecipeHistoryAccessStack } from "./recipe-history-access.js";
 import { SourceGrantRuntimeStack } from "./source-grant-runtime.js";
 import { CollectionPublishingStack } from "./collection-publishing.js";
 
+import { MockPublishingStack } from "./mock-publishing.js";
+
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
 if (!/^[a-z0-9-]+$/.test(stage)) throw new Error("stage must be lowercase letters, numbers or hyphens");
@@ -35,6 +37,11 @@ if (app.node.tryGetContext("provisionCollectionPublishing") === "true") {
     throw new Error("manual OIDC collection publishing and legacy CodeBuild publishing must not be selected together");
   }
   const publishing = new CollectionPublishingStack(app, `FoodtechCollectionPublishing-${stage}`, { env }, stage);
+  Tags.of(publishing).add("Project", "foodtech");
+  Tags.of(publishing).add("Environment", stage);
+}
+if (app.node.tryGetContext("provisionMockPublishing") === "true") {
+  const publishing = new MockPublishingStack(app, `FoodtechMockPublishing-${stage}`, { env }, stage);
   Tags.of(publishing).add("Project", "foodtech");
   Tags.of(publishing).add("Environment", stage);
 }
