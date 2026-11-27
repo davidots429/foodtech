@@ -4,6 +4,8 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import { Construct } from "constructs";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Separate finite Mock/collector definitions; never starts or schedules tasks. */
 export class PrivateRestTrialStack extends Stack {
@@ -33,6 +35,10 @@ export class PrivateRestTrialStack extends Stack {
       description: `Reviewed immutable ${repository} image with private REST trial capabilities`,
     });
     const mockImage = image("MockImageUri", "mock"), collectorImage = image("CollectorImageUri", "collection");
+    const mockCommand: unknown = JSON.parse(readFileSync(join(__dirname, "../../containers/private-rest-trial-command.json"), "utf8"));
+    if (!Array.isArray(mockCommand) || !mockCommand.every(value => typeof value === "string")) {
+      throw new Error("private REST Mock command must be a string array");
+    }
     // Provision/populate the two independent Secrets under a separate reviewed
     // procedure. No plaintext, generated credential, or Secret creation here.
     const secret = (name: string, suffix: string) => new CfnParameter(this, name, {
@@ -138,7 +144,7 @@ export class PrivateRestTrialStack extends Stack {
       { DOTNET_EnableDiagnostics: "0", DOTNET_CLI_TELEMETRY_OPTOUT: "1" },
       { FOODTECH_MOCK_SERVER_CERT_PEM: "server_cert_pem", FOODTECH_MOCK_SERVER_KEY_PEM: "server_key_pem",
         FOODTECH_MOCK_CLIENT_ID: "client_id", FOODTECH_MOCK_CLIENT_SECRET: "client_secret" },
-      ["serve", "--fixture", "fixtures/rest-invalid-utf8-single-v1.json", "--certificate-source", "injected", "--max-runtime", "600", "--port", "8443"]);
+      mockCommand);
     definition("collector", "collection", collector, collectorSecret.valueAsString, collectorKey.valueAsString, collectorImage.valueAsString,
       { FOODTECH_STAGE: "dev", FOODTECH_COLLECTION_PROTOCOL: "rest", FOODTECH_COLLECTION_RUN_MODE: "private-rest-trial",
         FOODTECH_REST_TRIAL_ENABLED: "true", FOODTECH_REST_TRIAL_MAX_SECONDS: "60",

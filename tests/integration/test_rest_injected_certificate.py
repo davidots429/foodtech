@@ -1,5 +1,6 @@
 """Exercise the C# REST server with injected TLS material and a finite lifetime."""
 import os
+import json
 from pathlib import Path
 import shutil
 import socket
@@ -51,10 +52,18 @@ class InjectedRestCertificateTests(unittest.TestCase):
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 0))
             port = probe.getsockname()[1]
-        args = ['dotnet', str(DLL), 'serve', '--fixture', str(FIXTURE), '--port', str(port),
-            '--certificate-source', source, '--fault', 'invalid-utf8']
-        if runtime is not None:
-            args += ['--max-runtime', runtime]
+        # Exercise the deployed Task command; only local paths/port/deadline and
+        # the explicit legacy PFX test differ from the reviewed runtime command.
+        command = json.loads((ROOT / 'infra/containers/private-rest-trial-command.json').read_text())
+        command[command.index('--fixture') + 1] = str(FIXTURE)
+        command[command.index('--port') + 1] = str(port)
+        command[command.index('--certificate-source') + 1] = source
+        index = command.index('--max-runtime')
+        if runtime is None:
+            del command[index:index + 2]
+        else:
+            command[index + 1] = runtime
+        args = ['dotnet', str(DLL), *command]
         return args, f'https://localhost:{port}'
 
     def assert_redacted(self, output):

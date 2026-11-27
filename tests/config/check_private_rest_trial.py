@@ -110,6 +110,10 @@ def check(template):
             assert container['MountPoints'] == [{'ContainerPath': '/run/foodtech-collection', 'ReadOnly': False, 'SourceVolume': 'collector-ca'}]
         else:
             assert '--max-runtime' in container['Command'] and '600' in container['Command']
+            command = container['Command']
+            assert command[command.index('--bind-address') + 1] == '0.0.0.0'
+            assert command[command.index('--fault') + 1] == 'invalid-utf8'
+            assert command[command.index('--fixture') + 1] == 'fixtures/rest-invalid-utf8-single-v1.json'
             assert 'MountPoints' not in container
         expected_actions = {'ecr:GetAuthorizationToken', 'ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer',
             'logs:CreateLogStream', 'logs:PutLogEvents', 'secretsmanager:GetSecretValue', 'kms:Decrypt'}
@@ -141,6 +145,8 @@ def negative_checks(template):
     for key, resource in template['Resources'].items():
         if resource['Type'] == 'AWS::ECS::TaskDefinition':
             mutations += [(key, 'readonly'), (key, 'shared-role'), (key, 'shared-secret')]
+            if resource['Properties']['ContainerDefinitions'][0]['Name'] == 'mock':
+                mutations += [(key, 'loopback-mock'), (key, 'missing-fault')]
         elif resource['Type'] == 'AWS::S3::BucketPolicy':
             mutations += [(key, 'remove-denial'), (key, 'remove-tls')]
         elif resource['Type'] == 'AWS::S3::Bucket':
@@ -159,6 +165,13 @@ def negative_checks(template):
         elif mutation == 'wildcard-resource':
             statement = next(s for s in props['PolicyDocument']['Statement'] if s['Resource'] != '*')
             statement['Resource'] = '*'
+        elif mutation == 'loopback-mock':
+            command = props['ContainerDefinitions'][0]['Command']
+            command[command.index('--bind-address') + 1] = '127.0.0.1'
+        elif mutation == 'missing-fault':
+            command = props['ContainerDefinitions'][0]['Command']
+            index = command.index('--fault')
+            del command[index:index + 2]
         try:
             check(edited)
         except (AssertionError, KeyError, TypeError, ValueError):
