@@ -272,3 +272,19 @@ Mock은 테스트·시연용 별도 .NET 10 CLI이며 고객/관리자 서비스
 .NET 10의 [기본 Linux 이미지는 Ubuntu 24.04이며 Debian 이미지는 제공되지 않는다](https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/10.0/default-images-use-ubuntu). 기존 Mock 이미지도 이 기본값을 사용해 왔으며 `10.0.402-noble` SDK와 `10.0-noble` 런타임으로 명시해 암묵적 OS 선택을 없앤다. 프로젝트 업무 서버의 Debian 13 기준을 Mock 이미지가 충족한다고 표현하지 않는다. 실제 Mock 서버 시험은 이 OS·스캔 결과·네트워크·인증서/비밀 주입을 포함해 별도로 검토한다. Debian 13이 필요한 배포에 이 이미지를 그대로 사용하지 않는다.
 
 게시 역할은 지정 저장소 한 곳의 ECR 게시·메타데이터 확인과 토큰 발급만 허용하며 Task 실행·PassRole·네트워크·장비/업무 데이터 권한을 갖지 않는다. Bash/AWS CLI 게시 흐름의 API를 공식 ECR 단일 저장소 push 정책과 Service Authorization Reference에 대조하며 pull-through cache의 선택적 저장소 생성·import·태그 권한은 포함하지 않는다. 새 저장소/권한 적용·변수 연결·실제 게시에는 구체적인 별도 승인이 필요하다. fixture 해시 통과는 모든 Mock 프로토콜의 서버 호환성이나 실제 AWS 실행 검증이 아니다.
+
+## Private REST trial preparation
+
+`provisionPrivateRestTrial=true`는 `FoodtechPrivateRestTrial-dev`에 서로 독립적인 Mock·수집기 Fargate Task 정의와 역할 4개(Task/실행 역할 각각), 7일 로그 그룹 2개, 전용 격리 버킷을 준비한다. Task·서비스·예약을 실행하거나 네트워크를 생성하지 않는다. 기존 `foodtech-data-flow-dev`와 `foodtech-ordered-dev.fifo`는 참조만 한다. legacy 수집 인프라와 중복 생성하지 않도록 `provisionDataFlow=true`를 함께 선택하려면 `collectionInfrastructureMode=deferred`가 필요하다. 기본 앱에서는 선택되지 않는다.
+
+Mock Task 역할에는 업무 AWS 권한이 없다. 수집기 역할은 지정 개발 표의 STREAM/MOCK/INGESTION_DLQ 키에 필요한 Get/Put/Update, STREAM 키에만 Query/Delete, 지정 FIFO에 SendMessage, 격리 버킷 ingestion/*에 TLS·AES256 PutObject만 가진다. 목록 조회·원본 다운로드·다른 표·Secret 조회·KMS 복호화 권한을 주지 않는다. SDK 소스의 IAM Autopilot 초안에서 선택한 기능에 필요한 권한만 제한했으며 복제·ObjectLock·ACL·다른 저장 암호화 등 선택하지 않은 API 변형의 권한을 포함하지 않는다. 수집기 코드의 트랜잭션은 구성 Put/Update 권한으로 평가된다.
+
+각 실행 역할은 자신의 ECR 저장소 이미지 읽기·자신의 로그 stream 쓰기·자신의 Secret 읽기와 해당 Secret의 KMS 복호화만 가진다. `MockSecretArn`과 `CollectorSecretArn`은 같은 계정/리전의 별도 이름으로 제한하고 각각 `MockSecretKeyArn`/`CollectorSecretKeyArn`의 정확한 고객 관리 키를 받는다. 복호화는 [Secrets Manager의 ViaService와 SecretARN 문맥](https://docs.aws.amazon.com/secretsmanager/latest/userguide/security-encryption.html)으로 제한한다. Secret 필드 선택이 같은 Secret 내 다른 필드의 IAM 접근을 막지는 않으므로 서버 개인키와 수집기 CA를 별도 Secret에 둔다. 이 스택은 Secret/키를 생성하거나 값을 받지 않는다. 별도로 검토한 생성·암호화·갱신·감사·삭제 절차 및 실 ARN이 필요하며 실제 값은 template/인자/로그에 넣지 않는다. ECS 역할 신뢰는 [공식 지원 범위](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html)에 맞춰 동일 계정·리전의 ECS SourceArn으로 제한한다.
+
+`MockImageUri`·`CollectorImageUri`는 각각 지정 개발 저장소의 sha256 digest URI를 명시하며 기본값이 없다. 기존 게시 이미지는 새 주입 인증서/실행 명령을 포함하지 않으므로 그대로 시험하지 않는다. Mock은 잘못된 UTF-8 한 건을 제공하고 최대 600초 뒤 종료한다. 수집기는 명시적 trial UUID·시도 구분·사설 Mock origin을 RunTask override로 받아 최대 60초 실행한다. Task 정의에 가짜 기본 주소나 자동 시도를 넣지 않는다. 실제 IP SAN을 가진 짧은 수명 인증서와 동일 OAuth 정보를 두 Secret에 주입한 뒤 Fargate 플랫폼 1.4.0 이상으로 실행해야 한다.
+
+`QuarantineWritesEnabled` 기본값 `false`는 수집기 역할의 격리 PutObject를 명시적으로 거부한다. 이 단계에서 실제 S3 AccessDenied와 커서/manifest 미생성을 확인한다. 별도 검토한 변경 세트로 `true`로 바꾸면 이 시험용 Deny 한 건만 제거되며 영구 TLS 거부·IAM 범위·공개 차단·AES256은 유지된다. 동일 trial UUID로 재시도한 뒤 원본 바이트·암호화·manifest·커서를 대조하고 소유한 합성 자료만 정리한다. 버킷은 Retain·ACL 비활성·비버전 관리이며 자동 삭제 custom resource는 없다. 이 오류 한 건 시험으로 정상 SQS 송신이나 모든 프로토콜의 실행 성공을 주장하지 않는다.
+
+네트워크는 별도 `FoodtechRuntimeFoundation-dev`의 `runtimeCollectionMode=private-rest-trial` 옵션이다. 기존 유지보수 SG는 그대로 두고 수집기/Mock SG를 추가한다. 수집기→Mock TCP8443과 ECS/AWS API용 TCP443 송신을 허용하며 공용 인바운드는 없다. 사설 Task의 `assignPublicIp=DISABLED`를 실행 시 확인한다. S3 Gateway Endpoint에 정확한 수집기 역할·전용 버킷 ingestion/*·같은 ResourceAccount·AES256 PutObject만 추가한다. AWS 소유 ECR layer 다운로드 statement는 그대로 둔다. 옵션을 생략하면 기존 네트워크와 endpoint 정책을 유지한다.
+
+두 Task는 UID 10001·읽기 전용 root filesystem·capability ALL 제거로 정의한다. 수집기 CA만 이미지 VOLUME과 일치하는 `/run/foodtech-collection` bind volume에 0600으로 생성한다. Mock 서버 개인키 파일은 만들지 않는다. root filesystem을 쓰기 가능하게 바꾸거나 TLS 검증을 끄는 방식으로 실행 실패를 우회하지 않는다. 실제 적용 전에는 템플릿·권한 분석·Guard 지적·새 이미지 스캔·Secret 준비·시간/비용/정리 범위를 검토하고 구체적인 실행 승인을 받아야 한다. 이 구성의 생성이나 로컬 검사를 실제 Task 검증 완료로 취급하지 않는다.

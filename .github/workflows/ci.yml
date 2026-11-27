@@ -83,6 +83,13 @@ jobs:
             exit 1
           fi
           python3 -c "from pathlib import Path; assert 'runtimeEgressMode=nat is required' in Path('/tmp/foodtech-runtime-rejected.log').read_text()"
+      - name: Check separate private REST trial tasks and network
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechPrivateRestTrial-dev --strict --no-lookups -c provisionPrivateRestTrial=true --output /tmp/foodtech-private-rest-trial-cdk > /dev/null
+          python3 ../../tests/config/check_private_rest_trial.py /tmp/foodtech-private-rest-trial-cdk/FoodtechPrivateRestTrial-dev.template.json
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRuntimeFoundation-dev --strict --no-lookups -c provisionRuntimeFoundation=true -c runtimeEgressMode=nat -c runtimeImageRepositoryMode=existing -c runtimeCollectionMode=private-rest-trial --output /tmp/foodtech-private-rest-network-cdk > /dev/null
+          python3 ../../tests/config/check_runtime_foundation.py /tmp/foodtech-private-rest-network-cdk/FoodtechRuntimeFoundation-dev.template.json --existing-repository --private-rest-trial
       - run: CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiExecutionRegistry-dev --strict -c provisionAiExecutionRegistry=true --output /tmp/foodtech-ai-registry-retention-cdk > /dev/null
         working-directory: infra/cdk
       - run: python3 tests/config/check_ai_registry_retention.py /tmp/foodtech-ai-registry-retention-cdk/FoodtechAiExecutionRegistry-dev.template.json

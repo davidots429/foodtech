@@ -26,12 +26,18 @@ import { SourceGrantRuntimeStack } from "./source-grant-runtime.js";
 import { CollectionPublishingStack } from "./collection-publishing.js";
 
 import { MockPublishingStack } from "./mock-publishing.js";
+import { PrivateRestTrialStack } from "./private-rest-trial.js";
 
 const app = new App();
 const stage = app.node.tryGetContext("stage") ?? "dev";
 if (!/^[a-z0-9-]+$/.test(stage)) throw new Error("stage must be lowercase letters, numbers or hyphens");
 const env = { account: process.env.CDK_DEFAULT_ACCOUNT, region: "ap-southeast-2" };
 const principalProvisioning = app.node.tryGetContext("principalProvisioningEnabled") ?? "false";
+if (app.node.tryGetContext("provisionPrivateRestTrial") === "true") {
+  const trial = new PrivateRestTrialStack(app, `FoodtechPrivateRestTrial-${stage}`, { env }, stage);
+  Tags.of(trial).add("Project", "foodtech");
+  Tags.of(trial).add("Environment", stage);
+}
 if (app.node.tryGetContext("provisionCollectionPublishing") === "true") {
   if (app.node.tryGetContext("provisionCollectionImagePublishing") === "true") {
     throw new Error("manual OIDC collection publishing and legacy CodeBuild publishing must not be selected together");

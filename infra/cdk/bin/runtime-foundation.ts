@@ -26,6 +26,13 @@ export class RuntimeFoundationStack extends Stack {
     if (repositoryMode !== "create" && repositoryMode !== "existing") {
       throw new Error("runtimeImageRepositoryMode must be create or existing");
     }
+    const collectionMode = this.node.tryGetContext("runtimeCollectionMode") ?? "disabled";
+    if (collectionMode !== "disabled" && collectionMode !== "private-rest-trial") {
+      throw new Error("runtimeCollectionMode must be disabled or private-rest-trial");
+    }
+    if (collectionMode === "private-rest-trial" && (stage !== "dev" || this.region !== "ap-southeast-2")) {
+      throw new Error("private REST collection networking requires the development project region");
+    }
     const zone = new CfnParameter(this, "AvailabilityZone", {
       type: "AWS::EC2::AvailabilityZone::Name",
       description: "Reviewed ap-southeast-2 availability zone for the single-AZ development runtime",
@@ -77,6 +84,30 @@ export class RuntimeFoundationStack extends Stack {
     // ECR image layer downloads use the regional ECR-owned S3 bucket.
     s3.addToPolicy(new iam.PolicyStatement({ principals: [new iam.AnyPrincipal()],
       actions: ["s3:GetObject"], resources: [`arn:${this.partition}:s3:::prod-${this.region}-starport-layer-bucket/*`] }));
+
+    if (collectionMode === "private-rest-trial") {
+      const collector = new ec2.SecurityGroup(this, "CollectionTaskSecurityGroup", {
+        vpc, description: "Private REST collector: HTTPS AWS egress and Mock-only 8443",
+        allowAllOutbound: false, allowAllIpv6Outbound: false,
+      });
+      const mock = new ec2.SecurityGroup(this, "MockTaskSecurityGroup", {
+        vpc, description: "Private REST Mock: 8443 only from collector, HTTPS AWS egress",
+        allowAllOutbound: false, allowAllIpv6Outbound: false,
+      });
+      collector.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "AWS API and ECS agent HTTPS via NAT");
+      mock.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "ECS agent HTTPS via NAT");
+      collector.addEgressRule(mock, ec2.Port.tcp(8443), "Only the private REST Mock");
+      mock.addIngressRule(collector, ec2.Port.tcp(8443), "Only the private REST collector");
+      // Keep the AWS-owned image-layer statement independent: its bucket does
+      // not belong to this account. This is a boundary, not an IAM role grant.
+      s3.addToPolicy(new iam.PolicyStatement({ principals: [new iam.AnyPrincipal()],
+        actions: ["s3:PutObject"], resources: [`arn:aws:s3:::foodtech-ingestion-quarantine-${this.account}-dev/ingestion/*`],
+        conditions: { StringEquals: { "aws:PrincipalArn": `arn:aws:iam::${this.account}:role/foodtech-collection-task-dev`,
+          "aws:ResourceAccount": this.account, "s3:x-amz-server-side-encryption": "AES256" } },
+      }));
+      new CfnOutput(this, "CollectionTaskSecurityGroupId", { value: collector.securityGroupId });
+      new CfnOutput(this, "MockTaskSecurityGroupId", { value: mock.securityGroupId });
+    }
 
     const cluster = new ecs.Cluster(this, "RuntimeCluster", {
       vpc, clusterName: `foodtech-runtime-${stage}`,
