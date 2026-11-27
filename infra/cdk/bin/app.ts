@@ -23,6 +23,7 @@ import { SourceGrantDeletionAccessStack } from "./source-grant-deletion-access.j
 import { RecipeSourceAccessStack, RecipeSourceCatalogStack } from "./recipe-source-access.js";
 import { RecipeHistoryAccessStack } from "./recipe-history-access.js";
 import { CombiRecipeReadAccessStack } from "./combi-read-access.js";
+import { CombiExecutionReadAccessStack } from "./combi-execution-access.js";
 import { SourceGrantRuntimeStack } from "./source-grant-runtime.js";
 import { CollectionPublishingStack } from "./collection-publishing.js";
 
@@ -93,6 +94,12 @@ if (app.node.tryGetContext("provisionSourceGrantDeletionAccess") === "true") {
 
 if (app.node.tryGetContext("provisionRecipeHistoryAccess") === "true") {
   const access = new RecipeHistoryAccessStack(app, `FoodtechRecipeHistoryAccess-${stage}`, { env }, stage);
+  Tags.of(access).add("Project", "foodtech");
+  Tags.of(access).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionCombiExecutionReadAccess") === "true") {
+  const access = new CombiExecutionReadAccessStack(app, `FoodtechCombiExecutionReadAccess-${stage}`, { env }, stage);
   Tags.of(access).add("Project", "foodtech");
   Tags.of(access).add("Environment", stage);
 }

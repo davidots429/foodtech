@@ -1,0 +1,39 @@
+{
+  "Policies": [
+    {
+      "Policy": {
+        "Id": "IamPolicyAutopilot",
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [
+              "dynamodb:GetItem",
+              "dynamodb:ReadDataForReplication"
+            ],
+            "Resource": [
+              "arn:aws:dynamodb:ap-southeast-2:573693340100:table/*"
+            ]
+          },
+          {
+            "Effect": "Allow",
+            "Action": [
+              "kms:Decrypt"
+            ],
+            "Resource": [
+              "arn:aws:kms:ap-southeast-2:573693340100:key/*"
+            ],
+            "Condition": {
+              "StringEquals": {
+                "kms:ViaService": [
+                  "dynamodb.ap-southeast-2.amazonaws.com"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "PolicyType": "Identity"
+    }
+  ]
+}
