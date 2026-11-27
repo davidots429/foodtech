@@ -352,3 +352,27 @@ Guard currently reports fixed resource names (required by the runtime role contr
 and wildcard-resource usage (STS identity observation and ECR authorization token).
 The raw findings remain visible; no previous deployment exception is reused.
 Review these findings and effective permissions before any actual application.
+
+### Manual meal refresh task registration
+
+`provisionMealRefreshRuntime=true` requires `principalProvisioningEnabled=true`,
+the development stage and an explicit account. It registers one Fargate Task
+definition and, by default, a retained seven-day `/foodtech/dev/meal-refresh` log
+group. It creates no roles, network, service, schedule, table or index and does
+not invoke `RunTask`. TaskRoleArn and ExecutionRoleArn accept only the separate
+reviewed meal-refresh roles in that account. ImageUri accepts only a maintenance
+repository digest; the caller must verify its manifest, source guards and scan.
+
+The explicit command `python -m foodtech_business_api.meal_refresh_runtime`
+uses strict principal checks, 25-item pages, at most 100 pages per shard and a
+600-second pass deadline. External observation and stopping stalled Tasks remain
+separate safeguards. Registration does not establish working service access,
+index completeness, writer coordination or deletion safety.
+
+The manual and disabled schedule stacks share the existing log path and Task
+family. `mealRefreshLogGroupMode=create` preserves the schedule's existing
+logical resource ID. After separately verifying an existing group's retention,
+configuration and ownership, use `mealRefreshLogGroupMode=existing` to reference
+it. Selecting both stacks in create mode is rejected. Existing mode performs no
+existence check or CloudFormation import. Each stack owns its own Task revision;
+when moving to scheduling, review and pin the intended revision explicitly.

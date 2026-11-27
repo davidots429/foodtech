@@ -131,6 +131,27 @@ jobs:
         run: |
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechStandardizationRuntime-dev --strict -c provisionStandardizationRuntime=true -c principalProvisioningEnabled=true -c standardizationTaskRoleArn=arn:aws:iam::123456789012:role/FoodtechMinimalDataFlow-dev-StandardizationWorkerTask-reviewed --output /tmp/foodtech-standardization-runtime-cdk > /dev/null
           python3 ../../tests/config/check_standardization_runtime.py /tmp/foodtech-standardization-runtime-cdk/FoodtechStandardizationRuntime-dev.template.json 123456789012
+      - name: Check manual meal refresh registration
+        working-directory: infra/cdk
+        run: |
+          for mode in create existing; do
+            CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshRuntime-dev --strict --no-lookups -c provisionMealRefreshRuntime=true -c principalProvisioningEnabled=true -c mealRefreshLogGroupMode="$mode" --output "/tmp/foodtech-meal-manual-$mode" > /dev/null
+            python3 ../../tests/config/check_meal_refresh_runtime.py "/tmp/foodtech-meal-manual-$mode/FoodtechMealRefreshRuntime-dev.template.json" "$mode"
+          done
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshRuntime-dev FoodtechMealRefreshSchedule-dev --strict --no-lookups -c provisionMealRefreshRuntime=true -c provisionMealRefreshSchedule=true -c principalProvisioningEnabled=true -c mealRefreshLogGroupMode=existing --output /tmp/foodtech-meal-shared-logs > /dev/null
+          python3 ../../tests/config/check_meal_refresh_runtime.py /tmp/foodtech-meal-shared-logs/FoodtechMealRefreshRuntime-dev.template.json existing
+          python3 ../../tests/config/check_meal_refresh_schedule.py /tmp/foodtech-meal-shared-logs/FoodtechMealRefreshSchedule-dev.template.json true
+          for rejection in strict stage collision logmode; do
+            args='-c provisionMealRefreshRuntime=true -c principalProvisioningEnabled=true'
+            case "$rejection" in
+              strict) args='-c provisionMealRefreshRuntime=true'; expected='requires principalProvisioningEnabled=true' ;;
+              stage) args="$args -c stage=prod"; expected='requires dev and an explicit verified account' ;;
+              collision) args="$args -c provisionMealRefreshSchedule=true"; expected='must not both create the shared log group' ;;
+              logmode) args="$args -c mealRefreshLogGroupMode=invalid"; expected='mealRefreshLogGroupMode must be create or existing' ;;
+            esac
+            if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth --strict --no-lookups $args --output "/tmp/foodtech-meal-rejected-$rejection" > "/tmp/foodtech-meal-rejected-$rejection.log" 2>&1; then exit 1; fi
+            EXPECTED="$expected" REJECTION="$rejection" python3 -c "import os; from pathlib import Path; assert os.environ['EXPECTED'] in Path('/tmp/foodtech-meal-rejected-' + os.environ['REJECTION'] + '.log').read_text()"
+          done
       - name: Check meal refresh role boundaries
         working-directory: infra/cdk
         run: |
