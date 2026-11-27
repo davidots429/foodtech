@@ -26,6 +26,7 @@ from foodtech_contracts.combi_quality_load import classify as classify_quality_l
 from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
 from .combi_quality_sample import current_quality
+from .combi_candidate_guards import transition_minimum, require_fresh_rice_preparation
 
 router = APIRouter(prefix="/api/customer/combi-meals", tags=["combi-meals"])
 
@@ -328,6 +329,11 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
         raise HTTPException(413, "합성 원천 자료의 크기 제한을 초과했습니다.")
     if body.expected_cursor != count or meal.get("source") or (state and state["device_id"] != body.device_id):
         raise HTTPException(409, "수집 순서 또는 배치 상태가 변경되었습니다.")
+    rows = {row['sk']: row for row in await _store_call(store, store.read_meal, pk)}
+    try:
+        minimum_transition_seconds = transition_minimum(meal, rows)
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(409, "보존된 후보의 전환 조건을 확인할 수 없습니다.") from None
     jobs = {"RICE": meal["rice_cooking_job_id"], "TRANSITION": meal["mode_transition_id"],
             "MACKEREL": meal["mackerel_cooking_job_id"]}
     validator = CombiStreamValidator(str(meal_id), body.device_id, jobs)
@@ -366,7 +372,7 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
             after = mackerel_monitor
         else:
             before = transition_monitor
-            transition_monitor = observe_transition_live(transition_monitor, observation)
+            transition_monitor = observe_transition_live(transition_monitor, observation, minimum_seconds=minimum_transition_seconds)
             after = transition_monitor
         events.extend(events_for(observation, previous_phase=previous_phase, previous_door=previous_door,
                                  previous_alarm=previous_alarm, before=before, after=after))
@@ -856,6 +862,10 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
         updated.update(status="RUNNING", active_cooking_started_at=at,
                        products=[item.model_dump(mode="json") for item in products], load_snapshot=snapshot)
     elif body.event == "RICE_STARTED":
+        try:
+            require_fresh_rice_preparation(old, rows, observed)
+        except (ValueError, KeyError, TypeError, ArithmeticError):
+            raise HTTPException(409, "후보를 적용한 새 배치의 전처리·급수 기록을 먼저 확인해 주세요.") from None
         preparation = step.get("rice_preparation") or {}
         if preparation.get("draining_completed_at") and observed < datetime.fromisoformat(preparation["draining_completed_at"].replace("Z", "+00:00")):
             raise HTTPException(422, "밥 조리는 기록된 배수 완료 이후에 시작해야 합니다.")
@@ -915,8 +925,8 @@ async def record_transition_evidence(meal_id: UUID, request: Request, body: Tran
     try:
         result = assess_transition([TransitionSample(**item.model_dump()) for item in body.samples],
                                    humidity_supported=body.humidity_supported,
-                                   vent_supported=body.vent_supported)
-    except ValueError as exc:
+                                   vent_supported=body.vent_supported, minimum_seconds=transition_minimum(old, rows))
+    except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     status = {"DRY_HEAT_READY": "MACKEREL_READY", "MODE_TRANSITION_TIMEOUT": "TRANSITION_TIMEOUT"}.get(
         result["status"], "MODE_TRANSITION")
@@ -1238,7 +1248,8 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
                                  humidity_percent=Decimal(item["humidity_percent"])
                                  if item["humidity_percent"] is not None else None,
                                  vent_event=item["vent_event"]) for item in transition_samples],
-                humidity_supported=humidity_supported, vent_supported=vent_supported)
+                humidity_supported=humidity_supported, vent_supported=vent_supported,
+                minimum_seconds=transition_minimum(old, rows))
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(422, "원표본의 무결성이나 조리 시간 범위를 확인할 수 없습니다.") from exc
     version = int(old["version"]) + 1

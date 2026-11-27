@@ -4,7 +4,9 @@ from decimal import Decimal
 RULE_VERSION = "synthetic-transition-live-v1"
 
 
-def observe(previous: dict | None, sample: dict) -> dict:
+def observe(previous: dict | None, sample: dict, *, minimum_seconds: int = 30) -> dict:
+    if type(minimum_seconds) is not int or not 30 <= minimum_seconds <= 300:
+        raise ValueError("transition target requires 30 to 300 seconds")
     if sample.get("phase") != "TRANSITION":
         raise ValueError("transition sample required")
     second = sample["phaseSecond"]
@@ -37,7 +39,7 @@ def observe(previous: dict | None, sample: dict) -> dict:
     ready_at = old.get("ready_observed_at_second")
     timeout = bool(old.get("timeout", False))
     vent_ready = source == "MEASURED" or not vent_supported or vent == "CLOSED"
-    ready_current = bool(valid and stable >= 30 and (source == "MEASURED" or second >= 180) and vent_ready and not timeout)
+    ready_current = bool(valid and stable >= 30 and second >= minimum_seconds and (source == "MEASURED" or second >= 180) and vent_ready and not timeout)
     if ready_current and ready_at is None:
         ready_at = second
     if complete and second >= 300 and ready_at is None:

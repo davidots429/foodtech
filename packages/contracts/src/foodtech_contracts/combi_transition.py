@@ -16,7 +16,9 @@ class TransitionSample:
 
 
 def assess_transition(samples: list[TransitionSample], *, humidity_supported: bool,
-                      vent_supported: bool) -> dict:
+                      vent_supported: bool, minimum_seconds: int = 30) -> dict:
+    if type(minimum_seconds) is not int or not 30 <= minimum_seconds <= 300:
+        raise ValueError("transition target requires 30 to 300 seconds")
     if not samples or len(samples) > 300:
         raise ValueError("transition requires 1 to 300 consecutive samples")
     stable = 0
@@ -52,7 +54,7 @@ def assess_transition(samples: list[TransitionSample], *, humidity_supported: bo
                  sample.climate_setpoint_percent == 10 and sample.door_closed and not sample.critical_alarm and
                  (not humidity_supported or sample.humidity_percent <= 15))
         stable = stable + 1 if valid else 0
-        if stable >= 30 and (humidity_supported or sample.second >= 180) and \
+        if stable >= 30 and sample.second >= minimum_seconds and (humidity_supported or sample.second >= 180) and \
                 (humidity_supported or not vent_supported or vent_state == "CLOSED"):
             ready_at = sample.second
             if expected != len(samples):

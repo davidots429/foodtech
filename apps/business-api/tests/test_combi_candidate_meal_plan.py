@@ -14,24 +14,28 @@ from foodtech_contracts.combi_cooking import rice_water
 NOW='2026-11-28T02:30:00Z'
 
 
+def plan_input(menu='RICE'):
+    review=record();review['menu']=menu;review['proposal']['menu']=menu
+    if menu=='RICE':
+        review['proposal']['data'].update(duration_seconds=1740,effective_water_ratio='1.22')
+    else:
+        review['proposal']['data']={'temperature_c':'220','climate_setpoint_percent':'10','fan_level':3,
+            'duration_seconds':750,'pan_positions':[{'rack':1,'shelf':2}], 'transition_duration_seconds':180}
+    review['proposal_digest']=recipe_proposal_digest(review['proposal'])
+    meta={'meal_batch_id':MEAL,'version':3,'provenance':'SYNTHETIC',
+        ('rice_cooking_job_id' if menu=='RICE' else 'mackerel_cooking_job_id'):JOB,
+        'equipment_size':'MEDIUM_FIXED_RACK_10'}
+    candidate=build_combi_candidate(review,meta,'2026-11-28T02:00:00Z')
+    payload={'request_id':str(uuid4()),'meal_id':MEAL,'menu':menu,'expected_meal_version':3,
+        'proposal_digest':review['proposal_digest'],'confirmed_pan_positions':review['proposal']['data']['pan_positions'],
+        'acknowledged':True,'new_meal':{'equipment_size':'MEDIUM_FIXED_RACK_10','rack_count':1,'pan_count':1,
+            'dry_rice_kg':'2','drained_rice_kg':'2.4','added_water_kg':'2','pan_tare_kg':'1','rack_tare_kg':'0'}}
+    return payload,candidate,review
+
+
 class CombiCandidateMealPlanTests(unittest.TestCase):
     def setup_candidate(self,menu='RICE'):
-        review=record();review['menu']=menu;review['proposal']['menu']=menu
-        if menu=='RICE':
-            review['proposal']['data'].update(duration_seconds=1740,effective_water_ratio='1.22')
-        else:
-            review['proposal']['data']={'temperature_c':'220','climate_setpoint_percent':'10','fan_level':3,
-                'duration_seconds':750,'pan_positions':[{'rack':1,'shelf':2}], 'transition_duration_seconds':180}
-        review['proposal_digest']=recipe_proposal_digest(review['proposal'])
-        meta={'meal_batch_id':MEAL,'version':3,'provenance':'SYNTHETIC',
-            ('rice_cooking_job_id' if menu=='RICE' else 'mackerel_cooking_job_id'):JOB,
-            'equipment_size':'MEDIUM_FIXED_RACK_10'}
-        candidate=build_combi_candidate(review,meta,'2026-11-28T02:00:00Z')
-        payload={'request_id':str(uuid4()),'meal_id':MEAL,'menu':menu,'expected_meal_version':3,
-            'proposal_digest':review['proposal_digest'],'confirmed_pan_positions':review['proposal']['data']['pan_positions'],
-            'acknowledged':True,'new_meal':{'equipment_size':'MEDIUM_FIXED_RACK_10','rack_count':1,'pan_count':1,
-                'dry_rice_kg':'2','drained_rice_kg':'2.4','added_water_kg':'2','pan_tare_kg':'1','rack_tare_kg':'0'}}
-        return payload,candidate,review
+        return plan_input(menu)
 
     def test_rice_programme_water_target_and_layout_are_applied_without_inheriting_facts(self):
         body,candidate,review=self.setup_candidate()

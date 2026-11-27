@@ -346,7 +346,8 @@ def _observe(rows, raws, menu, now):
             calculated = assess_transition([TransitionSample(r['phaseSecond'], _number(r['chamberCelsius']),
                 _number(r['climateSetpointPercent']), r['doorState'] == 'CLOSED', r['criticalAlarm'],
                 _number(r['measuredHumidityPercent']) if r['measuredHumidityPercent'] is not None else None,
-                r['ventEvent']) for r in samples], humidity_supported=sources == {'MEASURED'}, vent_supported=next(iter(vents)))
+                r['ventEvent']) for r in samples], humidity_supported=sources == {'MEASURED'}, vent_supported=next(iter(vents)),
+                minimum_seconds=_integer(transition.get('target_duration_seconds', 30)))
             if any(not _same(value, transition.get(key)) for key, value in calculated.items()) or \
                     calculated['status'] != 'DRY_HEAT_READY' or _time(transition['started_at']) + timedelta(seconds=len(samples)) > start:
                 raise ValueError
