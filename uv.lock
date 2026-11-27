@@ -475,6 +475,7 @@ source = { editable = "apps/ai-gateway" }
 dependencies = [
     { name = "aws-encryption-sdk", extra = ["mpl"] },
     { name = "boto3" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "foodtech-contracts" },
     { name = "httpx" },
@@ -486,6 +487,7 @@ dependencies = [
 requires-dist = [
     { name = "aws-encryption-sdk", extras = ["mpl"], specifier = "==4.0.7" },
     { name = "boto3", specifier = ">=1.40,<2" },
+    { name = "cryptography", specifier = ">=50.0.2,<51" },
     { name = "fastapi", specifier = ">=0.120,<1" },
     { name = "foodtech-contracts", editable = "packages/contracts" },
     { name = "httpx", specifier = ">=0.28,<1" },
@@ -501,6 +503,7 @@ dependencies = [
     { name = "aws-encryption-sdk", extra = ["mpl"] },
     { name = "boto3" },
     { name = "botocore", extra = ["crt"] },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "foodtech-contracts" },
     { name = "httpx" },
@@ -513,6 +516,7 @@ requires-dist = [
     { name = "aws-encryption-sdk", extras = ["mpl"], specifier = "==4.0.7" },
     { name = "boto3", specifier = ">=1.40,<2" },
     { name = "botocore", extras = ["crt"], specifier = ">=1.43,<2" },
+    { name = "cryptography", specifier = ">=50.0.2,<51" },
     { name = "fastapi", specifier = ">=0.120,<1" },
     { name = "foodtech-contracts", editable = "packages/contracts" },
     { name = "httpx", specifier = ">=0.28,<1" },

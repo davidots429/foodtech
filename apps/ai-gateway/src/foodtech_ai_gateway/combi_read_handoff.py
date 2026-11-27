@@ -9,6 +9,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
 import re
+import hmac
 
 import boto3
 from botocore.config import Config
@@ -16,7 +17,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
 from starlette.requests import ClientDisconnect
 
-from foodtech_contracts.combi_read_handoff import CombiReadHandoff, CONTENT_TYPE, MAX_BYTES
+from foodtech_contracts.combi_read_handoff import CombiReadHandoff, CONTENT_TYPE, MAX_BYTES, TLS_PEER_STATE_KEY, TLS_PIN_APP_STATE_KEY
 from .combi_history_conditions import DynamoCombiHistoryConditions
 from .combi_source_guard import DynamoCombiSourceGuard
 from .policy import Execution, ExecutionSnapshot
@@ -118,15 +119,22 @@ def _accept(raw, *, snapshot, expected_read_role_arn, expected_read_role_id, con
         raise CombiHandoffDenied('combi read handoff unavailable') from None
 
 
+def require_combi_transport(request):
+    """Call before registry reads as well as before credential frame parsing."""
+    expected = getattr(request.app.state,TLS_PIN_APP_STATE_KEY,None)
+    state = request.scope.get('state',{})
+    actual = state.get(TLS_PEER_STATE_KEY) if type(state) is dict else None
+    if request.scope.get('scheme') != 'https' or getattr(request.app.state, 'mtls_listener', False) is not True or \
+            getattr(request.app.state, 'combi_broker_listener', False) is not True or \
+            type(expected) is not str or not re.fullmatch('[a-f0-9]{64}',expected) or type(actual) is not str or not re.fullmatch('[a-f0-9]{64}',actual) or \
+            not hmac.compare_digest(actual,expected):
+        raise HTTPException(401, 'internal mTLS authentication required', headers={'Cache-Control': 'no-store'})
+
+
 async def receive_internal_combi_handoff(request, *, snapshot, expected_read_role_arn, expected_read_role_id,
         condition_client, session_factory=boto3.Session, clock=lambda: datetime.now(timezone.utc)):
     """Authenticate the dedicated listener before parsing any credential bytes."""
-    # The generic business-client listener is insufficient for Combi issuance.
-    # A reviewed dedicated runner must establish the exclusive broker-client
-    # contract before setting this state; this Boolean itself is not proof.
-    if request.scope.get('scheme') != 'https' or getattr(request.app.state, 'mtls_listener', False) is not True or \
-            getattr(request.app.state, 'combi_broker_listener', False) is not True:
-        raise HTTPException(401, 'internal mTLS authentication required', headers={'Cache-Control': 'no-store'})
+    require_combi_transport(request)
     length = request.headers.get('Content-Length')
     if request.headers.get('Content-Type') != CONTENT_TYPE or request.headers.get('Content-Encoding', 'identity') != 'identity' or \
             (length is not None and (not 1 <= len(length) <= 5 or not length.isascii() or not length.isdigit() or not 1 <= int(length) <= MAX_BYTES)):

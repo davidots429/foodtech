@@ -168,8 +168,18 @@ AI 실행 관찰은 보존된 인벤토리의 실행 META를 강한 일관성으
 
 ### Combi 비공개 수신 경계 준비
 
-`receive_internal_combi_handoff`는 HTTPS·전용 mTLS listener·Combi 발급자 전용 listener 계약을 확인한 뒤에만 본문을 읽는다. 기존 범용 business listener만으로는 통과하지 않는다. 이 상태 표시는 검토된 전용 runner가 실제 클라이언트 인증을 성립시킨 뒤 설정해야 하며 Boolean 자체는 인증/배포 증명이 아니다. 현재 runner·라우터에 연결하거나 활성화하지 않는다.
+`receive_internal_combi_handoff`는 HTTPS·전용 mTLS listener·Combi 발급자 전용 listener 계약을 확인한 뒤에만 본문을 읽는다. 기존 범용 business listener만으로는 통과하지 않는다. 전용 pin 프로토콜이 실제 연결의 인증서 지문을 요청 ASGI state에 넣고 수신기가 구성된 지문과 대조한다. 앱 전체 Boolean이나 신원 헤더만으로 인증되지 않는다. 모델 라우터는 아직 활성화하지 않는다.
 
 Combi 전용 타입·최대 본문·인코딩/길이를 제한하고, 정확한 저장 ExecutionSnapshot·범위/전체 이력과 구성된 역할 ARN/불변 RoleId를 대조한다. 임시 자격증명으로 만든 SDK client의 endpoint를 고정하고 STS 식별값의 역할·세션·RoleId를 확인한 뒤 별도 조건 client와 원본 판독기에 연결한다. 오류는 키·본문을 반환하지 않고, 실패/취소 또는 늦은 미전달 결과의 client를 닫는다. 반환된 읽기 객체는 해당 실행/만료에 결합되며 일반 직렬화를 허용하지 않는다.
 
 STS 역할/RoleId 일치가 인라인 세션 정책의 증명은 아니다. 실제 독점 발급자·인증서/runner·위임/서비스 접근 검증과 저장 실행의 예약 전 재조회·원자적 예약/정산이 필요하다. 고객·기존 Combi 실행 차단은 유지한다. 로컬 SDK fixture 왕복은 실제 TLS·AWS 세션·모델 종단간 증거가 아니다.
+
+### Combi 전용 pin TLS 실행기와 전송
+
+`python -m foodtech_ai_gateway.serve_combi`는 기본 비활성이다. 명시적 opt-in과 registry/auth 테이블 설정, `FOODTECH_COMBI_SERVER_CERT`·`FOODTECH_COMBI_SERVER_KEY`·`FOODTECH_COMBI_BROKER_CA`·`FOODTECH_COMBI_BROKER_CERT`가 필요하다. 기본 주소는 loopback:8444다. 발급자 인증서는 clientAuth 전용 leaf이며 SAN URI `urn:foodtech:service:combi-read-broker`를 가진 단일 인증서여야 한다. 실제 발급·보관·배포·회전은 별도 작업이다.
+
+Native TLS가 CA/클라이언트 인증서를 검증한 뒤 H11 연결 프로토콜이 정확한 발급자 leaf 지문을 HTTP 파싱 전에 검사한다. 같은 CA·같은 서비스 URI의 다른 leaf도 거부한다. 검증 지문은 연결별 state 사본에만 넣으며, `require_combi_transport`를 registry 조회 전에 호출해야 한다. 동일 앱의 다른 TLS listener나 임의 헤더는 이 증거를 만들 수 없다. 전용 listener는 Combi POST 경로 외의 기존 내부 경로도 차단한다. proxy 신원 헤더·WebSocket·access log는 사용하지 않는다.
+
+발송기는 일반 CA 전체 대신 검토된 서버 leaf만 신뢰하는 native TLS chain/목적/만료/hostname 검증을 사용한다. 서버 인증서가 바뀌면 pin도 갱신해야 한다. 프레임은 1회 POST만 하며 리다이렉트/자동 재시도·환경 proxy·TLS keylog를 사용하지 않는다. 제한된 JSON/no-store 결과만 수용하고 자격증명 문자열이 결과에 들어오면 반환하지 않는다.
+
+실제 로컬 TLS로 올바른 발급자/원본 판독 왕복·다른 CA/인증서 없음·같은 CA의 다른 발급자·같은 CA/hostname/키를 재사용한 다른 서버 인증서·공유 앱의 범용 listener와 헤더 위조 차단을 확인한다. AWS 응답/행은 합성 fixture이며 실제 세션·배포·모델 E2E를 뜻하지 않는다. 실행기만 시작해도 Combi 모델 호출이 활성화되는 것은 아니다. 실제 broker/controller/예약·정산·작성자 검증과 배포는 후속이다.

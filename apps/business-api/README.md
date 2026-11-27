@@ -697,3 +697,9 @@ separate from the local tests.
 `CombiReadLease._internal_handoff`는 저장 실행·보호된 전체 이력·현재 위임을 다시 확인한 뒤 명시적 임시 자격증명을 동결한다. Combi 전용 프레임은 기존 Jeyuk 프레임과 구분하며, 일반 repr/JSON/pickle/deepcopy로 내보내지 않는다. 크기 제한·정확한 중첩 필드·중복/비유한 수치 거부·만료/시계 역행 검사를 적용한다. 고객 응답이나 로그에 프레임 또는 키를 넣지 않는다.
 
 이 변경은 HTTP 고객 경로나 비공개 발송 경로를 활성화하지 않는다. 검토된 전용 발급자 TLS 클라이언트·수신 runner와 전송, 실제 위임/원본 접근, 실행/정산 연결은 후속이다. typed 프레임이나 전달 시 주장된 ARN만으로 IAM 세션 정책·전체 이력·배포 독점성이 증명되지 않는다.
+
+### Combi pin TLS 발송 준비
+
+`CombiDeliverySettings`는 운영자가 구성한 명시적 HTTPS 주소·검토된 서버 leaf·발급자 인증서/키만 받는다. 사용자 요청의 URL·인증서 경로를 받는 공개 API는 없다. URL userinfo/경로/query/fragment를 허용하지 않으며 hostname 검증을 끄거나 전체 서버 CA로 fallback하지 않는다. 단일 서버Auth leaf에 native partial-chain trust를 고정하고 클라이언트 인증서를 제공한다. 환경 proxy와 keylog는 사용하지 않는다.
+
+`deliver_internal_combi_handoff`는 Combi 전용 경로로 한 번만 POST하며 리다이렉트·자동 재시도하지 않는다. JSON/no-store·비압축·본문 크기·정확한 실행 결과를 확인하고 자격증명 값이 들어간 응답을 고객에게 반환하지 않는다. 오류에 upstream 본문·키·주소를 복사하지 않는다. 고객 라우트나 실제 모델 호출은 아직 연결하지 않는다. 실제 발급자 배포·IAM/session·원자적 예약/정산 검증은 별도다.
