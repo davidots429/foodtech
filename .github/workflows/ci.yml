@@ -131,6 +131,16 @@ jobs:
         run: |
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechStandardizationRuntime-dev --strict -c provisionStandardizationRuntime=true -c principalProvisioningEnabled=true -c standardizationTaskRoleArn=arn:aws:iam::123456789012:role/FoodtechMinimalDataFlow-dev-StandardizationWorkerTask-reviewed --output /tmp/foodtech-standardization-runtime-cdk > /dev/null
           python3 ../../tests/config/check_standardization_runtime.py /tmp/foodtech-standardization-runtime-cdk/FoodtechStandardizationRuntime-dev.template.json 123456789012
+      - name: Check meal refresh role boundaries
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshAccess-dev --strict --no-lookups -c provisionMealRefreshAccess=true --output /tmp/foodtech-meal-access-cdk > /dev/null
+          python3 ../../tests/config/check_meal_refresh_access.py /tmp/foodtech-meal-access-cdk/FoodtechMealRefreshAccess-dev.template.json 123456789012
+          if CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMealRefreshAccess-prod --strict --no-lookups -c provisionMealRefreshAccess=true -c stage=prod --output /tmp/foodtech-meal-access-prod > /tmp/foodtech-meal-access-prod.log 2>&1; then
+            echo "Non-development meal refresh authority accepted"
+            exit 1
+          fi
+          python3 -c "from pathlib import Path; assert 'meal refresh access requires dev' in Path('/tmp/foodtech-meal-access-prod.log').read_text()"
       - name: Check recipe source broker access
         working-directory: infra/cdk
         run: |

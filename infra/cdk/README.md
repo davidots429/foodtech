@@ -304,3 +304,50 @@ Mock Task 역할에는 업무 AWS 권한이 없다. 수집기 역할은 지정 �
 네트워크는 별도 `FoodtechRuntimeFoundation-dev`의 `runtimeCollectionMode=private-rest-trial` 옵션이다. 기존 유지보수 SG는 그대로 두고 수집기/Mock SG를 추가한다. 수집기→Mock TCP8443과 ECS/AWS API용 TCP443 송신을 허용하며 공용 인바운드는 없다. 사설 Task의 `assignPublicIp=DISABLED`를 실행 시 확인한다. S3 Gateway Endpoint에 정확한 수집기 역할·전용 버킷 ingestion/*·같은 ResourceAccount·AES256 PutObject만 추가한다. AWS 소유 ECR layer 다운로드 statement는 그대로 둔다. 옵션을 생략하면 기존 네트워크와 endpoint 정책을 유지한다.
 
 두 Task는 UID 10001·읽기 전용 root filesystem·capability ALL 제거로 정의한다. 수집기 CA만 이미지 VOLUME과 일치하는 `/run/foodtech-collection` bind volume에 0600으로 생성한다. Mock 서버 개인키 파일은 만들지 않는다. root filesystem을 쓰기 가능하게 바꾸거나 TLS 검증을 끄는 방식으로 실행 실패를 우회하지 않는다. 실제 적용 전에는 템플릿·권한 분석·Guard 지적·새 이미지 스캔·Secret 준비·시간/비용/정리 범위를 검토하고 구체적인 실행 승인을 받아야 한다. 이 구성의 생성이나 로컬 검사를 실제 Task 검증 완료로 취급하지 않는다.
+
+
+### Meal refresh IAM preparation
+
+`-c provisionMealRefreshAccess=true` opts into `FoodtechMealRefreshAccess-dev`.
+An explicit account and `ap-southeast-2` are required. This creates only three
+role definitions and their policies: business refresh, image/log execution,
+and EventBridge invocation. `ClusterArn` and `ScheduleRuleArn` must be supplied
+at deployment review; no schedule, Task, table, index or network is created.
+
+The source-derived baseline in `bin/meal-refresh-baseline.json` was generated
+by IAM Policy Autopilot 0.4 from `meal_refresh_runtime.py`,
+`combi_refresh_worker.py` and `cooking_store.py` at main `ddec408` (same source
+as PR267 head `a34000e`). The generated Policy is extracted, its metadata Id
+removed and account replaced with `${ACCOUNT}`. The baseline is evidence, not
+an attached policy: the construct selects only verified actions and scopes
+resources/conditions separately. The shared-store baseline includes replication
+and KMS actions unrelated to this command; these are not granted.
+
+```bash
+DISABLE_IAM_POLICY_AUTOPILOT_TELEMETRY=true uvx iam-policy-autopilot@latest generate-policies \
+  "$PWD/apps/business-api/src/foodtech_business_api/meal_refresh_runtime.py" \
+  "$PWD/apps/business-api/src/foodtech_business_api/combi_refresh_worker.py" \
+  "$PWD/apps/business-api/src/foodtech_business_api/cooking_store.py" \
+  --region ap-southeast-2 --account <reviewed-account> --service-hints dynamodb sts --pretty
+```
+
+Run that command from the repository root. The task reads/checks only `USER#`
+authentication records. Cooking writes require `TransactWriteItems` and selected
+meal/aggregate partitions; there is no auth mutation, credential access or
+unrelated cooking-job write. IAM partition-key conditions do not enforce a
+specific sort key inside an allowed meal partition. DIRTY-only cursor mutations
+and version/epoch checks remain runtime responsibilities.
+
+The execution role can pull only the existing maintenance repository and write
+its own log streams. Invocation is limited to one supplied rule/cluster, the
+meal-refresh task family and passing the two named ECS roles. Do not enable
+managed Task tags or add target overrides without reviewing any new permissions.
+Actual IAM deployment, pending-index/backfill, coordinated strict-mode writer
+rollout, deletion/restore safeguards, failure notifications and schedule
+activation remain separate gates. Source checks and policy simulation alone
+are not proof of actual role/service access.
+
+Guard currently reports fixed resource names (required by the runtime role contract)
+and wildcard-resource usage (STS identity observation and ECR authorization token).
+The raw findings remain visible; no previous deployment exception is reused.
+Review these findings and effective permissions before any actual application.
