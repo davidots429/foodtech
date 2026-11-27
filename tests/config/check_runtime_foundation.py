@@ -5,7 +5,7 @@ from collections import Counter
 from pathlib import Path
 
 
-def check(path, existing_repository=False):
+def check(path, existing_repository=False, private_rest_trial=False):
     template = json.loads(Path(path).read_text())
     resources = template['Resources']
     counts = Counter(value['Type'] for value in resources.values())
@@ -16,6 +16,9 @@ def check(path, existing_repository=False):
         'AWS::EC2::InternetGateway': 1, 'AWS::EC2::VPCGatewayAttachment': 1,
         'AWS::EC2::VPCEndpoint': 2, 'AWS::EC2::SecurityGroup': 1,
         'AWS::ECS::Cluster': 1, 'AWS::ECR::Repository': int(not existing_repository)})
+    if private_rest_trial:
+        expected_counts.update({'AWS::EC2::SecurityGroup': 2,
+            'AWS::EC2::SecurityGroupIngress': 1, 'AWS::EC2::SecurityGroupEgress': 1})
     assert counts == +expected_counts
     def of_type(kind):
         return {key: value for key, value in resources.items() if value['Type'] == kind}
@@ -41,29 +44,53 @@ def check(path, existing_repository=False):
     associations = of_type('AWS::EC2::SubnetRouteTableAssociation')
     assert len(associations) == 2
     assert sum(value['Properties']['RouteTableId'] == {'Ref': private_id} for value in associations.values()) == 1
-    group, = of_type('AWS::EC2::SecurityGroup').values()
-    assert not group['Properties'].get('SecurityGroupIngress')
-    egress, = group['Properties']['SecurityGroupEgress']
-    assert (egress['CidrIp'], egress['IpProtocol'], egress['FromPort'], egress['ToPort']) == ('0.0.0.0/0', 'tcp', 443, 443)
-    assert not of_type('AWS::EC2::SecurityGroupIngress')
+    for group in of_type('AWS::EC2::SecurityGroup').values():
+        assert not group['Properties'].get('SecurityGroupIngress')
+        egress, = group['Properties']['SecurityGroupEgress']
+        assert (egress['CidrIp'], egress['IpProtocol'], egress['FromPort'], egress['ToPort']) == ('0.0.0.0/0', 'tcp', 443, 443)
+    if private_rest_trial:
+        collector = template['Outputs']['CollectionTaskSecurityGroupId']['Value']
+        mock = template['Outputs']['MockTaskSecurityGroupId']['Value']
+        assert collector != mock and collector != template['Outputs']['TaskSecurityGroupId']['Value']
+        ingress, = of_type('AWS::EC2::SecurityGroupIngress').values()
+        outbound, = of_type('AWS::EC2::SecurityGroupEgress').values()
+        for value in (ingress, outbound):
+            props = value['Properties']
+            assert props['FromPort'] == props['ToPort'] == 8443 and props['IpProtocol'] == 'tcp'
+            assert 'CidrIp' not in props and 'CidrIpv6' not in props
+        assert ingress['Properties']['GroupId'] == mock
+        assert ingress['Properties']['SourceSecurityGroupId'] == collector
+        assert outbound['Properties']['GroupId'] == collector
+        assert outbound['Properties']['DestinationSecurityGroupId'] == mock
+    else:
+        assert not of_type('AWS::EC2::SecurityGroupIngress')
+        assert not of_type('AWS::EC2::SecurityGroupEgress')
     endpoints = of_type('AWS::EC2::VPCEndpoint')
     assert len(endpoints) == 2
     policies = []
     for value in endpoints.values():
         props = value['Properties']
         assert props['VpcEndpointType'] == 'Gateway' and props['RouteTableIds'] == [{'Ref': private_id}]
-        statement, = props['PolicyDocument']['Statement']
-        assert statement['Effect'] == 'Allow'
-        policies.append(statement)
+        statements = props['PolicyDocument']['Statement']
+        assert all(statement['Effect'] == 'Allow' for statement in statements)
+        policies.extend(statements)
     s3, = [statement for statement in policies if statement['Action'] == 's3:GetObject']
     assert 'prod-ap-southeast-2-starport-layer-bucket/*' in json.dumps(s3['Resource'])
-    dynamo, = [statement for statement in policies if statement is not s3]
+    dynamo, = [statement for statement in policies if isinstance(statement['Action'], list)]
+    assert len(policies) == (3 if private_rest_trial else 2)
     assert set(dynamo['Action']) == {'dynamodb:DescribeTable', 'dynamodb:GetItem', 'dynamodb:Query', 'dynamodb:Scan',
         'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:ConditionCheckItem'}
     account = dynamo['Condition']['StringEquals']['aws:PrincipalAccount']
     assert account.isdigit() and len(account) == 12
     assert dynamo['Principal'] == {'AWS': '*'}
     assert dynamo['Condition'] == {'StringEquals': {'aws:PrincipalAccount': account}}
+    if private_rest_trial:
+        put, = [statement for statement in policies if statement['Action'] == 's3:PutObject']
+        assert put['Principal'] == {'AWS': '*'}
+        assert put['Resource'] == f'arn:aws:s3:::foodtech-ingestion-quarantine-{account}-dev/ingestion/*'
+        assert put['Condition'] == {'StringEquals': {
+            'aws:PrincipalArn': f'arn:aws:iam::{account}:role/foodtech-collection-task-dev',
+            'aws:ResourceAccount': account, 's3:x-amz-server-side-encryption': 'AES256'}}
     def text(value):
         if isinstance(value, str):
             return value
@@ -105,5 +132,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('template')
     parser.add_argument('--existing-repository', action='store_true')
+    parser.add_argument('--private-rest-trial', action='store_true')
     args = parser.parse_args()
-    check(args.template, args.existing_repository)
+    check(args.template, args.existing_repository, args.private_rest_trial)

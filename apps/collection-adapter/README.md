@@ -122,3 +122,13 @@ REST JSON의 `mockprofile-110-{b,c}-001`과 `mockprofile-120-{b,c}-001`은 각 �
 2026-11-21 개발 DynamoDB·SQS에서 C# MQTT Mock의 기본 `300/301/302`, 볶음·교반 `310/311/312`, 콤비오븐 `320/321/322` 각 vendor-a/b/c를 수집했다. 27개 조합의 순서·장비별 표준화·오류 격리 및 합성 데이터 정리를 확인했다. 재실행: `AWS_PROFILE=foodtech uv run --no-sync python tests/live/mqtt_equipment_aws_check.py`. CSV 정상 fixture는 세 건 모두 정상이며 JSON·XML의 세 번째 물리 불가능한 값은 격리된다.
 
 `tests/live/rest_quarantine_aws_check.py`는 C# REST Mock의 잘못된 UTF-8에 대해 격리 저장 실패 시 커서가 전진하지 않는지와 성공 시 원본 바이트·암호화·manifest·커서 및 정리를 검증한다. 개발 스택의 전용 버킷이나 명시적 opt-in된 `foodtech-rest-quarantine-test-*` 임시 버킷을 사용하며 버전 관리가 설정된 경우 중단한다. 일회성 비공개 버킷과 개발 DynamoDB를 사용해 실제 저장·실패·합성 항목 정리를 확인하고 버킷을 삭제했다. 개발자 자격증명 시험이며 배포된 수집기 역할·전용 버킷 검증은 별도다.
+
+### 프라이빗 REST Task 시험 명령 (배포 준비 중)
+
+`python -m foodtech_collection_adapter.rest_trial --trial`은 실제 수집 CLI와 같은 격리 처리 경로를 실행한다. ECS entrypoint에서는 `FOODTECH_COLLECTION_RUN_MODE=private-rest-trial`과 `FOODTECH_REST_TRIAL_ENABLED=true`가 모두 필요하다. 기본 수집 모드와 다른 프로토콜은 기존 실행 방식을 유지한다. 이 명령의 로컬 SDK 시험은 실제 AWS 실행 완료 증거가 아니다.
+
+실행 대상은 `dev`, `ap-southeast-2`, Fargate의 `foodtech-collection-task-dev` 역할과 그 계정의 개발 데이터 표·FIFO 큐·전용 격리 버킷으로 제한한다. STS에서 실제 호출 역할을 확인하며 정적 키·프로필이나 다른 자격증명 공급자로 대체하지 않는다. `FOODTECH_REST_TRIAL_ID`는 canonical UUIDv4, `FOODTECH_REST_TRIAL_ATTEMPT`는 `blocked` 또는 `allowed`, `FOODTECH_REST_TRIAL_MAX_SECONDS`는 10~60초를 명시한다. 실제 Mock IP가 정해진 뒤 `FOODTECH_MOCK_BASE_URL`에 `10.42.0.32/27`의 사용 가능한 사설 IP·HTTPS·8443 포트를 넣고 해당 IP와 일치하는 인증서를 사용한다. CA 검증을 끄지 않는다. 기존 Mock 인증 정보와 CA 주입도 필요하다.
+
+시험은 `mockprofile-100-a-001`에서 잘못된 UTF-8 한 건과 명시적 완료 커서 1이 반환되는 경우만 처리한다. 다른 응답은 저장 전에 차단한다. `blocked`는 실제 PutObject의 AccessDenied/403과 커서·manifest 부재를 함께 확인한다. 다른 API의 거부·시간 초과·버킷 부재는 성공으로 인정하지 않는다. `allowed`는 manifest의 바이트 해시·경로·원천 식별자와 커서 1을 확인한다. S3 원본 조회·정리와 버킷 정책 변경은 별도 검토된 운영 절차에서 수행한다. 명령은 정책을 바꾸거나 데이터를 삭제하지 않는다.
+
+컨테이너는 비특권 UID 10001과 읽기 전용 root filesystem을 전제로 한다. CA 파일을 만들 수 있도록 이미지의 `/run/foodtech-collection` VOLUME과 같은 위치에 전용 쓰기 가능 Task bind volume을 연결해야 한다. 이 디렉터리만 10001 소유·0700이며 생성한 CA 파일은 0600이다. 공유 임시 디렉터리에 개인키를 저장하지 않는다.

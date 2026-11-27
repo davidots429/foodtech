@@ -21,6 +21,38 @@ spec.loader.exec_module(entrypoint)
 
 
 class CollectionEntrypointTests(unittest.TestCase):
+    def test_trial_requires_explicit_opt_in_and_rest_before_materializing_secrets(self):
+        for environment in (
+                {'FOODTECH_COLLECTION_RUN_MODE': 'private-rest-trial'},
+                {'FOODTECH_COLLECTION_RUN_MODE': 'private-rest-trial',
+                 'FOODTECH_REST_TRIAL_ENABLED': 'true', 'FOODTECH_COLLECTION_PROTOCOL': 'mqtt'},
+                {'FOODTECH_COLLECTION_RUN_MODE': 'unknown'}):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), \
+                    patch.object(entrypoint.tempfile, 'mkdtemp') as create, \
+                    patch.object(entrypoint.os, 'execvpe') as execute:
+                with self.assertRaises(ValueError):
+                    entrypoint.main()
+                create.assert_not_called()
+                execute.assert_not_called()
+
+    def test_trial_uses_private_ca_and_dedicated_module_without_secret_arguments(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {'FOODTECH_COLLECTION_RUN_MODE': 'private-rest-trial',
+                    'FOODTECH_REST_TRIAL_ENABLED': 'true',
+                    'FOODTECH_MOCK_CA_PEM': '-----BEGIN CERTIFICATE-----\nsynthetic',
+                    'FOODTECH_MOCK_CLIENT_SECRET': 'synthetic-secret'}, clear=True), \
+                patch.object(entrypoint.sys, 'argv', ['entry', '--trial']), \
+                patch.object(entrypoint.tempfile, 'mkdtemp', return_value=directory), \
+                patch.object(entrypoint.ssl, 'create_default_context'), \
+                patch.object(entrypoint.os, 'execvpe') as execute:
+            entrypoint.main()
+            self.assertEqual(execute.call_args.args[1],
+                             ['python', '-m', 'foodtech_collection_adapter.rest_trial', '--trial'])
+            child = execute.call_args.args[2]
+            self.assertNotIn('FOODTECH_MOCK_CA_PEM', child)
+            self.assertEqual(stat.S_IMODE(Path(child['FOODTECH_MOCK_CA_FILE']).stat().st_mode), 0o600)
+            self.assertNotIn('synthetic-secret', execute.call_args.args[1])
+
     def test_ca_is_private_and_secret_is_not_in_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
             environment = {'FOODTECH_MOCK_CA_PEM': '-----BEGIN CERTIFICATE-----\nsynthetic',

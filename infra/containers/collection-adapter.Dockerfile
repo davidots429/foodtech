@@ -23,5 +23,13 @@ ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY infra/containers/collection_entrypoint.py /app/collection_entrypoint.py
+# ECS copies this volume path's ownership; its default root:0755 is not writable
+# by the collector. Keep the rest of the filesystem read-only at runtime.
+RUN mkdir -p /run/foodtech-collection \
+    && touch /run/foodtech-collection/.keep \
+    && chown -R 10001:10001 /run/foodtech-collection \
+    && chmod 0700 /run/foodtech-collection
+ENV TMPDIR=/run/foodtech-collection
+VOLUME ["/run/foodtech-collection"]
 USER 10001:10001
 ENTRYPOINT ["python", "/app/collection_entrypoint.py"]

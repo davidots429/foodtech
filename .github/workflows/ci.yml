@@ -83,6 +83,13 @@ jobs:
             exit 1
           fi
           python3 -c "from pathlib import Path; assert 'runtimeEgressMode=nat is required' in Path('/tmp/foodtech-runtime-rejected.log').read_text()"
+      - name: Check separate private REST trial tasks and network
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechPrivateRestTrial-dev --strict --no-lookups -c provisionPrivateRestTrial=true --output /tmp/foodtech-private-rest-trial-cdk > /dev/null
+          python3 ../../tests/config/check_private_rest_trial.py /tmp/foodtech-private-rest-trial-cdk/FoodtechPrivateRestTrial-dev.template.json
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechRuntimeFoundation-dev --strict --no-lookups -c provisionRuntimeFoundation=true -c runtimeEgressMode=nat -c runtimeImageRepositoryMode=existing -c runtimeCollectionMode=private-rest-trial --output /tmp/foodtech-private-rest-network-cdk > /dev/null
+          python3 ../../tests/config/check_runtime_foundation.py /tmp/foodtech-private-rest-network-cdk/FoodtechRuntimeFoundation-dev.template.json --existing-repository --private-rest-trial
       - run: CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechAiExecutionRegistry-dev --strict -c provisionAiExecutionRegistry=true --output /tmp/foodtech-ai-registry-retention-cdk > /dev/null
         working-directory: infra/cdk
       - run: python3 tests/config/check_ai_registry_retention.py /tmp/foodtech-ai-registry-retention-cdk/FoodtechAiExecutionRegistry-dev.template.json
@@ -277,6 +284,11 @@ jobs:
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e DOTNET_EnableDiagnostics=0 foodtech-ci/mock-control:test hash --fixture fixtures/mockprofile-100-a-001.json > "$RUNNER_TEMP/mock-hash.txt"
           grep -Fx 'rec-a-001 f76cb5275bb85fc7c0c0da0309dc96cb5b64d29588d902cf28b6c5140e8d5ff2' "$RUNNER_TEMP/mock-hash.txt"
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh foodtech-ci/mock-control:test -c '. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 24.04'
+          if docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e DOTNET_EnableDiagnostics=0 -e FOODTECH_MOCK_CLIENT_ID=synthetic-guard -e FOODTECH_MOCK_CLIENT_SECRET=synthetic-guard-value foodtech-ci/mock-control:test serve --fixture fixtures/rest-invalid-utf8-single-v1.json --certificate-source injected --max-runtime 0 --port 8443 > "$RUNNER_TEMP/mock-runtime-guard.txt" 2>&1; then
+            echo 'Unbounded or invalid Mock runtime was accepted' >&2
+            exit 1
+          fi
+          grep -F 'REST Mock --max-runtime must be 1 to 600 seconds.' "$RUNNER_TEMP/mock-runtime-guard.txt"
 
   collection-adapter-image:
     runs-on: ubuntu-latest
@@ -292,6 +304,8 @@ jobs:
           tags: foodtech-ci/collection-adapter:test
       - name: Verify REST collection entrypoint
         run: docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges foodtech-ci/collection-adapter:test --help
+      - name: Verify private REST trial module and writable CA volume
+        run: bash infra/scripts/check_collection_trial_image.sh foodtech-ci/collection-adapter:test
       - name: Verify MQTT collection entrypoint
         run: docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges -e FOODTECH_COLLECTION_PROTOCOL=mqtt foodtech-ci/collection-adapter:test --help
       - name: Verify OPC UA JSON collection entrypoint

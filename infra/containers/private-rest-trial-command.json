@@ -1,0 +1,9 @@
+[
+  "serve",
+  "--fixture", "fixtures/rest-invalid-utf8-single-v1.json",
+  "--certificate-source", "injected",
+  "--max-runtime", "600",
+  "--port", "8443",
+  "--bind-address", "0.0.0.0",
+  "--fault", "invalid-utf8"
+]

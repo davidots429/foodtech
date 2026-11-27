@@ -114,18 +114,16 @@ var clientId = Environment.GetEnvironmentVariable("FOODTECH_MOCK_CLIENT_ID");
 var clientSecret = Environment.GetEnvironmentVariable("FOODTECH_MOCK_CLIENT_SECRET");
 if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
     throw new InvalidOperationException("Mock OAuth client credentials must be set in the environment.");
-var certPath = Required(options, "cert");
-var certPassword = Environment.GetEnvironmentVariable("FOODTECH_MOCK_CERT_PASSWORD");
-if (string.IsNullOrWhiteSpace(certPassword))
-    throw new InvalidOperationException("FOODTECH_MOCK_CERT_PASSWORD is required.");
 var port = int.Parse(Required(options, "port"));
 if (port is < 1024 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
+var bindAddress = options.TryGetValue("bind-address", out var bind) ? MockListenAddress.Parse(bind) : null;
+var runtimeSeconds = MockServerCertificate.RuntimeSeconds(options);
+using var serverCertificate = MockServerCertificate.Load(options);
 
 var builder = WebApplication.CreateBuilder(Array.Empty<string>());
-var bindAddress = options.TryGetValue("bind-address", out var bind) ? MockListenAddress.Parse(bind) : null;
 builder.WebHost.ConfigureKestrel(server => {
-    if (bindAddress is null) server.ListenLocalhost(port, listen => listen.UseHttps(certPath, certPassword));
-    else server.Listen(bindAddress, port, listen => listen.UseHttps(certPath, certPassword));
+    if (bindAddress is null) server.ListenLocalhost(port, listen => listen.UseHttps(serverCertificate));
+    else server.Listen(bindAddress, port, listen => listen.UseHttps(serverCertificate));
 });
 var app = builder.Build();
 var accessToken = "";
@@ -230,7 +228,12 @@ app.MapGet("/v1/records", async (HttpContext context, int? cursor, int? wait) =>
 });
 
 app.MapGet("/health", () => Results.Json(new { status = "ok", programVersion, provenance = "SYNTHETIC" }));
-app.Run();
+if (runtimeSeconds is int seconds)
+{
+    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
+    await app.RunAsync(deadline.Token);
+}
+else await app.RunAsync();
 
 static Dictionary<string, string> ParseArgs(string[] args)
 {
