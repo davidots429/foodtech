@@ -67,5 +67,31 @@ remain `NEEDS_REVIEW`, with execution and manual invocation unavailable. A
 historical display does not establish current safety, authorize adoption, or
 satisfy protected writer/history rollout requirements. The customer meal screen offers a separate rice/mackerel execution-ID lookup,
 with typed proposal fields, units and pan layout. Changing the batch clears the
-previous display; stale responses are discarded. Real deployment and human
-review/adoption integration remain separate work.
+previous display; stale responses are discarded. Human review is recorded separately as described below. Real deployment and
+recipe adoption remain separate work.
+
+
+### Combi human review records
+
+The customer recommendation view can load the current menu-specific review,
+record an explicit approve/reject decision with a reason and acknowledgement,
+and page through immutable history. Approval records human review; it does not
+change the meal, safety outcome or adopted recipe. No candidate or equipment
+write is made by this operation.
+
+`GET/POST /api/customer/ai/combi/recipe-executions/{execution_id}/review` binds the
+decision to the owned meal/menu, stored execution/result, exact proposal digest
+and expected meal/review versions. The BFF derives the job ID. CSRF and fresh
+customer principal/session checks apply to writes. `GET .../combi/recipe-reviews`
+reads only that meal/menu's bounded history. Recheck history after an uncertain
+save response; the same request/version/content is idempotent, while altered
+content or a competing review conflicts.
+
+DynamoDB writes atomically condition the active principal epoch/deletion lock,
+meal metadata version and menu job reference, independent review pointer and
+immutable review item. Production writes require shared principal provisioning.
+No automatic SDK service trial/deployment is implied; the in-memory test store
+models batch/review conflicts without a cross-store principal transaction.
+Review rows stay in the owned COMBI_MEAL partition and participate in its existing
+full-partition withdrawal cleanup. All-writer/history rollout, food safety and
+actual AWS review transactions remain separate validation requirements.

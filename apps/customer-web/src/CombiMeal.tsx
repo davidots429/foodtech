@@ -461,7 +461,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
           setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`))} />)}
       {(["RICE", "MACKEREL"] as const).map(menu => <CombiRecommendation
         key={`combi-recommendation-${meal.meal.meal_batch_id}-${menu}-${meal.meal.version}`}
-        mealId={meal.meal.meal_batch_id} jobId={menu === "RICE" ? meal.rice.job_id : meal.mackerel.job_id} menu={menu} />)}
+        mealId={meal.meal.meal_batch_id} jobId={menu === "RICE" ? meal.rice.job_id : meal.mackerel.job_id} menu={menu} csrf={csrf} />)}
       <CombiLive mealId={meal.meal.meal_batch_id} />
       <p>고등어 투입: {meal.transition.mackerel_load_allowed ? "허용" : "차단"}
         {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>
