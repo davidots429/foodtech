@@ -723,3 +723,11 @@ broker는 위임을 브라우저 Session으로 꾸미거나 토큰을 조회하�
 | broker→Gateway | `FOODTECH_COMBI_GATEWAY_URL`, `FOODTECH_COMBI_GATEWAY_SERVER_CERT`, `FOODTECH_COMBI_BROKER_CLIENT_CERT`, `FOODTECH_COMBI_BROKER_CLIENT_KEY` |
 
 BFF clientAuth 인증서의 SAN URI는 `urn:foodtech:service:business-api`, Gateway 호출용 broker 인증서는 `urn:foodtech:service:combi-read-broker`다. broker factory는 실제 STS 계정·역할·불변 RoleId와 container-role provider 및 고정 SDK endpoint를 확인한다. 실제 실행 레지스트리의 최소 속성 GetItem 권한은 별도 검토·적용 대상이며 이 코드를 추가한 것으로 권한이 생기지 않는다. 실제 작성자/보존 이력 검증 기록을 자동 발급하지 않는다. 로컬 저장/SDK/모델 응답 fixture와 TLS 시험을 실제 AWS session policy·보존 이력·모델 실행 증거로 표시하지 않는다.
+
+### 의도한 broker 역할의 실행 메타데이터 읽기 probe
+
+`python -m foodtech_business_api.combi_execution_read_probe`는 별도 승인한 Fargate 시험용 CLI다. 업무 데이터 준비·삭제·STS 원본 위임·세션·모델·쓰기 작업을 하지 않는다. `FOODTECH_COMBI_EXECUTION_READ_PROBE_ENABLED=true`, `AWS_EXECUTION_ENV=AWS_ECS_FARGATE`, `FOODTECH_STAGE=dev`, 명시적 `FOODTECH_COMBI_EXECUTION_PROBE_ACCOUNT`, `FOODTECH_COMBI_EXECUTION_PROBE_ROLE_ID`, 새 UUIDv4 `FOODTECH_COMBI_EXECUTION_PROBE_ID`가 필요하다. 실제 broker STS 계정·역할·불변 ID와 container-role provider를 대조하고 regional SDK endpoint를 고정한다. 개발자 자격증명이나 다른 실행 역할로 대체하지 않는다.
+
+운영자가 승인된 시험에서 해당 `EXEC#<probe>/META` 및 `MODEL#COMBI_ROLEPROBE#<probe>/META` 키가 없음을 먼저 확인해야 한다. 허용된 두 조회가 빈 결과를 반환한 뒤에만 전체 속성·금지 model/credential 속성·다른 파티션·transaction·Query의 여섯 거부를 확인한다. 예상하지 않은 데이터가 나오면 즉시 중단하고 그 값은 출력하지 않는다. 부정 사례는 정확한 `AccessDeniedException`만 인정하며 throttle/timeout/validation/예상 밖 허용은 실패다. SDK 자동 재시도는 없고 script 전체 제한은 180초다. 결과에는 사례 이름과 제한된 성공 플래그만 출력하며 키·역할 세션·항목·SDK 오류 값을 기록하지 않는다.
+
+이 probe의 성공도 해당 요청의 권한 검증만 뜻한다. 원본 STS session policy·고객 로그인·보호된 작성자/보존 이력·모델/권고 E2E 또는 고객 데이터 검증을 뜻하지 않는다. 실제 이미지 게시·Task 정의/실행·네트워크와 정리는 별도 검토·승인 대상이며 기본 비활성이다.
