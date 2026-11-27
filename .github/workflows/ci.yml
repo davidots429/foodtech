@@ -182,6 +182,12 @@ jobs:
         run: |
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCombiRecipeReadAccess-dev --strict --no-lookups -c provisionCombiRecipeReadAccess=true --output /tmp/foodtech-combi-read-access-cdk > /dev/null
           python3 ../../tests/config/check_combi_read_access.py /tmp/foodtech-combi-read-access-cdk/FoodtechCombiRecipeReadAccess-dev.template.json 123456789012
+      - name: Check minimal combi execution metadata access
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCombiExecutionReadAccess-dev --strict --no-lookups -c provisionCombiExecutionReadAccess=true --output /tmp/foodtech-combi-execution-access-cdk > /dev/null
+          python3 ../../tests/config/check_combi_execution_access.py /tmp/foodtech-combi-execution-access-cdk/FoodtechCombiExecutionReadAccess-dev.template.json 123456789012
+          python3 ../../tests/config/check_combi_execution_access_mutations.py /tmp/foodtech-combi-execution-access-cdk/FoodtechCombiExecutionReadAccess-dev.template.json 123456789012
       - name: Check incremental recipe history access
         working-directory: infra/cdk
         run: |

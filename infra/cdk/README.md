@@ -394,3 +394,13 @@ when moving to scheduling, review and pin the intended revision explicitly.
 Autopilot의 원본/발급기·이력/조건 기준을 `combi-read-baseline.json`으로 분리하고 액션을 좁힌다. 원본 역할은 조리 표의 Combi UUID 배치/원본 파티션만 읽으며 auth·전체 목록·LIVE·전역 Jeyuk·다른 표·write·KMS/복제 권한은 없다. 역할의 기본 사용자 범위는 개별 고객 위임이 아니며 발급기는 매번 네 개의 정확한 키로 세션 정책을 전달해야 한다. broker의 이력 조회와 Gateway의 ConditionCheck는 source client로 합치지 않는다.
 
 로컬 타입/합성·cfn-lint·정의/7개 안전조건 훼손 검사를 제공한다. Guard의 고정 역할명 지적은 검토 대상으로 남기며, 이 문서는 해당 예외를 승인하거나 실제 계정 정책을 증명하지 않는다. 기본 app 실행은 이 스택을 생성하지 않는다. 실제 적용 전 원격 동결·서비스/정책 검사·기존 역할의 모든 정책/신뢰/경계와 교집합을 검토하고 명시적 승인을 받는다. Task·네트워크·예약·보호된 coverage 발급·고객 실행/모델 호출은 활성화하지 않는다.
+
+### Combi 실행 메타데이터 조회 권한 후보
+
+`provisionCombiExecutionReadAccess=true`는 별도 개발용 `FoodtechCombiExecutionReadAccess-dev`에 기존 broker의 추가 inline 정책 하나만 정의한다. `BrokerTaskRoleArn`은 같은 계정의 `foodtech-recipe-broker-dev`만 허용하고 기본값이 없다. 역할·신뢰·기존 정책·테이블·키·Task·네트워크를 만들거나 변경하지 않는다. 이력/원본 역할이나 Gateway/BFF 권한과 합치지 않으며 기본 비활성이다. 실제 적용은 별도 검토/승인 대상이다.
+
+`DynamoCombiExecutionReader`의 실제 SDK 코드를 Autopilot으로 분석한 기준에서 `GetItem`만 선택한다. 복제·KMS·Query/Scan/BatchGet/transaction/write 권한은 부여하지 않는다. 단일 환경의 AI 실행 표, UUID 모양 `EXEC#` 파티션 키, 명시적 메타데이터 16개 속성으로 제한한다. `ForAllValues`와 동일 키의 `Null=false`, `Select=SPECIFIC_ATTRIBUTES`로 projection 없는 전체 속성 조회를 허용하지 않는다. `EnclosingOperation`은 없어야 하므로 이 정책을 transaction 읽기로 재사용하지 않는다. 기준 해시와 변경 제약을 template metadata에 남기며 추가 정책은 RETAIN이다.
+
+속성 allowlist는 Python 조회 코드와 검증기에서 대조한다. 식별자·상태·Combi 참조를 읽기 위한 범위이며 모델/자격증명/동의/결과/브라우저 세션 필드는 포함하지 않는다. IAM의 파티션 키 조건은 sort key나 소유자를 제한하지 않는다. 따라서 이 grant를 META 전용 또는 고객별 물리 격리로 표시하지 않는다. 애플리케이션은 실제 `META` 키·canonical UUID·owner/epoch/PENDING/버전/완전한 참조를 별도로 검증해야 한다. UUID 모양 IAM 패턴 자체가 UUID 검증은 아니다.
+
+새 권한은 보호된 작성자/보존 이력 검증을 발급하지 않고 고객·broker·모델을 활성화하지 않는다. 실제 역할/리소스 정책·암호화 키·상위 정책과 서비스 호출은 별도로 확인하며 모의 정책 평가를 실제 실행 증거로 사용하지 않는다.
