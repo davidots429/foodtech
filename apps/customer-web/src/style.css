@@ -99,3 +99,10 @@ code { overflow-wrap: anywhere; }
 
 .candidate-job { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #c7ded9; }
 .candidate-job h6 { font-size: 1rem; margin: 0 0 0.75rem; }
+
+.combi-proposal dl { display: grid; grid-template-columns: minmax(120px, 200px) 1fr; gap: 8px 16px; }
+.combi-proposal dt { font-weight: 600; }
+.combi-proposal dd { margin: 0; overflow-wrap: anywhere; }
+.combi-proposal table { border-collapse: collapse; min-width: 12rem; }
+.combi-proposal caption { text-align: left; white-space: nowrap; padding: 10px 0; font-weight: 600; }
+.combi-proposal th, .combi-proposal td { padding: 8px 16px; text-align: left; border-bottom: 1px solid #dce8e4; }

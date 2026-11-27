@@ -19,7 +19,7 @@ from .external_flow import ExternalFlow, ExternalFlowError, FIXTURE_PROMPT
 from .downgrade_flow import DowngradeFlow, DowngradeError
 from foodtech_contracts.recipe_execution_scope import recipe_execution_observation_payload, recipe_execution_status_payload
 from foodtech_contracts.recipe_result_view import recipe_execution_result_payload
-from foodtech_contracts.combi_execution_binding import parse_combi_binding, combi_binding_payload
+from foodtech_contracts.combi_execution_binding import parse_combi_binding, combi_binding_payload, validate_combi_execution
 
 app = FastAPI(title="Foodtech AI Gateway")
 
@@ -44,6 +44,11 @@ class RecipeScopeRequest(StrictBody):
 
 class RecipeStatusRequest(RecipeScopeRequest):
     job_id: UUID
+
+
+class CombiRecipeStatusRequest(RecipeStatusRequest):
+    meal_id: UUID
+    menu: Literal['RICE', 'MACKEREL']
 
 
 class ChatMessage(StrictBody):
@@ -258,6 +263,15 @@ async def _stable_recipe_result(request: Request, execution_id: UUID, body: Reci
         if not execution or execution.tenant_id != body.tenant_id or execution.feature != Feature.RECIPE_CORRECTION or \
                 execution.job_id != job_id:
             raise HTTPException(404, 'EXECUTION_NOT_FOUND', headers={'Cache-Control': 'no-store'})
+        binding = getattr(execution, 'combi_binding', None)
+        if isinstance(body, CombiRecipeStatusRequest):
+            if binding is None:
+                raise HTTPException(404, 'EXECUTION_NOT_FOUND', headers={'Cache-Control': 'no-store'})
+            validate_combi_execution(execution)
+            if (binding.current_meal_id, binding.menu) != (str(body.meal_id), body.menu):
+                raise HTTPException(404, 'EXECUTION_NOT_FOUND', headers={'Cache-Control': 'no-store'})
+        elif binding is not None:
+            raise HTTPException(404, 'EXECUTION_NOT_FOUND', headers={'Cache-Control': 'no-store'})
         stable = await asyncio.to_thread(registry.execution_status_snapshot, identifier, body.tenant_id)
         if stable is None or stable[0] != before:
             raise RegistryConflict('execution changed during status lookup')
@@ -276,6 +290,16 @@ async def recipe_execution_result(request: Request, execution_id: UUID, body: Re
     except (ValueError, TypeError, AttributeError):
         raise HTTPException(409, 'EXECUTION_STATUS_CHANGED', headers={'Cache-Control': 'no-store'}) from None
     return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/internal/ai/combi-recipe-status/{execution_id}')
+async def combi_recipe_status(request: Request, execution_id: UUID, body: CombiRecipeStatusRequest):
+    return await recipe_execution_status(request, execution_id, body)
+
+
+@app.post('/internal/ai/combi-recipe-results/{execution_id}')
+async def combi_recipe_result(request: Request, execution_id: UUID, body: CombiRecipeStatusRequest):
+    return await recipe_execution_result(request, execution_id, body)
 
 
 @app.post("/internal/ai/recipe-downgrades/preview", status_code=201)

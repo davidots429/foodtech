@@ -45,3 +45,27 @@
 - 합성 MQTT CSV 기본 장비 프로파일 `mockprofile-302`는 vendor-a/b/c 열 계약으로 수집한다. CSV 셀이 `=`, `+`, `-`, `@`, 탭 또는 CR로 시작하면 음수 표기를 포함해 격리하며 원본과 격리 결과를 보존한 후에만 MQTT 메시지를 확인한다.
 
 Approved AI proposal reviews preserve a separate immutable recipe candidate with its original baseline; candidates are never applied to equipment or existing recipes automatically.
+
+
+### Combi stored recommendation reads
+
+The customer BFF exposes `GET /api/customer/ai/combi/recipe-executions/{execution_id}/status`
+and `/result` with `meal_id` and `menu=RICE|MACKEREL`. It derives the menu job ID from
+an owned `COMBI_MEAL` metadata record and checks the customer principal/session and
+unchanged batch before returning the result. It never fabricates a standalone
+`JOB` record, reads source chunks, invokes a model, or issues source credentials.
+A changed batch version is marked `job_changed`; an intervening batch/session
+change prevents returning the observation.
+
+The separate internal `/internal/ai/combi-recipe-status/{execution_id}` and
+`combi-recipe-results` routes require the existing business-client mTLS boundary.
+The Gateway checks the stored owner, immutable Combi meal/menu/job binding, and
+stable execution/result snapshot. The legacy status/result routes reject Combi
+bindings. Only bounded, schema/guard-version-matched rice or mackerel proposals
+are displayed; raw responses and credentials are never returned. These views
+remain `NEEDS_REVIEW`, with execution and manual invocation unavailable. A
+historical display does not establish current safety, authorize adoption, or
+satisfy protected writer/history rollout requirements. The customer meal screen offers a separate rice/mackerel execution-ID lookup,
+with typed proposal fields, units and pan layout. Changing the batch clears the
+previous display; stale responses are discarded. Real deployment and human
+review/adoption integration remain separate work.

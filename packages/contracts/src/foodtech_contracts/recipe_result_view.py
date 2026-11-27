@@ -9,6 +9,8 @@ import json
 import rfc8785
 
 from .recipe_execution_scope import recipe_execution_status_payload, validate_recipe_status_payload
+from .combi_recommendation import fields as combi_fields, SCHEMA_VERSION as COMBI_SCHEMA_VERSION, RULE_VERSION as COMBI_RULE_VERSION
+from .combi_execution_binding import validate_combi_execution
 from .recommendation_guard import RULE_VERSION
 from .recommendation_output import MAX_OUTPUT_BYTES, SCHEMA_VERSION
 
@@ -26,7 +28,30 @@ def _unique(pairs):
     return result
 
 
+def _combi_data(value):
+    menu = 'RICE' if 'effective_water_ratio' in value else 'MACKEREL'
+    if set(value) != set(combi_fields(menu)):
+        raise ValueError('combi proposal fields unavailable')
+    numbers = {'temperature_c', 'climate_setpoint_percent', 'effective_water_ratio'}
+    for name, raw in value.items():
+        if name in numbers:
+            # Use the same bounded canonical decimal-string validation as legacy views.
+            _data({'temperature_c': raw, 'duration_seconds': 0})
+        elif name != 'pan_positions' and (type(raw) is not int or not 0 <= raw < 2**31):
+            raise ValueError('invalid stored combi integer')
+    positions = value['pan_positions']
+    if type(positions) is not list or not 1 <= len(positions) <= 20 or any(
+            type(p) is not dict or set(p) != {'rack', 'shelf'} or
+            type(p['rack']) is not int or not 1 <= p['rack'] <= 2 or
+            type(p['shelf']) is not int or not 1 <= p['shelf'] <= 10 for p in positions) or \
+            len({(p['rack'], p['shelf']) for p in positions}) != len(positions):
+        raise ValueError('invalid stored pan positions')
+    return menu, {**value, 'pan_positions': [dict(p) for p in positions]}
+
+
 def _data(value):
+    if type(value) is dict and 'pan_positions' in value:
+        return _combi_data(value)
     if not isinstance(value, dict) or set(value) not in (_TONKATSU, _JEYUK):
         raise ValueError('recipe proposal fields unavailable')
     for key, number in value.items():
@@ -53,22 +78,23 @@ def _proposal(raw):
     if not isinstance(value, dict) or set(value) != {
             'status', 'error_code', 'data', 'schema_version', 'guard_version', 'fallback_used', 'attempts'} or \
             value['status'] != 'NEEDS_REVIEW' or value['error_code'] is not None or \
-            value['schema_version'] != SCHEMA_VERSION or value['guard_version'] != RULE_VERSION or \
+            (value['schema_version'], value['guard_version']) not in {
+                (SCHEMA_VERSION, RULE_VERSION), (COMBI_SCHEMA_VERSION, COMBI_RULE_VERSION)} or \
             value['fallback_used'] is not False or type(value['attempts']) is not int or not 1 <= value['attempts'] <= 3:
         raise ValueError('recipe result unavailable')
     menu, data = _data(value['data'])
-    return {'status': 'NEEDS_REVIEW', 'schema_version': SCHEMA_VERSION, 'guard_version': RULE_VERSION,
-            'menu': menu, 'data': data}
+    return validated_recipe_proposal({'status': 'NEEDS_REVIEW', 'schema_version': value['schema_version'],
+        'guard_version': value['guard_version'], 'menu': menu, 'data': data})
 
 
 def validated_recipe_proposal(proposal):
     """Copy the supported review proposal without arbitrary model content."""
     if not isinstance(proposal, dict) or set(proposal) != {'status', 'schema_version', 'guard_version', 'menu', 'data'} or \
-            proposal['status'] != 'NEEDS_REVIEW' or proposal['schema_version'] != SCHEMA_VERSION or \
-            proposal['guard_version'] != RULE_VERSION:
+            proposal['status'] != 'NEEDS_REVIEW':
         raise ValueError('recipe proposal unavailable')
     menu, data = _data(proposal['data'])
-    if proposal['menu'] != menu:
+    versions = (COMBI_SCHEMA_VERSION, COMBI_RULE_VERSION) if menu in {'RICE', 'MACKEREL'} else (SCHEMA_VERSION, RULE_VERSION)
+    if proposal['menu'] != menu or (proposal['schema_version'], proposal['guard_version']) != versions:
         raise ValueError('recipe proposal unavailable')
     return {**proposal, 'data': data}
 
@@ -110,6 +136,14 @@ def recipe_execution_result_payload(snapshot, result, *, execution_id, tenant_id
     else:
         try:
             proposal = _proposal(result.get('response_text'))
+            execution = snapshot.execution
+            binding = getattr(execution, 'combi_binding', None)
+            if binding is not None:
+                validate_combi_execution(execution)
+                if proposal['menu'] != binding.menu:
+                    raise ValueError('stored combi menu differs')
+            elif proposal['menu'] in {'RICE', 'MACKEREL'}:
+                raise ValueError('stored combi binding required')
             status = 'AVAILABLE'
         except (ValueError, TypeError, RecursionError, UnicodeError, OverflowError):
             status, error = 'UNAVAILABLE', 'RECIPE_RESULT_UNAVAILABLE'
