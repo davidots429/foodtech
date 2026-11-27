@@ -64,11 +64,4 @@ async def invoke_customer_recipe(request, execution_id):
                             headers={'Cache-Control': 'no-store'}) from None
     finally:
         if broker is not None:
-            clients = (getattr(broker, 'sts', None), getattr(getattr(broker, 'source_authority', None), 'client', None))
-            for client in clients:
-                close = getattr(client, 'close', None)
-                if callable(close):
-                    try:
-                        await asyncio.to_thread(close)
-                    except (BotoCoreError, OSError):
-                        pass
+            await asyncio.to_thread(broker.close)

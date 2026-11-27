@@ -82,6 +82,16 @@ class RuntimeIdentityTests(unittest.TestCase):
                 self.session.resource.assert_not_called()
 
 
+    def test_partial_client_initialization_closes_existing_clients(self):
+        self.session.resource.side_effect=ValueError('private-marker')
+        with patch.dict(os.environ,self.env), patch('foodtech_ai_gateway.recipe_invocation.boto3.Session',return_value=self.session):
+            with self.assertRaises(RecipeRuntimeUnavailable) as error:
+                configured_recipe_conditions(self.registry)
+        self.assertNotIn('private-marker',str(error.exception))
+        self.sts.close.assert_called_once()
+        self.conditions.close.assert_called_once()
+
+
 class InvocationBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_plain_http_and_disabled_route_stop_before_service_or_aws(self):
         for scheme, listener, enabled, expected in [('http', False, 'true', 401),
@@ -183,3 +193,18 @@ class InvocationBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call for call in ollama.mock_calls if call[0] != '__bool__'],[])
         self.assertNotIn('synthetic-secret-marker',response.text)
         self.assertIsNone(shared.recipe_source_guard)
+
+    async def test_cleanup_failure_does_not_replace_already_decided_outcome(self):
+        identifier=str(uuid4())
+        snapshot=SimpleNamespace(execution=SimpleNamespace(execution_id=identifier,tenant_id='one',feature=Feature.RECIPE_CORRECTION))
+        registry=MagicMock(); registry.execution_snapshot.return_value=snapshot
+        client=MagicMock(); client.close.side_effect=OSError('private-marker')
+        shared=GatewayService(registry)
+        with patch.dict(os.environ,{'FOODTECH_RECIPE_INVOCATION_ENABLED':'true'}), \
+                patch('foodtech_ai_gateway.recipe_invocation.configured_recipe_conditions',return_value=('read-role',client,registry)), \
+                patch('foodtech_ai_gateway.recipe_invocation.receive_internal_recipe_handoff',new=AsyncMock(return_value=object())), \
+                patch.object(GatewayService,'execute_observed_local_recipe',new=AsyncMock(return_value=ExecutionOutcome(identifier,'DENIED',error_code='HISTORY_SCOPE_UNAVAILABLE'))):
+            response=await invoke_observed_recipe(object(),identifier,service=shared,ollama=object())
+        self.assertEqual(response.status_code,200)
+        self.assertNotIn('private-marker',response.body.decode())
+        registry.resource.meta.client.close.assert_called_once()

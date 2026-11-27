@@ -74,6 +74,7 @@ class CustomerInvocationTests(unittest.IsolatedAsyncioTestCase):
         deliver.assert_awaited_once_with(lease)
         self.broker.sts.close.assert_called_once()
         self.broker.source_authority.client.close.assert_called_once()
+        self.broker.cooking_resource.meta.client.close.assert_called_once()
 
     async def test_session_revoke_after_delivery_hides_outcome_without_reinvoking(self):
         changed=SimpleNamespace(subject=self.session.subject,epoch=4,csrf='csrf')
@@ -133,3 +134,26 @@ class CustomerInvocationTests(unittest.IsolatedAsyncioTestCase):
                                                       history_authority=authority)
         self.assertIs(result,bound)
         client.close.assert_called_once()
+
+    def test_owned_clients_close_on_partial_configuration_or_cleanup_failure(self):
+        env = {**self.env, 'FOODTECH_RECIPE_SOURCE_BROKER_ENABLED':'true',
+            'AWS_EXECUTION_ENV':'AWS_ECS_FARGATE', 'FOODTECH_STAGE':'dev',
+            'FOODTECH_RECIPE_SOURCE_READ_ROLE_ARN':self.broker.read_role_arn,
+            'FOODTECH_RECIPE_BROKER_TASK_ROLE_ARN':'arn:aws:iam::123456789012:role/broker-dev',
+            'FOODTECH_AUTH_TABLE':'foodtech-auth-sessions-dev', 'FOODTECH_SOURCE_ACCESS_TABLE':'foodtech-source-access-dev'}
+        sdk=MagicMock()
+        sdk.get_credentials.return_value=SimpleNamespace(method='container-role')
+        sts, conditions=MagicMock(), MagicMock()
+        sts.get_caller_identity.return_value={'Account':'123456789012',
+            'Arn':'arn:aws:sts::123456789012:assumed-role/broker-dev/session-1'}
+        sdk.client.side_effect=lambda service, **kw: sts if service=='sts' else conditions
+        sdk.resource.side_effect=ValueError('private-marker')
+        from foodtech_business_api.recipe_read_broker import configured_broker
+        with patch.dict(os.environ,env), patch('foodtech_business_api.recipe_read_broker.boto3.Session',return_value=sdk):
+            with self.assertRaises(ValueError): configured_broker()
+        sts.close.assert_called_once()
+        conditions.close.assert_called_once()
+        self.broker.sts.close.side_effect=OSError('private-marker')
+        self.broker.close()
+        self.broker.source_authority.client.close.assert_called_once()
+        self.broker.cooking_resource.meta.client.close.assert_called_once()

@@ -19,6 +19,17 @@ class RecipeRuntimeUnavailable(Exception):
     pass
 
 
+def _close_clients(*clients):
+    seen = set()
+    for client in clients:
+        if client is not None and id(client) not in seen:
+            seen.add(id(client))
+            try:
+                client.close()
+            except (BotoCoreError, OSError):
+                pass
+
+
 def configured_recipe_conditions(registry):
     """Use the verified Gateway task identity only for condition checks."""
     env = os.environ
@@ -36,6 +47,7 @@ def configured_recipe_conditions(registry):
             registry.auth_table != f'foodtech-auth-sessions-{stage}' or \
             env.get('FOODTECH_AUTH_TABLE') != registry.auth_table:
         raise RecipeRuntimeUnavailable('recipe runtime unavailable')
+    client, resource = None, None
     try:
         session = boto3.Session(region_name='ap-southeast-2')
         credentials = session.get_credentials()
@@ -57,7 +69,8 @@ def configured_recipe_conditions(registry):
         observed_registry = DynamoRegistry(registry.table_name, registry.period, resource=resource, client=client,
                                            local_models=registry.local_models, auth_table=registry.auth_table)
         return read_role, client, observed_registry
-    except (ValueError, TypeError, AttributeError, BotoCoreError, ClientError):
+    except (ValueError, TypeError, AttributeError, BotoCoreError, ClientError, OSError):
+        _close_clients(client, getattr(getattr(resource, 'meta', None), 'client', None))
         raise RecipeRuntimeUnavailable('recipe runtime unavailable') from None
 
 
@@ -87,7 +100,5 @@ async def invoke_observed_recipe(request, execution_id, *, service, ollama):
     except (RecipeRuntimeUnavailable, BotoCoreError, ClientError):
         raise HTTPException(503, 'RECIPE_INVOCATION_UNAVAILABLE', headers={'Cache-Control': 'no-store'}) from None
     finally:
-        if client is not None:
-            await asyncio.to_thread(client.close)
-        if registry is not None:
-            await asyncio.to_thread(registry.resource.meta.client.close)
+        resource_client = registry.resource.meta.client if registry is not None else None
+        await asyncio.to_thread(_close_clients, client, resource_client)
