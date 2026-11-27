@@ -96,3 +96,6 @@ code { overflow-wrap: anywhere; }
 @media (max-width: 680px) { .shell { padding: 24px 14px 48px; } section { padding: 18px; } .score-row { grid-template-columns: 1fr; } .score-row label { width: 100%; } .status-grid { grid-template-columns: 1fr 1fr; } .lookup-row { flex-wrap: wrap; } .lookup-row label { flex-basis: 100%; } }
 
 .recipe-candidate { margin: 0.75rem 0; overflow-wrap: anywhere; }
+
+.candidate-job { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #c7ded9; }
+.candidate-job h6 { font-size: 1rem; margin: 0 0 0.75rem; }

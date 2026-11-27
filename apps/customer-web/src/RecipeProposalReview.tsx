@@ -5,8 +5,8 @@ import { parseRecipeReview, parseReviewContext, parseReviewPage } from "./recipe
 import type { RecipeReview, ReviewContext } from "./recipeReview";
 import type { RecipeProposal } from "./recipeResult";
 
-export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal, csrf }: {
-  jobId: string; executionId: string; jobVersion: number; proposal: RecipeProposal; csrf: string;
+export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal, csrf, onCreated }: {
+  jobId: string; executionId: string; jobVersion: number; proposal: RecipeProposal; csrf: string; onCreated?: (jobId: string) => void;
 }) {
   const [context, setContext] = useState<ReviewContext | null>(null);
   const [decision, setDecision] = useState<"" | "APPROVE" | "REJECT">("");
@@ -79,7 +79,7 @@ export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal,
       <p>검토 기록 버전: {context.review_version}</p>
       {latest && <p>{latestMatches ? "이 권고" : "현재 표시 내용과 다른 권고"}의 최근 검토:
         {latest.decision === "APPROVE" ? "검토 승인" : "검토 거절"} · {latest.reason} · {latest.reviewed_at}</p>}
-      {latest && <RecipeCandidateView key={latest.version} review={latest} />}
+      {latest && <RecipeCandidateView key={latest.version} review={latest} csrf={csrf} onCreated={onCreated} />}
       {!context.can_review && <p>권고 생성 이후 조리 기록이 변경되어 새 검토를 저장할 수 없습니다.</p>}
       <label>검토 결과<select value={decision} disabled={busy || !context.can_review}
         onChange={event => { setDecision(event.target.value as "" | "APPROVE" | "REJECT"); setAcknowledged(false); }}>
@@ -99,7 +99,7 @@ export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal,
         {item.execution_id === executionId ? "같은 실행의 기록" : "다른 실행의 기록"} · 작업 버전 {item.job_version} ·
         {item.decision === "APPROVE" ? "검토 승인" : "검토 거절"} · {item.reason} · {item.reviewed_at}
         {historyJobVersion !== null && item.job_version !== historyJobVersion && <p>조리 기록 변경 이전의 검토입니다.</p>}
-        <RecipeCandidateView review={item} />
+        <RecipeCandidateView review={item} csrf={csrf} onCreated={onCreated} />
         <details><summary>검토 당시 권고 값</summary><dl>{fields.filter(([field]) => field in item.proposal.data)
           .map(([field, label, unit]) => <div key={field}><dt>{label}</dt><dd>{item.proposal.data[field]} {unit}</dd></div>)}</dl></details>
       </li>)}</ol>}

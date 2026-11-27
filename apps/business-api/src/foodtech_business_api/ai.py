@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from .auth import _csrf, _session
+from .recipe_candidate_jobs import CandidateJobRequest
 from foodtech_contracts.recipe_execution_scope import validate_recipe_status_payload
 from foodtech_contracts.recipe_result_view import recipe_proposal_digest, validate_recipe_result_payload
 
@@ -325,6 +326,12 @@ async def recipe_candidate(request: Request, review_version: int, job_id: UUID):
         raise HTTPException(404, '이 검토에 저장된 후보 버전이 없습니다.', headers={'Cache-Control': 'no-store'})
     return JSONResponse({'candidate': candidate, 'current_job_version': job['version'],
         'current_review_version': current['version']}, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/recipe-candidates/{review_version}/cooking-jobs', status_code=201)
+async def candidate_cooking_job(request: Request, review_version: int, body: CandidateJobRequest, job_id: UUID):
+    from .recipe_candidate_jobs import create_candidate_job
+    return await create_candidate_job(request, job_id, review_version, body)
 
 
 @router.post('/recipe-executions/{execution_id}/invoke')

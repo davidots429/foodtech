@@ -1,3 +1,4 @@
+import type { RecipeCandidate } from "./recipeCandidate";
 export type JobStatus = "PENDING" | "READY" | "RUNNING" | "PAUSED" | "SAFETY_HOLD" | "COMPLETED" | "FAILED" | "CANCELED";
 export type SafetyStatus = "NOT_MEASURED" | "PASSED" | "FAILED" | "INCOMPLETE" | "SUSPECTED" | "UNDER_REVIEW" | "CLEARED";
 export type TransitionEvent = "PREHEAT_COMPLETED" | "PREHEAT_CONDITION_LOST" | "COOKING_STARTED" |
@@ -22,6 +23,8 @@ export type CookingJob = {
   provenance: "SYNTHETIC";
   equipment_profile: string;
   recipe_version: string;
+  recipe_candidate_selection?: { schema_version: "recipe-candidate-selection-v1"; request_id: string; request_hash: string;
+    source_job_id: string; source_job_version: number; review_version: number; candidate: RecipeCandidate };
   planned_portions: number;
   thickness_cm?: string;
   actual_load_kg?: string | null;

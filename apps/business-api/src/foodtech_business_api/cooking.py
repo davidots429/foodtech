@@ -363,9 +363,8 @@ class Recook(StrictModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
-@router.post("", status_code=201)
-async def create_job(request: Request, body: NewJob) -> dict:
-    session, store = await _context(request, write=True)
+def new_job_meta(subject: str, body: NewJob, *, job_id: str | None = None) -> dict:
+    """Fresh job validation and initial state; never inherit safety or assessments."""
     if body.equipment_profile in {"synthetic-fryer", "synthetic-fryer-approved-v2"}:
         if body.thickness_cm is None or body.actual_load_kg is not None or body.planned_portions > 18:
             raise HTTPException(422, "합성 돈까스 작업에는 두께만 입력해야 합니다.")
@@ -386,9 +385,9 @@ async def create_job(request: Request, body: NewJob) -> dict:
         menu, thickness_status, thickness_band = "JEYUK", "NOT_APPLICABLE", None
     else:
         raise HTTPException(422, "지원되지 않는 합성 장비 프로파일입니다.")
-    job_id = str(uuid.uuid4())
+    job_id = job_id or str(uuid.uuid4())
     meta = {
-        "job_id": job_id, "owner_subject": session.subject, "menu": menu,
+        "job_id": job_id, "owner_subject": subject, "menu": menu,
         "provenance": "SYNTHETIC", "equipment_profile": body.equipment_profile,
         "recipe_version": body.recipe_version, "planned_portions": body.planned_portions,
         "thickness_cm": str(body.thickness_cm) if body.thickness_cm is not None else None,
@@ -419,12 +418,18 @@ async def create_job(request: Request, body: NewJob) -> dict:
         "discharge_check_version": 0, "discharge_check_status": "NOT_MEASURED",
         "process_time_status": "NOT_MEASURED",
     }
+    return meta
+
+
+@router.post("", status_code=201)
+async def create_job(request: Request, body: NewJob) -> dict:
+    session, store = await _context(request, write=True)
+    meta = new_job_meta(session.subject, body)
     try:
-        await _store_call(store, store.create, _pk(session.subject, job_id), meta, session.epoch)
+        await _store_call(store, store.create, _pk(session.subject, meta["job_id"]), meta, session.epoch)
     except Conflict as exc:
         raise _conflict() from exc
     return meta
-
 
 @router.get("")
 async def list_jobs(request: Request, limit: int = Query(20, ge=1, le=50),

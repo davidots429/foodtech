@@ -1,3 +1,4 @@
+import { parseCandidateJobReceipt, parseCandidateJobRecovery } from "../../apps/customer-web/src/candidateCookingJob.ts";
 import { parseRecipeCandidate } from "../../apps/customer-web/src/recipeCandidate.ts";
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -59,4 +60,24 @@ test('candidate rejects altered content, linkage, applied state and untrusted fi
   for(const changed of [{current_job_version:2},{current_review_version:0},{current_review_version:true}])
     assert.throws(()=>parseRecipeCandidate({...payload,...changed},review));
   assert.throws(()=>parseRecipeCandidate(payload,{...review,decision:'REJECT'}));
+});
+
+const jobInput={request_id:'00000000-0000-4000-8000-000000000005',expected_job_version:3,proposal_digest:review.proposal_digest,
+  planned_portions:20,thickness_cm:null,actual_load_kg:'7.00',acknowledged:true};
+const selection={schema_version:'recipe-candidate-selection-v1',request_id:jobInput.request_id,request_hash:'b'.repeat(64),
+  source_job_id:job,source_job_version:3,review_version:1,candidate};
+const child={job_id:jobInput.request_id,recipe_version:candidate.candidate_id,provenance:'SYNTHETIC',menu:'JEYUK',equipment_profile:'jeyuk-medium',
+  planned_portions:20,thickness_cm:null,actual_load_kg:'7',source_job_id:null,recook_reason:null,recipe_candidate_selection:selection};
+test('new candidate job receipt is tied to the original request and candidate',()=>{
+  const raw={job_id:jobInput.request_id,recipe_version:candidate.candidate_id,request_hash:'b'.repeat(64),created:true};
+  assert.equal(parseCandidateJobReceipt(raw,candidate,jobInput).job_id,jobInput.request_id);
+  for(const change of [{job_id:job},{recipe_version:'other'},{request_hash:'bad'},{created:'true'}])
+    assert.throws(()=>parseCandidateJobReceipt({...raw,...change},candidate,jobInput));
+});
+test('response-loss recovery validates candidate lineage and new measurements without resubmission',()=>{
+  assert.equal(parseCandidateJobRecovery({job:child},candidate,review,jobInput).job_id,jobInput.request_id);
+  for(const change of [{job_id:job},{planned_portions:19},{actual_load_kg:'8'},{source_job_id:job},
+    {recipe_candidate_selection:{...selection,source_job_id:execution}},
+    {recipe_candidate_selection:{...selection,candidate:{...candidate,proposal:{...proposal,data:{...proposal.data,temperature_c:'250'}}}}}])
+    assert.throws(()=>parseCandidateJobRecovery({job:{...child,...change}},candidate,review,jobInput));
 });
