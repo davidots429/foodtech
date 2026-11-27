@@ -12,11 +12,14 @@ from foodtech_contracts.recommendation_guard import Evidence
 def build_combi_inputs(current, prior):
     for batch in (current, prior):
         if type(batch) is not ObservedCombiBatch or type(batch.baseline) is not CombiBaseline or \
-                type(batch.unresolved) is not tuple or batch.unresolved or \
+                type(batch.unresolved) is not tuple or batch.unresolved or type(batch.quality) is not tuple or \
                 batch.recorded_safety_status not in {'PASSED', 'FAILED'} or \
                 batch.recorded_safety_status != batch.sampled_safety_status or \
                 batch.baseline.safety_basis_valid is not True or batch.baseline.process_interrupted is not False:
             raise ValueError('combi recommendation evidence unavailable')
+        quality = dict(batch.quality)
+        if quality.get('status') != ('CURRENT' if batch.recorded_safety_status == 'PASSED' else 'BLOCKED_BY_SAFETY'):
+            raise ValueError('current combi quality evidence unavailable')
     if current.meal_id == prior.meal_id or current.job_id == prior.job_id or \
             current.source_digest == prior.source_digest or \
             (current.baseline.menu, current.baseline.size) != (prior.baseline.menu, prior.baseline.size):

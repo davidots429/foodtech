@@ -24,6 +24,7 @@ from foodtech_business_api.main import app
 from foodtech_collection_adapter.combi_import import import_meal
 from foodtech_collection_adapter.rest import RestMockClient
 from foodtech_business_api.combi_owned_observations import read_owned_combi_observation
+from foodtech_contracts.combi_quality_observation import SCORE_ITEMS
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "fixtures/combi-normal-medium-v1.json"
@@ -334,13 +335,21 @@ class CombiSourceBindingTests(unittest.IsolatedAsyncioTestCase):
                     'expected_version': confirmed.json()['meal']['version'], 'measured_at': unloaded.isoformat(),
                     'probes': probes})
                 self.assertEqual(checked.status_code, 200, checked.text)
+                graded = await client.post(path + '/quality/mackerel', headers=headers, json={
+                    'expected_version': checked.json()['meal']['version'], 'expected_current_version': 0,
+                    'kind': 'INITIAL', 'scores': {name: 4 for name in SCORE_ITEMS},
+                    'observations': {name: '합성 관찰' for name in SCORE_ITEMS},
+                    'quality_decision': 'QUALITY_PASSED', 'quality_reason_codes': [],
+                    'planned_portions': 3, 'actual_portions': 3, 'overall_satisfaction': 4})
+                self.assertEqual(graded.status_code, 201, graded.text)
                 observations = read_owned_combi_observation(await session(None, None),
-                    meal_id=meal['meal_batch_id'], expected_version=checked.json()['meal']['version'],
+                    meal_id=meal['meal_batch_id'], expected_version=graded.json()['meal']['version'],
                     source_digest=hashlib.sha256(('\n'.join(records) + '\n').encode()).hexdigest(),
                     menu='MACKEREL', meal_reader=store.read_meal, source_reader=store.read_meal_source_chunk,
                     principal_reader=lambda owner: {'pk': 'USER#' + owner, 'epoch': 0})
                 self.assertEqual(observations.unresolved, ())
                 self.assertEqual(observations.sampled_safety_status, 'PASSED')
+                self.assertEqual(observations.model_context()['quality']['score_percent'], '80.00')
                 self.assertEqual(observations.baseline.ingredient_kg, Decimal('.39'))
                 self.assertIs(observations.baseline.humidity_available, False)
                 self.assertIs(observations.baseline.transition_ready, True)
