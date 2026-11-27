@@ -1,6 +1,6 @@
 """Receive a bounded read lease over the dedicated internal mTLS listener.
 
-No public route is mounted here. The eventual invocation handler must provide
+No public route is mounted here. The opt-in internal invocation handler provides
 a fresh authoritative execution snapshot and the independently reviewed
 condition-only client. A matching STS role is not proof of its session policy;
 the trusted issuer and real AWS allow/deny validation remain required.

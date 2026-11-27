@@ -115,7 +115,8 @@ class RecipeReadLease:
 
 class RecipeReadBroker:
     """Internal issuance primitive; the authenticated wrapper is the entry point."""
-    def __init__(self, *, account, stage, read_role_arn, sts, session_factory=boto3.Session, source_authority=None):
+    def __init__(self, *, account, stage, read_role_arn, sts, session_factory=boto3.Session, source_authority=None,
+                 cooking_resource=None):
         if not isinstance(account, str) or not re.fullmatch(r'[0-9]{12}', account) or \
                 not isinstance(stage, str) or not re.fullmatch(r'[a-z0-9-]{1,32}', stage) or \
                 read_role_arn != f'arn:aws:iam::{account}:role/foodtech-recipe-source-read-{stage}':
@@ -123,8 +124,24 @@ class RecipeReadBroker:
         self.account, self.stage, self.read_role_arn = account, stage, read_role_arn
         self.sts, self.session_factory = sts, session_factory
         self.source_authority = source_authority
+        self.cooking_resource = cooking_resource
         self.config = Config(connect_timeout=5, read_timeout=15, ignore_configured_endpoint_urls=True,
+            proxies={}, account_id_endpoint_mode='disabled',
             retries={'mode': 'standard', 'total_max_attempts': 2})
+
+    def close(self):
+        """Dispose task-owned clients without changing an already settled outcome."""
+        clients = (self.sts, getattr(self.source_authority, 'client', None),
+                   getattr(getattr(self.cooking_resource, 'meta', None), 'client', None))
+        seen = set()
+        for client in clients:
+            close = getattr(client, 'close', None)
+            if id(client) not in seen and callable(close):
+                seen.add(id(client))
+                try:
+                    close()
+                except (BotoCoreError, OSError):
+                    pass
 
     def session_policy(self, scope):
         _validate_scope(scope)
@@ -184,17 +201,26 @@ def configured_broker():
     if credentials is None or credentials.method != 'container-role':
         raise RecipeScopeDenied('recipe broker task credentials required')
     config = Config(connect_timeout=5, read_timeout=15, ignore_configured_endpoint_urls=True,
+        proxies={}, account_id_endpoint_mode='disabled',
         retries={'mode': 'standard', 'total_max_attempts': 2})
-    sts = session.client('sts', config=config)
-    identity = sts.get_caller_identity()
-    role_name = caller.rsplit('/', 1)[1]
-    if identity.get('Account') != match[1] or not re.fullmatch(
-            r'arn:aws:sts::' + match[1] + ':assumed-role/' + re.escape(role_name) +
-            r'/[A-Za-z0-9+=,.@_-]{2,64}', identity.get('Arn', '')):
-        raise RecipeScopeDenied('unexpected recipe broker task identity')
-    authority = DynamoSourceReadAuthority(auth_table=env['FOODTECH_AUTH_TABLE'],
-        catalog_table=env['FOODTECH_SOURCE_ACCESS_TABLE'], client=session.client('dynamodb', config=config))
-    return RecipeReadBroker(account=match[1], stage=stage, read_role_arn=read_role, sts=sts, source_authority=authority)
+    sts = session.client('sts', config=config, endpoint_url=f'https://sts.{REGION}.amazonaws.com')
+    broker = RecipeReadBroker(account=match[1], stage=stage, read_role_arn=read_role, sts=sts)
+    try:
+        identity = sts.get_caller_identity()
+        role_name = caller.rsplit('/', 1)[1]
+        if identity.get('Account') != match[1] or not re.fullmatch(
+                r'arn:aws:sts::' + match[1] + ':assumed-role/' + re.escape(role_name) +
+                r'/[A-Za-z0-9+=,.@_-]{2,64}', identity.get('Arn', '')):
+            raise RecipeScopeDenied('unexpected recipe broker task identity')
+        broker.source_authority = DynamoSourceReadAuthority(auth_table=env['FOODTECH_AUTH_TABLE'],
+            catalog_table=env['FOODTECH_SOURCE_ACCESS_TABLE'], client=session.client('dynamodb', config=config,
+                endpoint_url=f'https://dynamodb.{REGION}.amazonaws.com'))
+        broker.cooking_resource = session.resource('dynamodb', config=config,
+                                                 endpoint_url=f'https://dynamodb.{REGION}.amazonaws.com')
+        return broker
+    except (RecipeScopeDenied, BotoCoreError, ClientError, ValueError, OSError):
+        broker.close()
+        raise
 
 
 async def issue_authenticated_reads(request, execution_id, *, execution_reader, job_reader, broker,

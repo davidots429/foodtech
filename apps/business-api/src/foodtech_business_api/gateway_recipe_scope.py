@@ -57,14 +57,14 @@ class GatewayRecipeExecutionReader:
             raise RecipeScopeDenied('recipe execution scope unavailable') from None
 
 
-async def issue_customer_recipe_reads(request, execution_id, *, job_reader, broker):
+async def issue_customer_recipe_reads(request, execution_id, *, job_reader, broker, history_authority=None):
     """Connect a fresh customer/CSRF check to Gateway observations and STS.
 
     No HTTP response is produced. The returned private lease still requires a
     protected Gateway transfer and atomic source/grant settlement before use.
     """
     from .ai import _gateway_settings
-    from .recipe_read_broker import issue_authenticated_reads
+    from .recipe_read_broker import issue_authenticated_reads, bind_authenticated_recipe_history
     import ssl
 
     session = await _session(request, 'customer')
@@ -77,7 +77,11 @@ async def issue_customer_recipe_reads(request, execution_id, *, job_reader, brok
     client = httpx.Client(verify=context, timeout=20, trust_env=False, follow_redirects=False)
     try:
         reader = GatewayRecipeExecutionReader(client=client, url=url, subject=session.subject)
-        return await issue_authenticated_reads(request, execution_id,
+        lease = await issue_authenticated_reads(request, execution_id,
             execution_reader=reader, job_reader=job_reader, broker=broker)
+        if history_authority is not None:
+            lease = await bind_authenticated_recipe_history(request, lease, authority=history_authority,
+                        execution_reader=reader, job_reader=job_reader)
+        return lease
     finally:
         await asyncio.to_thread(client.close)

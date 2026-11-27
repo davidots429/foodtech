@@ -42,8 +42,8 @@ def _outcome(raw, execution_id):
 async def deliver_internal_recipe_read_lease(lease):
     """Used only after fresh customer authorization; never retry invocation.
 
-    The invocation route is intentionally not enabled until authoritative
-    recommendation evidence and deployed permission checks are connected.
+    Invocation is disabled by default. Its caller must bind authoritative
+    history and deploy the independently checked role/permission boundaries.
     """
     if type(lease) is not RecipeReadLease:
         raise RecipeDeliveryUnavailable('recipe invocation unavailable')
