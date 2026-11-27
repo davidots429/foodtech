@@ -27,27 +27,49 @@ export class RecipeSourceCatalogStack extends Stack {
 export class RecipeSourceAccessStack extends Stack {
   constructor(scope: Construct, id: string, props: StackProps, stage: string) {
     super(scope, id, props);
-    if (stage !== "dev" || Token.isUnresolved(this.account) || !/^[0-9]{12}$/.test(this.account)) {
-      throw new Error("recipe source access requires dev and an explicit verified account");
+    if (stage !== "dev" || Token.isUnresolved(this.account) || !/^[0-9]{12}$/.test(this.account) || this.region !== "ap-southeast-2") {
+      throw new Error("recipe source access requires dev and an explicit verified regional account");
     }
     const rolePattern = `^arn:aws:iam::${this.account}:role/[A-Za-z0-9+=,.@_-]{1,64}$`;
-    const broker = new CfnParameter(this, "BrokerTaskRoleArn", { type: "String", allowedPattern: rolePattern,
-      description: "Reviewed existing trusted BFF/broker task role; never the Gateway role" });
+    const brokerMode = this.node.tryGetContext("recipeBrokerRoleMode") ?? "existing";
+    if (brokerMode !== "existing" && brokerMode !== "create") {
+      throw new Error("recipeBrokerRoleMode must be existing or create");
+    }
+    // This identity is only the trusted read issuer. Authentication/session,
+    // ordinary BFF writes and history access require separately reviewed grants.
+    const ownedBroker = brokerMode === "create" ? new iam.Role(this, "BrokerTaskRole", {
+      roleName: `foodtech-recipe-broker-${stage}`,
+      description: "Dedicated ECS recipe read issuer; not a general customer API or Gateway role",
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", { conditions: {
+        StringEquals: { "aws:SourceAccount": this.account },
+        ArnLike: { "aws:SourceArn": `arn:aws:ecs:ap-southeast-2:${this.account}:*` },
+      } }),
+    }) : undefined;
+    const existingBroker = ownedBroker ? undefined : new CfnParameter(this, "BrokerTaskRoleArn", {
+      type: "String", allowedPattern: rolePattern,
+      description: "Reviewed existing trusted BFF/broker task role; never the Gateway role",
+    });
+    // CloudFormation Rules cannot refer to resource GetAtt values. The owned
+    // role has an explicit name, so compare its account-bound literal ARN.
+    const brokerArn = ownedBroker
+      ? `arn:aws:iam::${this.account}:role/foodtech-recipe-broker-${stage}`
+      : existingBroker!.valueAsString;
     const gateway = new CfnParameter(this, "GatewayTaskRoleArn", { type: "String", allowedPattern: rolePattern,
       description: "Existing Gateway task role, explicitly excluded from credential issuance" });
     const name = `foodtech-recipe-source-read-${stage}`;
     const readArn = `arn:aws:iam::${this.account}:role/${name}`;
     new CfnRule(this, "DistinctSourceAuthorities", { assertions: [{ assert: Fn.conditionAnd(
-      Fn.conditionNot(Fn.conditionEquals(broker.valueAsString, gateway.valueAsString)),
-      Fn.conditionNot(Fn.conditionEquals(broker.valueAsString, readArn)),
+      Fn.conditionNot(Fn.conditionEquals(brokerArn, gateway.valueAsString)),
+      ...(ownedBroker ? [] : [Fn.conditionNot(Fn.conditionEquals(brokerArn, readArn))]),
       Fn.conditionNot(Fn.conditionEquals(gateway.valueAsString, readArn))),
       assertDescription: "Broker, Gateway and scoped read roles must be different" }] });
     const role = new iam.Role(this, "ReadRole", { roleName: name,
       description: "Broker-issued bounded recipe reads; every issue must supply an exact-key session policy",
-      assumedBy: new iam.ArnPrincipal(broker.valueAsString).withConditions({
-        StringEquals: { "aws:PrincipalArn": broker.valueAsString, "aws:RequestedRegion": "ap-southeast-2" },
+      assumedBy: new iam.ArnPrincipal(brokerArn).withConditions({
+        StringEquals: { "aws:PrincipalArn": brokerArn, "aws:RequestedRegion": "ap-southeast-2" },
         StringLike: { "sts:RoleSessionName": "recipe-*" },
       }) });
+    if (ownedBroker) role.node.addDependency(ownedBroker);
     role.assumeRolePolicy!.addStatements(new iam.PolicyStatement({ effect: iam.Effect.DENY,
       principals: [new iam.ArnPrincipal(gateway.valueAsString)], actions: ["sts:AssumeRole"] }));
     role.assumeRolePolicy!.addStatements(new iam.PolicyStatement({ effect: iam.Effect.DENY,
@@ -66,7 +88,7 @@ export class RecipeSourceAccessStack extends Stack {
     // Attach only the generated AssumeRole call, refined to this one role.
     // The existing broker must separately retain its own application permissions.
     new iam.CfnPolicy(this, "BrokerAssumeReadRole", { policyName: `foodtech-recipe-source-assume-${stage}`,
-      roles: [Fn.select(1, Fn.split("/", broker.valueAsString))], policyDocument: {
+      roles: [ownedBroker ? ownedBroker.roleName : Fn.select(1, Fn.split("/", brokerArn))], policyDocument: {
         Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "sts:AssumeRole", Resource: role.roleArn,
           Condition: { StringEquals: { "aws:RequestedRegion": "ap-southeast-2" },
             StringLike: { "sts:RoleSessionName": "recipe-*" } } }, {
@@ -79,6 +101,6 @@ export class RecipeSourceAccessStack extends Stack {
         }],
       } });
     new CfnOutput(this, "RecipeSourceReadRoleArn", { value: role.roleArn });
-    new CfnOutput(this, "ReviewedBrokerTaskRoleArn", { value: broker.valueAsString });
+    new CfnOutput(this, "ReviewedBrokerTaskRoleArn", { value: brokerArn });
   }
 }

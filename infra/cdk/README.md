@@ -376,3 +376,11 @@ configuration and ownership, use `mealRefreshLogGroupMode=existing` to reference
 it. Selecting both stacks in create mode is rejected. Existing mode performs no
 existence check or CloudFormation import. Each stack owns its own Task revision;
 when moving to scheduling, review and pin the intended revision explicitly.
+
+### CDK가 소유하는 권고 브로커 역할
+
+`FoodtechRecipeSourceAccess-dev`는 기본적으로 검토된 기존 `BrokerTaskRoleArn`을 요구합니다. 아직 전용 역할이 없다면 `-c provisionRecipeSourceAccess=true -c recipeBrokerRoleMode=create`로 `foodtech-recipe-broker-dev`를 함께 정의할 수 있습니다. 생성 모드에는 외부 BrokerTaskRoleArn 매개변수가 없으며 GatewayTaskRoleArn은 계속 명시해야 합니다. 잘못된 모드는 합성 단계에서 거부합니다.
+
+생성한 역할은 같은 프로젝트·리전의 ECS Task만 신뢰하고 Gateway와 분리합니다. 읽기 역할과 정책이 브로커 역할보다 먼저 생성되지 않도록 의존성을 둡니다. 기존 원천 읽기 역할의 범위와 호출별 정확한 키의 session policy, Gateway의 AssumeRole 거부·TagSession 금지는 유지합니다. 새 역할에 직접 원천 조회·쓰기·KMS·Cognito·이미지·로그 권한을 추가하지 않습니다.
+
+이 옵션은 브로커의 실행 신원을 준비합니다. 고객 인증/세션·일반 업무 API 저장 권한·이력 정책·작성자 잠금·Task 정의·실제 로그인과 권고 종단간 연결은 별도 검토 대상입니다. 이 역할만으로 업무 API 전체를 배포할 수 있다고 간주하지 않습니다. 기존/생성 모드 전환은 역할의 소유권과 삭제 영향을 확인한 뒤 변경 세트로 검토하며, 같은 이름의 외부 역할을 자동으로 인수하지 않습니다. 실제 적용은 명시적 배포 승인을 거칩니다.
