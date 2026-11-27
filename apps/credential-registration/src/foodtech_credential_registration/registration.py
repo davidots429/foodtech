@@ -140,6 +140,7 @@ class CredentialRegistrar:
                 principal_values[':zero'] = 0
             self.client.transact_write_items(TransactItems=[
                 {"ConditionCheck": {"TableName": self.auth_table, "Key": self._item({"pk": f"USER#{tenant_id}"}),
+                    "ReturnValuesOnConditionCheckFailure": "NONE",
                     "ConditionExpression": principal_condition + " AND (attribute_not_exists(suspended) OR suspended = :false) AND attribute_not_exists(deletion_lock_request)",
                     "ExpressionAttributeNames": {"#epoch": "epoch"},
                     "ExpressionAttributeValues": self._item(principal_values)}},

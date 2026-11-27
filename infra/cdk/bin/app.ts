@@ -809,8 +809,19 @@ class CredentialVaultStack extends Stack {
     const authForRegistration = dynamodb.Table.fromTableName(
       this, "AuthSessionsForCredentialRegistration", `foodtech-auth-sessions-${stage}`,
     );
-    authForRegistration.grant(registration, "dynamodb:ConditionCheckItem");
-    authForRegistration.grant(gateway, "dynamodb:ConditionCheckItem");
+    // A broad base Allow would override the separate history checker boundary.
+    // Both services only check their active USER; history CONTROL checks belong
+    // to the independently reviewed history access policy.
+    for (const role of [registration, gateway]) {
+      const grant = authForRegistration.grant(role, "dynamodb:ConditionCheckItem");
+      for (const statement of [...grant.principalStatements, ...grant.resourceStatements]) {
+        statement.addCondition("ForAllValues:StringLike", { "dynamodb:LeadingKeys": ["USER#*"] });
+        statement.addCondition("Null", { "dynamodb:LeadingKeys": "false" });
+        statement.addCondition("StringEquals", {
+          "aws:RequestedRegion": this.region, "dynamodb:ReturnValues": "NONE",
+        });
+      }
+    }
     table.grant(gateway, "dynamodb:GetItem");
     const registry = dynamodb.Table.fromTableName(
       this, "ExecutionRegistryForGateway", `foodtech-ai-execution-registry-${stage}`,

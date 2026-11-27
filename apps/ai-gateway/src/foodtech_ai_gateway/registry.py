@@ -399,6 +399,7 @@ class DynamoRegistry:
             names['#epoch'] = 'epoch'
         check = {"TableName": self.auth_table,
                 "Key": self._av({"pk": f"USER#{tenant_id}"}),
+                "ReturnValuesOnConditionCheckFailure": "NONE",
                 "ConditionExpression": condition, "ExpressionAttributeValues": self._av(values)}
         if names:
             check['ExpressionAttributeNames'] = names

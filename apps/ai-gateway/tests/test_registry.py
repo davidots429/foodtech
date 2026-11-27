@@ -190,6 +190,13 @@ class RegistryTests(unittest.TestCase):
         self.service = GatewayService(self.registry)
         self.client.calls.clear()
 
+    def test_active_principal_check_never_returns_authentication_record(self):
+        for initialized in (False, True):
+            self.registry.require_principal = initialized
+            guard = self.registry._active_tenant_guard('tenant-a')['ConditionCheck']
+            self.assertEqual(guard['ReturnValuesOnConditionCheckFailure'], 'NONE')
+            self.assertEqual(guard['Key'], {'pk': {'S': 'USER#tenant-a'}})
+
     def test_execution_snapshot_contains_consistent_state_and_version(self):
         snapshot = self.registry.execution_snapshot('run-1')
         self.assertEqual(snapshot.execution.execution_id, 'run-1')
