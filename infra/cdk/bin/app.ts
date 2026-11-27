@@ -293,12 +293,15 @@ class MinimalDataFlowStack extends Stack {
         return value.trim();
       };
       const repo = required("collectionImageRepository");
-      const tag = required("collectionImageTag");
+      const digest = required("collectionImageDigest");
+      if (app.node.tryGetContext("collectionImageTag") !== undefined) {
+        throw new Error("collectionImageTag is not supported; use collectionImageDigest");
+      }
       const secretArn = required("collectionMockSecretArn");
       const mockUrl = required("collectionMockBaseUrl");
       if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
-          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
-        throw new Error("collection image requires a valid repository and version tag");
+          !/^sha256:[a-f0-9]{64}$/.test(digest)) {
+        throw new Error("collection image requires a valid repository and immutable sha256 digest");
       }
       if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
         throw new Error("collectionMockSecretArn must be a complete Secrets Manager ARN");
@@ -321,7 +324,7 @@ class MinimalDataFlowStack extends Stack {
         removalPolicy: RemovalPolicy.RETAIN,
       });
       task.addContainer("App", {
-        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        image: ecs.ContainerImage.fromEcrRepository(repository, digest), essential: true, user: "10001",
         environment: { FOODTECH_MOCK_BASE_URL: parsed.origin, FOODTECH_DATA_TABLE: table.tableName,
           FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl, FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
         secrets: { FOODTECH_MOCK_CLIENT_ID: ecs.Secret.fromSecretsManager(secret, "client_id"),
@@ -340,13 +343,16 @@ class MinimalDataFlowStack extends Stack {
         return value.trim();
       };
       const repo = required("collectionImageRepository");
-      const tag = required("collectionImageTag");
+      const digest = required("collectionImageDigest");
+      if (app.node.tryGetContext("collectionImageTag") !== undefined) {
+        throw new Error("collectionImageTag is not supported; use collectionImageDigest");
+      }
       const secretArn = required("collectionMqttSecretArn");
       const host = required("collectionMqttHost");
       const port = required("collectionMqttPort");
       if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
-          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
-        throw new Error("collection image requires a valid repository and version tag");
+          !/^sha256:[a-f0-9]{64}$/.test(digest)) {
+        throw new Error("collection image requires a valid repository and immutable sha256 digest");
       }
       if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
         throw new Error("collectionMqttSecretArn must be a complete Secrets Manager ARN");
@@ -367,7 +373,7 @@ class MinimalDataFlowStack extends Stack {
         removalPolicy: RemovalPolicy.RETAIN,
       });
       task.addContainer("App", {
-        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        image: ecs.ContainerImage.fromEcrRepository(repository, digest), essential: true, user: "10001",
         environment: { FOODTECH_COLLECTION_PROTOCOL: "mqtt", FOODTECH_MQTT_HOST: host, FOODTECH_MQTT_PORT: port,
           FOODTECH_DATA_TABLE: table.tableName, FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl,
           FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
@@ -388,12 +394,15 @@ class MinimalDataFlowStack extends Stack {
         return value.trim();
       };
       const repo = required("collectionImageRepository");
-      const tag = required("collectionImageTag");
+      const digest = required("collectionImageDigest");
+      if (app.node.tryGetContext("collectionImageTag") !== undefined) {
+        throw new Error("collectionImageTag is not supported; use collectionImageDigest");
+      }
       const secretArn = required("collectionUaJsonSecretArn");
       const mockUrl = required("collectionUaJsonBaseUrl");
       if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
-          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
-        throw new Error("collection image requires a valid repository and version tag");
+          !/^sha256:[a-f0-9]{64}$/.test(digest)) {
+        throw new Error("collection image requires a valid repository and immutable sha256 digest");
       }
       if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
         throw new Error("collectionUaJsonSecretArn must be a complete Secrets Manager ARN");
@@ -416,7 +425,7 @@ class MinimalDataFlowStack extends Stack {
         removalPolicy: RemovalPolicy.RETAIN,
       });
       task.addContainer("App", {
-        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        image: ecs.ContainerImage.fromEcrRepository(repository, digest), essential: true, user: "10001",
         environment: { FOODTECH_COLLECTION_PROTOCOL: "opcua-json", FOODTECH_UA_JSON_URL: parsed.origin,
           FOODTECH_DATA_TABLE: table.tableName, FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl,
           FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
@@ -436,12 +445,15 @@ class MinimalDataFlowStack extends Stack {
         return value.trim();
       };
       const repo = required("collectionImageRepository");
-      const tag = required("collectionImageTag");
+      const digest = required("collectionImageDigest");
+      if (app.node.tryGetContext("collectionImageTag") !== undefined) {
+        throw new Error("collectionImageTag is not supported; use collectionImageDigest");
+      }
       const secretArn = required("collectionUaBinarySecretArn");
       const endpoint = required("collectionUaBinaryEndpoint");
       if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(repo) ||
-          !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag) || tag === "latest") {
-        throw new Error("collection image requires a valid repository and version tag");
+          !/^sha256:[a-f0-9]{64}$/.test(digest)) {
+        throw new Error("collection image requires a valid repository and immutable sha256 digest");
       }
       if (!/^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+/.test(secretArn)) {
         throw new Error("collectionUaBinarySecretArn must be a complete Secrets Manager ARN");
@@ -464,7 +476,7 @@ class MinimalDataFlowStack extends Stack {
         removalPolicy: RemovalPolicy.RETAIN,
       });
       task.addContainer("App", {
-        image: ecs.ContainerImage.fromEcrRepository(repository, tag), essential: true, user: "10001",
+        image: ecs.ContainerImage.fromEcrRepository(repository, digest), essential: true, user: "10001",
         environment: { FOODTECH_COLLECTION_PROTOCOL: "opcua-binary", FOODTECH_OPCUA_ENDPOINT: endpoint,
           FOODTECH_DATA_TABLE: table.tableName, FOODTECH_ORDERED_QUEUE_URL: ordered.queueUrl,
           FOODTECH_INGESTION_DLQ_BUCKET: ingestionDlq.bucketName },
