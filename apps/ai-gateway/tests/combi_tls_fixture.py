@@ -41,4 +41,5 @@ def certificates(directory):
         broker=issue('broker',root,ExtendedKeyUsageOID.CLIENT_AUTH,uri),
         other_broker=issue('other-broker',root,ExtendedKeyUsageOID.CLIENT_AUTH,uri),
         business=issue('business',root,ExtendedKeyUsageOID.CLIENT_AUTH,'urn:foodtech:service:business-api'),
+        other_business=issue('other-business',root,ExtendedKeyUsageOID.CLIENT_AUTH,'urn:foodtech:service:business-api'),
         wrong_ca=issue('wrong-ca-client',other,ExtendedKeyUsageOID.CLIENT_AUTH,uri))

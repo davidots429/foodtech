@@ -482,3 +482,9 @@ async def execution_status(request: Request, execution_id: str) -> dict:
             return JSONResponse(result.json(), headers={'Cache-Control': 'no-store'})
     except (httpx.HTTPError, ValueError, OSError):
         raise HTTPException(502, "실행 상태를 읽지 못했습니다.") from None
+
+
+@router.post('/combi-recipe-executions/{execution_id}/invoke')
+async def invoke_combi_recipe_execution(request: Request, execution_id: UUID):
+    from .combi_customer_invocation import invoke_customer_combi
+    return await invoke_customer_combi(request,execution_id)
