@@ -14,6 +14,7 @@ def main(path: str, expected_mode: str = 'false') -> None:
     assert len(tasks) == 1 and len(rules) == 2
     task = tasks[0]
     rule, = [r for r in rules if 'ScheduleExpression' in r]
+    assert rule['Name'] == 'foodtech-meal-refresh-dev'
     stopped, = [r for r in rules if 'EventPattern' in r]
     assert stopped['EventPattern']['detail']['group'] == ['foodtech-meal-refresh-dev']
     assert stopped['EventPattern']['detail']['lastStatus'] == ['STOPPED']
