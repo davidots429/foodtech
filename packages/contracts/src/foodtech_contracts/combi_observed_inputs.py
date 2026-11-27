@@ -19,6 +19,7 @@ from .combi_transition import TransitionSample, assess_transition
 from .combi_probe import summarize
 from .combi_sampling import selection_issues
 from .combi_recommendation import CombiBaseline
+from .combi_quality_observation import observe_quality
 
 
 def _number(value):
@@ -78,10 +79,14 @@ class ObservedCombiBatch:
     safety_summary: tuple[tuple[str, object], ...] = ()
     effective_water_ratio: str | None = None
     added_water_kg: str | None = None
+    quality: tuple[tuple[str, object], ...] = ()
 
     def model_context(self):
         # Do not copy source IDs, notes, actor identities, raw text or timestamps.
         b = self.baseline
+        quality = dict(self.quality)
+        if 'scores' in quality:
+            quality['scores'] = dict(quality['scores'])
         return {'basis': 'SYNTHETIC_COMBI_SAMPLES_ONLY', 'menu': b.menu, 'size': b.size,
             'rack_count': b.rack_count, 'pan_count': b.pan_count,
             'ingredient_kg': str(b.ingredient_kg), 'pan_tare_kg': str(b.pan_tare_kg),
@@ -101,6 +106,7 @@ class ObservedCombiBatch:
             'preceding_steam': dict(self.preceding_steam) if self.preceding_steam else None,
             'rice_preparation': dict(self.preparation) if self.preparation else None,
             'safety_summary': dict(self.safety_summary) if self.safety_summary else None,
+            'quality': quality,
             'unresolved': list(self.unresolved)}
 
 
@@ -361,10 +367,13 @@ def _observe(rows, raws, menu, now):
         humidity_available, transition_ready,
         _number(step['dry_rice_kg']) if menu == 'RICE' else None,
         _number(step['drained_rice_kg']) if menu == 'RICE' else None)
+    quality = observe_quality(rows, step, meta, menu, now=now)
+    if dict(quality).get('status') == 'UNAVAILABLE':
+        unresolved.append('CURRENT_QUALITY_UNAVAILABLE')
     return ObservedCombiBatch(meal_id=meta['meal_batch_id'], job_id=jobs[menu], meal_version=version,
         source_digest=digest, baseline=baseline, recorded_safety_status=step['safety_status'],
         sampled_process_status=process['status'], sampled_safety_status=safety, unresolved=tuple(unresolved),
         humidity_source=next(iter(humidity)), transition_humidity_source=transition_humidity,
         thermal_exposure_seconds=exposure, preceding_steam=steam, preparation=preparation, safety_summary=safety_summary,
         effective_water_ratio=str(_number(step['effective_water_ratio'])) if menu == 'RICE' else None,
-        added_water_kg=str(_number(step['added_water_kg'])) if menu == 'RICE' else None)
+        added_water_kg=str(_number(step['added_water_kg'])) if menu == 'RICE' else None, quality=quality)

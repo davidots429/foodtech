@@ -104,6 +104,23 @@ def fixture(name='current', *, large=False):
         'EVENT#FISH': {'event': 'MACKEREL_CORE_CHECK', 'safety_version': 1, 'observed_at': iso(unloaded),
             'safety_status': 'PASSED', 'probes': probes, 'probe_summaries': summaries,
             'products': products, 'selection_issues': [], 'selection_note': None}}
+    from foodtech_contracts.combi_quality_observation import SCORE_ITEMS
+    for number, step in enumerate((rice, fish), 10):
+        key = f'EVENT#{number:012d}'
+        at = iso(unloaded + timedelta(seconds=61))
+        assessment = {'version': 1, 'safety_version': 1, 'safety_status': 'PASSED', 'menu': step['menu'],
+            'kind': 'INITIAL', 'previous_version': None,
+            'status': 'COMPLETED', 'scale_version': step['menu'].lower() + '-common-v1',
+            'formula_version': 'quality-v1', 'equipment_size': size, 'completed_at': at,
+            'scores': {name: 4 for name in SCORE_ITEMS}, 'observations': {name: 'synthetic observation' for name in SCORE_ITEMS},
+            'score_total': 28, 'score_percent': '80.00', 'quality_passed': True, 'quality_target': True,
+            'quality_status': 'QUALITY_PASSED', 'quality_reason_codes': [], 'overall_satisfaction': 4,
+            'planned_portions': 3, 'actual_portions': 3, 'actor': 'private-actor', 'quality_note': 'private-note'}
+        rows[key] = {'event': step['menu'] + '_QUALITY_ASSESSED', 'observed_at': at, 'recorded_at': at,
+                     'assessment': assessment}
+        step.update(quality_version=1, quality_status='QUALITY_PASSED', quality_current={
+            'version': 1, 'event_sk': key, 'quality_status': 'QUALITY_PASSED', 'score_percent': '80.00',
+            'quality_target': True, 'safety_version': 1, 'usable': True})
     for key, row in rows.items(): row.setdefault('sk', key)
     return rows, raw
 
