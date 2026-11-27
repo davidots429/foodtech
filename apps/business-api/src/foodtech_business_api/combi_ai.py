@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi import APIRouter, HTTPException, Request, Query, Path
 from fastapi.responses import JSONResponse
 from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
@@ -319,3 +319,65 @@ async def combi_review_history(request: Request, meal_id: UUID, menu: Literal['R
     except (ValueError, BotoCoreError, ClientError):
         raise HTTPException(503, '검토 이력을 확인하지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
     return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+class CombiCandidatePreservation(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    meal_id: UUID
+    menu: Literal['RICE', 'MACKEREL']
+    expected_meal_version: int = Field(strict=True, ge=1, le=10**18)
+    proposal_digest: str = Field(pattern=r'^[a-f0-9]{64}$')
+    acknowledged: StrictBool
+
+    @model_validator(mode='after')
+    def explicit_preservation(self):
+        if not self.acknowledged:
+            raise ValueError('explicit candidate preservation required')
+        return self
+
+
+async def _candidate_response(request, meal_id, menu, review_version, body=None):
+    from .combi_recipe_candidate import CombiCandidateStore
+    from .cooking_store import Conflict
+    from .cooking import _now
+    session, store = await _context(request, write=body is not None)
+    session = Session(session.surface, session.subject, None, session.csrf, session.expires, session.epoch)
+    try:
+        await _require_principal_record(session)
+        meta, _ = await _owned_result_meta(store, session.subject, str(meal_id), menu)
+        pk = f'SCOPE#USER#{session.subject}#COMBI_MEAL#{meal_id}'
+        candidates = CombiCandidateStore(store)
+        if body is None:
+            value = await _store_call(store, candidates.get, pk, menu, review_version)
+        else:
+            if meta['version'] != body.expected_meal_version:
+                raise Conflict
+            value = await _store_call(store, candidates.preserve, pk, menu, review_version,
+                body.expected_meal_version, body.proposal_digest, _now(), session.epoch)
+        pointer = await _store_call(store, candidates.reviews.current, pk, menu)
+        await _review_recheck(request, session, store, meta, str(meal_id), menu)
+        if value is None:
+            raise HTTPException(404, '이 검토에 저장된 후보 버전이 없습니다.', headers={'Cache-Control':'no-store'})
+        return JSONResponse({'candidate':value, 'current_meal_version':meta['version'],
+            'current_review_version':pointer['version'], 'adoption_available':False},
+            status_code=200 if body is None else 201, headers={'Cache-Control':'no-store'})
+    except Conflict:
+        raise HTTPException(409, '현재 승인 검토 또는 식사배치가 변경되었습니다. 이력을 확인해 주세요.',
+                            headers={'Cache-Control':'no-store'}) from None
+    except RecipeScopeDenied:
+        raise HTTPException(401, '로그인 상태가 변경되었습니다.', headers={'Cache-Control':'no-store'}) from None
+    except (ValueError, BotoCoreError, ClientError):
+        raise HTTPException(503, '후보 저장 여부를 확인하지 못했습니다. 같은 검토 버전의 후보를 조회해 주세요.',
+                            headers={'Cache-Control':'no-store'}) from None
+
+
+@router.get('/recipe-candidates/{review_version}')
+async def combi_recipe_candidate(request: Request, meal_id: UUID, menu: Literal['RICE','MACKEREL'],
+                                  review_version: int = Path(ge=1, le=2**53-1)):
+    return await _candidate_response(request, meal_id, menu, review_version)
+
+
+@router.post('/recipe-candidates/{review_version}', status_code=201)
+async def combi_preserve_candidate(request: Request, body: CombiCandidatePreservation,
+                                   review_version: int = Path(ge=1, le=2**53-1)):
+    return await _candidate_response(request, body.meal_id, body.menu, review_version, body)
