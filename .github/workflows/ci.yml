@@ -318,3 +318,6 @@ jobs:
           status=0
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -m foodtech_business_api.source_grant_deletion_worker || status=$?
           test "$status" -eq 2
+      - name: Verify installed source grant target isolation without network
+        if: matrix.workload == 'maintenance'
+        run: docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test - < tests/config/source_grant_target_image_probe.py
