@@ -80,6 +80,17 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/davidots429/foodtech
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Verify disabled meal refresh before obtaining AWS credentials
+        if: inputs.operation == 'publish'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          WORKLOAD: ${{ steps.target.outputs.workload }}
+        run: |
+          if [ "$WORKLOAD" = maintenance ]; then
+            status=0
+            docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-maintenance:$TAG" -m foodtech_business_api.meal_refresh_runtime || status=$?
+            test "$status" -eq 2
+          fi
       - name: Verify disabled read probe before obtaining AWS credentials
         if: inputs.operation == 'publish'
         env:

@@ -295,9 +295,9 @@ jobs:
           tags: foodtech-ci/combi-refresh-worker:test
       - name: Verify worker imports and explicit configuration guard
         run: |
-          docker run --rm --entrypoint python foodtech-ci/combi-refresh-worker:test -c 'import foodtech_business_api.combi_refresh_worker'
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python foodtech-ci/combi-refresh-worker:test -c 'import foodtech_business_api.combi_refresh_worker'
           status=0
-          docker run --rm foodtech-ci/combi-refresh-worker:test || status=$?
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges foodtech-ci/combi-refresh-worker:test || status=$?
           test "$status" -eq 2
       - name: Verify maintenance libzstd security update in the runtime image
         run: |

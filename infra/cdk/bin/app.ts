@@ -557,20 +557,25 @@ class MaintenanceScheduleStack extends Stack {
     if (identityRelease && Token.isUnresolved(this.account)) {
       throw new Error("identity worker runtime requires an explicit verified CDK account");
     }
+    if (!identityRelease && (Token.isUnresolved(this.account) || !/^[0-9]{12}$/.test(this.account))) {
+      throw new Error("meal refresh runtime requires an explicit verified CDK account");
+    }
     const arnPattern = "^arn:[a-z0-9-]+:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$";
     const param = (name: string, pattern: string, description: string): CfnParameter =>
       new CfnParameter(this, name, { type: "String", allowedPattern: pattern, description });
     const identityRolePattern = (kind: string) => `^arn:aws:iam::${this.account}:role/foodtech-withdrawal-identity-${kind}-${stage}$`;
-    const taskRole = param("TaskRoleArn", identityRelease ? identityRolePattern("task") : arnPattern, "Existing reviewed least-privilege task role ARN");
+    const mealRolePattern = `^arn:aws:iam::${this.account}:role/foodtech-meal-refresh-task-${stage}$`;
+    const taskRole = param("TaskRoleArn", identityRelease ? identityRolePattern("task") : mealRolePattern, "Existing reviewed least-privilege task role ARN");
     const executionRole = param("ExecutionRoleArn", identityRelease ? identityRolePattern("execution") : arnPattern, "Existing ECS task execution role ARN");
     const invokeRole = param("InvokeRoleArn", identityRelease ? identityRolePattern("invoke") : arnPattern, "Existing EventBridge ECS invocation role ARN");
-    if (identityRelease) {
-      new CfnRule(this, "SeparateIdentityWorkerRoles", { assertions: [{
+    {
+      new CfnRule(this, identityRelease ? "SeparateIdentityWorkerRoles" : "SeparateMealRefreshRoles", { assertions: [{
         assert: Fn.conditionAnd(
           Fn.conditionNot(Fn.conditionEquals(taskRole.valueAsString, executionRole.valueAsString)),
           Fn.conditionNot(Fn.conditionEquals(taskRole.valueAsString, invokeRole.valueAsString)),
           Fn.conditionNot(Fn.conditionEquals(executionRole.valueAsString, invokeRole.valueAsString))),
-        assertDescription: "Identity worker, ECS execution and invocation roles must be distinct",
+        assertDescription: identityRelease ? "Identity worker, ECS execution and invocation roles must be distinct"
+          : "Meal refresh worker, ECS execution and invocation roles must be distinct",
       }] });
     }
     const pool = identityRelease ? param("CognitoUserPoolId", "^ap-southeast-2_[A-Za-z0-9]+$",
@@ -592,7 +597,9 @@ class MaintenanceScheduleStack extends Stack {
       containerDefinitions: [{ name: "worker", image: image.valueAsString, essential: true, user: "10001:10001",
         readonlyRootFilesystem: true,
         ...(identityRelease ? { entryPoint: ["python", "-m", "foodtech_business_api.withdrawal_identity_worker"] } : {}),
-        ...(identityRelease ? { stopTimeout: 30 } : {}),
+        stopTimeout: 30,
+        ...(!identityRelease ? { privileged: false,
+          linuxParameters: { capabilities: { drop: ["ALL"] } } } : {}),
         environment: identityRelease ? [
           { name: "FOODTECH_WITHDRAWAL_IDENTITY_WORKER_ENABLED", value: "true" },
           { name: "FOODTECH_WITHDRAWAL_IDENTITY_TASK_ROLE_ARN", value: taskRole.valueAsString },
@@ -601,6 +608,11 @@ class MaintenanceScheduleStack extends Stack {
           { name: "FOODTECH_DELETION_REGISTRY_TABLE", value: `foodtech-deletion-registry-${stage}` },
           { name: "FOODTECH_COGNITO_USER_POOL_ID", value: pool!.valueAsString },
         ] : [
+          { name: "FOODTECH_MEAL_REFRESH_ENABLED", value: "true" },
+          { name: "FOODTECH_MEAL_REFRESH_TASK_ROLE_ARN", value: taskRole.valueAsString },
+          { name: "FOODTECH_MEAL_REFRESH_PAGE_SIZE", value: "25" },
+          { name: "FOODTECH_MEAL_REFRESH_MAX_PAGES_PER_SHARD", value: "100" },
+          { name: "FOODTECH_MEAL_REFRESH_MAX_SECONDS", value: "600" },
           { name: "FOODTECH_COOKING_TABLE", value: `foodtech-cooking-jobs-${stage}` },
           { name: "FOODTECH_PRINCIPAL_PROVISIONING_ENABLED", value: principalProvisioning },
           { name: "FOODTECH_AUTH_TABLE", value: `foodtech-auth-sessions-${stage}` },

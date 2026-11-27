@@ -84,6 +84,8 @@ def process_pending_page(store, auth_table, shard: int, cursor: dict | None = No
             counts['processed'] += 1
             if result['status'] == 'PARTIAL':
                 counts['partial'] += 1
+        except TimeoutError:
+            raise
         except Exception:
             # The marker remains pending; never log customer keys or exception values.
             counts['failed'] += 1
@@ -118,29 +120,9 @@ def sweep_pending(store, auth_table, *, page_size: int = 25, max_pages_per_shard
 
 
 def main() -> int:
-    """Run one explicitly configured sweep; scheduling and IAM remain external."""
-    import json
-    import os
-    import re
-    import sys
-
-    from .auth_store import DynamoAuthStore
-    from .cooking_store import DynamoCookingStore
-
-    cooking_table = os.getenv('FOODTECH_COOKING_TABLE', '')
-    auth_table = os.getenv('FOODTECH_AUTH_TABLE', '')
-    if not re.fullmatch(r'foodtech-cooking-jobs-[a-z0-9-]{1,32}', cooking_table) or \
-            not re.fullmatch(r'foodtech-auth-sessions-[a-z0-9-]{1,32}', auth_table):
-        print('Explicit cooking and authentication table names are required.', file=sys.stderr)
-        return 2
-    try:
-        result = sweep_pending(DynamoCookingStore(cooking_table), DynamoAuthStore(auth_table).table)
-    except Exception:
-        # Do not emit request payloads, table keys, or SDK exception details.
-        print('Pending aggregate sweep failed.', file=sys.stderr)
-        return 1
-    print(json.dumps(result, sort_keys=True))
-    return 1 if result['failed'] else 0
+    """The executable requires the dedicated finite ECS runtime contract."""
+    from .meal_refresh_runtime import main as runtime_main
+    return runtime_main()
 
 
 if __name__ == '__main__':

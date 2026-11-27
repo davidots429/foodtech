@@ -1,5 +1,6 @@
 """Check disabled-by-default meal refresh deployment boundaries."""
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -25,8 +26,23 @@ def main(path: str, expected_mode: str = 'false') -> None:
     container, = task['ContainerDefinitions']
     assert container['Image'] == {'Ref': 'ImageUri'} and container['User'] == '10001:10001'
     assert container['ReadonlyRootFilesystem'] is True
+    assert container['Privileged'] is False and container['StopTimeout'] == 30
+    assert container['LinuxParameters'] == {'Capabilities': {'Drop': ['ALL']}}
     env = {item['Name']: item['Value'] for item in container['Environment']}
     assert env['FOODTECH_PRINCIPAL_PROVISIONING_ENABLED'] == expected_mode
+    assert env['FOODTECH_MEAL_REFRESH_ENABLED'] == 'true'
+    assert env['FOODTECH_MEAL_REFRESH_TASK_ROLE_ARN'] == {'Ref': 'TaskRoleArn'}
+    assert env['FOODTECH_MEAL_REFRESH_MAX_SECONDS'] == '600'
+    assert env['FOODTECH_MEAL_REFRESH_PAGE_SIZE'] == '25'
+    assert env['FOODTECH_MEAL_REFRESH_MAX_PAGES_PER_SHARD'] == '100'
+    assert 'foodtech-meal-refresh-task-' in template['Parameters']['TaskRoleArn']['AllowedPattern']
+    pattern = template['Parameters']['TaskRoleArn']['AllowedPattern']
+    account = re.search(r'::([0-9]{12}):', pattern).group(1)
+    assert re.fullmatch(pattern, f'arn:aws:iam::{account}:role/foodtech-meal-refresh-task-dev')
+    other = '000000000000' if account != '000000000000' else '111111111111'
+    assert not re.fullmatch(pattern, f'arn:aws:iam::{other}:role/foodtech-meal-refresh-task-dev')
+    separate = template['Rules']['SeparateMealRefreshRoles']['Assertions'][0]['Assert']['Fn::And']
+    assert len(separate) == 3
     assert rule['State'] == 'DISABLED'
     target, = rule['Targets']
     assert target['RoleArn'] == {'Ref': 'InvokeRoleArn'}
