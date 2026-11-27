@@ -68,7 +68,7 @@
 
 `infra/containers/collection-adapter.Dockerfile`은 잠금된 Python 의존성으로 비관리자 수집기 이미지를 만든다. 진입점은 주입된 인증서 자료를 검증해 권한 `0600` 임시 파일로 저장한 뒤 `FOODTECH_COLLECTION_PROTOCOL`에 따라 REST·MQTT·OPC UA JSON·OPC UA Binary 수집 명령을 실행한다. CI는 이미지를 빌드해 각 명령의 도움말 실행을 확인한다.
 
-`provisionRestCollectionTask=true`를 `provisionDataFlow=true`와 함께 사용하면 위 역할을 사용하는 단발 Fargate Task Definition을 합성한다. `collectionImageRepository`, `collectionImageTag`, `collectionMockBaseUrl`(HTTPS origin), `collectionMockSecretArn`이 필요하다. Secrets Manager JSON 필드 `client_id`, `client_secret`, `ca_pem`은 Task 실행 역할을 통해 주입하며 일반 환경변수로 저장하지 않는다. 기본 수집은 한 번 실행 후 종료하며 실행 시 허용된 CLI 인수를 지정할 수 있다.
+`provisionRestCollectionTask=true`를 `provisionDataFlow=true`와 함께 사용하면 위 역할을 사용하는 단발 Fargate Task Definition을 합성한다. `collectionImageRepository`, `collectionImageDigest`(`sha256:`와 소문자 16진수 64자리), `collectionMockBaseUrl`(HTTPS origin), `collectionMockSecretArn`이 필요하다. Secrets Manager JSON 필드 `client_id`, `client_secret`, `ca_pem`은 Task 실행 역할을 통해 주입하며 일반 환경변수로 저장하지 않는다. 기본 수집은 한 번 실행 후 종료하며 실행 시 허용된 CLI 인수를 지정할 수 있다.
 
 `provisionMqttCollectionTask=true`는 같은 이미지와 역할을 사용하는 별도 단발 MQTT Task를 합성한다. 이미지 설정 외에 `collectionMqttHost`, `collectionMqttPort`, `collectionMqttSecretArn`이 필요하며 비밀 JSON 필드 `username`, `password`, `client_id`, `ca_pem`을 사용한다.
 
@@ -248,3 +248,5 @@ python3 ../../tests/config/check_maintenance_publishing.py /tmp/foodtech-mainten
 
 
 인증 상태 조건 검사는 `USER#*` LeadingKeys와 필수 키 존재 조건을 사용하고 `dynamodb:ReturnValues=NONE`(IfExists)을 요구한다. 세션 키의 조건 검사와 `ALL_OLD` 실패 응답으로 인증 항목을 읽는 경로를 허용하지 않는다. [AWS의 ConditionCheck 실패 반환 제한 예시](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html)를 따르며 기존 배포에는 인증 ConditionCheck 권한 자체가 없어 이번 후보는 기존 인증 권한을 제거하는 변경이 아니다. 실제 역할 검증에서는 조건 통과·실패 및 반환 금지를 함께 확인해야 한다.
+
+수집기 REST·MQTT·OPC UA JSON/Binary Task는 모두 검토한 ECR digest를 요구한다. 태그 입력 `collectionImageTag`는 거부한다. 합성 성공은 해당 digest의 존재·스캔·실제 역할·격리 경로 실행 증거가 아니며 게시/배포는 별도로 검토한다.

@@ -33,6 +33,8 @@ jobs:
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechPrivacyStorage-dev --strict -c provisionPrivacyStorage=true --output /tmp/foodtech-privacy-cdk
         working-directory: infra/cdk
       - run: python3 tests/config/check_privacy_storage.py /tmp/foodtech-privacy-cdk/FoodtechPrivacyStorage-dev.template.json
+      - name: Check immutable collection task images
+        run: python3 tests/config/check_collection_image.py
       - name: Check manual maintenance publishing roles
         working-directory: infra/cdk
         run: |
