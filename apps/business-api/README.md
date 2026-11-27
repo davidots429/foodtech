@@ -678,3 +678,8 @@ an owned-job GET to reconcile an uncertain response without automatically
 resubmitting. New lineage stays in the existing owner/job deletion inventory.
 Actual runtime-role/AWS storage and complete deletion/restore verification remain
 separate from the local tests.
+### Combi 실행의 원본 읽기 범위
+
+`combi_read_scope`는 새 고객 세션·CSRF·실재 계정과 저장 실행을 대조한 뒤, 보호된 전체 Combi 이력 판독으로 현재/직전 배치의 읽기 범위를 만든다. 읽기 전후 실행 상태·개정과 이력을 다시 확인하며 공유 Session/실행 객체가 바뀌어도 최초 비교 기준을 이동시키지 않는다. 배치 기록 두 파티션과 각각의 `#SOURCE` 두 파티션만 도출하고 `#LIVE`, 전체 목록과 타 사용자 키는 포함하지 않는다.
+
+이 내부 관찰은 AWS 자격증명이나 세션 정책을 발급하지 않는다. 보호된 기록의 발급/모든 작성자 전환·실제 IAM·비공개 위임·고객 실행 연결은 별도이며 기존 Combi 실행 차단을 유지한다. HTTP에서 호출자가 키나 이력 witness를 직접 제출하는 경로는 추가하지 않는다.
