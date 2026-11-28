@@ -35,7 +35,7 @@ import { CombiExecutionReadAccessStack } from "./combi-execution-access.js";
 import { CombiExecutionReadProbeStack } from "./combi-execution-probe.js";
 import { SourceGrantRuntimeStack } from "./source-grant-runtime.js";
 import { CollectionPublishingStack } from "./collection-publishing.js";
-import { TonkatsuBrokerPublishingStack, TonkatsuGatewayPublishingStack } from "./tonkatsu-broker-publishing.js";
+import { TonkatsuBrokerPublishingStack, TonkatsuGatewayPublishingStack, TonkatsuOllamaPublishingStack } from "./tonkatsu-broker-publishing.js";
 
 import { MockPublishingStack } from "./mock-publishing.js";
 import { PrivateRestTrialStack } from "./private-rest-trial.js";
@@ -73,6 +73,12 @@ if (app.node.tryGetContext("provisionPrivateRestTrial") === "true") {
   Tags.of(trial).add("Project", "foodtech");
   Tags.of(trial).add("Environment", stage);
 }
+if (app.node.tryGetContext("provisionTonkatsuOllamaPublishing") === "true") {
+  const publishing = new TonkatsuOllamaPublishingStack(app, `FoodtechTonkatsuOllamaPublishing-${stage}`, { env }, stage);
+  Tags.of(publishing).add("Project", "foodtech");
+  Tags.of(publishing).add("Environment", stage);
+}
+
 if (app.node.tryGetContext("provisionTonkatsuGatewayPublishing") === "true") {
   const publishing = new TonkatsuGatewayPublishingStack(app, `FoodtechTonkatsuGatewayPublishing-${stage}`, { env }, stage);
   Tags.of(publishing).add("Project", "foodtech");

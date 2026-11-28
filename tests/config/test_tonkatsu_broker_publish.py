@@ -68,6 +68,35 @@ class TonkatsuBrokerPublisherTests(unittest.TestCase):
                 publish.verify_repository(environment, {"repositories": [repository]}, service="gateway")
         self.assertNotEqual(publish.WORKFLOW, publish.workflow("gateway"))
 
+    def test_ollama_build_does_not_authenticate_to_aws_or_upload_model_layers(self):
+        source = (ROOT / ".github/workflows/publish-tonkatsu-ollama-image.yml").read_text()
+        workflow = yaml.load(source, Loader=yaml.BaseLoader)
+        self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
+        operation = workflow["on"]["workflow_dispatch"]["inputs"]["operation"]
+        self.assertEqual(operation["options"], ["inspect", "build", "publish"])
+        self.assertEqual(operation["default"], "inspect")
+        job, = workflow["jobs"].values()
+        steps = job["steps"]
+        build, = [i for i, step in enumerate(steps) if "docker build" in step.get("run", "")]
+        smoke, = [i for i, step in enumerate(steps) if "docker run" in step.get("run", "")]
+        credentials, = [i for i, step in enumerate(steps) if "aws-actions/" in step.get("uses", "")]
+        self.assertLess(build, smoke)
+        self.assertLess(smoke, credentials)
+        self.assertIn("--from-registry", steps[build]["run"])
+        self.assertIn("--network none --read-only", steps[smoke]["run"])
+        for step in steps:
+            if "aws " in step.get("run", "") or "aws-actions/" in step.get("uses", ""):
+                self.assertEqual(step["if"], "inputs.operation == 'publish'")
+            if "run" in step:
+                subprocess.run(["bash", "-n"], input=step["run"], text=True, check=True)
+            if "actions/upload-artifact" in step.get("uses", ""):
+                self.assertTrue(step["with"]["path"].endswith(".json"))
+        ollama_env = {**self.env, "PUBLISH_ROLE_ARN": self.env["PUBLISH_ROLE_ARN"].replace("broker", "ollama")}
+        self.assertEqual(publish.target(ollama_env, service="ollama")["repository_name"],
+                         "foodtech/tonkatsu-ollama-dev")
+        with self.assertRaises(ValueError):
+            publish.target(self.env, service="ollama")
+
     def test_gateway_workflow_has_no_broker_role_or_destination(self):
         source = (ROOT / ".github/workflows/publish-tonkatsu-gateway-image.yml").read_text()
         self.assertNotIn("TONKATSU_BROKER", source)

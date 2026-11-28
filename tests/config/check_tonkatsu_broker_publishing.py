@@ -50,6 +50,6 @@ def validate(template, service="broker"):
 
 if __name__ == "__main__":
     validate(json.loads(Path(sys.argv[1]).read_text()))
-    if len(sys.argv) == 3:
-        validate(json.loads(Path(sys.argv[2]).read_text()), "gateway")
+    for service, path in zip(("gateway", "ollama"), sys.argv[2:]):
+        validate(json.loads(Path(path).read_text()), service)
     print("Tonkatsu publishing definitions verified")

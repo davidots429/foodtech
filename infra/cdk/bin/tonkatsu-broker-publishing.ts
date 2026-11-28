@@ -4,13 +4,13 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import { Construct } from "constructs";
 
 class TonkatsuPublishingStack extends Stack {
-  constructor(scope: Construct, id: string, props: StackProps, stage: string, service: "broker" | "gateway") {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string, service: "broker" | "gateway" | "ollama") {
     super(scope, id, props);
     if (stage !== "dev" || Token.isUnresolved(this.account) ||
         !/^\d{12}$/.test(this.account) || this.region !== "ap-southeast-2") {
       throw new Error(`Tonkatsu ${service} publishing requires dev and an explicit regional account`);
     }
-    const prefix = service === "broker" ? "Broker" : "Gateway";
+    const prefix = { broker: "Broker", gateway: "Gateway", ollama: "Ollama" }[service];
     const provider = new CfnParameter(this, "GitHubOidcProviderArn", {
       type: "String",
       allowedPattern: `^arn:aws:iam::${this.account}:oidc-provider/token[.]actions[.]githubusercontent[.]com$`,
@@ -64,5 +64,11 @@ export class TonkatsuBrokerPublishingStack extends TonkatsuPublishingStack {
 export class TonkatsuGatewayPublishingStack extends TonkatsuPublishingStack {
   constructor(scope: Construct, id: string, props: StackProps, stage: string) {
     super(scope, id, props, stage, "gateway");
+  }
+}
+
+export class TonkatsuOllamaPublishingStack extends TonkatsuPublishingStack {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string) {
+    super(scope, id, props, stage, "ollama");
   }
 }
