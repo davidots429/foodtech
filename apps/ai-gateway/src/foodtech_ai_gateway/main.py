@@ -463,13 +463,22 @@ async def tonkatsu_review_record(request: Request, execution_id: UUID, body: Ton
     return await _tonkatsu_record(request, execution_id, body, result_view=True, include_review_scope=True)
 
 
+def _tonkatsu_business_peer(request: Request) -> None:
+    from .serve_tonkatsu_business import authenticate_business_peer
+
+    if getattr(request.app.state, "tonkatsu_business_pin", None) is None:
+        _internal(request)
+    else:
+        authenticate_business_peer(request)
+
+
 async def _tonkatsu_record(request, execution_id, body, *, result_view, include_review_scope=False):
     from botocore.exceptions import BotoCoreError, ClientError
     from foodtech_contracts.dynamo_tonkatsu_scope import TonkatsuScopeUnavailable
     from .combi_invocation import CombiRuntimeUnavailable
     from .tonkatsu_invocation import read_tonkatsu_request
 
-    _internal(request)
+    _tonkatsu_business_peer(request)
     headers = {"Cache-Control": "no-store"}
     try:
         payload = await asyncio.to_thread(read_tonkatsu_request, execution_id=str(execution_id),
@@ -492,7 +501,7 @@ async def tonkatsu_recipe_request(request: Request, body: TonkatsuRequest):
     from .combi_invocation import CombiRuntimeUnavailable
     from .tonkatsu_invocation import create_tonkatsu_request
 
-    _internal(request)
+    _tonkatsu_business_peer(request)
     headers = {"Cache-Control": "no-store"}
     if body.job_id == body.prior_job_id:
         raise HTTPException(422, "TONKATSU_PRIOR_JOB_INVALID", headers=headers)
