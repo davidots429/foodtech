@@ -444,3 +444,5 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 돈까스 전용 Gateway 이미지는 `provisionTonkatsuGatewayPublishing=true`로 합성하는 `FoodtechTonkatsuGatewayPublishing-dev`의 별도 ECR 및 게시 역할을 사용한다. `Publish Tonkatsu Gateway image` 워크플로의 기본 모드는 공개 OIDC 클레임 검사다. 실제 게시에는 검토한 전체 main SHA와 Gateway 역할, Gateway 저장소가 일치해야 한다.
 
 `provisionTonkatsuGatewayExecution=true`는 Gateway의 전용 ECS 실행 역할과 7일 로그 그룹을 정의한다. Gateway ECR 이미지 가져오기, Gateway 컨테이너 로그 기록, Gateway TLS Secret의 조회와 해당 키의 문맥 제한 복호화만 허용한다. AI Gateway의 업무 역할과 이미지 게시 역할은 별도다.
+
+`provisionTonkatsuBusinessExecution=true`는 고객 API의 전용 ECS 실행 역할과 7일 로그 그룹을 정의한다. 브로커 게시 이미지에서 고객 API 진입점을 함께 검증한다. 고객 API 실행 역할은 해당 이미지를 가져오고 고객 API 로그와 전용 TLS 번들에만 접근한다. 배포에서 각 컨테이너의 업무 역할은 구분한다.
