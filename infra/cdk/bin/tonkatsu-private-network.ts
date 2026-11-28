@@ -2,6 +2,7 @@ import { CfnOutput, CfnParameter, Fn, Stack, StackProps, Token } from "aws-cdk-l
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as route53 from "aws-cdk-lib/aws-route53";
 import * as discovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 
@@ -154,6 +155,14 @@ export class TonkatsuPrivateNetworkStack extends Stack {
       new CfnOutput(this, `${label}DiscoveryArn`, { value: registration.attrArn });
       new CfnOutput(this, `${label}Host`, { value: `${name}.${namespaceName}` });
     }
+    const recordsHost = `records.${namespaceName}`;
+    new route53.CfnRecordSet(this, "RecordsAlias", {
+      hostedZoneId: namespace.attrHostedZoneId,
+      name: `${recordsHost}.`, type: "CNAME", ttl: "10",
+      resourceRecords: [`gateway.${namespaceName}.`],
+    });
+    new CfnOutput(this, "RecordsHost", { value: recordsHost });
+    new CfnOutput(this, "HostedZoneId", { value: namespace.attrHostedZoneId });
     new CfnOutput(this, "VpcId", { value: vpc.vpcId });
     new CfnOutput(this, "ClusterArn", { value: cluster.attrArn });
     new CfnOutput(this, "IsolatedSubnetId", { value: vpc.isolatedSubnets[0].subnetId });

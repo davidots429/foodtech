@@ -461,7 +461,7 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 
 `provisionTonkatsuPrivateNetwork=true`는 서비스 등록에 사용할 `tonkatsu.foodtech.internal` 사설 DNS와 개발용 네트워크를 합성한다. `AvailabilityZone`은 endpoint가 공통 지원하는 가용 영역을 지정하고 S3·DynamoDB prefix list ID는 Sydney의 AWS 관리 값을 전달한다. 기본 `isolated` 모드는 NAT 없이 지정한 AWS endpoint만 사용한다. `tonkatsuPrivateNetworkMode=managed-login`을 지정하면 Cognito OAuth를 사용하는 BFF 전용 NAT 서브넷과 세션 갱신용 KMS endpoint가 추가된다. BFF의 NAT 송신은 TCP 443이며 배포 시 별도 검토한다.
 
-각 ECS 서비스에는 출력된 역할별 subnet, security group, Cloud Map registry를 연결하고 공인 IP 부여를 끈다. 승인된 사설 시험 클라이언트만 BFF 8080에 연결한다. mTLS 발급에 쓰는 브로커·Gateway·추론 호스트는 이 스택의 DNS 출력으로 고정한다. Ollama 11434는 루프백에 유지된다. Cloud Map 등록과 ECS 태스크 실행은 후속 배포 단계다.
+각 ECS 서비스에는 출력된 역할별 subnet, security group, Cloud Map registry를 연결하고 공인 IP 부여를 끈다. 승인된 사설 시험 클라이언트만 BFF 8080에 연결한다. mTLS 발급에 쓰는 브로커·Gateway 호출·고객 기록·추론 호스트는 이 스택의 DNS 출력으로 고정한다. 고객 기록용 `RecordsHost`는 같은 사설 호스팅 영역에서 Gateway의 Cloud Map 레코드를 가리킨다. Gateway 호출과 고객 기록 주소는 동일 태스크의 서로 다른 포트와 서버 인증서를 사용한다. Ollama 11434는 루프백에 유지된다. Cloud Map 등록과 ECS 태스크 실행은 후속 배포 단계다.
 
 `provisionTonkatsuPrivateServices=true`는 검토한 네 태스크 리비전을 사설 네트워크의 역할별 서브넷·보안 그룹·Cloud Map 서비스에 연결한다. 스택의 기본 `DesiredCountPerService=0`에서 태스크는 정지 상태다. 승인된 시험에서 값 1로 전환하고 종료 시 0을 복원한다. 추론→Gateway→Broker→BFF 순서로 준비되며 서비스별 지정 서브넷 한 곳과 보안 그룹 한 개를 사용한다. 공인 IP와 ECS Exec을 비활성화한다.
 

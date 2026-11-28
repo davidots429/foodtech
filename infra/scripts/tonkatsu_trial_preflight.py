@@ -60,6 +60,11 @@ def checked_plan(plan):
 class ReadOnlyOperator(VerifiedOperator):
     def client(self, service):
         endpoints = {"ecs": "ecs", "ec2": "ec2", "ecr": "api.ecr", "servicediscovery": "servicediscovery"}
+        if service == "route53":
+            if service not in self.clients:
+                self.clients[service] = self.session.client(service, config=self.config, verify=True,
+                    region_name="us-east-1", endpoint_url="https://route53.amazonaws.com")
+            return self.clients[service]
         if service not in endpoints:
             require(service in {"cloudformation", "secretsmanager"}, "metadata_service")
             return super().client(service)
@@ -89,7 +94,7 @@ def stack_metadata(client, name, digest):
             metadata_fields(stack.get("Parameters", []), "ParameterKey", "ParameterValue"))
 
 
-def check_network(ec2, discovery, network, parameters, mode):
+def check_network(ec2, discovery, route53, network, parameters, mode):
     require((network["BusinessSubnetId"] != network["IsolatedSubnetId"]) == (mode == "managed-login"),
             "network_mode")
     subnet_ids = {network["BusinessSubnetId"], network["IsolatedSubnetId"]}
@@ -162,6 +167,20 @@ def check_network(ec2, discovery, network, parameters, mode):
     require(len(namespace_ids) == 1, "registry_namespace")
     namespace = discovery.get_namespace(Id=namespace_ids.pop())["Namespace"]
     require(namespace["Name"] == DOMAIN and namespace["Type"] == "DNS_PRIVATE", "private_namespace")
+    zone_id = network["HostedZoneId"]
+    require(zone_id == namespace["Properties"]["DnsProperties"]["HostedZoneId"], "private_hosted_zone_binding")
+    zone = route53.get_hosted_zone(Id=zone_id)
+    require(zone["HostedZone"]["Name"] == DOMAIN + "." and zone["HostedZone"]["Config"]["PrivateZone"]
+            and zone["VPCs"] == [{"VPCRegion": REGION, "VPCId": network["VpcId"]}], "private_hosted_zone")
+    alias_name = f"records.{DOMAIN}"
+    require(network["RecordsHost"] == alias_name, "records_hostname")
+    result = route53.list_resource_record_sets(HostedZoneId=zone_id, StartRecordName=alias_name + ".",
+                                               StartRecordType="CNAME", MaxItems="1")
+    require(result["ResourceRecordSets"] == [{
+        "Name": alias_name + ".", "Type": "CNAME", "TTL": 10,
+        "ResourceRecords": [{"Value": network["GatewayHost"] + "."}],
+    }], "records_dns_alias")
+
 
 
 def check_services(ecs, network, outputs, parameters, tasks):
@@ -220,7 +239,7 @@ def check_task(ecs, label, arn, images, bundle, version, network):
         environment = metadata_fields(container["environment"], "name", "value")
         expected_origins = {
             "business-api": {"FOODTECH_TONKATSU_BROKER_URL": f"https://{network['BrokerHost']}:8446",
-                             "FOODTECH_TONKATSU_GATEWAY_RECORDS_URL": f"https://{network['GatewayHost']}:8447"},
+                             "FOODTECH_TONKATSU_GATEWAY_RECORDS_URL": f"https://{network['RecordsHost']}:8447"},
             "broker": {"FOODTECH_TONKATSU_GATEWAY_URL": f"https://{network['GatewayHost']}:8445"},
             "gateway": {"FOODTECH_TONKATSU_OLLAMA_PRIVATE_ORIGIN": f"https://{network['InferenceHost']}:8448"},
         }
@@ -246,7 +265,7 @@ def preflight(operator, plan, evidence):
     network, network_parameters = snapshots[NETWORK]
     service_outputs, service_parameters = snapshots[SERVICES]
     evidence["phase"] = "network"
-    check_network(operator.client("ec2"), operator.client("servicediscovery"),
+    check_network(operator.client("ec2"), operator.client("servicediscovery"), operator.client("route53"),
                   network, network_parameters, plan["network_mode"])
     evidence["phase"] = "images"
     ecr = operator.client("ecr")

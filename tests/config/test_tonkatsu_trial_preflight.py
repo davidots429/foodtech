@@ -21,7 +21,7 @@ class TonkatsuTrialPreflightTests(unittest.TestCase):
                               for name, letter in zip(("broker", "gateway", "ollama"), "abc", strict=True)},
         }
         self.clients = {name: Mock() for name in
-                        ("cloudformation", "ecs", "ec2", "ecr", "servicediscovery", "secretsmanager")}
+                        ("cloudformation", "ecs", "ec2", "ecr", "servicediscovery", "secretsmanager", "route53")}
         self.operator = Mock()
         self.operator.client.side_effect = self.clients.__getitem__
         self.outputs = {stack: {} for stack in preflight.REVIEWED_STACKS}
@@ -31,6 +31,7 @@ class TonkatsuTrialPreflightTests(unittest.TestCase):
         self.network.update(ClusterArn=cluster, VpcId="vpc-12345678", IsolatedSubnetId="subnet-12345678",
                             BusinessSubnetId="subnet-12345678", TesterSecurityGroupId="sg-00000000",
                             ImageAccessSecurityGroupId="sg-00000005", WorkflowAccessSecurityGroupId="sg-00000006")
+        self.network.update(RecordsHost=f"records.{preflight.DOMAIN}", HostedZoneId="ZPRIVATEZONE")
         self.parameters[preflight.NETWORK].update(S3PrefixListId="pl-00000001", DynamoDbPrefixListId="pl-00000002")
         service_parameters = self.parameters[preflight.SERVICES]
         service_parameters.update(ClusterArn=cluster, DesiredCountPerService="0", BusinessSubnetId="subnet-12345678",
@@ -115,8 +116,17 @@ class TonkatsuTrialPreflightTests(unittest.TestCase):
         }
         self.clients["servicediscovery"].get_service.side_effect = lambda Id: {"Service": self.registries[Id]}
         self.clients["servicediscovery"].get_namespace.return_value = {
-            "Namespace": {"Name": preflight.DOMAIN, "Type": "DNS_PRIVATE"},
+            "Namespace": {"Name": preflight.DOMAIN, "Type": "DNS_PRIVATE",
+                          "Properties": {"DnsProperties": {"HostedZoneId": "ZPRIVATEZONE"}}},
         }
+        self.clients["route53"].get_hosted_zone.return_value = {
+            "HostedZone": {"Name": preflight.DOMAIN + ".", "Config": {"PrivateZone": True}},
+            "VPCs": [{"VPCRegion": preflight.REGION, "VPCId": self.network["VpcId"]}],
+        }
+        self.clients["route53"].list_resource_record_sets.return_value = {"ResourceRecordSets": [{
+            "Name": f"records.{preflight.DOMAIN}.", "Type": "CNAME", "TTL": 10,
+            "ResourceRecords": [{"Value": f"gateway.{preflight.DOMAIN}."}],
+        }]}
         self.clients["ecr"].describe_repositories.side_effect = lambda registryId, repositoryNames: {"repositories": [{
             "repositoryUri": self.repo_prefix + repositoryNames[0], "imageTagMutability": "IMMUTABLE",
             "imageScanningConfiguration": {"scanOnPush": True}, "encryptionConfiguration": {"encryptionType": "AES256"},
@@ -143,7 +153,7 @@ class TonkatsuTrialPreflightTests(unittest.TestCase):
     def container(self, name, repository, port, bundle):
         variables = {
             "business-api": {"FOODTECH_TONKATSU_BROKER_URL": f"https://broker.{preflight.DOMAIN}:8446",
-                             "FOODTECH_TONKATSU_GATEWAY_RECORDS_URL": f"https://gateway.{preflight.DOMAIN}:8447"},
+                             "FOODTECH_TONKATSU_GATEWAY_RECORDS_URL": f"https://records.{preflight.DOMAIN}:8447"},
             "broker": {"FOODTECH_TONKATSU_GATEWAY_URL": f"https://gateway.{preflight.DOMAIN}:8445"},
             "gateway": {"FOODTECH_TONKATSU_OLLAMA_PRIVATE_ORIGIN": f"https://inference.{preflight.DOMAIN}:8448"},
             "ollama": {"OLLAMA_HOST": "127.0.0.1:11434", "OLLAMA_NO_CLOUD": "1"},
@@ -196,6 +206,22 @@ class TonkatsuTrialPreflightTests(unittest.TestCase):
     def test_rejects_inference_egress_drift(self):
         self.groups[-1]["IpPermissionsEgress"][0]["UserIdGroupPairs"][0]["GroupId"] = "sg-00000007"
         with self.assertRaisesRegex(preflight.ReviewMismatch, "exact_egress_rules"):
+            self.run_preflight()
+
+    def test_records_hostname_must_point_to_the_private_gateway(self):
+        self.run_preflight()
+        self.clients["route53"].list_resource_record_sets.assert_called_once_with(
+            HostedZoneId="ZPRIVATEZONE", StartRecordName=f"records.{preflight.DOMAIN}.",
+            StartRecordType="CNAME", MaxItems="1",
+        )
+        row = self.clients["route53"].list_resource_record_sets.return_value["ResourceRecordSets"][0]
+        row["ResourceRecords"][0]["Value"] = "unreviewed.invalid."
+        with self.assertRaisesRegex(preflight.ReviewMismatch, "records_dns_alias"):
+            self.run_preflight()
+
+    def test_records_hosted_zone_must_belong_to_the_reviewed_private_vpc(self):
+        self.clients["route53"].get_hosted_zone.return_value["VPCs"][0]["VPCId"] = "vpc-87654321"
+        with self.assertRaisesRegex(preflight.ReviewMismatch, "private_hosted_zone"):
             self.run_preflight()
 
     def test_rejects_task_origin_outside_reviewed_dns(self):
