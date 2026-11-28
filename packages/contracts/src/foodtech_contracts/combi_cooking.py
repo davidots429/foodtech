@@ -56,14 +56,17 @@ class RiceWater:
     status: str
 
 
-def rice_water(dry_kg: Decimal, drained_kg: Decimal, added_water_kg: Decimal) -> RiceWater:
+def rice_water(dry_kg: Decimal, drained_kg: Decimal, added_water_kg: Decimal, *,
+               target_ratio: Decimal = Decimal("1.20")) -> RiceWater:
     dry = _mass(dry_kg, "dry rice", positive=True)
     drained = _mass(drained_kg, "drained rice")
     added = _mass(added_water_kg, "added water")
     if drained < dry:
         raise ValueError("drained rice cannot weigh less than dry rice")
     absorbed = drained - dry
-    target = dry * Decimal("1.20")
+    if not isinstance(target_ratio, Decimal) or not target_ratio.is_finite() or not Decimal("1.15") <= target_ratio <= Decimal("1.25"):
+        raise ValueError("target water ratio must stay within the approved range")
+    target = dry * target_ratio
     remainder = target - absorbed
     effective = absorbed + added
     ratio = effective / dry

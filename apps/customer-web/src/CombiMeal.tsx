@@ -1,3 +1,4 @@
+import { CombiCandidateLoad } from "./CombiCandidateLoad";
 import { useRef, useState } from "react";
 import { api } from "./cookingApi";
 import { CombiQuality } from "./CombiQuality";
@@ -14,11 +15,13 @@ type ProbeSummary = { probe_id: string; product_id: string; rack_id: string; she
 type Meal = {
   meal: { meal_batch_id: string; status: string; equipment_size: string; version: number;
     rice_recipe_version?: string; mackerel_recipe_version?: string;
+    recipe_candidate_selection?: { menu: "RICE" | "MACKEREL"; candidate: { candidate_id: string } };
     source?: { device_id: string; record_count: number; raw_sha256: string; first_observed_at?: string;
       phase_counts: { RICE: number; TRANSITION: number; MACKEREL: number } } };
   rice: { job_id: string; status: string; safety_status: string; quality_current?: { version: number;
     quality_status: string; score_percent: string; quality_target: boolean; usable?: boolean };
     water_ratio_status: string; effective_water_ratio: string;
+    target_program_seconds?: number; target_effective_water_ratio?: string; target_soaking_seconds?: number; target_draining_seconds?: number;
     rice_preparation?: RicePreparationRecord;
     target_added_water_kg: string | null; payload_kg: string; gross_kg: string;
     time_status?: string; program_cooking_duration?: number; thermal_exposure_duration?: number;
@@ -27,9 +30,9 @@ type Meal = {
     monitored_process_assessment?: { status: string; humidity_value_source: string; reason_codes: string[];
       door_assessment?: { status: string; door_open_seconds?: number }; fan_observation?: FanObservation; climate_observation?: ClimateObservation } };
   transition: { transition_id: string; mackerel_load_allowed: boolean; status: string;
-    humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null;
+    target_duration_seconds?: number; humidity_verification_status?: string; dryness_verification_basis?: string; ready_at_second?: number | null;
     samples?: unknown[]; source?: { raw_sha256: string; phase: string } };
-  mackerel: { job_id: string; status: string; safety_status: string; food_unloaded_at?: string;
+  mackerel: { target_program_seconds?: number; planned_pan_positions?: { rack: number; shelf: number }[]; job_id: string; status: string; safety_status: string; food_unloaded_at?: string;
     load_snapshot?: { rack_count: number; pan_count: number; ingredient_kg: string; pan_tare_kg: string;
       rack_tare_kg: string; payload_kg: string; gross_kg: string; rated_capacity_kg: string;
       load_basis: string; load_ratio: string; observed_at: string };
@@ -138,15 +141,18 @@ export function CombiMeal({ csrf }: { csrf: string }) {
       source: string, fan: number) => ({ seconds, chamberCelsius: chamber, climateSetpointPercent: climate,
       measuredHumidityPercent: humidity, humidityValueSource: source, fanLevel: fan, doorState: "CLOSED",
       criticalAlarm: false, ventSupported: false, ventEvent: null });
+    const riceSeconds = meal.rice.target_program_seconds ?? 1800;
+    const transitionSeconds = Math.max(180, meal.transition.target_duration_seconds ?? 30);
+    const fishSeconds = meal.mackerel.target_program_seconds ?? 720;
     const fixture = { provenance: "SYNTHETIC", profileId: "mockprofile-120", mockInstanceId: "mockprofile-120-a-001",
       mealBatchId: meal.meal.meal_batch_id, deviceId: sourceDevice, generatorVersion: "combi-generator-v1", seed: 2026,
-      logicalStartAt: new Date(Date.now() - 2_701_000).toISOString(), phases: [
+      logicalStartAt: new Date(Date.now() - (riceSeconds + transitionSeconds + fishSeconds + 1) * 1000).toISOString(), phases: [
         { phase: "RICE", cookingJobId: meal.rice.job_id, programVersion: "rice-steam-v1",
-          segments: [segment(1800, "100", "100", "98", "MEASURED", 4)] },
+          segments: [segment(riceSeconds, "100", "100", "98", "MEASURED", 4)] },
         { phase: "TRANSITION", cookingJobId: meal.transition.transition_id, programVersion: "dry-transition-v1",
-          segments: [segment(180, "220", "10", null, "NOT_SUPPORTED", 3)] },
+          segments: [segment(transitionSeconds, "220", "10", null, "NOT_SUPPORTED", 3)] },
         { phase: "MACKEREL", cookingJobId: meal.mackerel.job_id, programVersion: "mackerel-dry-v1",
-          segments: [segment(720, "220", "10", "10", "MEASURED", 3)] },
+          segments: [segment(fishSeconds, "220", "10", "10", "MEASURED", 3)] },
       ] };
     const url = URL.createObjectURL(new Blob([JSON.stringify(fixture, null, 2)], { type: "application/json" }));
     const link = document.createElement("a"); link.href = url; link.download = "combi-meal-fixture.json";
@@ -194,7 +200,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
     if (!meal || requestActive.current) return;
     requestActive.current = true; setBusy(true); setError("");
     const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
-    const count = humiditySupported ? 30 : 180;
+    const count = Math.max(humiditySupported ? 30 : 180, meal.transition.target_duration_seconds ?? 30);
     const samples = Array.from({ length: count }, (_, index) => ({ second: index + 1,
       chamber_celsius: "220", climate_setpoint_percent: "10", door_closed: true,
       critical_alarm: false, humidity_percent: humiditySupported ? "10" : null, vent_event: null }));
@@ -363,7 +369,7 @@ export function CombiMeal({ csrf }: { csrf: string }) {
         랙 {meal.mackerel.load_snapshot.rack_tare_kg}kg ({meal.mackerel.load_snapshot.rack_count}개) ·
         정격 반영 {meal.mackerel.load_snapshot.load_basis === "PAYLOAD_ONLY" ? meal.mackerel.load_snapshot.payload_kg : meal.mackerel.load_snapshot.gross_kg}kg
         / {meal.mackerel.load_snapshot.rated_capacity_kg}kg</p> : meal.mackerel.status !== "PENDING" && <p>고등어 투입 적재량: 미기록</p>}
-      {meal.meal.status === "MACKEREL_READY" && <div><p>합성 제품을 각 130g, 두께 1.5~2.0cm로 투입합니다.</p>
+      {meal.meal.status === "MACKEREL_READY" && meal.meal.recipe_candidate_selection?.menu !== "MACKEREL" && <div><p>합성 제품을 각 130g, 두께 1.5~2.0cm로 투입합니다.</p>
         <label>고등어용 빈 팬 총중량(kg)<input type="number" min="0" step="0.01" value={mackerelPanTare}
           onChange={event => setMackerelPanTare(event.target.value)} /></label>
         <p className="small">이번 적재의 빈 팬 중량을 모두 합해 입력합니다. 밥의 팬 중량은 가져오지 않습니다.
@@ -375,13 +381,27 @@ export function CombiMeal({ csrf }: { csrf: string }) {
           {meal.meal.equipment_size === "LARGE_ROLL_IN_RACK_20" && <option value="TWO_RACKS">두 랙</option>}
           {meal.meal.equipment_size === "LARGE_ROLL_IN_RACK_20" && <option value="TWO_RACKS_EQUAL">두 랙 · 동일 적재량 · 네 제품</option>}
         </select></label></div>}
-      {mealSteps[meal.meal.status] && <div className="field-row"><label>합성 관찰시각
+      {mealSteps[meal.meal.status] && !(meal.meal.status === "MACKEREL_READY" && meal.meal.recipe_candidate_selection?.menu === "MACKEREL") && <div className="field-row"><label>합성 관찰시각
         <input type="datetime-local" step="0.001" value={observedAt} onChange={event => setObservedAt(event.target.value)} /></label>
         {meal.meal.source?.first_observed_at && <button type="button" className="secondary" disabled={busy} onClick={useSourceTime}>원표본 시각 입력</button>}
         <button type="button" disabled={busy || (meal.meal.status === "MACKEREL_READY" && !!meal.meal.source &&
           (meal.transition.source?.raw_sha256 !== meal.meal.source.raw_sha256 || meal.transition.source?.phase !== "TRANSITION"))}
           onClick={recordStep}>{mealSteps[meal.meal.status].label}</button></div>}
-      {meal.meal.status === "MODE_TRANSITION" && <div><p>합성 표본으로 전환 조건을 시험합니다. 전환 시작 시각 이후 30초 또는 180초가 경과해야 합니다.</p>
+      {meal.meal.status === "MACKEREL_READY" && meal.meal.recipe_candidate_selection?.menu === "MACKEREL" && meal.mackerel.planned_pan_positions &&
+        <CombiCandidateLoad key={`${meal.meal.meal_batch_id}-${meal.meal.version}`} positions={meal.mackerel.planned_pan_positions}
+          large={meal.meal.equipment_size === "LARGE_ROLL_IN_RACK_20"} busy={busy} onSubmit={async body => {
+            if (requestActive.current) throw new Error("다른 작업을 마친 뒤 기록해 주세요.");
+            requestActive.current = true; setBusy(true);
+            try { const path = `/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`;
+              await api(path + "/events", csrf, { ...body, expected_version: meal.meal.version, event: "MACKEREL_STARTED" });
+              setMeal(await api<Meal>(path)); setSelectedProducts(null); setSelectionNote(""); setMackerelPanTare("");
+            } finally { requestActive.current = false; setBusy(false); }
+          }} />}
+      {meal.meal.recipe_candidate_selection && <p>적용 후보: {meal.meal.recipe_candidate_selection.candidate.candidate_id} ·
+        밥 계획 {meal.rice.target_program_seconds}초 / 고등어 계획 {meal.mackerel.target_program_seconds}초
+        {meal.rice.target_effective_water_ratio && <> · 밥 유효 물 비율 목표 {meal.rice.target_effective_water_ratio} · 불림 목표 {meal.rice.target_soaking_seconds}초 · 배수 목표 {meal.rice.target_draining_seconds}초</>}
+        {meal.transition.target_duration_seconds && <> · 전환 계획 최소 {meal.transition.target_duration_seconds}초</>}. 실제 관측과 안전 판정은 별도로 기록합니다.</p>}
+      {meal.meal.status === "MODE_TRANSITION" && <div><p>합성 표본으로 전환 조건을 시험합니다. 전환 시작 시각 이후 센서 조건과 계획 최소시간이 충족되어야 하며, 습도 미지원은 최소 180초를 확인합니다.</p>
         {meal.meal.source && !meal.transition.samples?.length && <button type="button" disabled={busy} onClick={() => assessSource("transition")}>연결된 전환 원표본 판정</button>}{" "}
         {!meal.meal.source && <><button type="button" disabled={busy} onClick={() => simulateTransition(true)}>습도 지원 합성 표본</button>{" "}
         <button type="button" disabled={busy} onClick={() => simulateTransition(false)}>습도 미지원 합성 표본</button></>}</div>}
@@ -461,7 +481,15 @@ export function CombiMeal({ csrf }: { csrf: string }) {
           setMeal(await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(meal.meal.meal_batch_id)}`))} />)}
       {(["RICE", "MACKEREL"] as const).map(menu => <CombiRecommendation
         key={`combi-recommendation-${meal.meal.meal_batch_id}-${menu}-${meal.meal.version}`}
-        mealId={meal.meal.meal_batch_id} jobId={menu === "RICE" ? meal.rice.job_id : meal.mackerel.job_id} menu={menu} csrf={csrf} />)}
+        mealId={meal.meal.meal_batch_id} jobId={menu === "RICE" ? meal.rice.job_id : meal.mackerel.job_id} menu={menu} csrf={csrf} onCreated={async id => {
+          if (requestActive.current) throw new Error("다른 배치 작업을 마친 뒤 열어 주세요.");
+          requestActive.current = true; setBusy(true);
+          try { const next = await api<Meal>(`/api/customer/combi-meals/${encodeURIComponent(id)}`);
+            setMeal(next); setLookup(id); setSourceFile(null); setSelectedProducts(null); setSelectionNote("");
+            setSampleLayout("THREE_SHELVES"); setMackerelPanTare(""); setObservedAt("");
+            setRiceSafetyObservation(""); setRiceSafetyNote("");
+          } finally { requestActive.current = false; setBusy(false); }
+        }} />)}
       <CombiLive mealId={meal.meal.meal_batch_id} />
       <p>고등어 투입: {meal.transition.mackerel_load_allowed ? "허용" : "차단"}
         {meal.transition.humidity_verification_status && <> · 습도 검증 {meal.transition.humidity_verification_status} · 근거 {meal.transition.dryness_verification_basis}</>}</p>

@@ -18,6 +18,7 @@ from .combi_mackerel_process import Sample as FishSample, assess as assess_fish
 from .combi_transition import TransitionSample, assess_transition
 from .combi_probe import summarize
 from .combi_sampling import selection_issues
+from .combi_candidate_layout import installed_rack_count
 from .combi_recommendation import CombiBaseline
 from .combi_quality_observation import observe_quality
 
@@ -174,9 +175,19 @@ def _load(meta, step, menu, rows):
         if any(pans[p['pan_id']] != (p['rack_id'], p['shelf']) or shelves[(p['rack_id'], p['shelf'])] != p['pan_id']
                for p in products) or any(sum(p['pan_id'] == pan for p in products) > 10 for pan in pans):
             raise ValueError('ambiguous product layout')
-        load = oven_load(meta['equipment_size'], len(racks), len(pans),
+        rack_count = len(racks)
+        selection = meta.get('recipe_candidate_selection')
+        if selection and selection.get('menu') == 'MACKEREL':
+            positions = selection['candidate']['proposal']['data']['pan_positions']
+            if not _same(positions, step.get('planned_pan_positions')) or \
+                    not _same(step.get('candidate_rack_order'), load_event.get('candidate_rack_order')):
+                raise ValueError('adopted layout audit mismatch')
+            rack_count = installed_rack_count(meta['equipment_size'], positions, products, step['candidate_rack_order'])
+        elif 'candidate_rack_order' in step or 'candidate_rack_order' in load_event or 'planned_pan_positions' in step:
+            raise ValueError('adopted layout selection unavailable')
+        load = oven_load(meta['equipment_size'], rack_count, len(pans),
             sum((_number(p['mass_kg']) for p in products), Decimal(0)), _number(snapshot['pan_tare_kg']),
-            Decimal(15) * len(racks) if meta['equipment_size'] == 'LARGE_ROLL_IN_RACK_20' else Decimal(0))
+            Decimal(15) * rack_count if meta['equipment_size'] == 'LARGE_ROLL_IN_RACK_20' else Decimal(0))
         expected = {'rule_version': RULE_VERSION, 'size': load.size, 'rack_count': load.rack_count,
             'pan_count': load.pan_count, 'load_basis': load.load_basis, 'observed_at': step['active_cooking_started_at']}
         if any(not _same(value, snapshot.get(key)) for key, value in expected.items()) or any(
@@ -346,7 +357,8 @@ def _observe(rows, raws, menu, now):
             calculated = assess_transition([TransitionSample(r['phaseSecond'], _number(r['chamberCelsius']),
                 _number(r['climateSetpointPercent']), r['doorState'] == 'CLOSED', r['criticalAlarm'],
                 _number(r['measuredHumidityPercent']) if r['measuredHumidityPercent'] is not None else None,
-                r['ventEvent']) for r in samples], humidity_supported=sources == {'MEASURED'}, vent_supported=next(iter(vents)))
+                r['ventEvent']) for r in samples], humidity_supported=sources == {'MEASURED'}, vent_supported=next(iter(vents)),
+                minimum_seconds=_integer(transition.get('target_duration_seconds', 30)))
             if any(not _same(value, transition.get(key)) for key, value in calculated.items()) or \
                     calculated['status'] != 'DRY_HEAT_READY' or _time(transition['started_at']) + timedelta(seconds=len(samples)) > start:
                 raise ValueError

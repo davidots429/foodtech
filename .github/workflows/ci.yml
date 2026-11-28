@@ -24,6 +24,7 @@ jobs:
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-recipe-results.test.mjs
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-reviews.test.mjs
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-candidates.test.mjs
+      - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-candidate-meals.test.mjs
       - run: node --import tsx ../../tests/frontend/recipe-reviews.test.mjs
         working-directory: infra/cdk
       - run: CDK_DEFAULT_ACCOUNT=573693340100 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechMinimalDataFlow-dev --strict -c provisionDataFlow=true --output /tmp/foodtech-data-flow-cdk

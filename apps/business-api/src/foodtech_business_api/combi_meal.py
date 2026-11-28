@@ -20,12 +20,14 @@ from foodtech_contracts.combi_mackerel_live import observe as observe_mackerel_l
 from foodtech_contracts.combi_transition_live import observe as observe_transition_live
 from foodtech_contracts.combi_live_events import events_for
 from foodtech_contracts.combi_sampling import selection_issues
+from foodtech_contracts.combi_candidate_layout import installed_rack_count
 from foodtech_contracts.combi_probe import summarize as summarize_probe
 from foodtech_contracts.combi_quality_load import classify as classify_quality_load
 
 from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
 from .combi_quality_sample import current_quality
+from .combi_candidate_guards import transition_minimum, require_fresh_rice_preparation, selected_programme, require_candidate_transition
 
 router = APIRouter(prefix="/api/customer/combi-meals", tags=["combi-meals"])
 
@@ -84,6 +86,7 @@ class MealEvent(BaseModel):
     event: Literal["RICE_STARTED", "RICE_PROGRAM_COMPLETED", "RICE_UNLOADED", "MODE_TRANSITION_STARTED",
                    "MACKEREL_STARTED", "MACKEREL_PROGRAM_COMPLETED", "MACKEREL_UNLOADED"]
     observed_at: datetime
+    candidate_rack_order: list[str] | None = Field(default=None, min_length=1, max_length=2)
     products: list[MackerelProduct] | None = Field(default=None, min_length=1, max_length=200)
     pan_tare_kg: Decimal | None = Field(default=None, ge=0, max_digits=7, decimal_places=2)
 
@@ -328,6 +331,11 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
         raise HTTPException(413, "합성 원천 자료의 크기 제한을 초과했습니다.")
     if body.expected_cursor != count or meal.get("source") or (state and state["device_id"] != body.device_id):
         raise HTTPException(409, "수집 순서 또는 배치 상태가 변경되었습니다.")
+    rows = {row['sk']: row for row in await _store_call(store, store.read_meal, pk)}
+    try:
+        minimum_transition_seconds = transition_minimum(meal, rows)
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(409, "보존된 후보의 전환 조건을 확인할 수 없습니다.") from None
     jobs = {"RICE": meal["rice_cooking_job_id"], "TRANSITION": meal["mode_transition_id"],
             "MACKEREL": meal["mackerel_cooking_job_id"]}
     validator = CombiStreamValidator(str(meal_id), body.device_id, jobs)
@@ -366,7 +374,7 @@ async def append_combi_live(meal_id: UUID, request: Request, body: CombiLiveBatc
             after = mackerel_monitor
         else:
             before = transition_monitor
-            transition_monitor = observe_transition_live(transition_monitor, observation)
+            transition_monitor = observe_transition_live(transition_monitor, observation, minimum_seconds=minimum_transition_seconds)
             after = transition_monitor
         events.extend(events_for(observation, previous_phase=previous_phase, previous_door=previous_door,
                                  previous_alarm=previous_alarm, before=before, after=after))
@@ -548,11 +556,11 @@ async def get_combi_source_windows(meal_id: UUID, request: Request,
             "next_cursor": cursor + len(page) if cursor + len(page) < len(windows) else None}
 
 
-@router.post("", status_code=201)
-async def create_meal(request: Request, body: CreateMeal) -> dict:
-    session, store = await _context(request, write=True)
+def new_meal_records(body: CreateMeal, identifiers: tuple[str, str, str, str], now: str, *,
+                     water_target_ratio: Decimal = Decimal("1.20")) -> list[dict]:
+    """Build fresh records through the shared load/water rules; no storage or control."""
     try:
-        water = rice_water(body.dry_rice_kg, body.drained_rice_kg, body.added_water_kg)
+        water = rice_water(body.dry_rice_kg, body.drained_rice_kg, body.added_water_kg, target_ratio=water_target_ratio)
         load = oven_load(body.equipment_size, body.rack_count, body.pan_count,
                          body.drained_rice_kg + body.added_water_kg,
                          body.pan_tare_kg, body.rack_tare_kg)
@@ -560,8 +568,7 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
         raise HTTPException(422, str(exc)) from exc
     if load.violations:
         raise HTTPException(422, {"code": "PROFILE_REJECTED", "violations": load.violations})
-    meal_id, rice_id, transition_id, fish_id = (str(uuid4()) for _ in range(4))
-    now = _now()
+    meal_id, rice_id, transition_id, fish_id = identifiers
     records = [
         {"sk": "META", "meal_batch_id": meal_id, "rice_cooking_job_id": rice_id,
          "mode_transition_id": transition_id, "mackerel_cooking_job_id": fish_id,
@@ -595,6 +602,15 @@ async def create_meal(request: Request, body: CreateMeal) -> dict:
         value = getattr(body, name)
         if value is not None:
             records[0][name] = value
+    return records
+
+
+@router.post("", status_code=201)
+async def create_meal(request: Request, body: CreateMeal) -> dict:
+    session, store = await _context(request, write=True)
+    identifiers = tuple(str(uuid4()) for _ in range(4))
+    records = new_meal_records(body, identifiers, _now())
+    meal_id = identifiers[0]
     try:
         await _store_call(store, store.create_meal, _pk(session.subject, meal_id), records, session.epoch)
     except Conflict as exc:
@@ -814,7 +830,16 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
         raise HTTPException(422, "고등어 투입 단계에서만 제품을 기록할 수 있습니다.")
     if body.event != "MACKEREL_STARTED" and body.pan_tare_kg is not None:
         raise HTTPException(422, "고등어 투입 단계에서만 팬 총중량을 기록할 수 있습니다.")
+    if body.event != "MACKEREL_STARTED" and body.candidate_rack_order is not None:
+        raise HTTPException(422, "후보 적용 고등어 투입 단계에서만 랙 순서를 기록할 수 있습니다.")
     if body.event == "MACKEREL_STARTED":
+        try:
+            adopted = selected_programme(old, rows, 'MACKEREL')
+            require_candidate_transition(old, rows, observed)
+        except (ValueError, KeyError, TypeError, ArithmeticError):
+            raise HTTPException(409, "후보의 새 전환 조건·관측·감사 기록을 먼저 확인해 주세요.") from None
+        if adopted is None and body.candidate_rack_order is not None:
+            raise HTTPException(422, "후보를 적용한 고등어 작업에만 랙 순서를 기록할 수 있습니다.")
         transition = rows.get(f"TRANSITION#{old['mode_transition_id']}")
         if not transition or transition.get("status") != "DRY_HEAT_READY" or not transition.get("mackerel_load_allowed"):
             raise HTTPException(409, "건열 전환 준비를 먼저 확인해야 합니다.")
@@ -834,8 +859,16 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
             raise HTTPException(422, "장비의 랙·선반·팬 위치 또는 팬당 제품 수를 확인해 주세요.")
         if body.pan_tare_kg is None:
             raise HTTPException(422, "고등어 적재에 사용하는 빈 팬의 총중량(kg)이 필요합니다.")
-        rack_tare = Decimal(15) * len(racks) if old['equipment_size'] == 'LARGE_ROLL_IN_RACK_20' else Decimal(0)
-        load = oven_load(old['equipment_size'], len(racks), len(pan_locations),
+        rack_count = len(racks)
+        if adopted is not None:
+            try:
+                rack_count = installed_rack_count(old['equipment_size'], adopted['pan_positions'],
+                    [item.model_dump(mode='json') for item in products], body.candidate_rack_order)
+            except (ValueError, KeyError, TypeError):
+                raise HTTPException(422, "설치된 랙의 순서와 실제 팬 위치가 후보 배치도와 일치해야 합니다.") from None
+            updated['candidate_rack_order'] = list(body.candidate_rack_order)
+        rack_tare = Decimal(15) * rack_count if old['equipment_size'] == 'LARGE_ROLL_IN_RACK_20' else Decimal(0)
+        load = oven_load(old['equipment_size'], rack_count, len(pan_locations),
                         sum((item.mass_kg for item in products), Decimal(0)), body.pan_tare_kg, rack_tare)
         if load.violations:
             raise HTTPException(422, {"code": "PROFILE_REJECTED", "violations": load.violations})
@@ -848,6 +881,10 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
         updated.update(status="RUNNING", active_cooking_started_at=at,
                        products=[item.model_dump(mode="json") for item in products], load_snapshot=snapshot)
     elif body.event == "RICE_STARTED":
+        try:
+            require_fresh_rice_preparation(old, rows, observed)
+        except (ValueError, KeyError, TypeError, ArithmeticError):
+            raise HTTPException(409, "후보를 적용한 새 배치의 전처리·급수 기록을 먼저 확인해 주세요.") from None
         preparation = step.get("rice_preparation") or {}
         if preparation.get("draining_completed_at") and observed < datetime.fromisoformat(preparation["draining_completed_at"].replace("Z", "+00:00")):
             raise HTTPException(422, "밥 조리는 기록된 배수 완료 이후에 시작해야 합니다.")
@@ -871,6 +908,8 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
              "to_status": next_status, "observed_at": at, "recorded_at": _now(), "actor": session.subject}
     if body.event == 'MACKEREL_STARTED':
         event['load_snapshot'] = updated['load_snapshot'].copy()
+        if 'candidate_rack_order' in updated:
+            event['candidate_rack_order'] = list(updated['candidate_rack_order'])
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:
@@ -907,8 +946,8 @@ async def record_transition_evidence(meal_id: UUID, request: Request, body: Tran
     try:
         result = assess_transition([TransitionSample(**item.model_dump()) for item in body.samples],
                                    humidity_supported=body.humidity_supported,
-                                   vent_supported=body.vent_supported)
-    except ValueError as exc:
+                                   vent_supported=body.vent_supported, minimum_seconds=transition_minimum(old, rows))
+    except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     status = {"DRY_HEAT_READY": "MACKEREL_READY", "MODE_TRANSITION_TIMEOUT": "TRANSITION_TIMEOUT"}.get(
         result["status"], "MODE_TRANSITION")
@@ -1230,7 +1269,8 @@ async def assess_bound_source(meal_id: UUID, phase: Literal["rice", "transition"
                                  humidity_percent=Decimal(item["humidity_percent"])
                                  if item["humidity_percent"] is not None else None,
                                  vent_event=item["vent_event"]) for item in transition_samples],
-                humidity_supported=humidity_supported, vent_supported=vent_supported)
+                humidity_supported=humidity_supported, vent_supported=vent_supported,
+                minimum_seconds=transition_minimum(old, rows))
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(422, "원표본의 무결성이나 조리 시간 범위를 확인할 수 없습니다.") from exc
     version = int(old["version"]) + 1
