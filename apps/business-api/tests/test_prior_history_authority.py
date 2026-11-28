@@ -342,6 +342,50 @@ class AuthorityTests(unittest.TestCase):
             self.assertEqual(verified, scope)
             self.assertEqual(lease.expires_at.timestamp(), 1100)
             lease.resource(verified)
+            frozen = session.get_credentials.return_value.get_frozen_credentials.return_value
+            frozen.access_key, frozen.secret_key, frozen.token = ("synthetic-key", "synthetic-secret", "synthetic-token")
+            frame = lease._internal_handoff(verified)
+            wire = frame._encode_for_internal_tls()
+        from foodtech_ai_gateway.tonkatsu_read_handoff import TonkatsuHandoffDenied, _accept
+
+        role_id = "AROA" + "A" * 17
+        consumer = Mock()
+        consumer_session = consumer.return_value
+        consumer_session.get_credentials.return_value.method = "explicit"
+        consumer_sts = consumer_session.client.return_value
+        consumer_sts.meta.endpoint_url = "https://sts.ap-southeast-2.amazonaws.com"
+        consumer_session.resource.return_value.meta.client.meta.endpoint_url = "https://dynamodb.ap-southeast-2.amazonaws.com"
+        identity = {"Account": "123456789012", "Arn": frame.assumed_role,
+                    "UserId": role_id + ":" + frame.assumed_role.rsplit("/", 1)[1]}
+        consumer_sts.get_caller_identity.return_value = identity
+        args_accept = dict(expected_role=broker.role, expected_role_id=role_id,
+                           session_factory=consumer, clock=lambda: now)
+        with self.assertRaises(TonkatsuHandoffDenied):
+            _accept(wire, resolve_scope=lambda: None, **args_accept)
+        with self.assertRaises(TonkatsuHandoffDenied):
+            _accept(wire, resolve_scope=lambda: replace(scope, execution_version=2), **args_accept)
+        consumer.assert_not_called()
+        consumer_sts.get_caller_identity.return_value = {**identity, "UserId": "wrong"}
+        with self.assertRaises(TonkatsuHandoffDenied):
+            _accept(wire, resolve_scope=lambda: scope, **args_accept)
+        consumer_session.resource.assert_not_called()
+        consumer_sts.get_caller_identity.return_value = identity
+        reads = _accept(wire, resolve_scope=lambda: scope, **args_accept)
+        resource = consumer_session.resource.return_value
+        cooking_table = resource.Table.return_value
+        cooking_table.get_item.side_effect = [
+            {"Item": {"pk": pk, "sk": "META", "owner_subject": self.owner, "job_id": job, "version": 1}}
+            for pk, job in zip(scope.job_partitions, (self.current, self.prior))
+        ]
+        with patch("foodtech_ai_gateway.tonkatsu_read_handoff.observe_scoped_tonkatsu_source",
+                   side_effect=["current-input", "prior-input"]) as observe:
+            self.assertEqual(reads.observe_inputs(), ("current-input", "prior-input"))
+            self.assertEqual([call.kwargs["scoped_stream"] for call in observe.call_args_list], list(streams))
+            self.assertEqual([call.kwargs["expected_revision"] for call in observe.call_args_list], [8, 7])
+        reads.close()
+        consumer_session.resource.return_value.meta.client.close.assert_called_once()
+        self.assertNotIn(self.owner.encode(), wire)
+        self.assertNotIn(b"synthetic-secret", repr(frame).encode())
         request = sts.assume_role.call_args.kwargs
         self.assertEqual(request["DurationSeconds"], 900)
         policy = json.loads(request["Policy"])

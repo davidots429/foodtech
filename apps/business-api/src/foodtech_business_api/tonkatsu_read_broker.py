@@ -8,6 +8,8 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from foodtech_contracts.tonkatsu_read_handoff import TonkatsuReadHandoff, scope_sha256
+
 from .recipe_scope import RecipeScopeDenied
 from .tonkatsu_read_scope import DynamoTonkatsuReadScope, TonkatsuReadScope
 
@@ -31,13 +33,14 @@ def _current(resolver, scope, now):
 
 
 class TonkatsuReadLease:
-    __slots__ = ("_scope", "_expires", "__session", "_config", "_clock", "_resolver", "_clients", "_last_time")
+    __slots__ = ("_scope", "_expires", "__session", "_config", "_clock", "_resolver", "_clients", "_last_time", "_role", "_assumed_role")
 
-    def __init__(self, scope, expires, session, config, clock, resolver, issued_at):
+    def __init__(self, scope, expires, session, config, clock, resolver, issued_at, *, role, assumed_role):
         self._scope, self._expires, self.__session = scope, expires, session
         self._config, self._clock, self._resolver = config, clock, resolver
         self._clients = []
         self._last_time = issued_at
+        self._role, self._assumed_role = role, assumed_role
 
     def __repr__(self):
         return "TonkatsuReadLease()"
@@ -49,7 +52,7 @@ class TonkatsuReadLease:
     def expires_at(self):
         return self._expires
 
-    def resource(self, expected_scope):
+    def _live_session(self, expected_scope):
         try:
             now = _time(self._clock)
             if (
@@ -62,12 +65,28 @@ class TonkatsuReadLease:
             if not now <= observed_at < self._expires:
                 raise ValueError("fryer lease expired during verification")
             self._last_time = observed_at
-            resource = self.__session.resource("dynamodb", region_name=REGION, config=self._config,
-                endpoint_url=f"https://dynamodb.{REGION}.amazonaws.com")
-            self._clients.append(resource.meta.client)
-            return resource
+            return self.__session
         except (ValueError, TypeError, AttributeError, OverflowError, BotoCoreError, ClientError):
             raise RecipeScopeDenied("fryer lease unavailable") from None
+
+    def resource(self, expected_scope):
+        session = self._live_session(expected_scope)
+        resource = session.resource("dynamodb", region_name=REGION, config=self._config,
+            endpoint_url=f"https://dynamodb.{REGION}.amazonaws.com")
+        self._clients.append(resource.meta.client)
+        return resource
+
+    def _internal_handoff(self, expected_scope):
+        session = self._live_session(expected_scope)
+        credentials = session.get_credentials()
+        if credentials is None or credentials.method != "explicit":
+            raise RecipeScopeDenied("explicit fryer lease credentials required")
+        frozen = credentials.get_frozen_credentials()
+        handoff = TonkatsuReadHandoff(scope_digest=scope_sha256(expected_scope),
+            role=self._role, assumed_role=self._assumed_role, expires=self._expires,
+            credentials=(frozen.access_key, frozen.secret_key, frozen.token), clock=self._clock)
+        handoff.validate(expected_scope)
+        return handoff
 
     def close(self):
         self.__session = None
@@ -154,6 +173,7 @@ class TonkatsuReadBroker:
             explicit = session.get_credentials()
             if explicit is None or explicit.method != "explicit":
                 raise ValueError("explicit fryer lease credentials required")
-            return scope, TonkatsuReadLease(scope, expires, session, self.config, self.clock, self.resolver, now)
+            return scope, TonkatsuReadLease(scope, expires, session, self.config, self.clock, self.resolver, now,
+                                                  role=self.role, assumed_role=arn)
         except (ValueError, TypeError, AttributeError, KeyError, ArithmeticError, BotoCoreError, ClientError):
             raise RecipeScopeDenied("verified fryer read lease unavailable") from None

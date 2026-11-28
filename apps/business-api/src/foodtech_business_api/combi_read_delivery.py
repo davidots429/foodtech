@@ -70,21 +70,27 @@ async def deliver_internal_combi_handoff(handoff, settings):
     try:
         if type(handoff) is not CombiReadHandoff or type(settings) is not CombiDeliverySettings: raise ValueError
         credentials = tuple(handoff._sdk_credentials().values())
-        raw = handoff._encode_for_internal_tls()
-        context = _context(settings)
-        async with httpx.AsyncClient(verify=context,timeout=195,trust_env=False,follow_redirects=False,http2=False) as client:
-            async with client.stream('POST',settings.gateway_url+'/internal/ai/combi-recipe-executions/'+handoff.scope.execution_id+'/invoke',
-                    content=raw,headers={'Content-Type':CONTENT_TYPE,'Cache-Control':'no-store','Accept':'application/json','Accept-Encoding':'identity'}) as response:
-                if response.status_code != 200 or response.headers.get('Cache-Control') != 'no-store' or \
-                        response.headers.get('Content-Type','').split(';',1)[0].strip().lower() != 'application/json' or \
-                        response.headers.get('Content-Encoding','identity') != 'identity': raise ValueError
-                content = bytearray()
-                async for chunk in response.aiter_bytes():
-                    if len(content)+len(chunk)>24576: raise ValueError
-                    content.extend(chunk)
-        outcome = _outcome(content,handoff.scope.execution_id)
-        if any(secret in value for secret in credentials for value in outcome.values() if type(value) is str): raise ValueError
-        return outcome
+        execution_id = handoff.scope.execution_id
+        path = '/internal/ai/combi-recipe-executions/' + execution_id + '/invoke'
+        return await _deliver_pinned(settings, handoff, credentials, path, CONTENT_TYPE, execution_id)
     except (ValueError,TypeError,AttributeError,OSError,UnicodeError,RecursionError,httpx.HTTPError,
             x509.ExtensionNotFound,x509.DuplicateExtension,UnsupportedAlgorithm):
         raise CombiDeliveryUnavailable('Combi invocation unavailable') from None
+
+
+async def _deliver_pinned(settings, handoff, credentials, path, content_type, execution_id):
+    raw = handoff._encode_for_internal_tls()
+    context = _context(settings)
+    async with httpx.AsyncClient(verify=context,timeout=195,trust_env=False,follow_redirects=False,http2=False) as client:
+        async with client.stream('POST',settings.gateway_url + path,
+                content=raw,headers={'Content-Type':content_type,'Cache-Control':'no-store','Accept':'application/json','Accept-Encoding':'identity'}) as response:
+            if response.status_code != 200 or response.headers.get('Cache-Control') != 'no-store' or \
+                    response.headers.get('Content-Type','').split(';',1)[0].strip().lower() != 'application/json' or \
+                    response.headers.get('Content-Encoding','identity') != 'identity': raise ValueError
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(content)+len(chunk)>24576: raise ValueError
+                content.extend(chunk)
+    outcome = _outcome(content,execution_id)
+    if any(secret in value for secret in credentials for value in outcome.values() if type(value) is str): raise ValueError
+    return outcome

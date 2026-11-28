@@ -1,14 +1,13 @@
 """Resolve protected fryer read scopes from stored execution metadata."""
 import re
-from dataclasses import dataclass
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from foodtech_contracts.collection_evidence import MAX_RECEIPT_RECORDS
 from foodtech_contracts.combi_history_witness import canonical_uuid, history_integer
-from foodtech_contracts.tonkatsu_execution_binding import TonkatsuExecutionBinding, parse_tonkatsu_binding
-from foodtech_contracts.tonkatsu_prior_history import TonkatsuPriorHistoryWitness
+from foodtech_contracts.tonkatsu_execution_binding import parse_tonkatsu_binding
+from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
 
 from .prior_history_authority import DynamoPriorHistoryAuthority, PriorHistoryUnavailable
 from .recipe_scope import RecipeScopeDenied
@@ -19,33 +18,6 @@ _EXECUTION_FIELDS = (
     "job_id", "job_version", "prior_job_id", "prior_job_version", "comparison_id",
     "jeyuk_source_revision", "prior_source_revision", "combi_binding", "tonkatsu_binding",
 )
-
-
-@dataclass(frozen=True, repr=False)
-class TonkatsuReadScope:
-    execution_id: str
-    execution_version: int
-    binding: TonkatsuExecutionBinding
-    history: TonkatsuPriorHistoryWitness
-
-    def __post_init__(self):
-        if not canonical_uuid(self.execution_id) or type(self.execution_version) is not int or (
-            type(self.binding) is not TonkatsuExecutionBinding or type(self.history) is not TonkatsuPriorHistoryWitness
-        ):
-            raise ValueError("typed fryer scope required")
-        history_integer(self.execution_version, 1, 2**63 - 1)
-        observed = self.history.history
-        if (observed.current_job_id, observed.prior_job_id, observed.job_versions, observed.auth_epoch) != (
-            self.binding.current.job_id, self.binding.prior.job_id,
-            (self.binding.current.job_version, self.binding.prior.job_version), self.binding.auth_epoch,
-        ):
-            raise ValueError("fryer scope and history mismatch")
-
-    @property
-    def job_partitions(self):
-        owner = self.history.history.owner
-        return tuple(f"SCOPE#USER#{owner}#JOB#{job_id}" for job_id in
-                     (self.binding.current.job_id, self.binding.prior.job_id))
 
 
 class DynamoTonkatsuReadScope:
