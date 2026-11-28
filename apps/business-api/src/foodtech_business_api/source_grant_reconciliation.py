@@ -12,6 +12,7 @@ from uuid import UUID, uuid5
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
+from .dynamodb_restore_verification import aware_timestamp, verify_restored_table
 from .source_grant_contract import SourceGrantConflict, _grant_mapping
 from .subject_identity import valid_subject
 from .source_grant_inventory import MAX_GRANTS
@@ -23,7 +24,7 @@ def validate_restore_page(start, limit):
 
 
 class SourceGrantReconciliation:
-    def __init__(self, *, inventory, client, restored_catalog_arn, clock, restored_auth_arn=None):
+    def __init__(self, *, inventory, client, restored_catalog_arn, clock, restored_auth_arn=None, restore_at=None):
         source_arn = inventory.cipher.source_table_arn
         match = re.fullmatch(r'arn:aws:dynamodb:ap-southeast-2:([0-9]{12}):table/foodtech-source-access-[a-z0-9-]+', source_arn)
         if not match or not isinstance(restored_catalog_arn, str) or not re.fullmatch(
@@ -39,7 +40,13 @@ class SourceGrantReconciliation:
                          f'table/foodtech-auth-sessions-restore-{run}')
         if restored_auth_arn is not None and restored_auth_arn != expected_auth:
             raise ValueError('explicit same-run isolated Auth restore table required')
+        if restored_auth_arn is not None and not aware_timestamp(restore_at):
+            raise ValueError('explicit DynamoDB restore point required')
+        if restored_auth_arn is None and restore_at is not None:
+            raise ValueError('explicit Auth restore table required with the restore point')
+        self.restore_at = restore_at
         self.restored_auth_arn = restored_auth_arn
+        self.source_auth_arn = f'arn:aws:dynamodb:ap-southeast-2:{match[1]}:table/{inventory.store.auth_table}'
         self.inventory, self.client, self.clock = inventory, client, clock
         self.restored_arn = self.table = restored_catalog_arn
         self.serializer, self.decoder = TypeSerializer(), TypeDeserializer()
@@ -90,6 +97,13 @@ class SourceGrantReconciliation:
                 ':version': version, ':restore': reconciliation_id, ':hold': hold, ':now': now, ':table': self.restored_arn}),
             'ReturnValuesOnConditionCheckFailure': 'NONE'}}
 
+    def _verify_restore_pair(self):
+        if self.restored_auth_arn is not None:
+            verify_restored_table(self.client, source_arn=self.inventory.cipher.source_table_arn,
+                restored_arn=self.restored_arn, restore_at=self.restore_at)
+            verify_restored_table(self.client, source_arn=self.source_auth_arn,
+                restored_arn=self.restored_auth_arn, restore_at=self.restore_at)
+
     def _restored_auth(self, subject):
         if self.restored_auth_arn is None:
             return None
@@ -138,6 +152,7 @@ class SourceGrantReconciliation:
         """Bounded idempotent deletes; canceled/changed holds fail in each transaction."""
         validate_restore_page(start, limit)
         hold = self._lease(request_id, reconciliation_id, expected_version)
+        self._verify_restore_pair()
         snapshot = self._restored_auth(subject)
         totals = {}
         def action(references):
@@ -177,6 +192,7 @@ class SourceGrantReconciliation:
     def observe_empty(self, *, subject, request_id, reconciliation_id, expected_version):
         """Observe absence across the configured archive and restore sources."""
         hold = self._lease(request_id, reconciliation_id, expected_version)
+        self._verify_restore_pair()
         snapshot = self._restored_auth(subject)
         result = {}
         def action(references):
