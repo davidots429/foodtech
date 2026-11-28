@@ -10,6 +10,7 @@ import re
 from uuid import UUID
 
 from foodtech_contracts.recipe_result_view import recipe_proposal_digest, validated_recipe_proposal
+from foodtech_contracts.tonkatsu_transaction_conditions import TonkatsuTransactionConditions
 from .cooking_store import Conflict, DynamoCookingStore, MemoryCookingStore, _api_numbers, _is_transaction_contention
 
 PREFIX = 'RECIPE_REVIEW#VERSION#'
@@ -137,7 +138,7 @@ class RecipeReviewStore:
             raise Conflict
         return build_candidate(record, job)
 
-    def save(self, pk, expected_job_version, expected_review_version, record, expected_epoch):
+    def save(self, pk, expected_job_version, expected_review_version, record, expected_epoch, *, fryer_conditions=None):
         subject, job_id = _scope(pk)
         _integer(expected_job_version, minimum=1)
         _integer(expected_review_version)
@@ -146,6 +147,17 @@ class RecipeReviewStore:
         if record['job_id'] != job_id or record['job_version'] != expected_job_version or \
                 record['version'] != expected_review_version + 1:
             raise ValueError('invalid recipe review binding')
+        if fryer_conditions is not None:
+            if type(fryer_conditions) is not TonkatsuTransactionConditions or not isinstance(self.store, DynamoCookingStore):
+                raise ValueError("atomic fryer review storage required")
+            scope = fryer_conditions.scope
+            if (
+                fryer_conditions.auth != self.store.auth_table_name or fryer_conditions.cooking != self.store.table.name
+                or scope.history.history.owner != subject or scope.binding.auth_epoch != expected_epoch
+                or scope.execution_id != record["execution_id"] or scope.binding.current.job_id != job_id
+                or scope.binding.current.job_version != expected_job_version or record["proposal"]["menu"] != "TONKATSU"
+            ):
+                raise Conflict
         from .recipe_candidate import CANDIDATE_PREFIX
         sk = PREFIX + f"{record['version']:019d}"
         candidate_sk = CANDIDATE_PREFIX + f"{record['version']:019d}"
@@ -177,6 +189,14 @@ class RecipeReviewStore:
         encode = self.store._item
         auth = self.store._owner_guard(subject, expected_epoch)
         auth['ConditionCheck']['ReturnValuesOnConditionCheckFailure'] = 'NONE'
+        guards = [auth, {'ConditionCheck': {'TableName': self.store.table.name,
+            'Key': encode({'pk': pk, 'sk': 'META'}),
+            'ConditionExpression': '#version = :expected AND owner_subject = :owner AND job_id = :job',
+            'ExpressionAttributeNames': {'#version': 'version'},
+            'ExpressionAttributeValues': encode({':expected': expected_job_version, ':owner': subject, ':job': job_id}),
+            'ReturnValuesOnConditionCheckFailure': 'NONE'}}]
+        if fryer_conditions is not None:
+            guards = fryer_conditions.review_checks()
         pointer_values = {':next': record['version']}
         if expected_review_version:
             pointer_values[':expected'] = expected_review_version
@@ -184,12 +204,7 @@ class RecipeReviewStore:
             'Item': encode({'pk': pk, 'sk': candidate_sk, **candidate}),
             'ConditionExpression': 'attribute_not_exists(pk)', 'ReturnValuesOnConditionCheckFailure': 'NONE'}}]
         try:
-            self.store.client.transact_write_items(TransactItems=[auth,
-                {'ConditionCheck': {'TableName': self.store.table.name, 'Key': encode({'pk': pk, 'sk': 'META'}),
-                    'ConditionExpression': '#version = :expected AND owner_subject = :owner AND job_id = :job',
-                    'ExpressionAttributeNames': {'#version': 'version'},
-                    'ExpressionAttributeValues': encode({':expected': expected_job_version, ':owner': subject, ':job': job_id}),
-                    'ReturnValuesOnConditionCheckFailure': 'NONE'}},
+            self.store.client.transact_write_items(TransactItems=[*guards,
                 {'Update': {'TableName': self.store.table.name, 'Key': encode({'pk': pk, 'sk': CURRENT}),
                     'UpdateExpression': 'SET #version = :next',
                     'ConditionExpression': '#version = :expected' if expected_review_version else 'attribute_not_exists(pk)',
@@ -202,7 +217,9 @@ class RecipeReviewStore:
             if not _is_transaction_contention(error):
                 raise
             reasons = error.response.get('CancellationReasons') or []
-            if len(reasons) != 4 + len(candidate_actions) or any(reason.get('Code') not in {None, 'None'} for reason in reasons[:2]):
+            if len(reasons) != len(guards) + 2 + len(candidate_actions) or any(
+                reason.get('Code') not in {None, 'None'} for reason in reasons[:len(guards)]
+            ):
                 raise Conflict from None
             existing = self._get(pk, sk)
             if existing is not None:

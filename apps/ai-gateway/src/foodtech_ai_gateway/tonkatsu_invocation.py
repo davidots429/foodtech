@@ -1,5 +1,6 @@
 """Route one verified stored fryer execution to the local-only Gateway service."""
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 import os
 from uuid import NAMESPACE_URL, uuid5
@@ -13,7 +14,7 @@ from foodtech_contracts.dynamo_tonkatsu_scope import DynamoTonkatsuReadScope, To
 
 from foodtech_contracts.recipe_execution_scope import recipe_execution_status_payload
 from foodtech_contracts.recipe_result_view import recipe_execution_result_payload
-from foodtech_contracts.tonkatsu_result_view import validate_tonkatsu_result_view
+from foodtech_contracts.tonkatsu_result_view import fryer_review_scope_payload, validate_tonkatsu_result_view
 
 from .combi_invocation import CombiRuntimeUnavailable, _close_runtime, configured_recipe_runtime
 from .policy import Caller
@@ -57,12 +58,12 @@ def create_tonkatsu_request(*, request_id, owner, epoch, current_job_id, prior_j
         _close_runtime(runtime)
 
 
-def read_tonkatsu_request(*, execution_id, owner, epoch, job_id, result_view):
+def read_tonkatsu_request(*, execution_id, owner, epoch, job_id, result_view, include_review_scope=False):
     runtime = None
     try:
         runtime = configured_recipe_runtime("tonkatsu")
         role, _, client, registry = runtime
-        resolver, _, _ = _scope_resolver(role, client, registry)
+        resolver, account, stage = _scope_resolver(role, client, registry)
         resolver.require_active_account(owner, epoch)
         lookup = {"owner": owner, "epoch": epoch, "job_id": job_id}
         before = registry.tonkatsu_status_snapshot(execution_id, **lookup)
@@ -87,8 +88,12 @@ def read_tonkatsu_request(*, execution_id, owner, epoch, job_id, result_view):
                 payload.update(projection_status="UNAVAILABLE", proposal=None, error_code="RECIPE_RESULT_UNAVAILABLE")
         else:
             payload = recipe_execution_status_payload(snapshot, result, **parameters)
-        return validate_tonkatsu_result_view({**payload, "source_current": source_current},
-                                            execution_id=execution_id, job_id=job_id, result_view=result_view)
+        payload = validate_tonkatsu_result_view({**payload, "source_current": source_current},
+                                               execution_id=execution_id, job_id=job_id, result_view=result_view)
+        if include_review_scope and result_view and payload["projection_status"] == "AVAILABLE":
+            return {**payload, "review_scope": fryer_review_scope_payload(
+                replace(current, execution_version=snapshot.version), account=account, stage=stage)}
+        return payload
     finally:
         _close_runtime(runtime)
 

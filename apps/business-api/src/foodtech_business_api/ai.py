@@ -3,11 +3,13 @@
 import os
 import ssl
 import json
+import time
 from uuid import UUID
 from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
@@ -16,7 +18,8 @@ from .auth import _csrf, _session
 from .recipe_candidate_jobs import CandidateJobRequest
 from foodtech_contracts.recipe_execution_scope import validate_recipe_status_payload
 from foodtech_contracts.recipe_result_view import recipe_proposal_digest, validate_recipe_result_payload
-from foodtech_contracts.tonkatsu_result_view import validate_tonkatsu_result_view
+from foodtech_contracts.tonkatsu_result_view import parse_fryer_review_scope, validate_tonkatsu_result_view
+from foodtech_contracts.tonkatsu_transaction_conditions import TonkatsuTransactionConditions
 
 
 router = APIRouter(prefix="/api/customer/ai", tags=["ai"])
@@ -234,7 +237,7 @@ async def _read_recipe_record(request: Request, execution_id: UUID, job_id: UUID
 
 
 async def _recipe_record_data(request: Request, execution_id: UUID, job_id: UUID, *, result_view: bool,
-                              tonkatsu: bool = False):
+                              tonkatsu: bool = False, include_review_scope: bool = False):
     from .cooking import _read
     before, _, _, before_job, _ = await _read(request, str(job_id))
     identity = (before.subject, getattr(before, 'epoch', None), before.csrf)
@@ -246,7 +249,7 @@ async def _recipe_record_data(request: Request, execution_id: UUID, job_id: UUID
                 or before_job.get("equipment_profile") != "synthetic-fryer-approved-v2"):
             raise HTTPException(404, "돈까스 조리작업을 찾을 수 없습니다.", headers={"Cache-Control": "no-store"})
         payload_request["auth_epoch"] = identity[1]
-        resource = "tonkatsu-" + resource
+        resource = "tonkatsu-recipe-review-context" if include_review_scope else "tonkatsu-" + resource
     url, ca, cert, key = _gateway_settings()
     try:
         async with _client(ca, cert, key) as client:
@@ -257,12 +260,24 @@ async def _recipe_record_data(request: Request, execution_id: UUID, job_id: UUID
                 raise HTTPException(409, '실행 상태가 변경되었습니다. 다시 조회해 주세요.', headers={'Cache-Control': 'no-store'})
             result.raise_for_status()
             if tonkatsu:
-                payload = validate_tonkatsu_result_view(result.json(), execution_id=str(execution_id),
+                wire = result.json()
+                sidecar = wire.pop("review_scope", None) if include_review_scope and type(wire) is dict else None
+                payload = validate_tonkatsu_result_view(wire, execution_id=str(execution_id),
                                                        job_id=str(job_id), result_view=result_view)
+                if include_review_scope and payload["projection_status"] == "AVAILABLE":
+                    scope = parse_fryer_review_scope(sidecar)
+                    if (
+                        scope.execution_id != str(execution_id) or scope.binding.current.job_id != str(job_id)
+                        or scope.binding.current.job_version != payload["job_version"]
+                        or scope.history.history.owner != identity[0] or scope.binding.auth_epoch != identity[1]
+                    ):
+                        raise ValueError("invalid stored fryer review binding")
+                    payload["fryer_conditions"] = TonkatsuTransactionConditions(scope=scope,
+                        account=sidecar["account"], stage=sidecar["stage"], clock=time.time)
             else:
                 validate = validate_recipe_result_payload if result_view else validate_recipe_status_payload
                 payload = validate(result.json(), execution_id=str(execution_id), job_id=str(job_id))
-    except (httpx.HTTPError, ValueError, OSError):
+    except (httpx.HTTPError, ValueError, TypeError, KeyError, OSError):
         raise HTTPException(502, '권고 실행 상태를 읽지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
     after, store, pk, job, _ = await _read(request, str(job_id))
     if identity != (after.subject, getattr(after, 'epoch', None), after.csrf):
@@ -299,19 +314,31 @@ class RecipeReviewRequest(BaseModel):
         return self
 
 
-async def _review_session(request, job_id, before):
+async def _review_session(request, job_id, before, *, identity=None):
     from .cooking import _read
+    expected = identity if identity is not None else (before.subject, before.epoch, before.csrf)
     after, _, _, job, _ = await _read(request, str(job_id))
-    if (before.subject, before.epoch, before.csrf) != (after.subject, after.epoch, after.csrf):
+    if expected != (after.subject, after.epoch, after.csrf):
         raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.', headers={'Cache-Control': 'no-store'})
     return job
 
 
 @router.get('/recipe-executions/{execution_id}/review')
 async def recipe_review_context(request: Request, execution_id: UUID, job_id: UUID):
+    return await _recipe_review_context(request, execution_id, job_id, tonkatsu=False)
+
+
+@router.get("/tonkatsu-recipe-executions/{execution_id}/review")
+async def tonkatsu_review_context(request: Request, execution_id: UUID, job_id: UUID):
+    return await _recipe_review_context(request, execution_id, job_id, tonkatsu=True)
+
+
+async def _recipe_review_context(request, execution_id, job_id, *, tonkatsu):
     from .cooking import _store_call
     from .recipe_review_store import RecipeReviewStore
-    payload, session, store, pk, _ = await _recipe_record_data(request, execution_id, job_id, result_view=True)
+    payload, session, store, pk, _ = await _recipe_record_data(
+        request, execution_id, job_id, result_view=True, **({"tonkatsu": True} if tonkatsu else {}),
+    )
     if payload['projection_status'] != 'AVAILABLE':
         raise HTTPException(409, '검토할 저장 권고가 없습니다.', headers={'Cache-Control': 'no-store'})
     try:
@@ -330,12 +357,23 @@ async def recipe_review_context(request: Request, execution_id: UUID, job_id: UU
 
 @router.post('/recipe-executions/{execution_id}/review', status_code=201)
 async def recipe_review(request: Request, execution_id: UUID, body: RecipeReviewRequest):
+    return await _save_recipe_review(request, execution_id, body, tonkatsu=False)
+
+
+@router.post("/tonkatsu-recipe-executions/{execution_id}/review", status_code=201)
+async def tonkatsu_review(request: Request, execution_id: UUID, body: RecipeReviewRequest):
+    return await _save_recipe_review(request, execution_id, body, tonkatsu=True)
+
+
+async def _save_recipe_review(request, execution_id, body, *, tonkatsu):
     from .cooking import _now, _read, _store_call
     from .cooking_store import Conflict
     from .recipe_review_store import RecipeReviewStore
     before, _, _, _, _ = await _read(request, str(body.job_id), write=True)
-    payload, session, store, pk, job = await _recipe_record_data(request, execution_id, body.job_id, result_view=True)
-    if (before.subject, before.epoch, before.csrf) != (session.subject, session.epoch, session.csrf):
+    identity = (before.subject, before.epoch, before.csrf)
+    lookup = {"tonkatsu": True, "include_review_scope": True} if tonkatsu else {}
+    payload, session, store, pk, job = await _recipe_record_data(request, execution_id, body.job_id, result_view=True, **lookup)
+    if identity != (session.subject, session.epoch, session.csrf):
         raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.', headers={'Cache-Control': 'no-store'})
     if payload['projection_status'] != 'AVAILABLE' or payload['job_version'] != body.expected_job_version or \
             job['version'] != body.expected_job_version or recipe_proposal_digest(payload['proposal']) != body.proposal_digest:
@@ -346,13 +384,17 @@ async def recipe_review(request: Request, execution_id: UUID, body: RecipeReview
         'proposal': payload['proposal'], 'decision': body.decision, 'reason': body.reason, 'reviewed_at': _now()}
     try:
         reviews = RecipeReviewStore(store)
+        if tonkatsu and "fryer_conditions" not in payload:
+            raise Conflict
         saved = await _store_call(store, reviews.save, pk, body.expected_job_version,
-                                  body.expected_review_version, value, session.epoch)
+                                  body.expected_review_version, value, session.epoch,
+                                  **({"fryer_conditions": payload["fryer_conditions"]} if tonkatsu else {}))
     except Conflict:
         raise HTTPException(409, '검토 또는 작업 상태가 변경되었습니다. 검토 이력을 확인해 주세요.', headers={'Cache-Control': 'no-store'}) from None
-    except ValueError:
-        raise HTTPException(503, '검토 기록을 저장하지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
-    current_job = await _review_session(request, body.job_id, session)
+    except (ValueError, BotoCoreError, ClientError):
+        raise HTTPException(503, '검토 저장 여부를 확인하지 못했습니다. 검토 이력을 확인해 주세요.',
+                            headers={'Cache-Control': 'no-store'}) from None
+    current_job = await _review_session(request, body.job_id, session, identity=identity)
     return JSONResponse({'review': saved, 'job_changed': current_job['version'] != saved['job_version']},
                         status_code=201, headers={'Cache-Control': 'no-store'})
 

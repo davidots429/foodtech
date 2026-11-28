@@ -71,10 +71,10 @@ def _conflict() -> HTTPException:
     return HTTPException(409, "작업 상태가 변경되었습니다. 다시 조회한 뒤 제출해 주세요.")
 
 
-async def _store_call(store, method, *args):
+async def _store_call(store, method, *args, **kwargs):
     if isinstance(store, MemoryCookingStore):
-        return method(*args)
-    return await asyncio.to_thread(method, *args)
+        return method(*args, **kwargs)
+    return await asyncio.to_thread(method, *args, **kwargs)
 
 
 async def _context(request: Request, *, write: bool = False):

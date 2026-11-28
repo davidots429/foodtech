@@ -165,6 +165,56 @@ class RecipeReviewStoreTests(unittest.TestCase):
         self.assertEqual(saved['Item']['sk'], {'S': PREFIX + f'{1:019d}'})
         self.assertTrue(all(next(iter(action.values()))['ReturnValuesOnConditionCheckFailure'] == 'NONE' for action in actions))
 
+    def test_fryer_approval_atomically_rechecks_both_sources_and_terminal_execution(self):
+        from botocore.session import get_session
+        from botocore.validate import validate_parameters
+        from foodtech_contracts.prior_history_witness import PriorHistoryWitness
+        from foodtech_contracts.tonkatsu_execution_binding import TonkatsuExecutionBinding, TonkatsuJobReference
+        from foodtech_contracts.tonkatsu_prior_history import TonkatsuPriorHistoryWitness, fryer_stream
+        from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
+        from foodtech_contracts.tonkatsu_result_view import fryer_review_scope_payload, parse_fryer_review_scope
+        from foodtech_contracts.tonkatsu_transaction_conditions import TonkatsuTransactionConditions
+
+        cooking, Canceled = self.dynamo()
+        cooking.table.name = "foodtech-cooking-jobs-dev"
+        cooking.auth_table_name = "foodtech-auth-sessions-dev"
+        cooking.table.get_item.return_value = {"Item": {**self.meta, "menu": "TONKATSU",
+            "equipment_profile": "synthetic-fryer-approved-v2"}}
+        prior = str(uuid4())
+        binding = TonkatsuExecutionBinding(TonkatsuJobReference(JOB, 3, 7), TonkatsuJobReference(prior, 2, 9), 5)
+        history = PriorHistoryWitness("customer", JOB, prior, (3, 2), 5, 1, 1, 1, str(uuid4()),
+            "a" * 64, "b" * 64, 1, "a" * 64, "c" * 64)
+        streams = tuple(fryer_stream({"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
+                                     "batch_id": f"batch-a-{name}"}) for name in ("current", "prior"))
+        scope = TonkatsuReadScope(EXECUTION, 3, binding, TonkatsuPriorHistoryWitness(history, streams, 900, 1100))
+        wire = fryer_review_scope_payload(scope, account="123456789012", stage="dev")
+        self.assertEqual(parse_fryer_review_scope(wire), scope)
+        conditions = TonkatsuTransactionConditions(scope=scope, account=wire["account"], stage=wire["stage"], clock=lambda: 1000)
+        proposal = {**PROPOSAL, "menu": "TONKATSU", "data": {"temperature_c": "170", "duration_seconds": 300}}
+        value = {**record(), "proposal": proposal, "proposal_digest": recipe_proposal_digest(proposal)}
+        self.assertEqual(RecipeReviewStore(cooking).save(PK, 3, 0, value, 5, fryer_conditions=conditions), value)
+        actions = cooking.client.transact_write_items.call_args.kwargs["TransactItems"]
+        model = get_session().get_service_model("dynamodb").operation_model("TransactWriteItems")
+        validate_parameters({"TransactItems": actions}, model.input_shape)
+        checks = [action["ConditionCheck"] for action in actions if "ConditionCheck" in action]
+        self.assertEqual((len(checks), len(actions)), (11, 14))
+        self.assertEqual([x["Key"]["sk"]["S"] for x in checks
+                          if x["TableName"] == "foodtech-ai-execution-registry-dev"], ["META", "RESULT"])
+        self.assertEqual(len([x for x in checks if x["TableName"] == "foodtech-data-flow-dev"]), 2)
+        self.assertEqual(sum(x["Key"]["pk"] == {"S": "USER#customer"} for x in checks), 1)
+        self.assertEqual(actions[-1]["Put"]["Item"]["status"], {"S": "CANDIDATE_NOT_APPLIED"})
+
+        reasons = [{"Code": "None"} for _ in actions]
+        reasons[5] = {"Code": "ConditionalCheckFailed"}
+        reasons[-2] = {"Code": "ConditionalCheckFailed"}
+        cooking.client.transact_write_items.side_effect = Canceled({
+            "Error": {"Code": "TransactionCanceledException"}, "CancellationReasons": reasons,
+        }, "TransactWriteItems")
+        cooking.table.get_item.reset_mock()
+        with self.assertRaises(Conflict):
+            RecipeReviewStore(cooking).save(PK, 3, 0, value, 5, fryer_conditions=conditions)
+        cooking.table.get_item.assert_called_once_with(Key={"pk": PK, "sk": "META"}, ConsistentRead=True)
+
     def test_dynamo_auth_failure_never_becomes_successful_idempotent_retry(self):
         cooking, Canceled = self.dynamo()
         value = record()

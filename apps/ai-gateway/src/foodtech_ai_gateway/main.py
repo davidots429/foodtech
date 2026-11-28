@@ -458,7 +458,12 @@ async def tonkatsu_recipe_result(request: Request, execution_id: UUID, body: Ton
     return await _tonkatsu_record(request, execution_id, body, result_view=True)
 
 
-async def _tonkatsu_record(request, execution_id, body, *, result_view):
+@app.post("/internal/ai/tonkatsu-recipe-review-context/{execution_id}")
+async def tonkatsu_review_record(request: Request, execution_id: UUID, body: TonkatsuStatusRequest):
+    return await _tonkatsu_record(request, execution_id, body, result_view=True, include_review_scope=True)
+
+
+async def _tonkatsu_record(request, execution_id, body, *, result_view, include_review_scope=False):
     from botocore.exceptions import BotoCoreError, ClientError
     from foodtech_contracts.dynamo_tonkatsu_scope import TonkatsuScopeUnavailable
     from .combi_invocation import CombiRuntimeUnavailable
@@ -468,7 +473,8 @@ async def _tonkatsu_record(request, execution_id, body, *, result_view):
     headers = {"Cache-Control": "no-store"}
     try:
         payload = await asyncio.to_thread(read_tonkatsu_request, execution_id=str(execution_id),
-            owner=body.tenant_id, epoch=body.auth_epoch, job_id=str(body.job_id), result_view=result_view)
+            owner=body.tenant_id, epoch=body.auth_epoch, job_id=str(body.job_id), result_view=result_view,
+            include_review_scope=include_review_scope)
     except TonkatsuScopeUnavailable:
         raise HTTPException(404, "EXECUTION_NOT_FOUND", headers=headers) from None
     except (RegistryConflict, ValueError, KeyError, TypeError, AttributeError):
