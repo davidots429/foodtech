@@ -368,9 +368,13 @@ class AuthorityTests(unittest.TestCase):
                 broker.issue(**args)
         session_factory.assert_not_called()
         with patch.object(resolver, "resolve", return_value=scope):
-            verified, lease = broker.issue(**args)
+            assume_count = sts.assume_role.call_count
+            with self.assertRaises(RecipeScopeDenied):
+                broker.issue(**args, deadline=now + timedelta(seconds=29))
+            self.assertEqual(sts.assume_role.call_count, assume_count)
+            verified, lease = broker.issue(**args, deadline=now + timedelta(seconds=60))
             self.assertEqual(verified, scope)
-            self.assertEqual(lease.expires_at.timestamp(), 1100)
+            self.assertEqual(lease.expires_at.timestamp(), 1060)
             lease.resource(verified)
             frozen = session.get_credentials.return_value.get_frozen_credentials.return_value
             frozen.access_key, frozen.secret_key, frozen.token = ("synthetic-key", "synthetic-secret", "synthetic-token")

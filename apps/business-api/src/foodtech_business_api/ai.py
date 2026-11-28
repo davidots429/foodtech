@@ -520,6 +520,13 @@ async def execution_status(request: Request, execution_id: str) -> dict:
         raise HTTPException(502, "실행 상태를 읽지 못했습니다.") from None
 
 
+@router.post("/tonkatsu-recipe-executions/{execution_id}/invoke")
+async def invoke_tonkatsu_recipe_execution(request: Request, execution_id: UUID):
+    from .combi_customer_invocation import invoke_customer_tonkatsu
+
+    return await invoke_customer_tonkatsu(request, execution_id)
+
+
 @router.post('/combi-recipe-executions/{execution_id}/invoke')
 async def invoke_combi_recipe_execution(request: Request, execution_id: UUID):
     from .combi_customer_invocation import invoke_customer_combi

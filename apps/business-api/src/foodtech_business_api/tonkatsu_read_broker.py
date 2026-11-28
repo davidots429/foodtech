@@ -142,11 +142,14 @@ class TonkatsuReadBroker:
             raise RecipeScopeDenied("fryer session policy exceeds length limit")
         return policy
 
-    def issue(self, *, owner, epoch, execution_id):
+    def issue(self, *, owner, epoch, execution_id, deadline=None):
         """The caller supplies authenticated identity and the stored execution UUID."""
         scope = self.resolver.resolve(owner=owner, epoch=epoch, execution_id=execution_id)
         try:
             started = _time(self.clock)
+            if deadline is not None and (type(deadline) is not datetime or deadline.utcoffset() is None
+                    or (deadline - started).total_seconds() < 30):
+                raise ValueError("fryer delegation too close to expiration")
             policy = self.session_policy(scope)
             if not scope.history.writer_verified_at <= started.timestamp() <= scope.history.writer_valid_until - 30:
                 raise ValueError("fryer history attestation too close to expiration")
@@ -166,6 +169,8 @@ class TonkatsuReadBroker:
             ):
                 raise ValueError("invalid fryer role response")
             expires = min(expires, datetime.fromtimestamp(scope.history.writer_valid_until, timezone.utc))
+            if deadline is not None:
+                expires = min(expires, deadline)
             if (expires - now).total_seconds() < 30:
                 raise ValueError("fryer lease expired during verification")
             session = self.session_factory(region_name=REGION, aws_access_key_id=credentials["AccessKeyId"],
