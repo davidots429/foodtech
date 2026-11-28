@@ -1,6 +1,7 @@
 import { CfnOutput, CfnParameter, Fn, Stack, StackProps, Token } from "aws-cdk-lib";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import { Construct } from "constructs";
+import { tonkatsuListenerHealth } from "./tonkatsu-private-services.js";
 
 const relayFields = {
   SERVER_CERT: "inference_server_cert_pem",
@@ -68,6 +69,7 @@ export class TonkatsuInferenceTaskStack extends Stack {
         } },
         { ...relay, dependsOn: [{ containerName: "ollama", condition: "HEALTHY" }],
           portMappings: [{ containerPort: 8448, protocol: "tcp" }],
+          healthCheck: tonkatsuListenerHealth(8448),
           secrets: Object.entries(relayFields).map(([suffix, field]) => ({
             name: `FOODTECH_TONKATSU_INFERENCE_${suffix}_PEM`,
             valueFrom: Fn.join("", [secret, `:${field}::`, version]),

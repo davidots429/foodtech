@@ -1,6 +1,7 @@
 import { CfnOutput, CfnParameter, Fn, Stack, StackProps, Token } from "aws-cdk-lib";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import { Construct } from "constructs";
+import { tonkatsuListenerHealth } from "./tonkatsu-private-services.js";
 
 const tlsFields = {
   BROKER_SERVER_CERT: "broker_server_cert_pem",
@@ -99,6 +100,7 @@ export class TonkatsuBusinessTaskStack extends Stack {
         linuxParameters: { capabilities: { drop: ["ALL"] } },
         mountPoints: [{ sourceVolume: "business-tls", containerPath: tlsDirectory, readOnly: false }],
         portMappings: [{ containerPort: 8080, protocol: "tcp" }],
+        healthCheck: tonkatsuListenerHealth(8080),
         environment: Object.entries(variables).map(([envName, value]) => ({ name: envName, value })),
         secrets: Object.entries(tlsFields).map(([suffix, key]) => ({
           name: `FOODTECH_TONKATSU_${suffix}_PEM`,
