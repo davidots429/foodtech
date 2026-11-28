@@ -116,7 +116,11 @@ const recipeStateLabels: Record<RecipeStatus["state"], string> = {
   PENDING: "실행 대기", RESERVED: "처리 중", SUCCEEDED: "처리 완료", FAILED: "실패",
 };
 
-export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCreated }: { jobId: string; csrf: string; comparisonId?: string; menu: string; onCreated?: (jobId: string) => void }) {
+export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, equipmentProfile, onCreated }: { jobId: string; csrf: string; comparisonId?: string; menu: string; equipmentProfile?: string; onCreated?: (jobId: string) => void }) {
+  const guardedFryer = menu === "TONKATSU" && equipmentProfile === "synthetic-fryer-approved-v2";
+  const executionResource = guardedFryer ? "tonkatsu-recipe-executions" : "recipe-executions";
+  const [fryerPrior, setFryerPrior] = useState<{ job_id: string; version: number } | null>(null);
+  const fryerRequest = useRef<{ key: string; id: string } | null>(null);
   const [value, setValue] = useState<Evidence | null>(null);
   const [priorJobId, setPriorJobId] = useState("");
   const [priorCandidate, setPriorCandidate] = useState<PriorCandidate | null>(null);
@@ -143,7 +147,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
   async function load() {
     if (busy) return;
     setBusy(true); setError(""); setValue(null); setRequested(null); setNotice(null); setConfirmed(false); setAcknowledged(false);
-    setRecovery(null); setRecipeResult(null); setInvocationMessage("");
+    setRecovery(null); setRecipeResult(null); setInvocationMessage(""); setFryerPrior(null);
     try {
       const params = new URLSearchParams();
       if (comparisonId) params.set("comparison_id", comparisonId);
@@ -152,6 +156,19 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
         (params.size ? "?" + params.toString() : ""));
       if (!value || value.job_version !== next.job_version) { restatementId.current = null; setRestatementStatus(""); }
       setValue(next);
+      if (guardedFryer && priorJobId.trim()) {
+        const id = priorJobId.trim().toLowerCase();
+        if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id) || id === jobId)
+          throw new Error("현재 작업과 다른 이전 돈까스 작업 ID를 입력해 주세요.");
+        const detail = await api<{ job: { job_id: string; version: number; menu: string; status: string;
+          equipment_profile: string; provenance: string } }>(jobPath(id) + "?process_view=AS_PROCESSED");
+        const prior = detail.job;
+        if (prior.job_id !== id || prior.menu !== "TONKATSU" || prior.equipment_profile !== equipmentProfile ||
+          prior.provenance !== "SYNTHETIC" || !["COMPLETED", "FAILED"].includes(prior.status) ||
+          !Number.isSafeInteger(prior.version) || prior.version < 1)
+          throw new Error("같은 합성 장비의 종료된 돈까스 작업을 입력해 주세요.");
+        setFryerPrior({ job_id: prior.job_id, version: prior.version });
+      }
     }
     catch (cause) { setError(cause instanceof Error ? cause.message : "조리 근거를 조회하지 못했습니다."); }
     finally { setBusy(false); }
@@ -160,6 +177,19 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
     if (!value || busy) return;
     setBusy(true); setError("");
     try {
+      if (guardedFryer) {
+        if (!fryerPrior) return;
+        const key = `${value.job_version}:${fryerPrior.job_id}:${fryerPrior.version}`;
+        if (fryerRequest.current?.key !== key) fryerRequest.current = { key, id: crypto.randomUUID() };
+        const result = await api<RecipeRequest>("/api/customer/ai/tonkatsu-recipe-requests", csrf, {
+          request_id: fryerRequest.current.id, job_id: jobId, job_version: value.job_version,
+          prior_job_id: fryerPrior.job_id, prior_job_version: fryerPrior.version,
+        });
+        if (result.state !== "PENDING" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(result.execution_id))
+          throw new Error("저장된 권고 실행 ID를 확인하지 못했습니다.");
+        setRequested(result); setRecoveryId(result.execution_id); setRecovery(null); setRecipeResult(null);
+        return;
+      }
       const result = await api<RecipeRequest>("/api/customer/ai/recipe-requests", csrf,
         { job_id: jobId, job_version: value.job_version, comparison_id: value.selected_comparison?.comparison_id ?? null, prior_job_id: value.selected_prior_job?.job_id ?? null, prior_job_version: value.selected_prior_job?.job_version ?? null, jeyuk_source_revision: value.jeyuk_collection?.source_revision ?? null, prior_source_revision: value.selected_prior_job?.collection.source_revision ?? null });
       setRequested(result); setRecoveryId(result.execution_id); setRecovery(null); setRecipeResult(null); setInvocationMessage("");
@@ -225,15 +255,20 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
     finally { setBusy(false); }
   }
   async function readRecipeStatus(identifier: string) {
-    const raw = await api<unknown>(`/api/customer/ai/recipe-executions/${identifier}/status?job_id=${encodeURIComponent(jobId)}`);
+    const raw = await api<unknown>(`/api/customer/ai/${executionResource}/${identifier}/status?job_id=${encodeURIComponent(jobId)}`);
     const result = parseRecipeStatus(raw, identifier, jobId);
+    if (guardedFryer && typeof result.source_current !== "boolean")
+      throw new Error("돈까스 원천 상태를 확인하지 못했습니다.");
     setRecovery(result);
     if (notice?.execution_id === identifier) setConfirmed(true);
     return result;
   }
   async function readRecipeResult(identifier: string) {
-    const raw = await api<unknown>(`/api/customer/ai/recipe-executions/${identifier}/result?job_id=${encodeURIComponent(jobId)}`);
+    const raw = await api<unknown>(`/api/customer/ai/${executionResource}/${identifier}/result?job_id=${encodeURIComponent(jobId)}`);
     const result = parseRecipeResult(raw, identifier, jobId);
+    if (guardedFryer && (typeof result.source_current !== "boolean" ||
+        (result.proposal !== null && result.proposal.menu !== "TONKATSU")))
+      throw new Error("돈까스 권고 범위를 확인하지 못했습니다.");
     setRecipeResult(result); setRecovery(result);
   }
   async function checkRecipeResult() {
@@ -250,7 +285,7 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
     setBusy(true); setError(""); setRecovery(null); setRecipeResult(null); setInvocationMessage("");
     try {
       const outcome = await postWithoutBody<{ execution_id: string; state: string }>(
-        `/api/customer/ai/recipe-executions/${identifier}/invoke`, csrf);
+        `/api/customer/ai/${executionResource}/${identifier}/invoke`, csrf);
       if (outcome.execution_id !== identifier || !["SUCCEEDED", "FAILED", "DENIED", "INDETERMINATE"].includes(outcome.state))
         throw new Error("실행 응답을 확인하지 못했습니다.");
       setInvocationMessage(outcome.state === "SUCCEEDED" ? "권고 생성이 끝났습니다. 저장된 검토 대상 내용을 확인해 주세요." :
@@ -287,6 +322,12 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
       <input value={priorJobId} disabled={busy} onChange={event => { setPriorJobId(event.target.value); setValue(null); }}
         placeholder="이전 조리작업의 ID" />
     </label>}
+    {guardedFryer && <label>비교할 이전 돈까스 작업 ID
+      <input value={priorJobId} disabled={busy} onChange={event => {
+        setPriorJobId(event.target.value); setFryerPrior(null); setRequested(null);
+      }} placeholder="종료된 조리작업의 ID" autoComplete="off" spellCheck={false} />
+    </label>}
+    {fryerPrior && <p className="small">선택한 이전 작업 버전 v{fryerPrior.version}. 권고 요청 시 실제 직전 작업인지 확인합니다.</p>}
     <button type="button" onClick={() => void load()} disabled={busy}>{busy ? "조회 중" : "조리 근거 조회"}</button>
     {error && <p role="alert">{error}</p>}
     {value && <div aria-live="polite">
@@ -374,8 +415,9 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
           restatementStatus === "STALE" ? "작업이 변경되어 취소됨 · 조리 근거를 다시 조회해 주세요" : "처리 대기"}</p>}
       </div>}
       {!requested && <button type="button" onClick={() => void requestRecipe()}
-        disabled={busy || value.completeness === "INSUFFICIENT"}>AI 권고 요청 기록</button>}
-      {requested && <><p>{recipeBlockedMessages[requested.reason] ?? "요청의 실행 조건을 확인해야 합니다."}</p>
+        disabled={busy || value.completeness === "INSUFFICIENT" || (guardedFryer && !fryerPrior)}>AI 권고 요청 기록</button>}
+      {requested && guardedFryer && <p role="status">요청이 저장되었습니다. 실행 ID로 상태를 확인해 주세요.</p>}
+      {requested && !guardedFryer && <><p>{recipeBlockedMessages[requested.reason] ?? "요청의 실행 조건을 확인해야 합니다."}</p>
         {!notice && downgradeEligible.has(requested.reason) && <button type="button" disabled={busy} onClick={() => void preview()}>로컬 모델 전환 고지 보기</button>}</>}
       {notice && !confirmed && <div>
         <p>{notice.quality_notice}</p>
@@ -401,7 +443,8 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
         <p>권고 요청 상태: {recipeStateLabels[currentRecovery.state]} · 요청 당시 작업 버전 {currentRecovery.job_version}</p>
         <p>처리 결과 기록: {currentRecovery.result_available ? "있음" : "아직 없음"}</p>
         {currentRecovery.job_changed && <p>조리 기록이 요청 당시와 달라졌습니다. 새 권고를 요청하기 전에 근거를 다시 확인해 주세요.</p>}
-        {!currentRecovery.manual_invocation_enabled && <p>현재 권고 생성 기능은 준비 중입니다. 기존 기록의 조회는 사용할 수 있습니다.</p>}
+        {currentRecovery.source_current === false && <p>요청 당시의 조리 기록과 원천 범위를 다시 확인할 수 없습니다.</p>}
+        {!currentRecovery.manual_invocation_enabled && currentRecovery.source_current !== false && currentRecovery.state === "PENDING" && <p>현재 권고 생성 기능은 준비 중입니다. 기존 기록의 조회는 사용할 수 있습니다.</p>}
         {canInvokeRecipe(currentRecovery, identifier, jobId, menu) &&
           <button type="button" disabled={busy} onClick={() => void invokeRecipe()}>권고 생성 요청</button>}
         {currentRecovery.result_available && <button type="button" disabled={busy} onClick={() => void checkRecipeResult()}>저장된 권고 내용 보기</button>}
@@ -420,11 +463,13 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, onCrea
           <p className="small">생성 당시 기록에 따른 제안입니다. 현재 공정의 안전 승인이나 장비 자동 적용이 아닙니다.</p>
           <RecipeProposalReview key={`${currentResult.execution_id}:${currentResult.job_version}:${JSON.stringify(currentResult.proposal)}`}
             jobId={jobId} executionId={currentResult.execution_id} jobVersion={currentResult.job_version}
-            proposal={currentResult.proposal} csrf={csrf} onCreated={onCreated} />
+            proposal={currentResult.proposal} csrf={csrf} onCreated={onCreated} guardedFryer={guardedFryer} />
         </>}
         {currentResult.projection_status === "NOT_READY" && <p>저장된 결과가 아직 없습니다. 같은 실행 ID로 상태를 확인해 주세요.</p>}
         {currentResult.projection_status === "FAILED" && <p>권고 생성이 실패했습니다. 새 호출을 자동으로 시도하지 않습니다.</p>}
-        {currentResult.projection_status === "UNAVAILABLE" && <p>저장된 결과의 형식을 확인할 수 없어 내용을 표시하지 않습니다.</p>}
+        {currentResult.projection_status === "UNAVAILABLE" && <p>{currentResult.source_current === false
+          ? "조리 기록 또는 원천 범위가 현재와 달라 권고안을 볼 수 없습니다."
+          : "저장된 결과의 형식을 확인할 수 없어 내용을 표시하지 않습니다."}</p>}
       </div>}
     </div>
   </section>;

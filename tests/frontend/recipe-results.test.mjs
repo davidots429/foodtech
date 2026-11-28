@@ -80,3 +80,13 @@ test('ambiguous transport failure sends once and does not expose the thrown deta
   await assert.rejects(postWithoutBody('/invoke','csrf'),error=>error instanceof ApiError&&error.status===0&&!error.message.includes('private-marker'));
   assert.equal(calls,1);
 });
+
+test('guarded fryer invokes only from a current pending record and hides stale proposals', () => {
+  assert.equal(canInvokeRecipe(parseRecipeStatus({ ...status, source_current: true }, id, job), id, job, "TONKATSU"), true);
+  assert.equal(canInvokeRecipe(parseRecipeStatus({ ...status, source_current: false }, id, job), id, job, "TONKATSU"), false);
+  assert.throws(() => parseRecipeStatus({ ...status, source_current: "true" }, id, job));
+  const fryerProposal = { ...proposal, menu: "TONKATSU", data: { temperature_c: "170", duration_seconds: 300 } };
+  assert.throws(() => parseRecipeResult({ ...result, source_current: false, proposal: fryerProposal }, id, job));
+  assert.equal(parseRecipeResult({ ...result, source_current: false, projection_status: "UNAVAILABLE",
+    error_code: "RECIPE_RESULT_UNAVAILABLE", proposal: null }, id, job).proposal, null);
+});

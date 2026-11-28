@@ -3,6 +3,7 @@ import { api, ApiError, jobPath } from "./cookingApi";
 import { parseCandidateJobReceipt, parseCandidateJobRecovery } from "./candidateCookingJob";
 import type { CandidateJobInput } from "./candidateCookingJob";
 import type { RecipeCandidate } from "./recipeCandidate";
+import { fryerSourceContract } from "./recipeReview";
 import type { RecipeReview } from "./recipeReview";
 
 export function CandidateCookingJob({ candidate, review, csrf, onCreated, eligible }: { candidate: RecipeCandidate;
@@ -26,7 +27,8 @@ export function CandidateCookingJob({ candidate, review, csrf, onCreated, eligib
       thickness_cm: jeyuk ? null : measurement, actual_load_kg: jeyuk ? measurement : null, acknowledged: true };
     setAttempt(input);
     try {
-      const raw = await api<unknown>(`/api/customer/ai/recipe-candidates/${candidate.review_version}/cooking-jobs?job_id=${candidate.job_id}`, csrf, input);
+      const prefix = candidate.source_contract === fryerSourceContract ? "tonkatsu-" : "";
+      const raw = await api<unknown>(`/api/customer/ai/${prefix}recipe-candidates/${candidate.review_version}/cooking-jobs?job_id=${candidate.job_id}`, csrf, input);
       const receipt = parseCandidateJobReceipt(raw, candidate, input);
       setJobId(receipt.job_id); onCreated?.(receipt.job_id);
     } catch (cause) {

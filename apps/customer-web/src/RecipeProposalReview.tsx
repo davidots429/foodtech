@@ -1,12 +1,12 @@
 import { RecipeCandidateView } from "./RecipeCandidateView";
 import { useRef, useState } from "react";
 import { api, ApiError } from "./cookingApi";
-import { parseRecipeReview, parseReviewContext, parseReviewPage } from "./recipeReview";
+import { fryerSourceContract, parseRecipeReview, parseReviewContext, parseReviewPage } from "./recipeReview";
 import type { RecipeReview, ReviewContext } from "./recipeReview";
 import type { RecipeProposal } from "./recipeResult";
 
-export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal, csrf, onCreated }: {
-  jobId: string; executionId: string; jobVersion: number; proposal: RecipeProposal; csrf: string; onCreated?: (jobId: string) => void;
+export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal, csrf, onCreated, guardedFryer = false }: {
+  jobId: string; executionId: string; jobVersion: number; proposal: RecipeProposal; csrf: string; guardedFryer?: boolean; onCreated?: (jobId: string) => void;
 }) {
   const [context, setContext] = useState<ReviewContext | null>(null);
   const [decision, setDecision] = useState<"" | "APPROVE" | "REJECT">("");
@@ -19,7 +19,7 @@ export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal,
   const [nextCursor, setNextCursor] = useState<number | null>(null);
   const [historyJobVersion, setHistoryJobVersion] = useState<number | null>(null);
   const inFlight = useRef(false);
-  const path = `/api/customer/ai/recipe-executions/${executionId}/review`;
+  const path = `/api/customer/ai/${guardedFryer ? "tonkatsu-" : ""}recipe-executions/${executionId}/review`;
 
   async function loadContext() {
     if (busy) return;
@@ -39,7 +39,8 @@ export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal,
         proposal_digest: context.proposal_digest, request_id: crypto.randomUUID(), decision,
         reason: reason.trim(), acknowledged: true });
       const saved = parseRecipeReview(raw.review, jobId);
-      if (typeof raw.job_changed !== "boolean" || saved.execution_id !== executionId ||
+      if (typeof raw.job_changed !== "boolean" || (saved.source_contract === fryerSourceContract) !== guardedFryer ||
+        saved.execution_id !== executionId ||
         saved.proposal_digest !== context.proposal_digest || saved.version !== context.review_version + 1 ||
         saved.job_version !== jobVersion || JSON.stringify(saved.proposal) !== JSON.stringify(context.proposal) ||
         saved.decision !== decision || saved.reason !== reason.trim()) throw new Error("검토 응답을 확인하지 못했습니다.");

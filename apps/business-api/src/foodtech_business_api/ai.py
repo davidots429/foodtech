@@ -292,6 +292,10 @@ async def _recipe_record_data(request: Request, execution_id: UUID, job_id: UUID
     manual_enabled = job.get('menu') == 'JEYUK' and all(os.getenv(name) == 'true' for name in (
         'FOODTECH_RECIPE_INVOCATION_ENABLED', 'FOODTECH_PRINCIPAL_PROVISIONING_ENABLED',
         'FOODTECH_RECIPE_SOURCE_BROKER_ENABLED'))
+    if tonkatsu:
+        manual_enabled = payload["source_current"] and all(os.getenv(name) == "true" for name in (
+            "FOODTECH_TONKATSU_CUSTOMER_INVOCATION_ENABLED", "FOODTECH_PRINCIPAL_PROVISIONING_ENABLED",
+        ))
     return ({**payload, 'job_changed': payload['job_version'] != job['version'],
              'manual_invocation_enabled': manual_enabled}, after, store, pk, job)
 

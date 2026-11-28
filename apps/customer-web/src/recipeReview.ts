@@ -1,9 +1,11 @@
 import { parseRecipeResult } from "./recipeResult";
 import type { RecipeProposal } from "./recipeResult";
 
+export const fryerSourceContract = "tonkatsu-guarded-source-v1" as const;
+
 export type RecipeReview = { schema_version: "recipe-review-v1"; version: number; request_id: string;
   execution_id: string; job_id: string; job_version: number; proposal_digest: string; proposal: RecipeProposal;
-  decision: "APPROVE" | "REJECT"; reason: string; reviewed_at: string };
+  decision: "APPROVE" | "REJECT"; reason: string; reviewed_at: string; source_contract?: typeof fryerSourceContract };
 export type ReviewContext = { execution_id: string; job_id: string; job_version: number; proposal_digest: string;
   proposal: RecipeProposal; review_version: number; can_review: boolean; latest_review: RecipeReview | null };
 const object = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
@@ -20,16 +22,21 @@ function proposal(raw: unknown, executionId: string, jobId: string): RecipePropo
 
 export function parseRecipeReview(raw: unknown, jobId: string): RecipeReview {
   if (!object(raw) || Object.keys(raw).sort().join() !== ["schema_version", "version", "request_id", "execution_id",
-    "job_id", "job_version", "proposal_digest", "proposal", "decision", "reason", "reviewed_at"].sort().join() ||
+     "job_id", "job_version", "proposal_digest", "proposal", "decision", "reason", "reviewed_at",
+    ...(raw.source_contract === undefined ? [] : ["source_contract"])].sort().join() ||
+    (raw.source_contract !== undefined && raw.source_contract !== fryerSourceContract) ||
     raw.schema_version !== "recipe-review-v1" || raw.job_id !== jobId || !uuid(raw.request_id) || !uuid(raw.execution_id) ||
     !integer(raw.version) || !integer(raw.job_version) || !digest(raw.proposal_digest) ||
     (raw.decision !== "APPROVE" && raw.decision !== "REJECT") || typeof raw.reason !== "string" ||
     !raw.reason.trim() || raw.reason !== raw.reason.trim() || raw.reason.length > 1000 ||
     typeof raw.reviewed_at !== "string" || !/(?:Z|\+00:00)$/.test(raw.reviewed_at) || !Number.isFinite(Date.parse(raw.reviewed_at))) return fail();
+  const checked = proposal(raw.proposal, raw.execution_id, jobId);
+  if (raw.source_contract !== undefined && checked.menu !== "TONKATSU") return fail();
   return { schema_version: "recipe-review-v1", version: raw.version, request_id: raw.request_id,
     execution_id: raw.execution_id, job_id: jobId, job_version: raw.job_version, proposal_digest: raw.proposal_digest,
-    proposal: proposal(raw.proposal, raw.execution_id, jobId), decision: raw.decision,
-    reason: raw.reason, reviewed_at: raw.reviewed_at };
+    proposal: checked, decision: raw.decision,
+    reason: raw.reason, reviewed_at: raw.reviewed_at,
+    ...(raw.source_contract === fryerSourceContract ? { source_contract: fryerSourceContract } : {}) };
 }
 
 export function parseReviewContext(raw: unknown, executionId: string, jobId: string,
