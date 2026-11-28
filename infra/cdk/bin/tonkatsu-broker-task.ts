@@ -7,9 +7,10 @@ import { Construct } from "constructs";
 const executionRoleName = "foodtech-tonkatsu-broker-execution-dev";
 const logGroupName = "/foodtech/dev/tonkatsu-broker";
 const repositoryName = "foodtech/tonkatsu-broker-dev";
+export const tonkatsuBrokerTlsName = `${repositoryName}/tls`;
 
 function tlsBundlePattern(region: string, account: string): string {
-  return `^arn:aws:secretsmanager:${region}:${account}:secret:${repositoryName}/tls-[A-Za-z0-9]{6}$`;
+  return `^arn:aws:secretsmanager:${region}:${account}:secret:${tonkatsuBrokerTlsName}-[A-Za-z0-9]{6}$`;
 }
 
 const tlsFields = {
