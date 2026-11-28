@@ -16,6 +16,7 @@ from .auth import _csrf, _session
 from .recipe_candidate_jobs import CandidateJobRequest
 from foodtech_contracts.recipe_execution_scope import validate_recipe_status_payload
 from foodtech_contracts.recipe_result_view import recipe_proposal_digest, validate_recipe_result_payload
+from foodtech_contracts.tonkatsu_result_view import validate_tonkatsu_result_view
 
 
 router = APIRouter(prefix="/api/customer/ai", tags=["ai"])
@@ -215,33 +216,61 @@ async def recipe_execution_result(request: Request, execution_id: UUID, job_id: 
     return await _read_recipe_record(request, execution_id, job_id, result_view=True)
 
 
+@router.get("/tonkatsu-recipe-executions/{execution_id}/status")
+async def tonkatsu_execution_status(request: Request, execution_id: UUID, job_id: UUID):
+    payload, *_ = await _recipe_record_data(request, execution_id, job_id, result_view=False, tonkatsu=True)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/tonkatsu-recipe-executions/{execution_id}/result")
+async def tonkatsu_execution_result(request: Request, execution_id: UUID, job_id: UUID):
+    payload, *_ = await _recipe_record_data(request, execution_id, job_id, result_view=True, tonkatsu=True)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
 async def _read_recipe_record(request: Request, execution_id: UUID, job_id: UUID, *, result_view: bool):
     payload, *_ = await _recipe_record_data(request, execution_id, job_id, result_view=result_view)
     return JSONResponse(payload, headers={'Cache-Control': 'no-store'})
 
 
-async def _recipe_record_data(request: Request, execution_id: UUID, job_id: UUID, *, result_view: bool):
+async def _recipe_record_data(request: Request, execution_id: UUID, job_id: UUID, *, result_view: bool,
+                              tonkatsu: bool = False):
     from .cooking import _read
-    before, _, _, _, _ = await _read(request, str(job_id))
+    before, _, _, before_job, _ = await _read(request, str(job_id))
+    identity = (before.subject, getattr(before, 'epoch', None), before.csrf)
+    payload_request = {'tenant_id': identity[0], 'job_id': str(job_id)}
+    resource = 'recipe-results' if result_view else 'recipe-status'
+    if tonkatsu:
+        before_job_version = before_job["version"]
+        if (before_job.get("menu") != "TONKATSU" or before_job.get("provenance") != "SYNTHETIC"
+                or before_job.get("equipment_profile") != "synthetic-fryer-approved-v2"):
+            raise HTTPException(404, "돈까스 조리작업을 찾을 수 없습니다.", headers={"Cache-Control": "no-store"})
+        payload_request["auth_epoch"] = identity[1]
+        resource = "tonkatsu-" + resource
     url, ca, cert, key = _gateway_settings()
     try:
         async with _client(ca, cert, key) as client:
-            resource = 'recipe-results' if result_view else 'recipe-status'
-            result = await client.post(f'{url}/internal/ai/{resource}/{execution_id}',
-                                      json={'tenant_id': before.subject, 'job_id': str(job_id)})
+            result = await client.post(f'{url}/internal/ai/{resource}/{execution_id}', json=payload_request)
             if result.status_code == 404:
                 raise HTTPException(404, '해당 조리작업의 권고 실행 기록을 찾을 수 없습니다.', headers={'Cache-Control': 'no-store'})
             if result.status_code == 409:
                 raise HTTPException(409, '실행 상태가 변경되었습니다. 다시 조회해 주세요.', headers={'Cache-Control': 'no-store'})
             result.raise_for_status()
-            validate = validate_recipe_result_payload if result_view else validate_recipe_status_payload
-            payload = validate(result.json(), execution_id=str(execution_id), job_id=str(job_id))
+            if tonkatsu:
+                payload = validate_tonkatsu_result_view(result.json(), execution_id=str(execution_id),
+                                                       job_id=str(job_id), result_view=result_view)
+            else:
+                validate = validate_recipe_result_payload if result_view else validate_recipe_status_payload
+                payload = validate(result.json(), execution_id=str(execution_id), job_id=str(job_id))
     except (httpx.HTTPError, ValueError, OSError):
         raise HTTPException(502, '권고 실행 상태를 읽지 못했습니다.', headers={'Cache-Control': 'no-store'}) from None
     after, store, pk, job, _ = await _read(request, str(job_id))
-    if (before.subject, getattr(before, 'epoch', None), before.csrf) != \
-            (after.subject, getattr(after, 'epoch', None), after.csrf):
+    if identity != (after.subject, getattr(after, 'epoch', None), after.csrf):
         raise HTTPException(401, '로그인 상태가 변경되었습니다. 다시 로그인해 주세요.', headers={'Cache-Control': 'no-store'})
+    if tonkatsu and before_job_version != job["version"]:
+        raise HTTPException(409, "조리작업이 변경되었습니다. 다시 조회해 주세요.", headers={"Cache-Control": "no-store"})
+    if tonkatsu and payload["source_current"] and payload["job_version"] != job["version"]:
+        raise HTTPException(409, "권고 저장 범위가 변경되었습니다. 다시 조회해 주세요.", headers={"Cache-Control": "no-store"})
     if result_view and payload.get('proposal') is not None and payload['proposal']['menu'] != job.get('menu'):
         raise HTTPException(502, '권고 결과의 메뉴가 작업과 일치하지 않습니다.', headers={'Cache-Control': 'no-store'})
     # Configuration visibility is not execution authorization; POST rechecks all scopes.

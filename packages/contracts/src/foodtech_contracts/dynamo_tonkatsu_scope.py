@@ -94,6 +94,22 @@ class DynamoTonkatsuReadScope:
             versions.append(history_integer(revision["revision"], 1, MAX_RECEIPT_RECORDS))
         return tuple(versions)
 
+    def require_active_account(self, owner, epoch):
+        if not valid_subject(owner) or type(epoch) is not int or not 0 <= epoch < 2**63:
+            raise TonkatsuScopeUnavailable("authenticated fryer account unavailable")
+        response = self.client.get_item(TableName=self.history.auth, Key={"pk": {"S": "USER#" + owner}},
+            ProjectionExpression="pk, #epoch, suspended, deletion_lock_request",
+            ExpressionAttributeNames={"#epoch": "epoch"}, ConsistentRead=True)
+        try:
+            row = self._decode(response["Item"])
+            if (
+                row.get("pk") != "USER#" + owner or history_integer(row.get("epoch"), 0, 2**63 - 1) != epoch
+                or row.get("suspended", False) is not False or "deletion_lock_request" in row
+            ):
+                raise ValueError
+        except (ValueError, TypeError, KeyError, ArithmeticError):
+            raise TonkatsuScopeUnavailable("authenticated fryer account unavailable") from None
+
     def plan_execution(self, *, owner, epoch, execution_id, current_job_id, prior_job_id, job_versions):
         """Discover source revisions before insertion. The writer must fence this scope atomically."""
         try:

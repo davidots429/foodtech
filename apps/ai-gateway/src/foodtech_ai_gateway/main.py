@@ -46,9 +46,12 @@ class RecipeStatusRequest(RecipeScopeRequest):
     job_id: UUID
 
 
-class TonkatsuRequest(RecipeStatusRequest):
-    request_id: UUID
+class TonkatsuStatusRequest(RecipeStatusRequest):
     auth_epoch: int = Field(strict=True, ge=0, lt=2**63)
+
+
+class TonkatsuRequest(TonkatsuStatusRequest):
+    request_id: UUID
     job_version: int = Field(strict=True, ge=1, le=10**18)
     prior_job_id: UUID
     prior_job_version: int = Field(strict=True, ge=1, le=10**18)
@@ -443,6 +446,38 @@ async def execution_status(request: Request, execution_id: str, tenant_id: str) 
             "error_code": result.get("error_code") if result else None,
             "actual_cost_usd": str(result["actual_cost_usd"]) if result else None,
             "settlement_status": result.get("settlement_status") if result else None}, headers={'Cache-Control': 'no-store'})
+
+
+@app.post("/internal/ai/tonkatsu-recipe-status/{execution_id}")
+async def tonkatsu_recipe_status(request: Request, execution_id: UUID, body: TonkatsuStatusRequest):
+    return await _tonkatsu_record(request, execution_id, body, result_view=False)
+
+
+@app.post("/internal/ai/tonkatsu-recipe-results/{execution_id}")
+async def tonkatsu_recipe_result(request: Request, execution_id: UUID, body: TonkatsuStatusRequest):
+    return await _tonkatsu_record(request, execution_id, body, result_view=True)
+
+
+async def _tonkatsu_record(request, execution_id, body, *, result_view):
+    from botocore.exceptions import BotoCoreError, ClientError
+    from foodtech_contracts.dynamo_tonkatsu_scope import TonkatsuScopeUnavailable
+    from .combi_invocation import CombiRuntimeUnavailable
+    from .tonkatsu_invocation import read_tonkatsu_request
+
+    _internal(request)
+    headers = {"Cache-Control": "no-store"}
+    try:
+        payload = await asyncio.to_thread(read_tonkatsu_request, execution_id=str(execution_id),
+            owner=body.tenant_id, epoch=body.auth_epoch, job_id=str(body.job_id), result_view=result_view)
+    except TonkatsuScopeUnavailable:
+        raise HTTPException(404, "EXECUTION_NOT_FOUND", headers=headers) from None
+    except (RegistryConflict, ValueError, KeyError, TypeError, AttributeError):
+        raise HTTPException(409, "EXECUTION_STATUS_CHANGED", headers=headers) from None
+    except (CombiRuntimeUnavailable, BotoCoreError, ClientError):
+        raise HTTPException(503, "TONKATSU_STATUS_UNAVAILABLE", headers=headers) from None
+    if payload is None:
+        raise HTTPException(404, "EXECUTION_NOT_FOUND", headers=headers)
+    return JSONResponse(payload, headers=headers)
 
 
 @app.post("/internal/ai/tonkatsu-recipe-requests", status_code=201)

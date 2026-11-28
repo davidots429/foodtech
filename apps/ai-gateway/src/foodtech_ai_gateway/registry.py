@@ -26,7 +26,8 @@ from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from .prior_history_conditions import DynamoPriorHistoryConditions
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
 from foodtech_contracts.combi_execution_binding import parse_combi_binding
-from foodtech_contracts.tonkatsu_execution_binding import BINDING_SCHEMA
+from foodtech_contracts.tonkatsu_execution_binding import BINDING_SCHEMA, parse_tonkatsu_binding
+from foodtech_contracts.combi_history_witness import history_integer
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -378,6 +379,45 @@ class DynamoRegistry:
                 (not terminal or result.get('state') != first.state)):
             raise RegistryConflict('execution result and state disagree')
         return first, result
+
+    def tonkatsu_status_snapshot(self, execution_id, *, owner, epoch, job_id):
+        """Keep fryer records out of generic reads and bind results to a stable META."""
+        row = self._get("EXEC", execution_id)
+        if (
+            not row or row.get("tonkatsu_binding") is None or row.get("tenant_id") != owner
+            or row.get("job_id") != job_id
+        ):
+            return None
+        binding = parse_tonkatsu_binding(row["tonkatsu_binding"])
+        if binding.auth_epoch != epoch:
+            return None
+        execution = self._execution_from_item(row, verified_fryer=True)
+        if (
+            execution.execution_id != execution_id or execution.tenant_id != owner
+            or (execution.job_id, execution.job_version) != (binding.current.job_id, binding.current.job_version)
+            or (execution.prior_job_id, execution.prior_job_version) != (binding.prior.job_id, binding.prior.job_version)
+            or execution.feature != Feature.RECIPE_CORRECTION or execution.data_classification != "SYNTHETIC"
+            or execution.estimated_cost_usd != 0 or execution.external_transfer_approved is not False
+            or any(value is not None for value in (execution.combi_binding, execution.credential_id,
+                execution.comparison_id, execution.jeyuk_source_revision, execution.prior_source_revision,
+                execution.external_transfer_consent_id))
+        ):
+            raise RegistryConflict("stored fryer result scope unavailable")
+        version = history_integer(row.get("version"), 1, 2**63 - 1)
+        state = row.get("state")
+        if state not in {"PENDING", "RESERVED", "SUCCEEDED", "FAILED"}:
+            raise RegistryConflict("stored fryer state unavailable")
+        result = self.execution_result(execution_id)
+        if self._get("EXEC", execution_id) != row:
+            raise RegistryConflict("fryer execution changed during read")
+        terminal = state in {"SUCCEEDED", "FAILED"}
+        if terminal != (result is not None) or (result is not None and (
+            result.get("pk") != row.get("pk") or result.get("sk") != "RESULT" or result.get("state") != state
+            or result.get("model_id") != execution.model_id or result.get("provider") != "ollama"
+            or result.get("actual_cost_usd") != 0 or result.get("settlement_status") != "SETTLED"
+        )):
+            raise RegistryConflict("fryer result and execution disagree")
+        return ExecutionSnapshot(execution, state, version), binding, result
 
     def model(self, model_id: str) -> Model | None:
         item = self._get("MODEL", model_id)

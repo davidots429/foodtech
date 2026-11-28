@@ -829,6 +829,16 @@ class RegistryTests(unittest.TestCase):
                              expected_execution=execution, tonkatsu_source_guard=guard)
         self.assertEqual(self.resource.table.items[key, "RESULT"]["response_text"], "verified")
         self.assertNotIn(("ACTIVE#tenant-a", key), self.resource.table.items)
+        status, registered_binding, result = self.registry.tonkatsu_status_snapshot(
+            execution_id, owner="tenant-a", epoch=0, job_id=current)
+        self.assertEqual(registered_binding, binding)
+        self.assertEqual((status.state, result["response_text"]), ("SUCCEEDED", "verified"))
+        for owner, epoch, job in (("foreign", 0, current), ("tenant-a", 1, current), ("tenant-a", 0, prior)):
+            self.assertIsNone(self.registry.tonkatsu_status_snapshot(execution_id, owner=owner, epoch=epoch, job_id=job))
+        self.assertIsNone(self.registry.execution_status_snapshot(execution_id, "tenant-a"))
+        self.resource.table.items[key, "RESULT"]["provider"] = "wrong-provider"
+        with self.assertRaises(RegistryConflict):
+            self.registry.tonkatsu_status_snapshot(execution_id, owner="tenant-a", epoch=0, job_id=current)
         # Replay the same fixture from its reserved state to test the race and failure branch.
         self.resource.table.items = reserved_rows
         source_changed = True

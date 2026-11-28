@@ -9,10 +9,15 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from foodtech_contracts.dynamo_prior_history import DynamoPriorHistoryAuthority
-from foodtech_contracts.dynamo_tonkatsu_scope import DynamoTonkatsuReadScope
+from foodtech_contracts.dynamo_tonkatsu_scope import DynamoTonkatsuReadScope, TonkatsuScopeUnavailable
+
+from foodtech_contracts.recipe_execution_scope import recipe_execution_status_payload
+from foodtech_contracts.recipe_result_view import recipe_execution_result_payload
+from foodtech_contracts.tonkatsu_result_view import validate_tonkatsu_result_view
 
 from .combi_invocation import CombiRuntimeUnavailable, _close_runtime, configured_recipe_runtime
 from .policy import Caller
+from .registry import RegistryConflict
 from .tonkatsu_transaction_conditions import TonkatsuTransactionConditions
 from .service import GatewayService
 from .tonkatsu_read_handoff import receive_internal_tonkatsu_handoff, require_tonkatsu_transport
@@ -48,6 +53,42 @@ def create_tonkatsu_request(*, request_id, owner, epoch, current_job_id, prior_j
         conditions = TonkatsuTransactionConditions(scope=scope, account=account, stage=stage,
             clock=lambda: int(datetime.now(timezone.utc).timestamp()))
         return registry.create_tonkatsu_execution(conditions, model_id=model_id)
+    finally:
+        _close_runtime(runtime)
+
+
+def read_tonkatsu_request(*, execution_id, owner, epoch, job_id, result_view):
+    runtime = None
+    try:
+        runtime = configured_recipe_runtime("tonkatsu")
+        role, _, client, registry = runtime
+        resolver, _, _ = _scope_resolver(role, client, registry)
+        resolver.require_active_account(owner, epoch)
+        lookup = {"owner": owner, "epoch": epoch, "job_id": job_id}
+        before = registry.tonkatsu_status_snapshot(execution_id, **lookup)
+        if before is None:
+            return None
+        snapshot, binding, result = before
+        try:
+            current = resolver.plan_execution(owner=owner, epoch=epoch, execution_id=execution_id,
+                current_job_id=binding.current.job_id, prior_job_id=binding.prior.job_id,
+                job_versions=(binding.current.job_version, binding.prior.job_version))
+            source_current = current.binding == binding
+        except TonkatsuScopeUnavailable:
+            source_current = False
+        if registry.tonkatsu_status_snapshot(execution_id, **lookup) != before:
+            raise RegistryConflict("fryer status changed during source verification")
+        resolver.require_active_account(owner, epoch)
+        parameters = {"execution_id": execution_id, "tenant_id": owner, "job_id": job_id}
+        if result_view:
+            visible = result if source_current or result is None else {**result, "response_text": None}
+            payload = recipe_execution_result_payload(snapshot, visible, **parameters)
+            if payload["proposal"] is not None and payload["proposal"]["menu"] != "TONKATSU":
+                payload.update(projection_status="UNAVAILABLE", proposal=None, error_code="RECIPE_RESULT_UNAVAILABLE")
+        else:
+            payload = recipe_execution_status_payload(snapshot, result, **parameters)
+        return validate_tonkatsu_result_view({**payload, "source_current": source_current},
+                                            execution_id=execution_id, job_id=job_id, result_view=result_view)
     finally:
         _close_runtime(runtime)
 
