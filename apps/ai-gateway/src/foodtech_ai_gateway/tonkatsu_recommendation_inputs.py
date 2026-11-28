@@ -1,5 +1,6 @@
 """Derive local-model inputs from two receipt-verified fryer observations."""
 from foodtech_contracts.recommendation_guard import Evidence
+from foodtech_contracts.tonkatsu_review_basis import build_tonkatsu_review_basis
 from foodtech_contracts.tonkatsu_controller_samples import TonkatsuControllerSummary
 from foodtech_contracts.tonkatsu_observed_inputs import (
     ObservedTonkatsuBatch, TonkatsuBatchFacts, TonkatsuCoreSummary, TonkatsuQualitySummary,
@@ -25,10 +26,13 @@ def build_tonkatsu_inputs(current, prior):
         raise ValueError("comparable fryer jobs required")
     # A successful recheck does not turn the original failed duration into a passing baseline.
     baseline_safety = "FAILED" if prior.reheat_history else prior.recorded_safety_status
+    basis = build_tonkatsu_review_basis(current.reference_recipe_version, current.profile, current.load_kg,
+                                        baseline_safety == "FAILED", prior.cooking_seconds)
     return Evidence("PARTIAL", baseline_safety, True, False), prior.as_baseline(), {
         "basis": "AUTHORIZED_SYNTHETIC_FRYER_BATCHES",
         "same_reference_recipe_version": (
             current.reference_recipe_version == prior.reference_recipe_version
         ),
+        "approved_target": {key: basis[key] for key in ("target_temperature_c", "target_duration_seconds")},
         "current": current.model_context(), "immediately_prior": prior.model_context(),
-    }
+    }, basis

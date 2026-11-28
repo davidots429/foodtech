@@ -13,6 +13,7 @@ from .combi_recommendation import fields as combi_fields, SCHEMA_VERSION as COMB
 from .combi_execution_binding import validate_combi_execution
 from .recommendation_guard import RULE_VERSION
 from .recommendation_output import MAX_OUTPUT_BYTES, SCHEMA_VERSION
+from .tonkatsu_review_basis import validate_tonkatsu_review_basis
 
 _TONKATSU = {'temperature_c', 'duration_seconds'}
 _JEYUK = _TONKATSU | {'rpm', 'load_kg', 'vegetable_interval_seconds', 'sauce_interval_seconds'}
@@ -75,8 +76,8 @@ def _proposal(raw):
         raise ValueError('recipe result unavailable')
     value = json.loads(raw, object_pairs_hook=_unique,
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite')))
-    if not isinstance(value, dict) or set(value) != {
-            'status', 'error_code', 'data', 'schema_version', 'guard_version', 'fallback_used', 'attempts'} or \
+    fields = {'status', 'error_code', 'data', 'schema_version', 'guard_version', 'fallback_used', 'attempts'}
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {'review_basis'}) or \
             value['status'] != 'NEEDS_REVIEW' or value['error_code'] is not None or \
             (value['schema_version'], value['guard_version']) not in {
                 (SCHEMA_VERSION, RULE_VERSION), (COMBI_SCHEMA_VERSION, COMBI_RULE_VERSION)} or \
@@ -84,19 +85,26 @@ def _proposal(raw):
         raise ValueError('recipe result unavailable')
     menu, data = _data(value['data'])
     return validated_recipe_proposal({'status': 'NEEDS_REVIEW', 'schema_version': value['schema_version'],
-        'guard_version': value['guard_version'], 'menu': menu, 'data': data})
+        'guard_version': value['guard_version'], 'menu': menu, 'data': data,
+        **({'review_basis': value['review_basis']} if 'review_basis' in value else {})})
 
 
 def validated_recipe_proposal(proposal):
     """Copy the supported review proposal without arbitrary model content."""
-    if not isinstance(proposal, dict) or set(proposal) != {'status', 'schema_version', 'guard_version', 'menu', 'data'} or \
+    fields = {'status', 'schema_version', 'guard_version', 'menu', 'data'}
+    if not isinstance(proposal, dict) or set(proposal) not in (fields, fields | {'review_basis'}) or \
             proposal['status'] != 'NEEDS_REVIEW':
         raise ValueError('recipe proposal unavailable')
     menu, data = _data(proposal['data'])
     versions = (COMBI_SCHEMA_VERSION, COMBI_RULE_VERSION) if menu in {'RICE', 'MACKEREL'} else (SCHEMA_VERSION, RULE_VERSION)
     if proposal['menu'] != menu or (proposal['schema_version'], proposal['guard_version']) != versions:
         raise ValueError('recipe proposal unavailable')
-    return {**proposal, 'data': data}
+    checked = {**proposal, 'data': data}
+    if 'review_basis' in proposal:
+        if menu != 'TONKATSU':
+            raise ValueError('fryer review basis requires a fryer proposal')
+        checked['review_basis'] = validate_tonkatsu_review_basis(proposal['review_basis'], data)
+    return checked
 
 
 def recipe_proposal_digest(proposal):

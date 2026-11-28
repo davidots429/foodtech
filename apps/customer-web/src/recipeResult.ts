@@ -1,8 +1,11 @@
+import { parseTonkatsuReviewBasis } from "./tonkatsuReviewBasis";
+import type { TonkatsuReviewBasis } from "./tonkatsuReviewBasis";
+
 export type RecipeState = "PENDING" | "RESERVED" | "SUCCEEDED" | "FAILED";
 export type RecipeStatus = { execution_id: string; job_id: string; job_version: number; state: RecipeState;
   result_available: boolean; execution_available: false; job_changed: boolean; manual_invocation_enabled: boolean; source_current?: boolean };
 export type RecipeProposal = { status: "NEEDS_REVIEW"; schema_version: string; guard_version: string;
-  menu: "TONKATSU" | "JEYUK"; data: Record<string, string | number> };
+  menu: "TONKATSU" | "JEYUK"; data: Record<string, string | number>; review_basis?: TonkatsuReviewBasis };
 export type RecipeResult = RecipeStatus & { projection_status: "NOT_READY" | "AVAILABLE" | "FAILED" | "UNAVAILABLE";
   proposal: RecipeProposal | null; error_code: string | null };
 
@@ -33,7 +36,8 @@ export function parseRecipeResult(raw: unknown, executionId: string, jobId: stri
   if (status === "AVAILABLE") {
     const p = raw.proposal;
     if (base.state !== "SUCCEEDED" || base.source_current === false || raw.error_code !== null || !record(p) ||
-      Object.keys(p).sort().join() !== ["status", "schema_version", "guard_version", "menu", "data"].sort().join() ||
+      Object.keys(p).sort().join() !== ["status", "schema_version", "guard_version", "menu", "data",
+        ...(p.review_basis === undefined ? [] : ["review_basis"])].sort().join() ||
       p.status !== "NEEDS_REVIEW" || p.schema_version !== "synthetic-recommendation-output-v1" ||
       p.guard_version !== "synthetic-recommendation-guard-v1" || !["TONKATSU", "JEYUK"].includes(p.menu as string) || !record(p.data)) return fail();
     const fields = p.menu === "JEYUK" ? jeyuk : tonkatsu;
@@ -50,9 +54,11 @@ export function parseRecipeResult(raw: unknown, executionId: string, jobId: stri
         data[field] = value;
       }
     }
+    if (p.review_basis !== undefined && p.menu !== "TONKATSU") return fail();
+    const basis = p.review_basis === undefined ? undefined : parseTonkatsuReviewBasis(p.review_basis, data);
     return { ...base, projection_status: status, error_code: null,
       proposal: { status: "NEEDS_REVIEW", schema_version: p.schema_version, guard_version: p.guard_version,
-        menu: p.menu as "TONKATSU" | "JEYUK", data } };
+        menu: p.menu as "TONKATSU" | "JEYUK", data, ...(basis ? { review_basis: basis } : {}) } };
   }
   if (raw.proposal !== null) return fail();
   if (status === "NOT_READY" && ["PENDING", "RESERVED"].includes(base.state) && raw.error_code === null)

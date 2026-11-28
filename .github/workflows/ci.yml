@@ -20,7 +20,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: node --experimental-transform-types tests/frontend/recipe-results.test.mjs
+      - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/recipe-results.test.mjs
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-recipe-results.test.mjs
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-reviews.test.mjs
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-candidates.test.mjs

@@ -74,7 +74,13 @@ class GuardedTonkatsuServiceTests(unittest.IsolatedAsyncioTestCase):
         self.ollama.structured_chat.side_effect = [SimpleNamespace(text="invalid"), self.acceptable]
         outcome = await self.execute()
         self.assertEqual(outcome.state, "SUCCEEDED")
-        self.assertEqual(json.loads(outcome.response_text)["status"], "NEEDS_REVIEW")
+        stored = json.loads(outcome.response_text)
+        self.assertEqual(stored["status"], "NEEDS_REVIEW")
+        basis = stored["review_basis"]
+        self.assertEqual(basis["reference_recipe_version"], "private-recipe-version")
+        self.assertEqual((basis["target_temperature_c"], basis["target_duration_seconds"]), (170, 300))
+        self.assertEqual((basis["observed_batch_mass_kg"], basis["minimum_duration_seconds"]), ("0.32", 300))
+        self.assertEqual(basis["reason_code"], "PRIOR_INITIAL_SAFETY_FAILURE")
         self.registry.reserve.assert_called_once_with(self.execution, "ollama", tonkatsu_source_guard=self.guard)
         self.registry.reserve_local_retry.assert_called_once_with(self.execution, 2, tonkatsu_source_guard=self.guard)
         self.assertEqual([call.kwargs["completed_calls"] for call in self.registry.verify_tonkatsu_execution.call_args_list],

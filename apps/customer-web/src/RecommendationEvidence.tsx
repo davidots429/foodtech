@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { api, ApiError, jobPath, postWithoutBody } from "./cookingApi";
 import { canInvokeRecipe, parseRecipeResult, parseRecipeStatus } from "./recipeResult";
 import type { RecipeResult, RecipeStatus } from "./recipeResult";
+import { TonkatsuBasisDetails } from "./TonkatsuBasisDetails";
 import { RecipeProposalReview } from "./RecipeProposalReview";
 
 type FeedTiming = { status: "RECORDED"; vegetable_start_offset_us: number; sauce_start_offset_us: number;
@@ -455,11 +456,12 @@ export function RecommendationEvidence({ jobId, csrf, comparisonId, menu, equipm
         {currentResult.projection_status === "AVAILABLE" && currentResult.proposal && <>
           <h5>검토 대상 권고 · {currentResult.proposal.menu === "JEYUK" ? "제육볶음" : "돈까스"}</h5>
           {currentResult.job_changed && <p>이후 조리 기록이 변경된 과거 제안입니다.</p>}
+          {currentResult.proposal.review_basis ? <TonkatsuBasisDetails proposal={currentResult.proposal} /> :
           <dl>{([["temperature_c", "조리 온도", "°C"], ["rpm", "교반 속도", "rpm"],
             ["duration_seconds", "조리 시간", "초"], ["load_kg", "조리량", "kg"],
             ["vegetable_interval_seconds", "채소 투입 간격", "초"], ["sauce_interval_seconds", "소스 투입 간격", "초"]] as const)
             .filter(([field]) => field in currentResult.proposal!.data).map(([field, label, unit]) =>
-              <div key={field}><dt>{label}</dt><dd>{currentResult.proposal!.data[field]} {unit}</dd></div>)}</dl>
+              <div key={field}><dt>{label}</dt><dd>{currentResult.proposal!.data[field]} {unit}</dd></div>)}</dl>}
           <p className="small">생성 당시 기록에 따른 제안입니다. 현재 공정의 안전 승인이나 장비 자동 적용이 아닙니다.</p>
           <RecipeProposalReview key={`${currentResult.execution_id}:${currentResult.job_version}:${JSON.stringify(currentResult.proposal)}`}
             jobId={jobId} executionId={currentResult.execution_id} jobVersion={currentResult.job_version}

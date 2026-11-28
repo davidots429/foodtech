@@ -1,3 +1,4 @@
+import { TonkatsuBasisDetails } from "./TonkatsuBasisDetails";
 import { RecipeCandidateView } from "./RecipeCandidateView";
 import { useRef, useState } from "react";
 import { api, ApiError } from "./cookingApi";
@@ -101,8 +102,9 @@ export function RecipeProposalReview({ jobId, executionId, jobVersion, proposal,
         {item.decision === "APPROVE" ? "검토 승인" : "검토 거절"} · {item.reason} · {item.reviewed_at}
         {historyJobVersion !== null && item.job_version !== historyJobVersion && <p>조리 기록 변경 이전의 검토입니다.</p>}
         <RecipeCandidateView review={item} csrf={csrf} onCreated={onCreated} />
-        <details><summary>검토 당시 권고 값</summary><dl>{fields.filter(([field]) => field in item.proposal.data)
-          .map(([field, label, unit]) => <div key={field}><dt>{label}</dt><dd>{item.proposal.data[field]} {unit}</dd></div>)}</dl></details>
+        <details><summary>검토 당시 권고 값</summary>{item.proposal.review_basis ? <TonkatsuBasisDetails proposal={item.proposal} /> :
+          <dl>{fields.filter(([field]) => field in item.proposal.data)
+          .map(([field, label, unit]) => <div key={field}><dt>{label}</dt><dd>{item.proposal.data[field]} {unit}</dd></div>)}</dl>}</details>
       </li>)}</ol>}
       {nextCursor !== null && <button type="button" disabled={busy} onClick={() => void loadHistory(true)}>다음 검토 이력</button>}
     </details>

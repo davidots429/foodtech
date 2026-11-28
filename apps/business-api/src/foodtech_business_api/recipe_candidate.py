@@ -21,6 +21,9 @@ def build_candidate(review, job):
         raise ValueError('approved review and matching synthetic job required')
     base, equipment, menu = job.get('recipe_version'), job.get('equipment_profile'), job.get('menu')
     _lineage(base, equipment, menu)
+    basis = review["proposal"].get("review_basis")
+    if basis is not None and (basis["reference_recipe_version"] != base or basis["profile"] != job.get("thickness_profile")):
+        raise ValueError("fryer candidate baseline changed")
     return {'schema_version': 'recipe-candidate-v1', 'candidate_id': 'recipe-candidate-' + review['job_id'] + '-r' + str(review['version']),
             'status': 'CANDIDATE_NOT_APPLIED', 'provenance': 'SYNTHETIC', 'base_recipe_version': base,
             'equipment_profile': equipment, 'review_version': review['version'],
@@ -38,7 +41,8 @@ def validate_candidate(candidate, review):
     _lineage(candidate.get('base_recipe_version'), candidate.get('equipment_profile'), review['proposal']['menu'])
     expected = build_candidate(review, {'job_id': review['job_id'], 'version': review['job_version'],
         'menu': review['proposal']['menu'], 'provenance': 'SYNTHETIC',
-        'recipe_version': candidate['base_recipe_version'], 'equipment_profile': candidate['equipment_profile']})
+        'recipe_version': candidate['base_recipe_version'], 'equipment_profile': candidate['equipment_profile'],
+        'thickness_profile': review['proposal'].get('review_basis', {}).get('profile')})
     if candidate != expected:
         raise ValueError('recipe candidate changed or mismatched')
     return copy.deepcopy(expected)

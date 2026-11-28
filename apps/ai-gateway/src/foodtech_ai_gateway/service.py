@@ -199,11 +199,11 @@ class GatewayService:
             current, prior = await asyncio.to_thread(tonkatsu_source_guard.observe_inputs)
             if (current.job_id, prior.job_id) != (execution.job_id, execution.prior_job_id):
                 raise ValueError("observed fryer execution mismatch")
-            evidence, baseline, context = build_tonkatsu_inputs(current, prior)
+            evidence, baseline, context, review_basis = build_tonkatsu_inputs(current, prior)
         except (RegistryConflict, ValueError, TypeError, AttributeError, KeyError, BotoCoreError, ClientError):
             return ExecutionOutcome(execution_id, "DENIED", error_code="RECOMMENDATION_EVIDENCE_UNVERIFIED")
         return await self._execute_prepared_recipe(caller, execution_id, evidence=evidence, baseline=baseline,
-            context=context, ollama=ollama, tonkatsu_source_guard=tonkatsu_source_guard, fryer_execution=execution)
+            context=context, ollama=ollama, tonkatsu_source_guard=tonkatsu_source_guard, fryer_execution=execution, fryer_review_basis=review_basis)
 
     async def execute_local_recipe(self, caller: Caller, execution_id: str, *,
                                    evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline | CombiBaseline,
@@ -222,7 +222,7 @@ class GatewayService:
             baseline=baseline, context=context, ollama=ollama)
 
     async def _execute_prepared_recipe(self, caller, execution_id, *, evidence, baseline, context, ollama,
-                                       combi_source_guard=None, tonkatsu_source_guard=None, fryer_execution=None):
+                                       combi_source_guard=None, tonkatsu_source_guard=None, fryer_execution=None, fryer_review_basis=None):
         execution = fryer_execution if tonkatsu_source_guard is not None else self.registry.execution(execution_id)
         model = self.registry.model(execution.model_id) if execution and tonkatsu_source_guard is None else None
         if not execution or execution.tenant_id != caller.tenant_id:
@@ -352,6 +352,8 @@ class GatewayService:
                     return ExecutionOutcome(execution_id, "FAILED", error_code=code)
                 return ExecutionOutcome(execution_id, "DENIED", error_code=code)
             if result["status"] == "NEEDS_REVIEW":
+                if fryer_review_basis is not None:
+                    result["review_basis"] = fryer_review_basis
                 response = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
                 settlement = await finish_recipe(succeeded=True, response_text=response)
                 if settlement != 'settled':

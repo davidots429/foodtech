@@ -10,6 +10,8 @@ from foodtech_ai_gateway.registry import RegistryConflict
 from foodtech_ai_gateway.tonkatsu_invocation import read_tonkatsu_request
 from foodtech_contracts.dynamo_tonkatsu_scope import TonkatsuScopeUnavailable
 from foodtech_contracts.recommendation_guard import Evidence
+from foodtech_contracts.recipe_result_view import recipe_proposal_digest
+from foodtech_contracts.tonkatsu_review_basis import build_tonkatsu_review_basis
 from foodtech_contracts.recommendation_output import TonkatsuBaseline, validate
 from foodtech_contracts.tonkatsu_execution_binding import TonkatsuExecutionBinding, TonkatsuJobReference
 
@@ -66,3 +68,15 @@ class TonkatsuStoredResultTests(unittest.TestCase):
         self.resolver.require_active_account.side_effect = [None, TonkatsuScopeUnavailable()]
         with self.assertRaises(TonkatsuScopeUnavailable):
             self.read()
+
+
+    def test_stored_fryer_basis_is_reviewed_and_altered_limits_are_hidden(self):
+        base = self.read()["proposal"]
+        data = json.loads(self.result["response_text"])
+        basis = build_tonkatsu_review_basis("baseline-r2", "STANDARD", Decimal("0.32"), True, 290)
+        self.result["response_text"] = json.dumps({**data, "review_basis": basis})
+        viewed = self.read()["proposal"]
+        self.assertEqual(viewed["review_basis"], basis)
+        self.assertNotEqual(recipe_proposal_digest(viewed), recipe_proposal_digest(base))
+        self.result["response_text"] = json.dumps({**data, "review_basis": {**basis, "maximum_temperature_c": 180}})
+        self.assertEqual(self.read()["projection_status"], "UNAVAILABLE")
