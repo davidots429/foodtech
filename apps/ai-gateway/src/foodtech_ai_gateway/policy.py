@@ -8,8 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from foodtech_contracts.combi_execution_binding import CombiExecutionBinding, validate_combi_execution
+
+
+if TYPE_CHECKING:
+    from .tonkatsu_read_handoff import ReceivedTonkatsuReads
 
 
 class Feature(StrEnum):
@@ -137,6 +141,8 @@ class Decision:
 
 class Registry(Protocol):
     def execution(self, execution_id: str) -> Execution | None: ...
+    def tonkatsu_execution(self, execution_id: str, guard: "ReceivedTonkatsuReads",
+                           *, completed_calls: int) -> Execution: ...
     def model(self, model_id: str) -> Model | None: ...
     def credential(self, credential_id: str) -> Credential | None: ...
     def consent(self, consent_id: str) -> Consent | None: ...
@@ -170,7 +176,22 @@ class GatewayPolicy:
     def authorize(self, caller: Caller, execution_id: str) -> Decision:
         if caller.service != "business-api" or not caller.tenant_id:
             return Decision(False, "CALLER_NOT_AUTHORIZED")
-        execution = self.registry.execution(execution_id)
+        return self._authorize_stored(caller, execution_id, self.registry.execution(execution_id))
+
+    def authorize_tonkatsu(self, caller: Caller, execution_id: str, guard: "ReceivedTonkatsuReads",
+                         *, completed_calls: int) -> Decision:
+        if caller.service != "business-api" or not caller.tenant_id:
+            return Decision(False, "CALLER_NOT_AUTHORIZED")
+        execution = self.registry.tonkatsu_execution(execution_id, guard, completed_calls=completed_calls)
+        return self._authorize_stored(caller, execution_id, execution, require_local=True)
+
+    def authorize_tonkatsu_creation(self, execution: Execution) -> Decision:
+        if execution.feature != Feature.RECIPE_CORRECTION:
+            return Decision(False, "LOCAL_RECIPE_REQUIRED")
+        return self._authorize_stored(Caller("business-api", execution.tenant_id),
+                                      execution.execution_id, execution, require_local=True)
+
+    def _authorize_stored(self, caller, execution_id, execution, *, require_local=False):
         if not execution or execution.tenant_id != caller.tenant_id or execution.execution_id != execution_id:
             return Decision(False, "EXECUTION_NOT_FOUND")
         if execution.feature not in ALLOWED_TIERS or execution.estimated_cost_usd < 0:
@@ -185,6 +206,8 @@ class GatewayPolicy:
             return Decision(False, "MODEL_CONFIGURATION_INVALID")
         if model.local != (model.provider == "ollama"):
             return Decision(False, "MODEL_CONFIGURATION_INVALID")
+        if require_local and (not model.local or model.provider != "ollama" or execution.estimated_cost_usd != 0):
+            return Decision(False, "LOCAL_RECIPE_REQUIRED")
         if execution.feature == Feature.SENSITIVE_LOCAL and not model.local:
             return Decision(False, "EXTERNAL_TRANSFER_BLOCKED")
         if model.tier not in ALLOWED_TIERS[execution.feature]:

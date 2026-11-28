@@ -1,0 +1,42 @@
+{
+  "broker": [
+    "dynamodb:GetItem",
+    "dynamodb:Query",
+    "dynamodb:ReadDataForReplication",
+    "kms:Decrypt",
+    "sts:AssumeRole",
+    "sts:GetCallerIdentity",
+    "sts:SetContext",
+    "sts:SetSourceIdentity",
+    "sts:TagSession"
+  ],
+  "scoped": [
+    "dynamodb:GetItem",
+    "dynamodb:Query",
+    "dynamodb:ReadDataForReplication",
+    "kms:Decrypt",
+    "sts:GetCallerIdentity"
+  ],
+  "gateway": [
+    "dynamodb:ConditionCheckItem",
+    "dynamodb:DeleteItem",
+    "dynamodb:GetItem",
+    "dynamodb:PutItem",
+    "dynamodb:Query",
+    "dynamodb:ReadDataForReplication",
+    "dynamodb:UpdateItem",
+    "dynamodb:WriteDataForReplication",
+    "kms:Decrypt",
+    "sts:GetCallerIdentity"
+  ],
+  "bff": [
+    "dynamodb:ConditionCheckItem",
+    "dynamodb:DeleteItem",
+    "dynamodb:GetItem",
+    "dynamodb:PutItem",
+    "dynamodb:Query",
+    "dynamodb:ReadDataForReplication",
+    "dynamodb:UpdateItem",
+    "kms:Decrypt"
+  ]
+}

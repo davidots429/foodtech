@@ -15,6 +15,8 @@ from .policy import Caller, Decision, ExecutionSnapshot, Feature, GatewayPolicy
 from .ollama import OllamaClient, OllamaFailure
 from .registry import DynamoRegistry, RegistryConflict
 from .combi_read_handoff import ReceivedCombiReads
+from .tonkatsu_read_handoff import ReceivedTonkatsuReads
+from .tonkatsu_recommendation_inputs import build_tonkatsu_inputs
 from .combi_recommendation_inputs import build_combi_inputs
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from .prior_history_conditions import DynamoPriorHistoryConditions
@@ -28,6 +30,10 @@ from .jeyuk_recommendation_inputs import build_jeyuk_inputs
 class _RecommendationDenied(Exception):
     def __init__(self, code: str):
         self.code = code
+
+
+class _ReservationUncertain(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -160,6 +166,45 @@ class GatewayService:
         return await self._execute_prepared_recipe(caller, execution_id, evidence=evidence, baseline=baseline,
             context=context, ollama=ollama, combi_source_guard=combi_source_guard)
 
+    def _reserve_fryer_attempt(self, caller, execution, guard, attempt):
+        self.registry.begin_request()
+        try:
+            decision = self.policy.authorize_tonkatsu(caller, execution.execution_id, guard,
+                                                      completed_calls=attempt - 1)
+            if not decision.allowed:
+                return decision
+            if decision.fallback_used or decision.model_id != execution.model_id:
+                return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
+            if attempt == 1:
+                self.registry.reserve(execution, "ollama", tonkatsu_source_guard=guard)
+            else:
+                self.registry.reserve_local_retry(execution, attempt, tonkatsu_source_guard=guard)
+            return decision
+        except RegistryConflict:
+            return Decision(False, "EXECUTION_CONFLICT_OR_LIMIT_EXCEEDED")
+
+    async def execute_observed_tonkatsu_recipe(self, caller: Caller, execution_id: str, *,
+                                              tonkatsu_source_guard: ReceivedTonkatsuReads,
+                                              ollama: OllamaClient) -> ExecutionOutcome:
+        """Run the internal synthetic observation path with per-call source checks."""
+        if caller.service != "business-api" or not caller.tenant_id:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="CALLER_NOT_AUTHORIZED")
+        if type(tonkatsu_source_guard) is not ReceivedTonkatsuReads:
+            return ExecutionOutcome(execution_id, "DENIED", error_code="TONKATSU_SOURCE_SCOPE_UNAVAILABLE")
+        try:
+            execution = await asyncio.to_thread(self.registry.tonkatsu_execution, execution_id,
+                tonkatsu_source_guard, completed_calls=0)
+            if execution.tenant_id != caller.tenant_id:
+                return ExecutionOutcome(execution_id, "DENIED", error_code="EXECUTION_NOT_FOUND")
+            current, prior = await asyncio.to_thread(tonkatsu_source_guard.observe_inputs)
+            if (current.job_id, prior.job_id) != (execution.job_id, execution.prior_job_id):
+                raise ValueError("observed fryer execution mismatch")
+            evidence, baseline, context, review_basis = build_tonkatsu_inputs(current, prior)
+        except (RegistryConflict, ValueError, TypeError, AttributeError, KeyError, BotoCoreError, ClientError):
+            return ExecutionOutcome(execution_id, "DENIED", error_code="RECOMMENDATION_EVIDENCE_UNVERIFIED")
+        return await self._execute_prepared_recipe(caller, execution_id, evidence=evidence, baseline=baseline,
+            context=context, ollama=ollama, tonkatsu_source_guard=tonkatsu_source_guard, fryer_execution=execution, fryer_review_basis=review_basis)
+
     async def execute_local_recipe(self, caller: Caller, execution_id: str, *,
                                    evidence: Evidence, baseline: TonkatsuBaseline | JeyukBaseline | CombiBaseline,
                                    context: dict, ollama: OllamaClient) -> ExecutionOutcome:
@@ -177,13 +222,13 @@ class GatewayService:
             baseline=baseline, context=context, ollama=ollama)
 
     async def _execute_prepared_recipe(self, caller, execution_id, *, evidence, baseline, context, ollama,
-                                       combi_source_guard=None):
-        execution = self.registry.execution(execution_id)
-        model = self.registry.model(execution.model_id) if execution else None
+                                       combi_source_guard=None, tonkatsu_source_guard=None, fryer_execution=None, fryer_review_basis=None):
+        execution = fryer_execution if tonkatsu_source_guard is not None else self.registry.execution(execution_id)
+        model = self.registry.model(execution.model_id) if execution and tonkatsu_source_guard is None else None
         if not execution or execution.tenant_id != caller.tenant_id:
             return ExecutionOutcome(execution_id, "DENIED", error_code="EXECUTION_NOT_FOUND")
-        if execution.feature != Feature.RECIPE_CORRECTION or not model or not model.local or \
-                model.provider != "ollama" or execution.estimated_cost_usd != 0:
+        if tonkatsu_source_guard is None and (execution.feature != Feature.RECIPE_CORRECTION or not model or
+                not model.local or model.provider != "ollama" or execution.estimated_cost_usd != 0):
             return ExecutionOutcome(execution_id, "DENIED", error_code="LOCAL_RECIPE_REQUIRED")
         if execution.combi_binding is not None or isinstance(baseline, CombiBaseline):
             if execution.combi_binding is None or type(baseline) is not CombiBaseline or \
@@ -215,8 +260,15 @@ class GatewayService:
                 return ExecutionOutcome(execution_id, "DENIED", error_code="SOURCE_SCOPE_UNAVAILABLE")
         attempts = 0
         reserved = False
+        completed_reservations = 0
 
         async def source_current():
+            if tonkatsu_source_guard is not None:
+                try:
+                    return await asyncio.to_thread(self.registry.verify_tonkatsu_execution, execution,
+                        tonkatsu_source_guard, completed_calls=completed_reservations)
+                except (RegistryConflict, ValueError, BotoCoreError, ClientError):
+                    return False
             if not isinstance(baseline, JeyukBaseline) and combi_source_guard is None:
                 return True
             try:
@@ -237,7 +289,9 @@ class GatewayService:
                                         recipe_source_guard=self.recipe_source_guard if succeeded and
                                             isinstance(baseline, JeyukBaseline) else None,
                                         **({'combi_source_guard': combi_source_guard} if succeeded and
-                                            combi_source_guard is not None else {}))
+                                            combi_source_guard is not None else {}),
+                                        **({"tonkatsu_source_guard": tonkatsu_source_guard}
+                                           if tonkatsu_source_guard is not None else {}))
                 return 'settled'
             except RegistryConflict:
                 return 'conflict'
@@ -246,12 +300,18 @@ class GatewayService:
                 return 'unknown'
 
         async def invoke(messages, schema):
-            nonlocal attempts, reserved
+            nonlocal attempts, reserved, completed_reservations
             if not await source_current():
                 raise _RecommendationDenied("RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE")
             attempts += 1
             guard_args = {'combi_source_guard': combi_source_guard} if combi_source_guard is not None else {}
-            if combi_source_guard is not None:
+            if tonkatsu_source_guard is not None:
+                try:
+                    decision = await asyncio.to_thread(self._reserve_fryer_attempt, caller, execution,
+                                                       tonkatsu_source_guard, attempts)
+                except (BotoCoreError, ClientError) as error:
+                    raise _ReservationUncertain from error
+            elif combi_source_guard is not None:
                 decision = (await asyncio.to_thread(self.prepare, caller, execution_id, local_recipe=True, **guard_args)
                     if attempts == 1 else await asyncio.to_thread(self.prepare_local_recipe_retry,
                         caller, execution_id, attempts, **guard_args))
@@ -261,7 +321,8 @@ class GatewayService:
             if not decision.allowed:
                 raise _RecommendationDenied(decision.code)
             reserved = True
-            if combi_source_guard is not None and not await source_current():
+            completed_reservations = attempts
+            if (combi_source_guard is not None or tonkatsu_source_guard is not None) and not await source_current():
                 raise _RecommendationDenied('RECIPE_SOURCE_CHANGED_OR_UNAVAILABLE')
             return (await ollama.structured_chat(decision.model_id, messages, schema)).text
 
@@ -269,6 +330,8 @@ class GatewayService:
             result = await generate_candidate(invoke, evidence=evidence, baseline=baseline, context=context)
             if not reserved:
                 return ExecutionOutcome(execution_id, "INDETERMINATE", error_code="EVIDENCE_INSUFFICIENT")
+        except _ReservationUncertain:
+            return ExecutionOutcome(execution_id, "INDETERMINATE", error_code="RESERVATION_RECONCILIATION_REQUIRED")
         except _RecommendationDenied as error:
             if not reserved:
                 return ExecutionOutcome(execution_id, "DENIED", error_code=error.code)
@@ -289,6 +352,8 @@ class GatewayService:
                     return ExecutionOutcome(execution_id, "FAILED", error_code=code)
                 return ExecutionOutcome(execution_id, "DENIED", error_code=code)
             if result["status"] == "NEEDS_REVIEW":
+                if fryer_review_basis is not None:
+                    result["review_basis"] = fryer_review_basis
                 response = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
                 settlement = await finish_recipe(succeeded=True, response_text=response)
                 if settlement != 'settled':

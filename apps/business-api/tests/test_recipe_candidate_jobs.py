@@ -175,3 +175,97 @@ class CandidateJobTests(RecipeStatusFixtures):
         before=copy.deepcopy(self.store.items)
         self.assertEqual((await self.request()).status_code,409)
         self.assertEqual(self.store.items,before)
+
+    async def test_guarded_fryer_candidate_cannot_use_generic_creation_route(self):
+        from foodtech_business_api.recipe_candidate import CANDIDATE_PREFIX, build_candidate
+        from foodtech_business_api.recipe_review_store import FRYER_SOURCE_CONTRACT, PREFIX
+
+        job = self.store.items[self.pk, "META"]
+        job.update(menu="TONKATSU", equipment_profile="synthetic-fryer-approved-v2", thickness_profile="STANDARD")
+        proposal = {**self.proposal, "menu": "TONKATSU", "data": {"temperature_c": "170", "duration_seconds": 300}}
+        review = {**self.review, "proposal": proposal, "proposal_digest": recipe_proposal_digest(proposal),
+                  "source_contract": FRYER_SOURCE_CONTRACT}
+        for prefix, value in ((PREFIX, review), (CANDIDATE_PREFIX, build_candidate(review, job))):
+            sk = prefix + f"{1:019d}"
+            self.store.items[self.pk, sk] = {"pk": self.pk, "sk": sk, **value}
+        body = {**self.body, "proposal_digest": review["proposal_digest"], "planned_portions": 4,
+                "actual_load_kg": None, "thickness_cm": "1.20"}
+        response = await self.request(body)
+        self.assertEqual(response.status_code, 409)
+        self.assertNotIn((f"SCOPE#USER#{self.subject}#JOB#{body['request_id']}", "META"), self.store.items)
+
+    def test_fryer_candidate_combines_roster_check_with_update_and_guards_replay(self):
+        from unittest.mock import MagicMock
+        from boto3.dynamodb.types import TypeSerializer
+        from botocore.session import get_session
+        from botocore.validate import validate_parameters
+        from foodtech_business_api.cooking import NewJob, new_job_meta
+        from foodtech_business_api.cooking_store import Conflict, DynamoCookingStore
+        from foodtech_business_api.recipe_candidate import CANDIDATE_PREFIX, build_candidate
+        from foodtech_business_api.recipe_candidate_jobs import CandidateJobRequest, request_hash
+        from foodtech_business_api.recipe_review_store import FRYER_SOURCE_CONTRACT, PREFIX
+        from foodtech_contracts.prior_history_witness import PriorHistoryWitness
+        from foodtech_contracts.tonkatsu_execution_binding import TonkatsuExecutionBinding, TonkatsuJobReference
+        from foodtech_contracts.tonkatsu_prior_history import TonkatsuPriorHistoryWitness, fryer_stream
+        from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
+        from foodtech_contracts.tonkatsu_transaction_conditions import TonkatsuTransactionConditions
+
+        job = self.store.items[self.pk, "META"]
+        job.update(menu="TONKATSU", equipment_profile="synthetic-fryer-approved-v2", thickness_profile="STANDARD")
+        proposal = {**self.proposal, "menu": "TONKATSU", "data": {"temperature_c": "170", "duration_seconds": 300}}
+        review = {**self.review, "proposal": proposal, "proposal_digest": recipe_proposal_digest(proposal),
+                  "source_contract": FRYER_SOURCE_CONTRACT}
+        candidate = build_candidate(review, job)
+        for prefix, value in ((PREFIX, review), (CANDIDATE_PREFIX, candidate)):
+            sk = prefix + f"{1:019d}"
+            self.store.items[self.pk, sk] = {"pk": self.pk, "sk": sk, **value}
+        store = object.__new__(DynamoCookingStore)
+        store.table, store.client = MagicMock(), MagicMock()
+        store.table.name = "foodtech-cooking-jobs-dev"
+        store.auth_table_name, store.require_principal = "foodtech-auth-sessions-dev", True
+        store.serializer = TypeSerializer()
+        store.table.get_item.side_effect = lambda **kw: {
+            "Item": copy.deepcopy(self.store.items.get((kw["Key"]["pk"], kw["Key"]["sk"])))
+        }
+        prior = str(uuid4())
+        binding = TonkatsuExecutionBinding(TonkatsuJobReference(self.job_id, 3, 7),
+                                           TonkatsuJobReference(prior, 4, 9), 0)
+        history = PriorHistoryWitness(self.subject, self.job_id, prior, (3, 4), 0, 2, 1, 1,
+            str(uuid4()), "a" * 64, "b" * 64, 2, "a" * 64, "c" * 64)
+        streams = tuple(fryer_stream({"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
+                                     "batch_id": f"batch-a-{name}"}) for name in ("current", "prior"))
+        scope = TonkatsuReadScope(self.execution_id, 3, binding, TonkatsuPriorHistoryWitness(history, streams, 900, 1100))
+        conditions = TonkatsuTransactionConditions(scope=scope, account="123456789012", stage="dev", clock=lambda: 1000)
+        body = CandidateJobRequest(**{**self.body, "proposal_digest": review["proposal_digest"],
+                                      "planned_portions": 4, "actual_load_kg": None, "thickness_cm": "1.20"})
+        fingerprint = request_hash(body, self.job_id, 1)
+        meta = new_job_meta(self.subject, NewJob(recipe_version=candidate["candidate_id"],
+                            equipment_profile="synthetic-fryer-approved-v2", planned_portions=4, thickness_cm="1.20"),
+                            job_id=str(body.request_id))
+        meta["recipe_candidate_selection"] = {"schema_version": "recipe-candidate-selection-v1",
+            "request_id": str(body.request_id), "request_hash": fingerprint, "source_job_id": self.job_id,
+            "source_job_version": 3, "review_version": 1, "candidate": candidate}
+        adapter = CandidateJobStore(store)
+        args = (self.pk, 1, candidate, meta, fingerprint, 0)
+        with self.assertRaises(Conflict):
+            adapter.create(*args)
+        with self.assertRaises(Conflict):
+            adapter.create(self.pk, 1, candidate, {**meta, "thickness_profile": "THIN"}, fingerprint, 0,
+                           fryer_conditions=conditions)
+        self.assertTrue(adapter.create(*args, fryer_conditions=conditions))
+        actions = store.client.transact_write_items.call_args.kwargs["TransactItems"]
+        validate_parameters({"TransactItems": actions},
+            get_session().get_service_model("dynamodb").operation_model("TransactWriteItems").input_shape)
+        self.assertEqual(len(actions), 16)
+        self.assertEqual([next(iter(a)) for a in actions[-3:]], ["Put", "Put", "Update"])
+        update = actions[-1]["Update"]
+        self.assertTrue(update["ConditionExpression"].endswith("(#fryer0 = :fryer0)"))
+        self.assertEqual(update["ExpressionAttributeValues"][":fryer0"], {"N": "2"})
+        self.assertFalse(any(a.get("ConditionCheck", {}).get("Key") == update["Key"] for a in actions))
+        self.assertEqual(actions[-3]["Put"]["Item"]["safety_status"], {"S": "NOT_MEASURED"})
+        target = f"SCOPE#USER#{self.subject}#JOB#{meta['job_id']}"
+        self.store.items[target, "META"] = copy.deepcopy(meta)
+        self.assertFalse(adapter.create(*args, fryer_conditions=conditions))
+        replay = store.client.transact_write_items.call_args.kwargs["TransactItems"]
+        self.assertTrue(all("ConditionCheck" in a for a in replay))
+        self.assertEqual(replay[-1]["ConditionCheck"]["Key"], {"pk": {"S": target}, "sk": {"S": "META"}})

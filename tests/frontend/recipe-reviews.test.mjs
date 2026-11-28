@@ -81,3 +81,17 @@ test('response-loss recovery validates candidate lineage and new measurements wi
     {recipe_candidate_selection:{...selection,candidate:{...candidate,proposal:{...proposal,data:{...proposal.data,temperature_c:'250'}}}}}])
     assert.throws(()=>parseCandidateJobRecovery({job:{...child,...change}},candidate,review,jobInput));
 });
+
+test('guarded fryer review and candidate preserve an identical source contract', () => {
+  const source_contract = "tonkatsu-guarded-source-v1";
+  const fryerProposal = { ...proposal, menu: "TONKATSU", data: { temperature_c: "170", duration_seconds: 300 } };
+  const fryer = parseRecipeReview({ ...review, proposal: fryerProposal, source_contract }, job);
+  assert.equal(fryer.source_contract, source_contract);
+  assert.throws(() => parseRecipeReview({ ...review, source_contract }, job));
+  const fryerCandidate = { ...candidate, source_contract, proposal: fryerProposal, equipment_profile: "synthetic-fryer-approved-v2" };
+  const payload = { candidate: fryerCandidate, current_job_version: 3, current_review_version: 1 };
+  assert.equal(parseRecipeCandidate(payload, fryer).candidate.source_contract, source_contract);
+  assert.throws(() => parseRecipeCandidate({ ...payload, candidate: { ...fryerCandidate, source_contract: "other" } }, fryer));
+  const { source_contract: _, ...unmarked } = fryerCandidate;
+  assert.throws(() => parseRecipeCandidate({ ...payload, candidate: unmarked }, fryer));
+});

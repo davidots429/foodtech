@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID,NameOID
 
 
-def certificates(directory):
+def certificates(directory, *, broker_uri="urn:foodtech:service:combi-read-broker"):
     now=datetime.now(timezone.utc)
     def ca(name):
         key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
@@ -33,7 +33,7 @@ def certificates(directory):
         cp.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
         kp.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()));kp.chmod(0o600)
         return str(cp),str(kp)
-    uri='urn:foodtech:service:combi-read-broker'
+    uri=broker_uri
     server=issue('server',root,ExtendedKeyUsageOID.SERVER_AUTH,server=True)
     return dict(ca=root[2],server=server,
         other_server=issue('other-server',root,ExtendedKeyUsageOID.SERVER_AUTH,server=True),

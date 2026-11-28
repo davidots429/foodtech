@@ -43,6 +43,11 @@ if (args.Length > 0 && args[0] == "simulate-tonkatsu-probes")
     TonkatsuProbeSimulation.Emit(Required(options, "fixture"), Required(options, "output"));
     return;
 }
+if (args.Length > 0 && args[0] == "simulate-tonkatsu-cooking")
+{
+    TonkatsuCookingSimulation.Emit(Required(options, "fixture"), Required(options, "output"));
+    return;
+}
 if (args.Length > 0 && args[0] == "simulate-combi")
 {
     CombiSimulation.Emit(Required(options, "fixture"), Required(options, "output"),

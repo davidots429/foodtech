@@ -897,7 +897,7 @@ export function CookingWorkspace({ csrf }: Props) {
             </div>}
             <LocalChat key={job.job_id} csrf={csrf} jobId={job.job_id} />
             <RecommendationEvidence key={`${job.job_id}-${job.version}-${comparisonFreshness === "CURRENT" ? comparison?.comparison_id ?? "" : ""}`}
-              jobId={job.job_id} csrf={csrf} menu={job.menu} onCreated={id => { void refresh(id).catch(() => setError("생성된 작업을 불러오지 못했습니다. 작업 ID로 다시 조회해 주세요.")); }} comparisonId={comparisonFreshness === "CURRENT" ? comparison?.comparison_id : undefined} />
+              jobId={job.job_id} csrf={csrf} menu={job.menu} equipmentProfile={job.equipment_profile} onCreated={id => { void refresh(id).catch(() => setError("생성된 작업을 불러오지 못했습니다. 작업 ID로 다시 조회해 주세요.")); }} comparisonId={comparisonFreshness === "CURRENT" ? comparison?.comparison_id : undefined} />
             {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuBatch key={job.job_id} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}
             {job.equipment_profile === "synthetic-fryer-approved-v2" && <TonkatsuInitialContext
               key={`${job.job_id}-${job.tonkatsu_batch_version ?? 0}`} job={job} csrf={csrf} onSaved={() => refresh(job.job_id)} />}

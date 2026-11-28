@@ -1,10 +1,9 @@
 """Current recorded quality facts; no free text, authors or authority assertions."""
 from datetime import datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 import re
 
-SCORE_ITEMS = ('ingredient_condition', 'preparation', 'taste', 'texture', 'appearance',
-               'aroma', 'temperature_suitability')
+from .quality_score import SCORE_ITEMS, summarize_quality_scores
 
 
 def _integer(value, low=1, high=10**18):
@@ -77,9 +76,7 @@ def observe_quality(rows, step, meta, menu, *, now):
             type(observations) is not dict or set(observations) != set(SCORE_ITEMS) or \
             any(type(v) is not str or not v.strip() or len(v) > 500 for v in observations.values()):
         raise ValueError('complete recorded quality scores and observations required')
-    values = tuple((name, _integer(scores[name], 1, 5)) for name in SCORE_ITEMS)
-    total = sum(v for _, v in values)
-    percent = (Decimal(total) / 35 * 100).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    values, total, percent = summarize_quality_scores(scores)
     reasons = a.get('quality_reason_codes')
     allowed = {'UNDERCOOKED', 'EXCESS_MOISTURE', 'OVERCOOKED', 'UNEVEN_COOK', 'BAD_SMELL'} | (
         {'BURNT_BOTTOM', 'RICE_CLUMPED'} if menu == 'RICE' else {'BURNT_SURFACE', 'DRY_TEXTURE', 'SKIN_NOT_CRISP'})

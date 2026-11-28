@@ -20,7 +20,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: node --experimental-transform-types tests/frontend/recipe-results.test.mjs
+      - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/recipe-results.test.mjs
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-recipe-results.test.mjs
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-reviews.test.mjs
       - run: TSX_TSCONFIG_PATH=apps/customer-web/tsconfig.json node --import tsx tests/frontend/combi-candidates.test.mjs
@@ -186,6 +186,11 @@ jobs:
         run: |
           CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechCombiRecipeReadAccess-dev --strict --no-lookups -c provisionCombiRecipeReadAccess=true --output /tmp/foodtech-combi-read-access-cdk > /dev/null
           python3 ../../tests/config/check_combi_read_access.py /tmp/foodtech-combi-read-access-cdk/FoodtechCombiRecipeReadAccess-dev.template.json 123456789012
+      - name: Check isolated Tonkatsu source read access
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechTonkatsuRecipeAccess-dev --strict --no-lookups -c provisionTonkatsuRecipeAccess=true --output /tmp/foodtech-tonkatsu-access-cdk > /dev/null
+          python3 ../../tests/config/check_tonkatsu_access.py /tmp/foodtech-tonkatsu-access-cdk/FoodtechTonkatsuRecipeAccess-dev.template.json 123456789012
       - name: Check minimal combi execution metadata access
         working-directory: infra/cdk
         run: |
@@ -314,7 +319,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        package: [foodtech-ai-gateway, foodtech-credential-registration]
+        package: [foodtech-ai-gateway, foodtech-credential-registration, foodtech-business-api]
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
@@ -329,10 +334,12 @@ jobs:
       - name: Verify service imports inside the runtime image
         run: |
           case '${{ matrix.package }}' in
-            foodtech-ai-gateway) module=foodtech_ai_gateway.serve ;;
-            foodtech-credential-registration) module=foodtech_credential_registration.serve ;;
+            foodtech-ai-gateway) modules=(foodtech_ai_gateway.serve foodtech_ai_gateway.serve_tonkatsu) ;;
+            foodtech-credential-registration) modules=(foodtech_credential_registration.serve) ;;
+            foodtech-business-api) modules=(foodtech_business_api.serve_tonkatsu_broker foodtech_business_api.tonkatsu_broker_app) ;;
           esac
-          docker run --rm --entrypoint python foodtech-ci/${{ matrix.package }}:test -c "import importlib; importlib.import_module('$module')"
+          docker run --rm --network none --entrypoint python foodtech-ci/${{ matrix.package }}:test \
+            -c 'import importlib, sys; [importlib.import_module(name) for name in sys.argv[1:]]' "${modules[@]}"
 
   mock-image:
     runs-on: ubuntu-latest

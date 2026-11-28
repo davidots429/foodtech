@@ -2,6 +2,7 @@
 from dataclasses import asdict,dataclass
 import json
 import math
+from typing import ClassVar
 
 from foodtech_contracts.combi_history_witness import canonical_uuid
 from .subject_identity import valid_subject
@@ -24,14 +25,15 @@ class CombiInvocationDelegation:
     epoch: int
     execution_id: str
     session_expires: int
-    schema: str = 'combi-invocation-delegation-v1'
+    SCHEMA: ClassVar[str] = 'combi-invocation-delegation-v1'
+    schema: str = SCHEMA
 
     def __post_init__(self):
         if not valid_subject(self.subject) or type(self.epoch) is not int or not 0<=self.epoch<2**63 or \
                 not canonical_uuid(self.execution_id) or type(self.session_expires) is not int or not 0<self.session_expires<2**63 or \
-                self.schema!='combi-invocation-delegation-v1': raise ValueError('invalid combi delegation')
+                self.schema != self.SCHEMA: raise ValueError('invalid combi delegation')
 
-    def __repr__(self): return 'CombiInvocationDelegation()'
+    def __repr__(self): return type(self).__name__ + '()'
 
     def require_live(self,now):
         if type(now) not in (int,float) or not 0<now<self.session_expires or not math.isfinite(now):
@@ -51,3 +53,12 @@ class CombiInvocationDelegation:
             return cls(**value)
         except (ValueError,TypeError,UnicodeError,RecursionError):
             raise ValueError('combi delegation unavailable') from None
+
+
+TONKATSU_CONTENT_TYPE = "application/vnd.foodtech.tonkatsu-invocation+json"
+
+
+@dataclass(frozen=True, repr=False)
+class TonkatsuInvocationDelegation(CombiInvocationDelegation):
+    SCHEMA: ClassVar[str] = "tonkatsu-invocation-delegation-v1"
+    schema: str = SCHEMA

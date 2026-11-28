@@ -18,12 +18,16 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from boto3.dynamodb.types import TypeSerializer
 
-from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, Model, Tier, UNCONFIGURED_TIER1
+from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, GatewayPolicy, Model, Tier, UNCONFIGURED_TIER1
 from .combi_read_handoff import ReceivedCombiReads
+from .tonkatsu_read_handoff import ReceivedTonkatsuReads
+from .tonkatsu_transaction_conditions import TonkatsuTransactionConditions
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from .prior_history_conditions import DynamoPriorHistoryConditions
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
 from foodtech_contracts.combi_execution_binding import parse_combi_binding
+from foodtech_contracts.tonkatsu_execution_binding import BINDING_SCHEMA, parse_tonkatsu_binding
+from foodtech_contracts.combi_history_witness import history_integer
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -113,6 +117,40 @@ class DynamoRegistry:
         fields["feature"] = value.feature.value
         fields["state"] = "PENDING"
         self._put_tenant_new("EXEC", value.execution_id, fields, value.tenant_id)
+
+    def create_tonkatsu_execution(self, conditions: TonkatsuTransactionConditions, *, model_id: str) -> Execution:
+        """Create a guarded pending row. Usage is charged only during reservation."""
+        if (
+            type(conditions) is not TonkatsuTransactionConditions
+            or conditions.execution_table != self.table_name or conditions.auth != self.auth_table
+            or conditions.scope.execution_version != 1 or not isinstance(model_id, str)
+            or not 1 <= len(model_id) <= 128 or model_id == UNCONFIGURED_TIER1
+        ):
+            raise ValueError("fryer creation scope unavailable")
+        scope = conditions.scope
+        owner = scope.history.history.owner
+        current, prior = scope.binding.current, scope.binding.prior
+        execution = Execution(scope.execution_id, owner, Feature.RECIPE_CORRECTION,
+            model_id, None, "SYNTHETIC", Decimal(0), job_id=current.job_id, job_version=current.job_version,
+            prior_job_id=prior.job_id, prior_job_version=prior.job_version)
+        self.begin_request()
+        decision = GatewayPolicy(self).authorize_tonkatsu_creation(execution)
+        if not decision.allowed or decision.model_id != model_id:
+            raise RegistryConflict("fryer model or execution limits unavailable")
+        item = {**_key("EXEC", scope.execution_id), **asdict(execution),
+            "feature": execution.feature.value, "state": "PENDING", "version": 1,
+            "tonkatsu_binding": {"schema_version": BINDING_SCHEMA, **asdict(scope.binding)}}
+        limit_ids = (self._limit_id("TENANT", owner), self._limit_id("PROVIDER", "ollama"),
+                     self._limit_id("PROJECT", "GLOBAL"))
+        checks = [*conditions.source_checks(), self._condition("MODEL", model_id),
+                  *(self._condition("LIMIT", key) for key in limit_ids)]
+        items = [*checks, {"Put": {"TableName": self.table_name, "Item": self._av(item),
+            "ConditionExpression": "attribute_not_exists(pk)", "ReturnValuesOnConditionCheckFailure": "NONE"}}]
+        try:
+            self.client.transact_write_items(TransactItems=items, ClientRequestToken=str(uuid4()))
+        except self.client.exceptions.TransactionCanceledException as error:
+            raise RegistryConflict("fryer execution inputs changed") from error
+        return execution
 
     def create_model(self, value: Model) -> None:
         if value.model_id == UNCONFIGURED_TIER1:
@@ -278,12 +316,14 @@ class DynamoRegistry:
 
     def execution(self, execution_id: str) -> Execution | None:
         item = self._get("EXEC", execution_id)
-        if not item:
+        if not item or item.get("tonkatsu_binding") is not None:
             return None
         return self._execution_from_item(item)
 
     @staticmethod
-    def _execution_from_item(item: dict) -> Execution:
+    def _execution_from_item(item: dict, *, verified_fryer=False) -> Execution:
+        if item.get("tonkatsu_binding") is not None and not verified_fryer:
+            raise RegistryConflict("fryer execution requires its dedicated guarded path")
         fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version", "jeyuk_source_revision", "prior_source_revision", "combi_binding"} else item[name]
                   for name in Execution.__dataclass_fields__}
         for name in ("job_version", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"):
@@ -301,7 +341,7 @@ class DynamoRegistry:
     def execution_snapshot(self, execution_id: str) -> ExecutionSnapshot | None:
         """Read execution, state and version from the same consistent item."""
         item = self._get("EXEC", execution_id)
-        if not item:
+        if not item or item.get("tonkatsu_binding") is not None:
             return None
         version = item.get('version')
         if isinstance(version, bool) or not isinstance(version, (int, Decimal)) or \
@@ -339,6 +379,45 @@ class DynamoRegistry:
                 (not terminal or result.get('state') != first.state)):
             raise RegistryConflict('execution result and state disagree')
         return first, result
+
+    def tonkatsu_status_snapshot(self, execution_id, *, owner, epoch, job_id):
+        """Keep fryer records out of generic reads and bind results to a stable META."""
+        row = self._get("EXEC", execution_id)
+        if (
+            not row or row.get("tonkatsu_binding") is None or row.get("tenant_id") != owner
+            or row.get("job_id") != job_id
+        ):
+            return None
+        binding = parse_tonkatsu_binding(row["tonkatsu_binding"])
+        if binding.auth_epoch != epoch:
+            return None
+        execution = self._execution_from_item(row, verified_fryer=True)
+        if (
+            execution.execution_id != execution_id or execution.tenant_id != owner
+            or (execution.job_id, execution.job_version) != (binding.current.job_id, binding.current.job_version)
+            or (execution.prior_job_id, execution.prior_job_version) != (binding.prior.job_id, binding.prior.job_version)
+            or execution.feature != Feature.RECIPE_CORRECTION or execution.data_classification != "SYNTHETIC"
+            or execution.estimated_cost_usd != 0 or execution.external_transfer_approved is not False
+            or any(value is not None for value in (execution.combi_binding, execution.credential_id,
+                execution.comparison_id, execution.jeyuk_source_revision, execution.prior_source_revision,
+                execution.external_transfer_consent_id))
+        ):
+            raise RegistryConflict("stored fryer result scope unavailable")
+        version = history_integer(row.get("version"), 1, 2**63 - 1)
+        state = row.get("state")
+        if state not in {"PENDING", "RESERVED", "SUCCEEDED", "FAILED"}:
+            raise RegistryConflict("stored fryer state unavailable")
+        result = self.execution_result(execution_id)
+        if self._get("EXEC", execution_id) != row:
+            raise RegistryConflict("fryer execution changed during read")
+        terminal = state in {"SUCCEEDED", "FAILED"}
+        if terminal != (result is not None) or (result is not None and (
+            result.get("pk") != row.get("pk") or result.get("sk") != "RESULT" or result.get("state") != state
+            or result.get("model_id") != execution.model_id or result.get("provider") != "ollama"
+            or result.get("actual_cost_usd") != 0 or result.get("settlement_status") != "SETTLED"
+        )):
+            raise RegistryConflict("fryer result and execution disagree")
+        return ExecutionSnapshot(execution, state, version), binding, result
 
     def model(self, model_id: str) -> Model | None:
         item = self._get("MODEL", model_id)
@@ -446,6 +525,8 @@ class DynamoRegistry:
         # Determine Combi from storage too: omitting the caller binding must not
         # turn a protected execution into an ordinary reservation.
         item = self._get('EXEC', execution.execution_id)
+        if item and item.get("tonkatsu_binding") is not None:
+            raise RegistryConflict("fryer execution requires its dedicated guarded path")
         if execution.combi_binding is not None or (item and item.get('combi_binding') is not None):
             try:
                 matches = item is not None and item['state'] == state and item['version'] == version and \
@@ -454,6 +535,55 @@ class DynamoRegistry:
                 matches = False
             if not matches:
                 raise RegistryConflict('stored combi execution changed')
+
+    def _verified_tonkatsu_item(self, execution_id, guard, completed_calls, *, expected_version=None):
+        if type(guard) is not ReceivedTonkatsuReads:
+            raise RegistryConflict("protected fryer reads required")
+        item = self._get("EXEC", execution_id)
+        if (not item or not guard.matches_stored(item, completed_calls=completed_calls)
+            or (expected_version is not None and item["version"] != expected_version)):
+            raise RegistryConflict("stored fryer execution changed")
+        return item
+
+    def tonkatsu_execution(self, execution_id, guard, *, completed_calls):
+        item = self._verified_tonkatsu_item(execution_id, guard, completed_calls)
+        return self._execution_from_item(item, verified_fryer=True)
+
+    def verify_tonkatsu_execution(self, execution, guard, *, completed_calls):
+        if self.tonkatsu_execution(execution.execution_id, guard, completed_calls=completed_calls) != execution:
+            return False
+        checks = guard.verification_checks(execution_id=execution.execution_id, completed_calls=completed_calls)
+        if (checks[0]["ConditionCheck"]["TableName"] != self.auth_table
+            or checks[-1]["ConditionCheck"]["TableName"] != self.table_name):
+            return False
+        try:
+            self.client.transact_write_items(TransactItems=checks, ClientRequestToken=str(uuid4()))
+        except self.client.exceptions.TransactionCanceledException:
+            return False
+        return True
+
+    def _fryer_transaction(self, execution, guard, update, completed_calls, *, failure=False):
+        try:
+            guarded_update, checks = guard.guard_transaction(update, execution_id=execution.execution_id,
+                completed_calls=completed_calls, failure=failure)
+            if not failure and (checks[0]["ConditionCheck"]["TableName"] != self.auth_table or any(
+                check["ConditionCheck"]["TableName"] == self.table_name for check in checks
+            )):
+                raise ValueError("fryer transaction tables mismatch")
+            return guarded_update, checks
+        except (ValueError, TypeError, AttributeError, KeyError, IndexError) as error:
+            raise RegistryConflict("fryer authorization changed") from error
+
+    def _require_fryer_reservation(self, execution, provider, guard, version, completed_calls):
+        if (provider != "ollama" or execution.estimated_cost_usd != 0
+            or _key("MODEL", execution.model_id)["pk"] not in self._read_versions
+            or (execution.downgrade_consent_id is not None
+                and _key("CONSENT", execution.downgrade_consent_id)["pk"] not in self._read_versions)
+        ):
+            raise RegistryConflict("fryer execution requires a read local model and zero estimated cost")
+        row = self._verified_tonkatsu_item(execution.execution_id, guard, completed_calls, expected_version=version)
+        if self._execution_from_item(row, verified_fryer=True) != execution:
+            raise RegistryConflict("stored fryer execution changed")
 
     def _combi_checks(self, execution, guard, *, version, completed_calls):
         if type(guard) is not ReceivedCombiReads or execution.combi_binding is None:
@@ -470,14 +600,18 @@ class DynamoRegistry:
         return checks
 
     def reserve(self, execution: Execution, provider: str, *,
-                combi_source_guard: ReceivedCombiReads | None = None) -> None:
+                combi_source_guard: ReceivedCombiReads | None = None,
+                tonkatsu_source_guard: ReceivedTonkatsuReads | None = None) -> None:
         """Claim one execution and all three limits in one DynamoDB transaction."""
         cost = execution.estimated_cost_usd
         key = _key("EXEC", execution.execution_id)
         version = self._read_versions.get(key["pk"])
         if version is None:
             raise RegistryConflict("execution was not read consistently")
-        self._check_stored_combi(execution, version=version, state='PENDING')
+        if tonkatsu_source_guard is not None:
+            self._require_fryer_reservation(execution, provider, tonkatsu_source_guard, version, 0)
+        else:
+            self._check_stored_combi(execution, version=version, state='PENDING')
         if execution.combi_binding is not None:
             if provider != 'ollama' or execution.estimated_cost_usd != 0:
                 raise RegistryConflict('combi execution requires local zero-cost provider')
@@ -526,6 +660,9 @@ class DynamoRegistry:
                 checked.add(key)
         if execution.combi_binding is not None:
             items[0:1] = combi_checks
+        elif tonkatsu_source_guard is not None:
+            update, checks = self._fryer_transaction(execution, tonkatsu_source_guard, items[1], 0)
+            items[:2] = [*checks, update]
         try:
             # A retry after a known conditional failure has fresh versions and
             # therefore different transaction parameters. Preserve the token
@@ -536,7 +673,8 @@ class DynamoRegistry:
             raise RegistryConflict("execution or authorization record changed, or limit exhausted") from error
 
     def reserve_local_retry(self, execution: Execution, attempt: int, *,
-                            combi_source_guard: ReceivedCombiReads | None = None) -> None:
+                            combi_source_guard: ReceivedCombiReads | None = None,
+                            tonkatsu_source_guard: ReceivedTonkatsuReads | None = None) -> None:
         """Atomically record a local recipe retry and consume one additional call.
 
         Authorization, model, consent and budget must have been read through a
@@ -552,7 +690,10 @@ class DynamoRegistry:
         tenant_version = self._read_versions.get(tenant_key["pk"])
         if execution_version is None or tenant_version is None:
             raise RegistryConflict("execution or tenant limit was not read consistently")
-        self._check_stored_combi(execution, version=execution_version, state='RESERVED')
+        if tonkatsu_source_guard is not None:
+            self._require_fryer_reservation(execution, "ollama", tonkatsu_source_guard, execution_version, attempt - 1)
+        else:
+            self._check_stored_combi(execution, version=execution_version, state='RESERVED')
         if execution.combi_binding is not None:
             combi_checks = self._combi_checks(execution, combi_source_guard,
                 version=execution_version, completed_calls=attempt - 1)
@@ -592,6 +733,9 @@ class DynamoRegistry:
                 items.append(self._condition(kind, identifier))
         if execution.combi_binding is not None:
             items[0:1] = combi_checks
+        elif tonkatsu_source_guard is not None:
+            update, checks = self._fryer_transaction(execution, tonkatsu_source_guard, items[1], attempt - 1)
+            items[:2] = [*checks, update]
         try:
             self.client.transact_write_items(TransactItems=items, ClientRequestToken=str(uuid4()))
         except self.client.exceptions.TransactionCanceledException as error:
@@ -601,7 +745,8 @@ class DynamoRegistry:
                response_text: str | None = None, error_code: str | None = None,
                expected_execution: Execution | None = None,
                recipe_source_guard: BoundRecipeSourceGuard | None = None,
-               combi_source_guard: ReceivedCombiReads | None = None) -> None:
+               combi_source_guard: ReceivedCombiReads | None = None,
+               tonkatsu_source_guard: ReceivedTonkatsuReads | None = None) -> None:
         """Persist result, settle cost and terminal state in one transaction."""
         if succeeded != (response_text is not None) or (not succeeded and not error_code):
             raise ValueError("success requires a response; failure requires an error code")
@@ -624,14 +769,23 @@ class DynamoRegistry:
         item = self._get("EXEC", execution_id)
         if not item or item["state"] != "RESERVED" or actual_cost_usd < 0:
             raise RegistryConflict("execution is not reserved or actual cost is invalid")
+        fryer = tonkatsu_source_guard is not None
+        if fryer:
+            retry_count = item.get("retry_count", 0)
+            if (type(tonkatsu_source_guard) is not ReceivedTonkatsuReads or expected_execution is None
+                or combi_source_guard is not None or recipe_source_guard is not None or actual_cost_usd != 0
+                or type(retry_count) not in (int, Decimal) or retry_count not in (0, 1, 2)
+                or not tonkatsu_source_guard.matches_stored(item, completed_calls=1 + int(retry_count))
+            ):
+                raise RegistryConflict("invalid fryer settlement progression")
         if expected_execution is not None:
             try:
-                matches = self._execution_from_item(item) == expected_execution
+                matches = self._execution_from_item(item, verified_fryer=fryer) == expected_execution
             except (KeyError, TypeError, ValueError):
                 matches = False
             if not matches:
                 raise RegistryConflict("execution changed before settlement")
-        stored_execution = self._execution_from_item(item)
+        stored_execution = self._execution_from_item(item, verified_fryer=fryer)
         combi_checks = []
         if stored_execution.combi_binding is not None and succeeded:
             retry_count = item.get('retry_count', 0)
@@ -695,6 +849,10 @@ class DynamoRegistry:
         changes.append({"Delete": {"TableName": self.table_name,
                                     "Key": self._av({"pk": f"ACTIVE#{tenant_id}", "sk": f"EXEC#{execution_id}"})}})
         changes.extend(combi_checks)
+        if fryer:
+            changes[0], checks = self._fryer_transaction(stored_execution, tonkatsu_source_guard, changes[0],
+                                                         1 + int(retry_count), failure=not succeeded)
+            changes.extend(checks)
         if recipe_source_guard is not None:
             try:
                 checks = recipe_source_guard.settlement_checks()

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "tonkatsu-cooking-fixture-v1",
+  "provenance": "SYNTHETIC",
+  "fixtureId": "batch-a-tonkatsu-normal",
+  "seed": 100,
+  "logicalStartAt": "2026-11-28T00:00:00Z",
+  "segments": [
+    {"seconds": 10, "oilTemperatureCelsius": 170, "calibrationStatus": "OK"},
+    {"seconds": 30, "oilTemperatureCelsius": 164, "calibrationStatus": "OK"},
+    {"seconds": 275, "oilTemperatureCelsius": 170, "calibrationStatus": "OK"}
+  ]
+}

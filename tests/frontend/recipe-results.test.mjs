@@ -80,3 +80,30 @@ test('ambiguous transport failure sends once and does not expose the thrown deta
   await assert.rejects(postWithoutBody('/invoke','csrf'),error=>error instanceof ApiError&&error.status===0&&!error.message.includes('private-marker'));
   assert.equal(calls,1);
 });
+
+test('guarded fryer invokes only from a current pending record and hides stale proposals', () => {
+  assert.equal(canInvokeRecipe(parseRecipeStatus({ ...status, source_current: true }, id, job), id, job, "TONKATSU"), true);
+  assert.equal(canInvokeRecipe(parseRecipeStatus({ ...status, source_current: false }, id, job), id, job, "TONKATSU"), false);
+  assert.throws(() => parseRecipeStatus({ ...status, source_current: "true" }, id, job));
+  const fryerProposal = { ...proposal, menu: "TONKATSU", data: { temperature_c: "170", duration_seconds: 300 } };
+  assert.throws(() => parseRecipeResult({ ...result, source_current: false, proposal: fryerProposal }, id, job));
+  assert.equal(parseRecipeResult({ ...result, source_current: false, projection_status: "UNAVAILABLE",
+    error_code: "RECIPE_RESULT_UNAVAILABLE", proposal: null }, id, job).proposal, null);
+});
+
+test('fryer comparison shows approved targets and rejects broadened stored limits', () => {
+  const review_basis = {
+    rule_version: "tonkatsu-approved-targets-v1", reference_recipe_version: "baseline-r2", profile: "STANDARD",
+    target_temperature_c: 170, target_duration_seconds: 300, minimum_thickness_cm: "1.0",
+    maximum_thickness_cm: "1.5", include_maximum_thickness: false, observed_batch_mass_kg: "0.32",
+    load_scope: "OBSERVED_BATCH_ONLY", minimum_temperature_c: 165, maximum_temperature_c: 175,
+    minimum_duration_seconds: 290, maximum_duration_seconds: 360, previous_actual_duration_seconds: 290,
+    reason_code: "PRIOR_INITIAL_SAFETY_FAILURE",
+  };
+  const fryer = { ...proposal, menu: "TONKATSU", data: { temperature_c: "170", duration_seconds: 300 }, review_basis };
+  const parsed = parseRecipeResult({ ...result, proposal: fryer }, id, job).proposal;
+  assert.deepEqual(parsed.review_basis, review_basis);
+  for (const edit of [{ maximum_temperature_c: 180 }, { minimum_duration_seconds: 270 }, { load_scope: "ANY" },
+    { include_maximum_thickness: true }, { observed_batch_mass_kg: "2.6" }])
+    assert.throws(() => parseRecipeResult({ ...result, proposal: { ...fryer, review_basis: { ...review_basis, ...edit } } }, id, job));
+});

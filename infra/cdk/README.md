@@ -412,3 +412,9 @@ Autopilot의 원본/발급기·이력/조건 기준을 `combi-read-baseline.json
 Task는 Fargate/awsvpc/x64 Linux, 0.25vCPU/512MiB, 비root·읽기 전용 파일 시스템·전체 capability 제거·privileged=false로 제한한다. 전용 probe 모듈을 entryPoint로 사용하고 포트·secret·volume·임의 command를 제공하지 않는다. 기존 execution role의 검토 대상인 `/foodtech/dev/meal-refresh` / `worker` 로그 경로만 사용한다. role permission은 이 정의로 생기지 않으며 실제 GetItem 후보 적용과 실서비스 접근 검증은 별도 단계다.
 
 probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재 이미지 finding·비용·네트워크/Task 정리를 구체화한 뒤 실제 실행 승인을 받아야 한다. CLI 자체는 180초 기한과 SDK 재시도 없는 허용2/거부6개의 유한 호출만 한다. 테스트 fixture나 모의 정책 결과를 실제 Task/서비스 접근 증거로 표시하지 않는다.
+
+### 돈까스 권고의 원천 읽기 위임 권한 후보
+
+`provisionTonkatsuRecipeAccess=true`로 개발용 `FoodtechTonkatsuRecipeAccess-dev`를 합성할 수 있다. 같은 계정에 있는 서로 다른 Gateway·업무 API 역할의 ARN을 전달한다. 스택은 브로커·위임 읽기 역할, 읽기 권한 경계, 각 역할에 부착하는 추가 정책을 정의한다. 리소스 적용에는 별도 검토가 필요하다.
+
+위임 읽기는 합성 돈까스 원천 파티션과 UUID 모양의 조리작업 파티션만 허용한다. 브로커가 현재·직전 작업의 정확한 키를 세션 정책으로 좁히고, Gateway와 업무 API는 보호된 기록의 버전·계정 상태를 조건 검사한다. 이 추가 정책에 대한 합성 검사는 기존 정책과 결합한 실제 권한, 고객별 격리, 배포된 작업의 접근 성공 여부까지 확인하지 않는다.

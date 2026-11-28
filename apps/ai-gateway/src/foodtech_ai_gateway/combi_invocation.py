@@ -32,22 +32,29 @@ def _close_runtime(runtime):
 
 def configured_combi_runtime():
     """Verify the Gateway container identity; source reads use the separate lease."""
+    return configured_recipe_runtime('combi')
+
+
+def configured_recipe_runtime(recipe):
+    if recipe not in ('combi', 'tonkatsu'):
+        raise CombiRuntimeUnavailable(f'{recipe} runtime unavailable')
+    prefix = 'FOODTECH_' + recipe.upper() + '_'
     env = os.environ
     stage = env.get('FOODTECH_STAGE', '')
-    role = env.get('FOODTECH_COMBI_GATEWAY_TASK_ROLE_ARN', '')
-    role_id = env.get('FOODTECH_COMBI_GATEWAY_TASK_ROLE_ID', '')
-    read_role_id = env.get('FOODTECH_COMBI_SOURCE_READ_ROLE_ID', '')
+    role = env.get(prefix+'GATEWAY_TASK_ROLE_ARN', '')
+    role_id = env.get(prefix+'GATEWAY_TASK_ROLE_ID', '')
+    read_role_id = env.get(prefix+'SOURCE_READ_ROLE_ID', '')
     match = re.fullmatch(r'arn:aws:iam::([0-9]{12}):role/([A-Za-z0-9+=,.@_-]{1,64})', role)
-    if env.get('FOODTECH_COMBI_INVOCATION_ENABLED') != 'true' or env.get('FOODTECH_COMBI_LISTENER_ENABLED') != 'true' or \
+    if env.get(prefix+'INVOCATION_ENABLED') != 'true' or env.get(prefix+'LISTENER_ENABLED') != 'true' or \
             env.get('FOODTECH_PRINCIPAL_PROVISIONING_ENABLED') != 'true' or env.get('AWS_EXECUTION_ENV') != 'AWS_ECS_FARGATE' or \
             not re.fullmatch('[a-z0-9-]{1,32}', stage) or not match or \
             not re.fullmatch('[A-Z0-9]{16,128}', role_id) or not re.fullmatch('[A-Z0-9]{16,128}', read_role_id) or \
             env.get('FOODTECH_AI_REGISTRY_TABLE') != 'foodtech-ai-execution-registry-'+stage or \
             env.get('FOODTECH_AUTH_TABLE') != 'foodtech-auth-sessions-'+stage:
-        raise CombiRuntimeUnavailable('combi runtime unavailable')
-    read_role = f'arn:aws:iam::{match[1]}:role/foodtech-combi-source-read-{stage}'
-    if env.get('FOODTECH_COMBI_SOURCE_READ_ROLE_ARN') != read_role or role == read_role or role_id == read_role_id:
-        raise CombiRuntimeUnavailable('combi runtime unavailable')
+        raise CombiRuntimeUnavailable(f'{recipe} runtime unavailable')
+    read_role = f'arn:aws:iam::{match[1]}:role/foodtech-{recipe}-source-read-{stage}'
+    if env.get(prefix+'SOURCE_READ_ROLE_ARN') != read_role or role == read_role or role_id == read_role_id:
+        raise CombiRuntimeUnavailable(f'{recipe} runtime unavailable')
     client, resource, sts = None, None, None
     try:
         session = boto3.Session(region_name='ap-southeast-2')
@@ -79,7 +86,7 @@ def configured_combi_runtime():
                 seen.add(id(value))
                 try: value.close()
                 except (BotoCoreError, ClientError, OSError): pass
-        raise CombiRuntimeUnavailable('combi runtime unavailable') from None
+        raise CombiRuntimeUnavailable(f'{recipe} runtime unavailable') from None
     finally:
         if sts is not None:
             try: sts.close()
