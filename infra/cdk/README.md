@@ -458,3 +458,7 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 `provisionTonkatsuInferenceTask=true`는 4 vCPU·12 GiB의 개발용 CPU 시험 후보를 합성한다. 태스크 역할은 없으며 릴레이·Ollama 이미지는 각각 digest로 고정한다. 비루트 컨테이너별 전용 쓰기 볼륨을 사용하고, Ollama가 승인 모델을 인식하면 릴레이가 8448 포트를 연다. Ollama는 루프백에 바인딩한다. 실제 실행 전에 고정 이미지, 추론 TLS 버전, 사설 DNS와 Gateway 전용 인바운드 및 제한된 송신 경로를 검증한다.
 
 `provisionTonkatsuOllamaPublishing=true`는 추론 태스크에서 참조할 모델 이미지 저장소와 해당 저장소에만 쓰는 게시 역할을 정의한다. 수동 워크플로의 기본값 `inspect`는 공개 OIDC 클레임만 검사한다. 검토 SHA를 고정한 `build`는 공개 레지스트리 모델을 크기와 SHA-256으로 검사해 amd64 이미지를 만들고 외부 네트워크를 끈 CPU 추론을 시험한다. `publish`는 같은 시험을 마친 뒤 대상 저장소 설정을 대조하고 이미지 digest를 기록한다.
+
+`provisionTonkatsuPrivateNetwork=true`는 서비스 등록에 사용할 `tonkatsu.foodtech.internal` 사설 DNS와 개발용 네트워크를 합성한다. `AvailabilityZone`은 endpoint가 공통 지원하는 가용 영역을 지정하고 S3·DynamoDB prefix list ID는 Sydney의 AWS 관리 값을 전달한다. 기본 `isolated` 모드는 NAT 없이 지정한 AWS endpoint만 사용한다. `tonkatsuPrivateNetworkMode=managed-login`을 지정하면 Cognito OAuth를 사용하는 BFF 전용 NAT 서브넷과 세션 갱신용 KMS endpoint가 추가된다. BFF의 NAT 송신은 TCP 443이며 배포 시 별도 검토한다.
+
+각 ECS 서비스에는 출력된 역할별 subnet, security group, Cloud Map registry를 연결하고 공인 IP 부여를 끈다. 승인된 사설 시험 클라이언트만 BFF 8080에 연결한다. mTLS 발급에 쓰는 브로커·Gateway·추론 호스트는 이 스택의 DNS 출력으로 고정한다. Ollama 11434는 루프백에 유지된다. Cloud Map 등록과 ECS 태스크 실행은 후속 배포 단계다.
