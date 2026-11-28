@@ -2,6 +2,7 @@
 import asyncio
 from datetime import datetime, timezone
 import os
+from uuid import NAMESPACE_URL, uuid5
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
@@ -12,11 +13,43 @@ from foodtech_contracts.dynamo_tonkatsu_scope import DynamoTonkatsuReadScope
 
 from .combi_invocation import CombiRuntimeUnavailable, _close_runtime, configured_recipe_runtime
 from .policy import Caller
+from .tonkatsu_transaction_conditions import TonkatsuTransactionConditions
 from .service import GatewayService
 from .tonkatsu_read_handoff import receive_internal_tonkatsu_handoff, require_tonkatsu_transport
 
 
 _HEADERS = {"Cache-Control": "no-store"}
+
+
+def _scope_resolver(role, client, registry):
+    account = role.split(":")[4]
+    stage = role.removeprefix(f"arn:aws:iam::{account}:role/foodtech-tonkatsu-source-read-")
+    history = DynamoPriorHistoryAuthority(auth_table=registry.auth_table,
+        cooking_table=f"foodtech-cooking-jobs-{stage}", account_id=account, client=client,
+        clock=lambda: int(datetime.now(timezone.utc).timestamp()))
+    resolver = DynamoTonkatsuReadScope(execution_table=registry.table_name,
+        data_table=f"foodtech-data-flow-{stage}", history=history)
+    return resolver, account, stage
+
+
+def create_tonkatsu_request(*, request_id, owner, epoch, current_job_id, prior_job_id, job_versions):
+    """Run the verified ECS read and atomic insert on one worker thread."""
+    runtime = None
+    try:
+        runtime = configured_recipe_runtime("tonkatsu")
+        role, _, client, registry = runtime
+        resolver, account, stage = _scope_resolver(role, client, registry)
+        model_id = os.getenv("FOODTECH_RECIPE_TIER1_MODEL_ID", "").strip()
+        if not model_id:
+            raise CombiRuntimeUnavailable("tier 1 model unavailable")
+        execution_id = str(uuid5(NAMESPACE_URL, f"foodtech:tonkatsu:{stage}:{owner}:{epoch}:{request_id}"))
+        scope = resolver.plan_execution(owner=owner, epoch=epoch, execution_id=execution_id,
+            current_job_id=current_job_id, prior_job_id=prior_job_id, job_versions=job_versions)
+        conditions = TonkatsuTransactionConditions(scope=scope, account=account, stage=stage,
+            clock=lambda: int(datetime.now(timezone.utc).timestamp()))
+        return registry.create_tonkatsu_execution(conditions, model_id=model_id)
+    finally:
+        _close_runtime(runtime)
 
 
 async def invoke_observed_tonkatsu(request, execution_id, *, ollama):
@@ -38,13 +71,7 @@ async def invoke_observed_tonkatsu(request, execution_id, *, ollama):
             raise
 
         role, role_id, client, registry = runtime
-        account = role.split(":")[4]
-        stage = role.removeprefix(f"arn:aws:iam::{account}:role/foodtech-tonkatsu-source-read-")
-        history = DynamoPriorHistoryAuthority(auth_table=registry.auth_table,
-            cooking_table=f"foodtech-cooking-jobs-{stage}", account_id=account, client=client,
-            clock=lambda: int(datetime.now(timezone.utc).timestamp()))
-        resolver = DynamoTonkatsuReadScope(execution_table=registry.table_name,
-            data_table=f"foodtech-data-flow-{stage}", history=history)
+        resolver, _, _ = _scope_resolver(role, client, registry)
         guard = await receive_internal_tonkatsu_handoff(request,
             resolve_scope=lambda: resolver.resolve_execution(identifier),
             expected_role=role, expected_role_id=role_id)

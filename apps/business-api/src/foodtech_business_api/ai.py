@@ -80,6 +80,15 @@ class RecipeJobRequest(BaseModel):
         return self
 
 
+class TonkatsuJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    job_id: UUID
+    job_version: int = Field(strict=True, ge=1, le=10**18)
+    prior_job_id: UUID
+    prior_job_version: int = Field(strict=True, ge=1, le=10**18)
+
+
 class RecipeConfirmRequest(RecipeJobRequest):
     notice_version: str = Field(min_length=1, max_length=64)
     quality_warning_acknowledged: StrictBool
@@ -142,6 +151,33 @@ async def _recipe_gateway(path: str, body: dict) -> dict:
             return result.json()
     except (httpx.HTTPError, ValueError, OSError):
         raise HTTPException(502, "AI 권고 요청을 처리하지 못했습니다.") from None
+
+
+@router.post("/tonkatsu-recipe-requests", status_code=201)
+async def tonkatsu_recipe_request(request: Request, body: TonkatsuJobRequest):
+    from .cooking import _read
+
+    if body.job_id == body.prior_job_id:
+        raise HTTPException(422, "서로 다른 두 조리작업이 필요합니다.")
+    session, _, _, current, _ = await _read(request, str(body.job_id), write=True)
+    prior_session, _, _, prior, _ = await _read(request, str(body.prior_job_id), write=True)
+    if (session.subject, session.epoch) != (prior_session.subject, prior_session.epoch) or any(
+        job.get("version") != version or job.get("menu") != "TONKATSU" or job.get("provenance") != "SYNTHETIC"
+        or job.get("equipment_profile") != "synthetic-fryer-approved-v2"
+        or job.get("status") not in {"COMPLETED", "FAILED"}
+        for job, version in ((current, body.job_version), (prior, body.prior_job_version))
+    ):
+        raise HTTPException(409, "조리 기록이 변경되었거나 권고에 사용할 수 없습니다.")
+    response = await _recipe_gateway("/internal/ai/tonkatsu-recipe-requests", {
+        **body.model_dump(mode="json"), "tenant_id": session.subject, "auth_epoch": session.epoch,
+    })
+    if type(response) is not dict or response.get("state") != "PENDING":
+        raise HTTPException(502, "돈까스 권고 요청을 처리하지 못했습니다.")
+    try:
+        execution_id = str(UUID(response.get("execution_id")))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(502, "돈까스 권고 요청을 처리하지 못했습니다.") from None
+    return {"execution_id": execution_id, "state": "PENDING"}
 
 
 @router.post("/recipe-requests", status_code=201)

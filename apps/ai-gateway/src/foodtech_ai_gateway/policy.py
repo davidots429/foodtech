@@ -185,6 +185,12 @@ class GatewayPolicy:
         execution = self.registry.tonkatsu_execution(execution_id, guard, completed_calls=completed_calls)
         return self._authorize_stored(caller, execution_id, execution, require_local=True)
 
+    def authorize_tonkatsu_creation(self, execution: Execution) -> Decision:
+        if execution.feature != Feature.RECIPE_CORRECTION:
+            return Decision(False, "LOCAL_RECIPE_REQUIRED")
+        return self._authorize_stored(Caller("business-api", execution.tenant_id),
+                                      execution.execution_id, execution, require_local=True)
+
     def _authorize_stored(self, caller, execution_id, execution, *, require_local=False):
         if not execution or execution.tenant_id != caller.tenant_id or execution.execution_id != execution_id:
             return Decision(False, "EXECUTION_NOT_FOUND")

@@ -3,7 +3,9 @@ import re
 
 from foodtech_contracts.collection_evidence import MAX_RECEIPT_RECORDS
 from foodtech_contracts.combi_history_witness import canonical_uuid, history_integer
-from foodtech_contracts.tonkatsu_execution_binding import parse_tonkatsu_binding
+from foodtech_contracts.tonkatsu_execution_binding import (
+    TonkatsuExecutionBinding, TonkatsuJobReference, parse_tonkatsu_binding,
+)
 from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
 
 from .dynamo_prior_history import DynamoPriorHistoryAuthority, PriorHistoryUnavailable
@@ -66,9 +68,8 @@ class DynamoTonkatsuReadScope:
             raise ValueError("stored fryer execution mismatch")
         return owner, binding, history_integer(row["version"], 1, 2**63 - 1)
 
-    def _source_links(self, owner, binding, streams):
+    def _source_revisions(self, owner, job_ids, streams):
         requests = []
-        references = (binding.current, binding.prior)
         for stream in streams:
             requests.extend([
                 {"Get": {"TableName": self.history.cooking, "Key": self._key(stream, "BINDING"),
@@ -80,16 +81,37 @@ class DynamoTonkatsuReadScope:
         rows = self.client.transact_get_items(TransactItems=requests)["Responses"]
         if len(rows) != 4:
             raise ValueError("incomplete fryer source links")
-        for index, (stream, reference) in enumerate(zip(streams, references)):
+        versions = []
+        for index, (stream, job_id) in enumerate(zip(streams, job_ids, strict=True)):
             link, revision = (self._decode(row["Item"]) for row in rows[2 * index:2 * index + 2])
             if (
                 link.get("pk") != stream or link.get("sk") != "BINDING"
-                or link.get("job_id") != reference.job_id
-                or link.get("job_pk") != f"SCOPE#USER#{owner}#JOB#{reference.job_id}"
+                or link.get("job_id") != job_id
+                or link.get("job_pk") != f"SCOPE#USER#{owner}#JOB#{job_id}"
                 or revision.get("pk") != stream or revision.get("sk") != "SOURCE#REVISION"
-                or history_integer(revision["revision"], 1, MAX_RECEIPT_RECORDS) != reference.source_revision
             ):
-                raise ValueError("fryer source link or version changed")
+                raise ValueError("fryer source link changed")
+            versions.append(history_integer(revision["revision"], 1, MAX_RECEIPT_RECORDS))
+        return tuple(versions)
+
+    def plan_execution(self, *, owner, epoch, execution_id, current_job_id, prior_job_id, job_versions):
+        """Discover source revisions before insertion. The writer must fence this scope atomically."""
+        try:
+            if not canonical_uuid(execution_id):
+                raise ValueError("stored fryer execution identifier required")
+            witness = self.history.observe_tonkatsu(owner=owner, auth_epoch=epoch,
+                current_job_id=current_job_id, prior_job_id=prior_job_id, job_versions=job_versions)
+            current_revision, prior_revision = self._source_revisions(
+                owner, (current_job_id, prior_job_id), witness.streams,
+            )
+            self.history.revalidate_tonkatsu(witness)
+            binding = TonkatsuExecutionBinding(
+                TonkatsuJobReference(current_job_id, job_versions[0], current_revision),
+                TonkatsuJobReference(prior_job_id, job_versions[1], prior_revision), epoch,
+            )
+            return TonkatsuReadScope(execution_id, 1, binding, witness)
+        except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError, PriorHistoryUnavailable):
+            raise TonkatsuScopeUnavailable("verified fryer execution inputs unavailable") from None
 
     def resolve(self, *, owner, epoch, execution_id):
         """Bind the broker's authenticated subject and epoch to the stored execution."""
@@ -113,9 +135,13 @@ class DynamoTonkatsuReadScope:
             witness = self.history.observe_tonkatsu(owner=owner, auth_epoch=epoch,
                 current_job_id=binding.current.job_id, prior_job_id=binding.prior.job_id,
                 job_versions=(binding.current.job_version, binding.prior.job_version))
-            self._source_links(owner, binding, witness.streams)
+            job_ids = (binding.current.job_id, binding.prior.job_id)
+            revisions = (binding.current.source_revision, binding.prior.source_revision)
+            if self._source_revisions(owner, job_ids, witness.streams) != revisions:
+                raise ValueError("fryer source version changed")
             self.history.revalidate_tonkatsu(witness)
-            self._source_links(owner, binding, witness.streams)
+            if self._source_revisions(owner, job_ids, witness.streams) != revisions:
+                raise ValueError("fryer source version changed")
             if self._execution(execution_id) != execution:
                 raise ValueError("fryer execution changed")
             return TonkatsuReadScope(execution_id, version, binding, witness)

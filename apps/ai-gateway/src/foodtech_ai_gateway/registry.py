@@ -18,13 +18,15 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from boto3.dynamodb.types import TypeSerializer
 
-from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, Model, Tier, UNCONFIGURED_TIER1
+from .policy import Budget, Consent, Credential, Execution, ExecutionSnapshot, Feature, GatewayPolicy, Model, Tier, UNCONFIGURED_TIER1
 from .combi_read_handoff import ReceivedCombiReads
 from .tonkatsu_read_handoff import ReceivedTonkatsuReads
+from .tonkatsu_transaction_conditions import TonkatsuTransactionConditions
 from .recipe_source_guard import BoundRecipeSourceGuard, DynamoRecipeSourceGuard
 from .prior_history_conditions import DynamoPriorHistoryConditions
 from .recipe_read_authorization import DynamoRecipeReadAuthorization
 from foodtech_contracts.combi_execution_binding import parse_combi_binding
+from foodtech_contracts.tonkatsu_execution_binding import BINDING_SCHEMA
 
 
 def _key(kind: str, identifier: str) -> dict[str, str]:
@@ -114,6 +116,40 @@ class DynamoRegistry:
         fields["feature"] = value.feature.value
         fields["state"] = "PENDING"
         self._put_tenant_new("EXEC", value.execution_id, fields, value.tenant_id)
+
+    def create_tonkatsu_execution(self, conditions: TonkatsuTransactionConditions, *, model_id: str) -> Execution:
+        """Create a guarded pending row. Usage is charged only during reservation."""
+        if (
+            type(conditions) is not TonkatsuTransactionConditions
+            or conditions.execution_table != self.table_name or conditions.auth != self.auth_table
+            or conditions.scope.execution_version != 1 or not isinstance(model_id, str)
+            or not 1 <= len(model_id) <= 128 or model_id == UNCONFIGURED_TIER1
+        ):
+            raise ValueError("fryer creation scope unavailable")
+        scope = conditions.scope
+        owner = scope.history.history.owner
+        current, prior = scope.binding.current, scope.binding.prior
+        execution = Execution(scope.execution_id, owner, Feature.RECIPE_CORRECTION,
+            model_id, None, "SYNTHETIC", Decimal(0), job_id=current.job_id, job_version=current.job_version,
+            prior_job_id=prior.job_id, prior_job_version=prior.job_version)
+        self.begin_request()
+        decision = GatewayPolicy(self).authorize_tonkatsu_creation(execution)
+        if not decision.allowed or decision.model_id != model_id:
+            raise RegistryConflict("fryer model or execution limits unavailable")
+        item = {**_key("EXEC", scope.execution_id), **asdict(execution),
+            "feature": execution.feature.value, "state": "PENDING", "version": 1,
+            "tonkatsu_binding": {"schema_version": BINDING_SCHEMA, **asdict(scope.binding)}}
+        limit_ids = (self._limit_id("TENANT", owner), self._limit_id("PROVIDER", "ollama"),
+                     self._limit_id("PROJECT", "GLOBAL"))
+        checks = [*conditions.source_checks(), self._condition("MODEL", model_id),
+                  *(self._condition("LIMIT", key) for key in limit_ids)]
+        items = [*checks, {"Put": {"TableName": self.table_name, "Item": self._av(item),
+            "ConditionExpression": "attribute_not_exists(pk)", "ReturnValuesOnConditionCheckFailure": "NONE"}}]
+        try:
+            self.client.transact_write_items(TransactItems=items, ClientRequestToken=str(uuid4()))
+        except self.client.exceptions.TransactionCanceledException as error:
+            raise RegistryConflict("fryer execution inputs changed") from error
+        return execution
 
     def create_model(self, value: Model) -> None:
         if value.model_id == UNCONFIGURED_TIER1:

@@ -75,6 +75,7 @@ class TonkatsuTransactionConditions:
         ):
             raise ValueError("verified fryer transaction scope required")
         self.scope = scope
+        self.execution_table = f"foodtech-ai-execution-registry-{stage}"
         self.auth = f"foodtech-auth-sessions-{stage}"
         self.cooking = f"foodtech-cooking-jobs-{stage}"
         self.data = f"foodtech-data-flow-{stage}"
@@ -115,8 +116,7 @@ class TonkatsuTransactionConditions:
         if type(operation) is not dict or set(operation) != {"Update"}:
             raise ValueError("fryer execution update required")
         update = deepcopy(operation["Update"])
-        stage = self.auth.removeprefix("foodtech-auth-sessions-")
-        if update.get("TableName") != f"foodtech-ai-execution-registry-{stage}" or update.get("Key") != {
+        if update.get("TableName") != self.execution_table or update.get("Key") != {
             "pk": {"S": "EXEC#" + self.scope.execution_id}, "sk": {"S": "META"},
         }:
             raise ValueError("fryer execution update key mismatch")

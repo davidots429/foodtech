@@ -46,6 +46,14 @@ class RecipeStatusRequest(RecipeScopeRequest):
     job_id: UUID
 
 
+class TonkatsuRequest(RecipeStatusRequest):
+    request_id: UUID
+    auth_epoch: int = Field(strict=True, ge=0, lt=2**63)
+    job_version: int = Field(strict=True, ge=1, le=10**18)
+    prior_job_id: UUID
+    prior_job_version: int = Field(strict=True, ge=1, le=10**18)
+
+
 class CombiRecipeStatusRequest(RecipeStatusRequest):
     meal_id: UUID
     menu: Literal['RICE', 'MACKEREL']
@@ -435,6 +443,27 @@ async def execution_status(request: Request, execution_id: str, tenant_id: str) 
             "error_code": result.get("error_code") if result else None,
             "actual_cost_usd": str(result["actual_cost_usd"]) if result else None,
             "settlement_status": result.get("settlement_status") if result else None}, headers={'Cache-Control': 'no-store'})
+
+
+@app.post("/internal/ai/tonkatsu-recipe-requests", status_code=201)
+async def tonkatsu_recipe_request(request: Request, body: TonkatsuRequest):
+    from botocore.exceptions import BotoCoreError, ClientError
+    from .combi_invocation import CombiRuntimeUnavailable
+    from .tonkatsu_invocation import create_tonkatsu_request
+
+    _internal(request)
+    headers = {"Cache-Control": "no-store"}
+    if body.job_id == body.prior_job_id:
+        raise HTTPException(422, "TONKATSU_PRIOR_JOB_INVALID", headers=headers)
+    try:
+        value = await asyncio.to_thread(create_tonkatsu_request, owner=body.tenant_id, epoch=body.auth_epoch,
+            request_id=str(body.request_id), current_job_id=str(body.job_id), prior_job_id=str(body.prior_job_id),
+            job_versions=(body.job_version, body.prior_job_version))
+    except (RegistryConflict, ValueError):
+        raise HTTPException(409, "TONKATSU_EXECUTION_INPUTS_CHANGED", headers=headers) from None
+    except (CombiRuntimeUnavailable, BotoCoreError, ClientError):
+        raise HTTPException(503, "TONKATSU_INVOCATION_UNAVAILABLE", headers=headers) from None
+    return JSONResponse({"execution_id": value.execution_id, "state": "PENDING"}, status_code=201, headers=headers)
 
 
 @app.post("/internal/ai/tonkatsu-recipe-executions/{execution_id}/invoke")

@@ -709,6 +709,7 @@ class RegistryTests(unittest.TestCase):
         from uuid import uuid4
 
         from foodtech_ai_gateway.tonkatsu_read_handoff import ReceivedTonkatsuReads
+        from foodtech_ai_gateway.tonkatsu_transaction_conditions import TonkatsuTransactionConditions
         from foodtech_contracts.prior_history_witness import PriorHistoryWitness
         from foodtech_contracts.tonkatsu_execution_binding import BINDING_SCHEMA, TonkatsuExecutionBinding, TonkatsuJobReference
         from foodtech_contracts.tonkatsu_prior_history import TonkatsuPriorHistoryWitness, fryer_stream
@@ -733,15 +734,13 @@ class RegistryTests(unittest.TestCase):
             expires=NOW + timedelta(seconds=120), credentials=("synthetic-access", "synthetic-secret", "synthetic-token"),
             clock=lambda: now)
         guard = ReceivedTonkatsuReads(frame, scope, lambda: scope, Mock(), "dev")
-        self.registry.create_execution(Execution(execution_id, "tenant-a", Feature.RECIPE_CORRECTION, "local-model",
-            None, "SYNTHETIC", Decimal(0), job_id=current, job_version=2, prior_job_id=prior, prior_job_version=3))
         key = "EXEC#" + execution_id
-        self.resource.table.items[key, "META"]["tonkatsu_binding"] = {"schema_version": BINDING_SCHEMA, **asdict(binding)}
-        self.resource.table.items["LIMIT#2026-11#TENANT#tenant-a", "META"]["calls_remaining"] = 3
+        limit = self.resource.table.items["LIMIT#2026-11#TENANT#tenant-a", "META"]
+        limit["calls_remaining"] = 3
         self.registry.auth_table = "foodtech-auth-sessions-dev"
-        self.registry.model("local-model")
-        self.registry.budget("tenant-a", "ollama")
-        execution = self.registry.tonkatsu_execution(execution_id, guard, completed_calls=0)
+        self.resource.table.items["MODEL#local-model", "META"]["tier"] = "TIER_1"
+        creation = TonkatsuTransactionConditions(scope=scope, account="123456789012", stage="dev",
+                                                clock=lambda: now.timestamp())
         original = self.client.transact_write_items
         history_checks_present = []
         source_changed = False
@@ -761,6 +760,15 @@ class RegistryTests(unittest.TestCase):
                 if source_changed:
                     raise TransactionCanceledException()
                 return
+            if "Put" in TransactItems[-1] and len(TransactItems) == 14:
+                self.assertEqual(len(source_checks), 9)
+                self.assertEqual({action["ConditionCheck"]["Key"]["pk"]["S"] for action in TransactItems[9:-1]},
+                    {"MODEL#local-model", "LIMIT#2026-11#TENANT#tenant-a",
+                     "LIMIT#2026-11#PROVIDER#ollama", "LIMIT#2026-11#PROJECT#GLOBAL"})
+                self.assertEqual(TransactItems[-1]["Put"]["ReturnValuesOnConditionCheckFailure"], "NONE")
+                if source_changed:
+                    raise TransactionCanceledException()
+                return original(TransactItems=TransactItems[9:], ClientRequestToken=ClientRequestToken)
             history_checks_present.append(len(source_checks))
             updates = [action["Update"] for action in TransactItems if "Update" in action
                        and action["Update"]["Key"]["pk"] == {"S": key}]
@@ -779,6 +787,26 @@ class RegistryTests(unittest.TestCase):
             original(TransactItems=registry_items, ClientRequestToken=ClientRequestToken)
 
         self.client.transact_write_items = transact
+        limit["calls_remaining"] = 0
+        with self.assertRaisesRegex(RegistryConflict, "limits unavailable"):
+            self.registry.create_tonkatsu_execution(creation, model_id="local-model")
+        self.assertNotIn((key, "META"), self.resource.table.items)
+        limit["calls_remaining"] = 3
+        source_changed = True
+        with self.assertRaisesRegex(RegistryConflict, "inputs changed"):
+            self.registry.create_tonkatsu_execution(creation, model_id="local-model")
+        self.assertNotIn((key, "META"), self.resource.table.items)
+        source_changed = False
+        execution = self.registry.create_tonkatsu_execution(creation, model_id="local-model")
+        row = self.resource.table.items[key, "META"]
+        self.assertEqual(row["tonkatsu_binding"], {"schema_version": BINDING_SCHEMA, **asdict(binding)})
+        self.assertEqual((row["state"], row["version"], limit["calls_remaining"]), ("PENDING", 1, 3))
+        self.assertEqual(self.registry.tonkatsu_execution(execution_id, guard, completed_calls=0), execution)
+        with self.assertRaisesRegex(RegistryConflict, "inputs changed"):
+            self.registry.create_tonkatsu_execution(creation, model_id="local-model")
+        self.registry.tonkatsu_execution(execution_id, guard, completed_calls=0)
+        self.registry.model("local-model")
+        self.registry.budget("tenant-a", "ollama")
         before = deepcopy(self.resource.table.items)
         source_changed = True
         with self.assertRaises(RegistryConflict):

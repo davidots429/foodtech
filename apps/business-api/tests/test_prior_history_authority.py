@@ -311,6 +311,16 @@ class AuthorityTests(unittest.TestCase):
             stub.assert_no_pending_responses()
 
         with Stubber(self.client) as stub:
+            self.observation(stub)
+            links(stub)
+            self.observation(stub)
+            pending = gateway.plan_execution(owner=self.owner, epoch=2, execution_id=execution_id,
+                current_job_id=self.current, prior_job_id=self.prior, job_versions=(1, 1))
+            self.assertEqual(pending.binding, from_registry.binding)
+            self.assertEqual(pending.execution_version, 1)
+            stub.assert_no_pending_responses()
+
+        with Stubber(self.client) as stub:
             execution(stub, {**row, "state": "RESERVED"})
             with self.assertRaises(TonkatsuScopeUnavailable):
                 gateway.resolve_execution(execution_id)
