@@ -47,6 +47,9 @@ class CapsuleInventory:
         self.client = client or boto3.client("dynamodb", region_name="ap-southeast-2")
         self.serializer, self.deserializer = TypeSerializer(), TypeDeserializer()
 
+    def _matches_scope(self, value: dict, request_id: str) -> bool:
+        return value["state"] == "DELETION_LOCKED" and value.get("deletion_request_id") == request_id
+
     def _read_meta(self, locator: str, request_id: str) -> dict:
         item = self.client.get_item(TableName=self.table_name, ConsistentRead=True,
             Key={"pk": self.serializer.serialize(locator), "sk": self.serializer.serialize("META")},
@@ -57,10 +60,9 @@ class CapsuleInventory:
             raise CapsuleInventoryError("capsule metadata is unavailable")
         try:
             value = {name: self.deserializer.deserialize(item[name]) for name in
-                     ("pk", "sk", "revision", "state", "deletion_request_id")}
+                     ("pk", "sk", "revision", "state", "deletion_request_id") if name in item}
             revision = value["revision"]
-            if value["pk"] != locator or value["sk"] != "META" or value["state"] != "DELETION_LOCKED" or \
-                    value["deletion_request_id"] != request_id or \
+            if value["pk"] != locator or value["sk"] != "META" or not self._matches_scope(value, request_id) or \
                     not revision.is_finite() or revision < 1 or revision != int(revision):
                 raise ValueError
             key_fields = ("user_key_id", "encrypted_user_dek", "pool_version", "shard_id", "key_arn",
@@ -148,3 +150,23 @@ class CapsuleInventory:
                 scope_epoch=before["scope_epoch"], scope_key_version=before["scope_key_version"],
                 encrypted_dek=before["encrypted_user_dek"])
         return InventoryResult(revision=before["revision"], entry_count=count, wrapped_user_key=wrapped_key)
+
+
+class RestoredCapsuleInventory(CapsuleInventory):
+    """Read only the Link Capsule table of a specific isolated recovery set."""
+
+    def __init__(self, restored_table_arn: str, allowed_purposes: frozenset[str], *, recovery_id: str, client):
+        try:
+            if not isinstance(recovery_id, str) or str(UUID(recovery_id)) != recovery_id:
+                raise ValueError
+        except ValueError:
+            raise ValueError("explicit Capsule recovery identifier required") from None
+        pattern = rf"arn:aws:dynamodb:ap-southeast-2:[0-9]{{12}}:table/foodtech-link-capsule-restore-{recovery_id}"
+        if not isinstance(restored_table_arn, str) or not re.fullmatch(pattern, restored_table_arn) or client is None:
+            raise ValueError("explicit isolated Capsule table and recovery client required")
+        super().__init__(restored_table_arn, allowed_purposes, client=client)
+        self.restored_table_arn = restored_table_arn
+
+    def _matches_scope(self, value: dict, request_id: str) -> bool:
+        return (value["state"] == "ACTIVE" and "deletion_request_id" not in value
+                or super()._matches_scope(value, request_id))

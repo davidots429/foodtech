@@ -111,6 +111,19 @@ class RecoveryRegistryLocators:
     def __init__(self, dynamodb, *, live_registry_arn: str, recovery_cipher):
         self._table = _live_table(dynamodb, live_registry_arn)
         self._cipher = recovery_cipher
+        self.live_registry_arn = live_registry_arn
+
+    def _read(self, expected: VersionedTombstone, fields: str) -> dict | None:
+        key = {"pk": "REGISTRY", "sk": f"REQ#{expected.tombstone.request_id}"}
+        _request_key(key)
+        return self._table.get_item(
+            Key=key, ConsistentRead=True, ProjectionExpression=fields,
+            ExpressionAttributeNames=_METADATA_NAMES,
+        ).get("Item")
+
+    def require_current(self, expected: VersionedTombstone) -> None:
+        if _entry(self._read(expected, _METADATA_FIELDS)) != expected:
+            raise RecoveryRegistryInventoryError("deletion registry entry changed during recovery")
 
     def use(self, expected: VersionedTombstone, action: Callable[[bytearray, bytearray], None]) -> None:
         """Hand recovered buffers to internal work after a strongly consistent version check.
@@ -122,16 +135,7 @@ class RecoveryRegistryLocators:
         if not callable(action):
             raise ValueError("explicit recovery action required")
         request_id = expected.tombstone.request_id
-        key = {"pk": "REGISTRY", "sk": f"REQ#{request_id}"}
-        _request_key(key)
-
-        def read(fields):
-            return self._table.get_item(
-                Key=key, ConsistentRead=True, ProjectionExpression=fields,
-                ExpressionAttributeNames=_METADATA_NAMES,
-            ).get("Item")
-
-        row = read(f"{_METADATA_FIELDS}, encrypted_user_id, encrypted_capsule_locator")
+        row = self._read(expected, f"{_METADATA_FIELDS}, encrypted_user_id, encrypted_capsule_locator")
         if _entry(row) != expected:
             raise RecoveryRegistryInventoryError("deletion registry entry changed before recovery")
 
@@ -144,8 +148,7 @@ class RecoveryRegistryLocators:
             return value
 
         def confirm(user, locator):
-            if _entry(read(_METADATA_FIELDS)) != expected:
-                raise RecoveryRegistryInventoryError("deletion registry entry changed during recovery")
+            self.require_current(expected)
             action(user, locator)
 
         self._cipher.use(
