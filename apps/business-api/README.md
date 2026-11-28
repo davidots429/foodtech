@@ -731,3 +731,26 @@ BFF clientAuth 인증서의 SAN URI는 `urn:foodtech:service:business-api`, Gate
 운영자가 승인된 시험에서 해당 `EXEC#<probe>/META` 및 `MODEL#COMBI_ROLEPROBE#<probe>/META` 키가 없음을 먼저 확인해야 한다. 허용된 두 조회가 빈 결과를 반환한 뒤에만 전체 속성·금지 model/credential 속성·다른 파티션·transaction·Query의 여섯 거부를 확인한다. 예상하지 않은 데이터가 나오면 즉시 중단하고 그 값은 출력하지 않는다. 부정 사례는 정확한 `AccessDeniedException`만 인정하며 throttle/timeout/validation/예상 밖 허용은 실패다. SDK 자동 재시도는 없고 script 전체 제한은 180초다. 결과에는 사례 이름과 제한된 성공 플래그만 출력하며 키·역할 세션·항목·SDK 오류 값을 기록하지 않는다.
 
 이 probe의 성공도 해당 요청의 권한 검증만 뜻한다. 원본 STS session policy·고객 로그인·보호된 작성자/보존 이력·모델/권고 E2E 또는 고객 데이터 검증을 뜻하지 않는다. 실제 이미지 게시·Task 정의/실행·네트워크와 정리는 별도 검토·승인 대상이며 기본 비활성이다.
+
+
+### Combi 보존 목록 대조와 보호된 등록
+
+`DynamoCombiRosterAudit`는 전체 표의 키를 강한 일관성으로 페이지 조회하여
+소유자의 보존 배치와 목록, META 및 두 조리작업·모드 전환의 부모 참조를 대조한다.
+목록에 빠진 배치·고아 기록·조회 중 이력 개정 변경은 거부한다. 최대 10,000배치,
+1,000페이지와 지정된 평가 항목 예산(최대 1,000,000개)으로 제한하며 남은 예산이
+다음 페이지 한도를 충당하지 못하면 조회 전에 거부한다. Scan의 필터·projection은
+읽기 용량이나 권한 범위를 줄이지 않는다. `#LIVE`·`#SOURCE` 키는 부모 존재만
+확인하며 그 원문·내용 완전성을 인증하지 않는다.
+
+`DynamoCombiHistoryCoverageRegistrar`는 독립 검증된 유효한 ENFORCED 작성자 통제를
+전제로 위 대조를 직접 실행하고 기존 활성 USER의 `combi_history_coverage`만 갱신한다.
+계정 epoch·정지/탈퇴 잠금, 작성자 세대·manifest·유효기간 및 이력 개정을 한 트랜잭션에서
+조건 검사한다. 기존 coverage는 정확한 값 비교로 교체하며 빈 이력의 부재 조건도
+보호하되 카운터를 생성하지 않는다. 응답 유실은 미리 보관한 등록 UUID로 읽기 전용
+결과 조회만 제공한다. 결과 조회는 현재/직전 배치 선택 허가가 아니다.
+
+이 내부 기능에는 기본 client·공개 API·CLI·역할·작성자 attestation 발급이 없다.
+실제 배포의 모든 작성자 원자성 및 USER/CONTROL 필드 쓰기 보호 검증이 선행되어야
+한다. 로컬 시험은 이 권한 경계의 실효성을 증명하지 않으며 Combi 모델 실행 차단과
+실제 coverage 미발급 상태를 유지한다.
