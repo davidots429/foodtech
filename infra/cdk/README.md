@@ -452,3 +452,7 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 추론은 검토된 `*.internal:8448` 주소로만 연결한다. 추론 호스트는 Gateway 업무 역할과 분리한다. `tonkatsu-inference` 컨테이너 모드 또는 `foodtech_ai_gateway.serve_tonkatsu_inference` 모듈로 사설 mTLS 릴레이를 실행하고, 같은 호스트의 loopback에 승인된 `llama3.1:8b` Ollama를 실행한다. 릴레이는 전용 URI `urn:foodtech:service:tonkatsu-gateway-inference`의 정확한 클라이언트 인증서와 독립된 TLS 서버 인증서가 필요하다. AWS 모델 호스트·사설 네트워크·인증서 등록은 배포 시 별도로 검토한다.
 
 `provisionTonkatsuInferenceTls=true`는 추론 호스트 전용 빈 TLS Secret과 KMS 키를 별도 스택에 정의한다. 초기화 계획에 `records_host`와 `inference_host`를 지정하면 기존 세 Secret과 추론 호스트 Secret의 동일 버전을 검증한다. Gateway에는 추론 클라이언트 키를, 추론 호스트에는 서버 키를 저장한다. 해당 계획은 네 개 Secret과 세 개 스택의 검토 SHA-256을 요구한다.
+
+`provisionTonkatsuInferenceExecution=true`은 추론 태스크 전용 ECS 실행 역할과 7일 로그 그룹을 정의한다. 실행 역할은 지정한 릴레이·Ollama ECR 이미지, 두 전용 로그 스트림, 추론 TLS Secret과 해당 키에만 접근한다.
+
+`provisionTonkatsuInferenceTask=true`는 4 vCPU·12 GiB의 개발용 CPU 시험 후보를 합성한다. 태스크 역할은 없으며 릴레이·Ollama 이미지는 각각 digest로 고정한다. 비루트 컨테이너별 전용 쓰기 볼륨을 사용하고, Ollama가 승인 모델을 인식하면 릴레이가 8448 포트를 연다. Ollama는 루프백에 바인딩한다. 실제 실행 전에 고정 이미지, 추론 TLS 버전, 사설 DNS와 Gateway 전용 인바운드 및 제한된 송신 경로를 검증한다.

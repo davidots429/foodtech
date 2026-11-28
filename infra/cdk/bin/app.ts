@@ -26,9 +26,10 @@ import { CombiRecipeReadAccessStack } from "./combi-read-access.js";
 import { TonkatsuBusinessTaskRoleStack } from "./tonkatsu-business-task-role.js";
 import { TonkatsuBusinessTaskStack } from "./tonkatsu-business-task.js";
 import { TonkatsuGatewayTaskStack } from "./tonkatsu-gateway-task.js";
+import { TonkatsuInferenceTaskStack } from "./tonkatsu-inference-task.js";
 import { TonkatsuGatewayTaskRoleStack } from "./tonkatsu-gateway-task-role.js";
 import { TonkatsuRecipeAccessStack } from "./tonkatsu-access.js";
-import { TonkatsuBrokerExecutionStack, TonkatsuBrokerTaskStack, TonkatsuBusinessExecutionStack, TonkatsuGatewayExecutionStack } from "./tonkatsu-broker-task.js";
+import { TonkatsuBrokerExecutionStack, TonkatsuBrokerTaskStack, TonkatsuBusinessExecutionStack, TonkatsuGatewayExecutionStack, TonkatsuInferenceExecutionStack } from "./tonkatsu-broker-task.js";
 import { TonkatsuBrokerTlsStack, TonkatsuInferenceTlsStack, TonkatsuPeerTlsStack } from "./tonkatsu-broker-tls.js";
 import { CombiExecutionReadAccessStack } from "./combi-execution-access.js";
 import { CombiExecutionReadProbeStack } from "./combi-execution-probe.js";
@@ -129,6 +130,18 @@ if (app.node.tryGetContext("provisionCombiExecutionReadAccess") === "true") {
   const access = new CombiExecutionReadAccessStack(app, `FoodtechCombiExecutionReadAccess-${stage}`, { env }, stage);
   Tags.of(access).add("Project", "foodtech");
   Tags.of(access).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionTonkatsuInferenceTask") === "true") {
+  const task = new TonkatsuInferenceTaskStack(app, `FoodtechTonkatsuInferenceTask-${stage}`, { env }, stage);
+  Tags.of(task).add("Project", "foodtech");
+  Tags.of(task).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionTonkatsuInferenceExecution") === "true") {
+  const execution = new TonkatsuInferenceExecutionStack(app, `FoodtechTonkatsuInferenceExecution-${stage}`, { env }, stage);
+  Tags.of(execution).add("Project", "foodtech");
+  Tags.of(execution).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionTonkatsuInferenceTls") === "true") {
