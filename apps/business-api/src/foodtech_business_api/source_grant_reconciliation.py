@@ -5,23 +5,25 @@ A global coordinator must establish/renew the live Registry's versioned hold,
 freeze restored writers, and verify every store before releasing that hold.
 Application clock checks do not provide a DynamoDB server-time predicate.
 """
+import json
 import re
 from decimal import Decimal
 from uuid import UUID, uuid5
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
-from .source_grant_contract import SourceGrantConflict
+from .source_grant_contract import SourceGrantConflict, _grant_mapping
+from .subject_identity import valid_subject
 from .source_grant_inventory import MAX_GRANTS
 
 
 def validate_restore_page(start, limit):
-    if type(start) is not int or not 0 <= start <= MAX_GRANTS or type(limit) is not int or not 1 <= limit <= 20:
+    if type(start) is not int or not 0 <= start <= 2 * MAX_GRANTS or type(limit) is not int or not 1 <= limit <= 20:
         raise ValueError('invalid source restoration page')
 
 
 class SourceGrantReconciliation:
-    def __init__(self, *, inventory, client, restored_catalog_arn, clock):
+    def __init__(self, *, inventory, client, restored_catalog_arn, clock, restored_auth_arn=None):
         source_arn = inventory.cipher.source_table_arn
         match = re.fullmatch(r'arn:aws:dynamodb:ap-southeast-2:([0-9]{12}):table/foodtech-source-access-[a-z0-9-]+', source_arn)
         if not match or not isinstance(restored_catalog_arn, str) or not re.fullmatch(
@@ -33,6 +35,11 @@ class SourceGrantReconciliation:
         if str(UUID(run)) != run or name in {inventory.catalog_table, inventory.store.auth_table,
                                            inventory.store.registry_table, inventory.store.progress_table}:
             raise ValueError('restore table must differ from live storage')
+        expected_auth = (f'arn:aws:dynamodb:ap-southeast-2:{match[1]}:'
+                         f'table/foodtech-auth-sessions-restore-{run}')
+        if restored_auth_arn is not None and restored_auth_arn != expected_auth:
+            raise ValueError('explicit same-run isolated Auth restore table required')
+        self.restored_auth_arn = restored_auth_arn
         self.inventory, self.client, self.clock = inventory, client, clock
         self.restored_arn = self.table = restored_catalog_arn
         self.serializer, self.decoder = TypeSerializer(), TypeDeserializer()
@@ -83,13 +90,58 @@ class SourceGrantReconciliation:
                 ':version': version, ':restore': reconciliation_id, ':hold': hold, ':now': now, ':table': self.restored_arn}),
             'ReturnValuesOnConditionCheckFailure': 'NONE'}}
 
+    def _restored_auth(self, subject):
+        if self.restored_auth_arn is None:
+            return None
+        if not valid_subject(subject):
+            raise ValueError('valid archived subject required')
+        row = self.client.get_item(TableName=self.restored_auth_arn,
+            Key=self._encode({'pk': 'USER#' + subject}), ConsistentRead=True,
+            ProjectionExpression='pk, #grants',
+            ExpressionAttributeNames={'#grants': 'source_read_grants'}).get('Item')
+        if row is None:
+            return None
+        try:
+            fields = {key: self.decoder.deserialize(value) for key, value in row.items()}
+            if fields.get('pk') != 'USER#' + subject:
+                raise ValueError
+            _grant_mapping(fields)
+            return fields
+        except (TypeError, ValueError, AttributeError):
+            raise SourceGrantConflict('restored source grant account unavailable') from None
+
+    def _auth_check(self, subject, snapshot):
+        check = {'TableName': self.restored_auth_arn, 'Key': self._encode({'pk': 'USER#' + subject}),
+                 'ReturnValuesOnConditionCheckFailure': 'NONE'}
+        if snapshot is None:
+            check['ConditionExpression'] = 'attribute_not_exists(pk)'
+        else:
+            check['ExpressionAttributeNames'] = {'#grants': 'source_read_grants'}
+            if 'source_read_grants' in snapshot:
+                check['ConditionExpression'] = 'attribute_exists(pk) AND #grants = :grants'
+                check['ExpressionAttributeValues'] = self._encode({':grants': snapshot['source_read_grants']})
+            else:
+                check['ConditionExpression'] = 'attribute_exists(pk) AND attribute_not_exists(#grants)'
+        return {'ConditionCheck': check}
+
+    @staticmethod
+    def _references(archive, snapshot):
+        restored = _grant_mapping(snapshot or {})
+        if len(restored) > MAX_GRANTS:
+            raise SourceGrantConflict('restored source grant scope exceeds supported size')
+        pairs = set(archive.items()) | set(restored.items())
+        if len({grant for _, grant in pairs}) != len(pairs):
+            raise SourceGrantConflict('restored source grant identifier has conflicting bindings')
+        return sorted(pairs)
+
     def delete_page(self, *, subject, request_id, reconciliation_id, expected_version, start=0, limit=20):
         """Bounded idempotent deletes; canceled/changed holds fail in each transaction."""
         validate_restore_page(start, limit)
         hold = self._lease(request_id, reconciliation_id, expected_version)
+        snapshot = self._restored_auth(subject)
         totals = {}
         def action(references):
-            rows = sorted(references.items())
+            rows = self._references(references, snapshot)
             if start > len(rows):
                 raise SourceGrantConflict('source restoration page outside inventory')
             end = min(start + limit, len(rows))
@@ -103,10 +155,16 @@ class SourceGrantReconciliation:
                     'ExpressionAttributeValues': self._encode({':grant': grant, ':source': source,
                                                                ':read': 'RECIPE_SOURCE_READ', ':schema': 1}),
                     'ReturnValuesOnConditionCheckFailure': 'NONE'}}
+                operations = [check, delete]
+                token_input = (f'source-grant:{request_id}:{expected_version}:{grant}:{hold}:'
+                               f'{check["ConditionCheck"]["ExpressionAttributeValues"][":now"]["N"]}')
+                if self.restored_auth_arn is not None:
+                    auth_check = self._auth_check(subject, snapshot)
+                    operations.append(auth_check)
+                    token_input += ':' + json.dumps(auth_check, sort_keys=True, separators=(',', ':'))
                 try:
-                    self.client.transact_write_items(TransactItems=[check, delete],
-                        ClientRequestToken=str(uuid5(UUID(reconciliation_id),
-                            f'source-grant:{request_id}:{expected_version}:{grant}:{hold}:{check["ConditionCheck"]["ExpressionAttributeValues"][":now"]["N"]}')))
+                    self.client.transact_write_items(TransactItems=operations,
+                        ClientRequestToken=str(uuid5(UUID(reconciliation_id), token_input)))
                 except self.client.exceptions.TransactionCanceledException:
                     raise SourceGrantConflict('source restoration lease or grant changed') from None
             if self._lease(request_id, reconciliation_id, expected_version) != hold:
@@ -117,11 +175,12 @@ class SourceGrantReconciliation:
         return totals
 
     def observe_empty(self, *, subject, request_id, reconciliation_id, expected_version):
-        """Observe all archived keys absent; never promotes the restored environment."""
+        """Observe absence across the configured archive and restore sources."""
         hold = self._lease(request_id, reconciliation_id, expected_version)
+        snapshot = self._restored_auth(subject)
         result = {}
         def action(references):
-            grants = sorted(references.values())
+            grants = [grant for _, grant in self._references(references, snapshot)]
             residual = False
             for offset in range(0, len(grants), 100):
                 page = grants[offset:offset + 100]
@@ -132,9 +191,13 @@ class SourceGrantReconciliation:
                 if not isinstance(rows, list) or len(rows) != len(page) or any(not isinstance(row, dict) for row in rows):
                     raise SourceGrantConflict('source restore residual observation unavailable')
                 residual = residual or any('Item' in row for row in rows)
+            if self._restored_auth(subject) != snapshot:
+                raise SourceGrantConflict('restored source grant account changed')
             if self._lease(request_id, reconciliation_id, expected_version) != hold:
                 raise SourceGrantConflict('source restoration hold changed')
             result.update(state='RESIDUAL_FOUND' if residual else 'CATALOG_EMPTY_OBSERVED',
                           deletion_complete=False, restore_promotion_allowed=False)
+            if self.restored_auth_arn is not None:
+                result['restored_auth_checked'] = True
         self.inventory.use_references(subject=subject, request_id=request_id, action=action)
         return result

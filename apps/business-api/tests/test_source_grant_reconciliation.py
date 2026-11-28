@@ -132,5 +132,87 @@ class ReconciliationTests(unittest.TestCase):
                                          restored_catalog_arn=arn, clock=lambda: 100)
 
 
+    def configure_restored_auth(self):
+        self.auth = self.arn.replace('foodtech-source-access-restore-', 'foodtech-auth-sessions-restore-')
+        self.worker = SourceGrantReconciliation(inventory=self.inventory, client=self.client,
+            restored_catalog_arn=self.arn, restored_auth_arn=self.auth, clock=lambda: 100)
+
+    def auth_response(self, stub, references=None):
+        item = {'pk': 'USER#' + self.subject}
+        if references is not None:
+            item['source_read_grants'] = references
+        stub.add_response('get_item', {'Item': {k: self.serializer.serialize(v) for k, v in item.items()}},
+            {'TableName': self.auth, 'Key': {'pk': {'S': item['pk']}}, 'ConsistentRead': True,
+             'ProjectionExpression': 'pk, #grants', 'ExpressionAttributeNames': {'#grants': 'source_read_grants'}})
+
+    def test_restored_auth_replaced_reference_and_archive_are_both_reapplied_and_verified(self):
+        self.configure_restored_auth()
+        source = 'JEYUK#jeyuk-example'
+        current, older = str(uuid4()), str(uuid4())
+        self.references = {source: current}
+        restored = {source: older}
+        writes, reads = [], []
+        for operation, calls in (('TransactWriteItems', writes), ('TransactGetItems', reads)):
+            self.client.meta.events.register('before-parameter-build.dynamodb.' + operation,
+                lambda params, calls=calls, **_: calls.append(copy.deepcopy(params)))
+        with Stubber(self.client) as stub:
+            self.lease(stub)
+            self.auth_response(stub, restored)
+            stub.add_response('transact_write_items', {})
+            stub.add_response('transact_write_items', {})
+            self.lease(stub)
+            result = self.worker.delete_page(**self.scope)
+            self.lease(stub)
+            self.auth_response(stub, restored)
+            stub.add_response('transact_get_items', {'Responses': [{}, {}]})
+            self.auth_response(stub, restored)
+            self.lease(stub)
+            observation = self.worker.observe_empty(**self.scope)
+            stub.assert_no_pending_responses()
+        self.assertEqual(result['delete_acknowledged'], 2)
+        self.assertTrue(observation['restored_auth_checked'])
+        self.assertFalse(observation['restore_promotion_allowed'])
+        deleted = set()
+        for write in writes:
+            registry, delete, auth = write['TransactItems']
+            self.assertEqual(registry['ConditionCheck']['TableName'], self.inventory.store.registry_table)
+            self.assertEqual(auth['ConditionCheck']['TableName'], self.auth)
+            self.assertIn('#grants = :grants', auth['ConditionCheck']['ConditionExpression'])
+            self.assertEqual(auth['ConditionCheck']['ExpressionAttributeValues'][':grants'],
+                             self.serializer.serialize(restored))
+            deleted.add(delete['Delete']['Key']['pk']['S'])
+        self.assertEqual(deleted, {'GRANT#' + current, 'GRANT#' + older})
+        self.assertEqual({op['Get']['Key']['pk']['S'] for op in reads[0]['TransactItems']}, deleted)
+
+    def test_restored_auth_drift_or_conflicting_identifier_blocks_evidence(self):
+        self.configure_restored_auth()
+        source = 'JEYUK#jeyuk-example'
+        grant = str(uuid4())
+        self.references = {source: grant}
+        with Stubber(self.client) as stub:
+            self.lease(stub)
+            self.auth_response(stub, {'JEYUK#jeyuk-other': grant})
+            with self.assertRaisesRegex(SourceGrantConflict, 'conflicting bindings'):
+                self.worker.delete_page(**self.scope)
+            stub.assert_no_pending_responses()
+        with Stubber(self.client) as stub:
+            self.lease(stub)
+            self.auth_response(stub, {source: grant})
+            stub.add_response('transact_get_items', {'Responses': [{}]})
+            self.auth_response(stub, {})
+            with self.assertRaisesRegex(SourceGrantConflict, 'account changed'):
+                self.worker.observe_empty(**self.scope)
+            stub.assert_no_pending_responses()
+
+    def test_other_restore_auth_table_is_rejected(self):
+        self.configure_restored_auth()
+        for arn in (self.auth.replace('123456789012', '123456789013'),
+                    self.auth[:self.auth.index('-restore-')] + '-dev',
+                    self.auth.rsplit('-restore-', 1)[0] + '-restore-' + self.restore):
+            with self.subTest(arn=arn), self.assertRaises(ValueError):
+                SourceGrantReconciliation(inventory=self.inventory, client=self.client,
+                    restored_catalog_arn=self.arn, restored_auth_arn=arn, clock=lambda: 100)
+
+
 if __name__ == '__main__':
     unittest.main()

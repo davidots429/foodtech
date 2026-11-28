@@ -176,12 +176,12 @@ class SourceGrantRestoreSession:
         return self.reconciliation.observe_empty(subject=subject, request_id=request_id,
             reconciliation_id=reconciliation_id, expected_version=expected_version)
 
-
     def advance_retired(self, *, request_id, reconciliation_id, expected_version, start, limit=20):
         """Reapply the next archived page under an owned hold, without an Auth record.
 
         When the final page is acknowledged, a separate read verifies every
-        archived key in the restored catalog. A failure preserves the hold and
+        key from the archive and configured Auth copy in the restored catalog.
+        A failure preserves the hold and
         the caller can retry the same page while the hold remains valid.
         """
         validate_restore_page(start, limit)
