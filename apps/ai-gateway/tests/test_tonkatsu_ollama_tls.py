@@ -9,6 +9,7 @@ from unittest.mock import patch
 from combi_tls_fixture import certificates
 from foodtech_ai_gateway.ollama import OllamaClient, OllamaFailure, OllamaResult
 from foodtech_ai_gateway.recommendation_generation import _FIELDS, _schema, _SYSTEM, TonkatsuBaseline
+from foodtech_ai_gateway.serve_tonkatsu import main as serve_gateway
 from foodtech_ai_gateway.serve_tonkatsu_inference import CLIENT_URI, inference_server_config
 from foodtech_ai_gateway.tonkatsu_invocation import configured_tonkatsu_ollama
 from foodtech_ai_gateway.tonkatsu_ollama_tls import TonkatsuInferenceTLS
@@ -75,3 +76,16 @@ class TonkatsuOllamaTlsTests(unittest.IsolatedAsyncioTestCase):
                        "https://other.foodtech.internal:8448", f"https://{HOST}:8448/#fragment"):
             with self.subTest(origin=origin), self.assertRaises(ValueError):
                 OllamaClient(origin, private_tls=self.tls)
+
+    async def test_invalid_private_tls_prevents_gateway_listener_startup(self):
+        env = {
+            PREFIX + "PRIVATE_ORIGIN": f"https://{HOST}:8448",
+            "FOODTECH_TONKATSU_LISTENER_ENABLED": "true",
+            "FOODTECH_AI_REGISTRY_TABLE": "synthetic-registry",
+            "FOODTECH_AUTH_TABLE": "synthetic-auth",
+        }
+        with (patch.dict("os.environ", env, clear=True),
+              patch("foodtech_ai_gateway.serve_tonkatsu.tonkatsu_server_config") as config):
+            with self.assertRaises(ValueError):
+                serve_gateway()
+            config.assert_not_called()

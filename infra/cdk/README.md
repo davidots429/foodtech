@@ -450,3 +450,5 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 `provisionTonkatsuGatewayTask=true`는 개발 환경의 Gateway 브로커 호출 리스너(8445)와 고객 기록 리스너(8447)의 Fargate Task 정의를 합성한다. 둘은 같은 Gateway 업무 역할과 고정 이미지 digest를 사용하고 TLS 파일 볼륨과 로그 스트림은 각각 갖는다. Gateway TLS의 고정 Secret 버전은 브로커·기록 TLS 필드와 별도 추론 클라이언트의 `inference_server_cert_pem`, `inference_client_cert_pem`, `inference_client_key_pem`을 포함해야 한다.
 
 추론은 검토된 `*.internal:8448` 주소로만 연결한다. 추론 호스트는 Gateway 업무 역할과 분리한다. `tonkatsu-inference` 컨테이너 모드 또는 `foodtech_ai_gateway.serve_tonkatsu_inference` 모듈로 사설 mTLS 릴레이를 실행하고, 같은 호스트의 loopback에 승인된 `llama3.1:8b` Ollama를 실행한다. 릴레이는 전용 URI `urn:foodtech:service:tonkatsu-gateway-inference`의 정확한 클라이언트 인증서와 독립된 TLS 서버 인증서가 필요하다. AWS 모델 호스트·사설 네트워크·인증서 등록은 배포 시 별도로 검토한다.
+
+`provisionTonkatsuInferenceTls=true`는 추론 호스트 전용 빈 TLS Secret과 KMS 키를 별도 스택에 정의한다. 초기화 계획에 `records_host`와 `inference_host`를 지정하면 기존 세 Secret과 추론 호스트 Secret의 동일 버전을 검증한다. Gateway에는 추론 클라이언트 키를, 추론 호스트에는 서버 키를 저장한다. 해당 계획은 네 개 Secret과 세 개 스택의 검토 SHA-256을 요구한다.

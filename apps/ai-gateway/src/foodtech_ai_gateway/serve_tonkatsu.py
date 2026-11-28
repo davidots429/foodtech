@@ -25,6 +25,10 @@ def main():
         raise ValueError("fryer registry and authentication tables required")
     from .main import app
 
+    if "FOODTECH_TONKATSU_OLLAMA_PRIVATE_ORIGIN" in os.environ:
+        from .tonkatsu_invocation import configured_tonkatsu_ollama
+
+        app.state.ollama_client = configured_tonkatsu_ollama()
     config = tonkatsu_server_config(app, server_cert=os.environ["FOODTECH_TONKATSU_SERVER_CERT"],
         server_key=os.environ["FOODTECH_TONKATSU_SERVER_KEY"], broker_ca=os.environ["FOODTECH_TONKATSU_BROKER_CA"],
         broker_certificate=os.environ["FOODTECH_TONKATSU_BROKER_CERT"],
