@@ -25,6 +25,7 @@ import { RecipeHistoryAccessStack } from "./recipe-history-access.js";
 import { CombiRecipeReadAccessStack } from "./combi-read-access.js";
 import { TonkatsuBusinessTaskRoleStack } from "./tonkatsu-business-task-role.js";
 import { TonkatsuBusinessTaskStack } from "./tonkatsu-business-task.js";
+import { TonkatsuGatewayTaskRoleStack } from "./tonkatsu-gateway-task-role.js";
 import { TonkatsuRecipeAccessStack } from "./tonkatsu-access.js";
 import { TonkatsuBrokerExecutionStack, TonkatsuBrokerTaskStack, TonkatsuBusinessExecutionStack, TonkatsuGatewayExecutionStack } from "./tonkatsu-broker-task.js";
 import { TonkatsuBrokerTlsStack, TonkatsuPeerTlsStack } from "./tonkatsu-broker-tls.js";
@@ -157,6 +158,12 @@ if (app.node.tryGetContext("provisionTonkatsuBusinessExecution") === "true") {
   const execution = new TonkatsuBusinessExecutionStack(app, `FoodtechTonkatsuBusinessExecution-${stage}`, { env }, stage);
   Tags.of(execution).add("Project", "foodtech");
   Tags.of(execution).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionTonkatsuGatewayTaskRole") === "true") {
+  const gatewayRole = new TonkatsuGatewayTaskRoleStack(app, `FoodtechTonkatsuGatewayTaskRole-${stage}`, { env }, stage);
+  Tags.of(gatewayRole).add("Project", "foodtech");
+  Tags.of(gatewayRole).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionTonkatsuGatewayExecution") === "true") {
