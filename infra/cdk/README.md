@@ -440,3 +440,5 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 `provisionTonkatsuBrokerPublishing=true`로 개발용 `FoodtechTonkatsuBrokerPublishing-dev`를 합성한다. 기존 GitHub OIDC 공급자와 수동 inspect에서 관찰한 정확한 main 주체를 전달한다. 스택은 암호화된 불변 ECR 이미지 저장소 하나와 여기만 쓸 수 있는 게시 역할을 정의한다.
 
 `Publish Tonkatsu broker image` 워크플로는 검토한 전체 커밋 SHA가 일치할 때만 게시 모드로 진행한다. AWS 자격증명을 얻기 전에 브로커 이미지와 TLS 볼륨을 확인하고, 실제 저장소 설정을 대조한 뒤 게시된 digest를 기록한다.
+
+돈까스 전용 Gateway 이미지는 `provisionTonkatsuGatewayPublishing=true`로 합성하는 `FoodtechTonkatsuGatewayPublishing-dev`의 별도 ECR 및 게시 역할을 사용한다. `Publish Tonkatsu Gateway image` 워크플로의 기본 모드는 공개 OIDC 클레임 검사다. 실제 게시에는 검토한 전체 main SHA와 Gateway 역할, Gateway 저장소가 일치해야 한다.

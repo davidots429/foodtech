@@ -189,8 +189,8 @@ jobs:
       - name: Check scoped Tonkatsu broker image publication
         working-directory: infra/cdk
         run: |
-          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechTonkatsuBrokerPublishing-dev --strict --no-lookups -c provisionTonkatsuBrokerPublishing=true --output /tmp/foodtech-tonkatsu-broker-publishing-cdk > /dev/null
-          python3 ../../tests/config/check_tonkatsu_broker_publishing.py /tmp/foodtech-tonkatsu-broker-publishing-cdk/FoodtechTonkatsuBrokerPublishing-dev.template.json
+          CDK_DEFAULT_ACCOUNT=123456789012 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechTonkatsuBrokerPublishing-dev FoodtechTonkatsuGatewayPublishing-dev --strict --no-lookups -c provisionTonkatsuBrokerPublishing=true -c provisionTonkatsuGatewayPublishing=true --output /tmp/foodtech-tonkatsu-broker-publishing-cdk > /dev/null
+          python3 ../../tests/config/check_tonkatsu_broker_publishing.py /tmp/foodtech-tonkatsu-broker-publishing-cdk/FoodtechTonkatsuBrokerPublishing-dev.template.json /tmp/foodtech-tonkatsu-broker-publishing-cdk/FoodtechTonkatsuGatewayPublishing-dev.template.json
       - name: Check isolated Tonkatsu source read access
         working-directory: infra/cdk
         run: |
