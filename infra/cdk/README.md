@@ -470,3 +470,7 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 사설 시연 스택과 서비스가 생성되어 있고 태스크 수가 0일 때 `infra/scripts/tonkatsu_trial_preflight.py --reviewed-plan <plan.json>`으로 배포 전 메타데이터를 읽어 대조한다. 계획에는 `network_mode`, 네 태스크·네트워크·서비스·세 TLS 스택의 canonical JSON SHA-256을 담은 `templates`, 브로커·Gateway·Ollama의 `image_digests`, 등록한 단일 `tls_version`을 넣는다. canonical 해시는 키를 정렬하고 공백을 제거한 ASCII JSON의 SHA-256이다. 도구는 `foodtech` 로그인 프로파일만 사용하고 결과에는 확인 단계와 수량을 기록한다.
 
 사설 서브넷과 서비스별 인바운드, ECS 연결, 고정 이미지와 TLS 버전 메타데이터를 검증한다. 실제 실행 전에는 발급된 인증서의 검토 기록, 이미지 스캔 및 시험 비용·종료 계획을 별도로 확인한다.
+
+`provisionTonkatsuPrivateProbe=true`는 BFF·Broker·Gateway의 사설 연결 확인용 단일 컨테이너 태스크 정의 세 개를 합성한다. 정의를 만든 뒤 실제 시험을 승인받으면 각 원래 송신자의 사설 서브넷과 보안 그룹을 지정해 공인 IP 없이 한 번씩 실행한다. 업무 IAM 역할과 인바운드 리스너는 없으며, 실행 역할은 기존 로그·이미지·TLS 저장소 경계를 사용한다. 각 태스크에는 발신 연결에 필요한 클라이언트 인증서·개인키와 상대 서버 공개 인증서만 주입한다.
+
+프로브는 지정한 사설 호스트를 DNS로 해석하고 서버 핀과 mTLS를 확인한다. 업무 핸들러가 없는 경로에서 404를 받으면 해당 연결을 기록하고 바로 종료한다. 이 증거의 범위는 네 연결의 DNS/TLS이며 업무 권한·데이터 처리·모델 응답은 별도 종단간 시험에서 확인한다.

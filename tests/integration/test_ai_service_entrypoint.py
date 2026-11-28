@@ -96,6 +96,25 @@ class AiServiceEntrypointTests(unittest.TestCase):
             mkdir.assert_not_called()
             execute.assert_not_called()
 
+    def test_transport_probe_discards_server_material_and_runs_without_a_listener(self):
+        prefix = "FOODTECH_TONKATSU_"
+        names = {"GATEWAY_SERVER_CERT", "BROKER_CLIENT_CERT", "BROKER_CLIENT_KEY"}
+        env = {"FOODTECH_SERVICE": "tonkatsu-broker", prefix + "TRANSPORT_PROBE": "true"}
+        for name in names | {"BROKER_SERVER_KEY"}:
+            env[prefix + name + "_PEM"] = "-----BEGIN TEST-----\n"
+        captured = {}
+        with (
+            TemporaryDirectory() as parent,
+            patch.dict(os.environ, env, clear=True),
+            patch.object(entrypoint.tempfile, "tempdir", parent),
+            patch.object(entrypoint.os, "execvpe",
+                         side_effect=lambda _, args, values: captured.update(args=args, env=dict(values))),
+        ):
+            entrypoint.main()
+            self.assertEqual(captured["args"], ["python", "/app/tonkatsu_transport_probe.py"])
+            self.assertEqual(set(captured["env"]), {"FOODTECH_SERVICE", *(prefix + name for name in names)})
+            self.assertEqual(len(list(pathlib.Path(parent).rglob("foodtech_tonkatsu_*"))), 3)
+
     def test_missing_tonkatsu_peer_pin_never_starts_the_listener(self):
         env = {"FOODTECH_SERVICE": "tonkatsu-gateway"}
         for name in ("SERVER_CERT", "SERVER_KEY", "BROKER_CA"):
