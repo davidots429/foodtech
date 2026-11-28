@@ -429,6 +429,8 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 
 `provisionTonkatsuBrokerTls=true`로 개발용 `FoodtechTonkatsuBrokerTls-dev`를 합성한다. 초기 값이 없는 브로커 전용 Secret과 자동 키 교체가 설정된 전용 KMS 키를 정의한다. 스택 종료 보호를 적용하고 두 리소스를 보존한다. KMS 암호 연산은 같은 계정과 리전의 Secrets Manager가 전용 Secret 이름의 암호화 문맥으로 호출할 때만 허용한다. 실행 역할은 실제 Secret ARN을 별도로 고정한다. 인증서와 키는 별도 검토 후 등록하고 Task에서 정확한 버전 ID를 지정한다.
 
+시연용 TLS 번들은 `infra/scripts/tonkatsu_trial_tls_material.py`에서 만든다. 검토된 서로 다른 두 사설 DNS 이름에 서버 인증서를 묶고, BFF→브로커와 브로커→Gateway의 인증 기관 및 키를 분리한다. 2시간 시험과 준비 여유를 위해 3시간 동안 유효한 인증서를 만든다. 생성 함수는 값을 메모리로 반환한다. 실제 저장·버전 고정은 검토된 초기화 절차에서 진행한다.
+
 ### 돈까스 브로커 이미지 게시 후보
 
 `provisionTonkatsuBrokerPublishing=true`로 개발용 `FoodtechTonkatsuBrokerPublishing-dev`를 합성한다. 기존 GitHub OIDC 공급자와 수동 inspect에서 관찰한 정확한 main 주체를 전달한다. 스택은 암호화된 불변 ECR 이미지 저장소 하나와 여기만 쓸 수 있는 게시 역할을 정의한다.
