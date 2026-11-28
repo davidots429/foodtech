@@ -1,0 +1,141 @@
+name: Publish Tonkatsu Ollama image
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect OIDC claims, build offline-tested image, or publish the checked main commit
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, build, publish]
+      expected_sha:
+        description: Full reviewed main commit SHA required for build and publication
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foodtech-tonkatsu-ollama-image
+  cancel-in-progress: false
+
+jobs:
+  tonkatsu-ollama-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-southeast-2
+      PUBLISH_ROLE_ARN: ${{ vars.FOODTECH_TONKATSU_OLLAMA_PUBLISH_ROLE_ARN }}
+      PUBLISH_ACCOUNT_ID: ${{ vars.FOODTECH_AWS_ACCOUNT_ID }}
+      OPERATION: ${{ inputs.operation }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.expected_sha }}
+    steps:
+      - name: Require manual trusted main context
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = davidots429/foodtech
+          test "$GITHUB_REF" = refs/heads/main
+          case "$OPERATION" in inspect|build|publish) ;; *) exit 1 ;; esac
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Inspect public OIDC claims without printing tokens
+        if: inputs.operation == 'inspect'
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 infra/scripts/tonkatsu_broker_publish.py inspect --service ollama --output "$RUNNER_TEMP/tonkatsu-ollama-oidc-inspection.json"
+      - name: Record OIDC inspection
+        if: inputs.operation == 'inspect'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tonkatsu-ollama-oidc-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tonkatsu-ollama-oidc-inspection.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Validate reviewed publishing target
+        id: target
+        if: inputs.operation == 'publish'
+        run: python3 infra/scripts/tonkatsu_broker_publish.py target --service ollama
+      - name: Verify source and build immutable local model image
+        if: inputs.operation == 'build' || inputs.operation == 'publish'
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$EXPECTED_SOURCE_SHA" = "$GITHUB_SHA"
+          df -h "$RUNNER_TEMP" "$(docker info --format '{{.DockerRootDir}}')"
+          stage="$(mktemp -d "$RUNNER_TEMP/tonkatsu-ollama.XXXXXX")"
+          trap 'rm -rf -- "$stage"' EXIT
+          python3 infra/containers/prepare_tonkatsu_ollama_context.py --from-registry --output "$stage/context"
+          docker build --platform linux/amd64 --network none \
+            --label "org.opencontainers.image.source=https://github.com/davidots429/foodtech" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag foodtech-tonkatsu-ollama:reviewed "$stage/context"
+          docker image inspect --format "image_bytes={{.Size}} architecture={{.Architecture}}" foodtech-tonkatsu-ollama:reviewed
+      - name: Run offline CPU smoke test before obtaining AWS credentials
+        if: inputs.operation == 'build' || inputs.operation == 'publish'
+        run: |
+          timeout 300 docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /bin/sh foodtech-tonkatsu-ollama:reviewed -eu -c '
+              test "$(id -u)" = 65532
+              test "$OLLAMA_HOST" = 127.0.0.1:11434
+              test "$OLLAMA_NO_CLOUD" = 1
+              /bin/ollama serve >"$TMPDIR/server.log" 2>&1 &
+              server=$!
+              trap "kill $server 2>/dev/null || :" EXIT
+              attempts=0
+              until /bin/ollama show llama3.1:8b >/dev/null 2>&1; do
+                kill -0 "$server"
+                attempts=$((attempts + 1))
+                test "$attempts" -lt 45
+                sleep 1
+              done
+              /bin/ollama run llama3.1:8b "Reply with one word: ready." >"$TMPDIR/output"
+              test -s "$TMPDIR/output"
+              echo "Offline CPU inference passed"
+            '
+      - name: Obtain short-lived Tonkatsu Ollama publishing credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.1
+        if: inputs.operation == 'publish'
+        with:
+          aws-region: ap-southeast-2
+          role-to-assume: ${{ vars.FOODTECH_TONKATSU_OLLAMA_PUBLISH_ROLE_ARN }}
+          allowed-account-ids: ${{ vars.FOODTECH_AWS_ACCOUNT_ID }}
+          role-duration-seconds: 1800
+          role-session-name: tonkatsu-ollama-${{ github.run_id }}-${{ github.run_attempt }}
+          unset-current-credentials: true
+      - name: Verify reviewed repository before Docker login
+        if: inputs.operation == 'publish'
+        run: |
+          aws ecr describe-repositories --repository-names foodtech/tonkatsu-ollama-dev --region "$AWS_REGION" --output json > "$RUNNER_TEMP/tonkatsu-ollama-repository.json"
+          python3 infra/scripts/tonkatsu_broker_publish.py verify-repository --service ollama --input "$RUNNER_TEMP/tonkatsu-ollama-repository.json"
+      - name: Publish immutable image and record registry digest
+        timeout-minutes: 25
+        if: inputs.operation == 'publish'
+        env:
+          REGISTRY: ${{ steps.target.outputs.registry }}
+          REPOSITORY: ${{ steps.target.outputs.repository }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG="$RUNNER_TEMP/foodtech-tonkatsu-ollama-docker"
+          mkdir -p "$DOCKER_CONFIG"
+          trap 'docker logout "$REGISTRY" >/dev/null 2>&1 || true; rm -f "$DOCKER_CONFIG/config.json"' EXIT
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+          docker tag foodtech-tonkatsu-ollama:reviewed "$REPOSITORY:$TAG"
+          docker push "$REPOSITORY:$TAG"
+          export IMAGE_DIGEST="$(aws ecr describe-images --repository-name foodtech/tonkatsu-ollama-dev --image-ids "imageTag=$TAG" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)"
+          python3 infra/scripts/tonkatsu_broker_publish.py manifest --service ollama --output "$RUNNER_TEMP/tonkatsu-ollama-image-manifest.json"
+      - name: Record immutable image manifest
+        uses: actions/upload-artifact@v7
+        if: inputs.operation == 'publish'
+        with:
+          name: tonkatsu-ollama-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tonkatsu-ollama-image-manifest.json
+          if-no-files-found: error
+          retention-days: 7

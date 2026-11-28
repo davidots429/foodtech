@@ -1,4 +1,5 @@
 import hashlib
+import io
 import importlib.util
 import json
 import tempfile
@@ -55,6 +56,42 @@ class TonkatsuOllamaContextTests(unittest.TestCase):
         self.assertIn('VOLUME ["/run/foodtech-ollama"]', dockerfile)
         self.assertIn("TMPDIR=/run/foodtech-ollama", dockerfile)
         self.assertIn("USER 65532:65532", dockerfile)
+
+    def test_registry_reconstructs_same_reviewed_manifest_and_verifies_blobs(self):
+        upstream = self.manifest.read_bytes()
+        digest = hashlib.sha256(upstream).hexdigest()
+        expected_manifest = json.loads(upstream)
+        expected_manifest["layers"].append({
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "digest": f"sha256:{digest}",
+            "size": len(upstream),
+        })
+        expected_bytes = json.dumps(expected_manifest, separators=(",", ":")).encode()
+        paths = {
+            "manifests/8b": upstream,
+            **{f"blobs/{path.name.replace('sha256-', 'sha256:')}": path.read_bytes()
+               for path in (self.store / "blobs").iterdir()},
+        }
+
+        def registry(path):
+            return io.BytesIO(paths[path])
+
+        with (
+            patch.object(context, "REGISTRY_MANIFEST_SHA256", digest),
+            patch.object(context, "MANIFEST_SHA256", hashlib.sha256(expected_bytes).hexdigest()),
+            patch.object(context, "registry_open", side_effect=registry),
+        ):
+            context.prepare_context(None, self.output, self.base_image)
+        store = self.output / "models"
+        self.assertEqual((store / context.MANIFEST).read_bytes(), expected_bytes)
+        self.assertEqual((store / "blobs" / f"sha256-{digest}").read_bytes(), upstream)
+
+    def test_changed_public_manifest_is_rejected_before_blob_requests(self):
+        with patch.object(context, "registry_open", return_value=io.BytesIO(b"changed")) as request:
+            with self.assertRaisesRegex(ValueError, "public manifest differs"):
+                context.prepare_context(None, self.output, self.base_image)
+        request.assert_called_once_with("manifests/8b")
+        self.assertFalse(self.output.exists())
 
     def test_rejects_changed_blob_and_removes_partial_output(self):
         self.model_blob.write_bytes(b"other")

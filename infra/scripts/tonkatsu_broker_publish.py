@@ -8,7 +8,7 @@ import re
 import maintenance_publish as common
 
 def workflow(service):
-    if service not in ("broker", "gateway"):
+    if service not in ("broker", "gateway", "ollama"):
         raise ValueError("unknown Tonkatsu publishing service")
     return common.REPOSITORY + f"/.github/workflows/publish-tonkatsu-{service}-image.yml@refs/heads/main"
 
@@ -61,7 +61,7 @@ def verify_repository(env, document, *, service="broker"):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=['inspect', 'target', 'verify-repository', 'manifest'])
-    parser.add_argument('--service', choices=['broker', 'gateway'], default='broker')
+    parser.add_argument('--service', choices=['broker', 'gateway', 'ollama'], default='broker')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--input', type=Path)
     options = parser.parse_args()
