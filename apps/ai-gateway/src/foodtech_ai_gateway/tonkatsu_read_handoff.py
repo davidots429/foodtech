@@ -19,7 +19,7 @@ from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
 
 from .tonkatsu_transaction_conditions import TonkatsuTransactionConditions
 from .tonkatsu_quality_inputs import observe_tonkatsu_quality
-from .tonkatsu_source_observation import observe_scoped_tonkatsu_source
+from .tonkatsu_source_observation import observe_scoped_tonkatsu_source, read_scoped_safety_events
 
 REGION = "ap-southeast-2"
 TLS_PEER_KEY = "foodtech_tonkatsu_peer_sha256"
@@ -68,8 +68,13 @@ class ReceivedTonkatsuReads:
                 or job.get("job_id") != reference.job_id
                 or history_integer(job.get("version")) != reference.job_version):
                 raise TonkatsuHandoffDenied("stored fryer job changed")
-            observed = observe_scoped_tonkatsu_source(table=data, job=job, scoped_stream=stream,
-                                                       expected_revision=reference.source_revision)
+            safety_events = None
+            if job.get("latest_tonkatsu_reheat") is not None or job.get("pending_tonkatsu_reheat") is not None:
+                safety_events = read_scoped_safety_events(cooking, job)
+            observed = observe_scoped_tonkatsu_source(
+                table=data, job=job, scoped_stream=stream, expected_revision=reference.source_revision,
+                safety_events=safety_events,
+            )
             quality = observe_tonkatsu_quality(cooking, job, observed)
             result.append(replace(observed, quality_summary=quality))
         self._check_scope()

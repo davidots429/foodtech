@@ -13,6 +13,7 @@ from foodtech_ai_gateway.service import GatewayService
 from foodtech_ai_gateway.tonkatsu_read_handoff import ReceivedTonkatsuReads
 from foodtech_contracts.tonkatsu_controller_samples import TonkatsuControllerSummary
 from foodtech_contracts.quality_score import SCORE_ITEMS
+from foodtech_contracts.tonkatsu_safety_observation import TonkatsuReheatHistory, TonkatsuReheatSegment
 from foodtech_contracts.tonkatsu_observed_inputs import (
     ObservedTonkatsuBatch, TonkatsuBatchFacts, TonkatsuCoreSummary, TonkatsuQualitySummary,
 )
@@ -93,6 +94,18 @@ class GuardedTonkatsuServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(context["immediately_prior"]["core_observation"]["probes_below_limit"], 1)
             self.assertEqual(context["current"]["quality_observation"]["status"], "CURRENT")
             self.assertEqual(context["immediately_prior"]["quality_observation"], {"status": "BLOCKED_BY_SAFETY"})
+
+    async def test_passed_reheat_never_justifies_shortening_failed_initial_cooking(self):
+        recheck = self.current.core_summary
+        history = TonkatsuReheatHistory(self.prior.core_summary,
+                                      (TonkatsuReheatSegment(Decimal(50), 0, "PASSED", recheck),))
+        self.prior = replace(self.prior, reheat_history=history, recorded_safety_status="PASSED",
+                             core_summary=recheck, quality_summary=self.current.quality_summary)
+        self.ollama.structured_chat.return_value = SimpleNamespace(text='{"temperature_c":170,"duration_seconds":290}')
+        outcome = await self.execute()
+        self.assertEqual((outcome.state, outcome.error_code), ("FAILED", "LIMIT_CHECK_FAILED"))
+        self.ollama.structured_chat.assert_awaited_once()
+        self.assertFalse(self.registry.finish.call_args.kwargs["succeeded"])
 
     async def test_incomplete_observation_denied_before_reservation(self):
         self.current = replace(self.current, unresolved=("REHEAT_TIMELINE_REQUIRES_SEPARATE_OBSERVATION",))

@@ -5,7 +5,7 @@ snapshot. A valid declared value is not proof of ingredient or oil suitability.
 Point samples are never interpolated into a continuous temperature history.
 """
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -15,31 +15,10 @@ from .tonkatsu_batch import MAX_BATCH_G, PROFILE, WEIGHT_TOLERANCE_G, batch as c
 from .tonkatsu_process import TIME_BANDS, cooking_time_status, thickness_profile
 from .recommendation_output import TonkatsuBaseline
 from .tonkatsu_controller_samples import observe_controller, TonkatsuControllerSummary
-
-
-def _number(value, minimum, maximum):
-    if type(value) not in (str, int, Decimal):
-        raise ValueError('recorded number required')
-    result = Decimal(value)
-    if not result.is_finite() or not minimum <= result <= maximum:
-        raise ValueError('recorded number out of bounds')
-    return result
-
-
-def _integer(value, minimum, maximum):
-    result = _number(value, minimum, maximum)
-    if type(value) is str or result != int(result):
-        raise ValueError('recorded integer required')
-    return int(result)
-
-
-def _instant(value):
-    if type(value) is not str or len(value) > 40:
-        raise ValueError('recorded timestamp required')
-    result = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    if result.utcoffset() != timedelta(0):
-        raise ValueError('recorded UTC timestamp required')
-    return result
+from .tonkatsu_safety_observation import (
+    TonkatsuCoreSummary, TonkatsuReheatHistory, observe_tonkatsu_reheat, summarize_tonkatsu_core,
+    recorded_instant as _instant, recorded_integer as _integer, recorded_number as _number,
+)
 
 
 @dataclass(frozen=True)
@@ -66,20 +45,6 @@ class TonkatsuBatchFacts:
             "target_product_weight_g": target_weight,
             "product_weight_tolerance_g": WEIGHT_TOLERANCE_G,
             "maximum_batch_mass_kg": str(Decimal(MAX_BATCH_G) / 1000),
-        }
-
-
-@dataclass(frozen=True)
-class TonkatsuCoreSummary:
-    probe_count: int
-    minimum_celsius: Decimal
-    probes_below_limit: int
-
-    def model_context(self):
-        return {
-            "probe_count": self.probe_count, "minimum_celsius": str(self.minimum_celsius),
-            "probes_below_limit": self.probes_below_limit,
-            "observed_span_seconds": 60, "samples_per_probe": 61,
         }
 
 
@@ -129,6 +94,7 @@ class ObservedTonkatsuBatch:
     controller_summary: TonkatsuControllerSummary | None = field(repr=False)
     unresolved: tuple[str, ...]
     quality_summary: TonkatsuQualitySummary | None = None
+    reheat_history: TonkatsuReheatHistory | None = None
 
     @property
     def core_series_consistent(self):
@@ -156,58 +122,30 @@ class ObservedTonkatsuBatch:
             'cooking_time_status': cooking_time_status(self.profile, self.cooking_seconds),
             'batch': self.batch_facts.model_context(),
             'core_observation': self.core_summary.model_context() if self.core_summary else None,
+            'reheat_history': self.reheat_history.model_context() if self.reheat_history else None,
             'core_series_consistent': self.core_series_consistent,
             'controller_observation': self.controller_summary.model_context() if self.controller_summary else None,
             'unresolved': list(self.unresolved)}
 
 
-def observe_tonkatsu_batch(job, raws):
+def observe_tonkatsu_batch(job, raws, *, safety_events=None):
     try:
-        return _observe(job, raws)
+        return _observe(job, raws, safety_events)
     except (KeyError, TypeError, ValueError, AttributeError, ArithmeticError, OverflowError):
         raise ValueError('synthetic fryer observation unavailable') from None
 
 
 def _core_summary(job, count):
-    """Summarize each calibrated series before checking the stored decision."""
+    """Check that the currently recorded probes still match their safety revision."""
     try:
         if _integer(job['core_check_safety_version'], 1, 10**18) != _integer(job['safety_version'], 1, 10**18):
             return None
-        probes = job['core_check']
-        if type(probes) is not list or len(probes) != count:
-            return None
-        ids, probe_ids, removals = set(), set(), set()
-        minima = []
-        lifted = _instant(job['actual_lifted_at'])
-        for probe in probes:
-            item = probe['item_id']
-            if type(item) is not str or not 1 <= len(item) <= 80 or item in ids or probe.get('calibration_status') != 'OK':
-                return None
-            probe_id = probe.get('probe_id')
-            removal = _integer(probe.get('removal_sequence'), 1, count)
-            if type(probe_id) is not str or not 1 <= len(probe_id) <= 80 or probe_id in probe_ids or removal in removals or \
-                    _instant(probe.get('measurement_start')) != lifted or \
-                    _instant(probe.get('measurement_end')) != lifted + timedelta(seconds=60):
-                return None
-            ids.add(item); probe_ids.add(probe_id); removals.add(removal)
-            samples = probe['samples']
-            if type(samples) is not list or len(samples) != 61:
-                return None
-            temperatures = []
-            for second, sample in enumerate(samples):
-                if _integer(sample['at_second'], 0, 60) != second:
-                    return None
-                temperatures.append(_number(sample['celsius'], Decimal('-273.15'), Decimal(300)))
-            minima.append(min(temperatures))
-        below = sum(temperature < 75 for temperature in minima)
-        if job.get('safety_status') != ('FAILED' if below else 'PASSED'):
-            return None
-        return TonkatsuCoreSummary(count, min(minima), below)
+        return summarize_tonkatsu_core(job['core_check'], count, _instant(job['actual_lifted_at']), job['safety_status'])
     except (KeyError, TypeError, ValueError, AttributeError, ArithmeticError):
         return None
 
 
-def _observe(job, raws):
+def _observe(job, raws, safety_events):
     if type(job) is not dict or job.get('menu') != 'TONKATSU' or job.get('provenance') != 'SYNTHETIC' or \
             job.get('equipment_profile') != 'synthetic-fryer-approved-v2' or \
             type(job.get('job_id')) is not str or str(UUID(job['job_id'])) != job['job_id'] or \
@@ -306,7 +244,14 @@ def _observe(job, raws):
     else: unresolved.append('STORAGE_STATE_UNAVAILABLE')
     if storage not in {'CHILLED', 'UNKNOWN'}:
         unresolved.append('STORAGE_OUTSIDE_SYNTHETIC_SCENARIO')
+    history = None
     core = _core_summary(job, expected['product_count'])
+    if job.get('pending_tonkatsu_reheat') is not None or job.get('latest_tonkatsu_reheat') is not None:
+        if safety_events is None:
+            unresolved.append('REHEAT_TIMELINE_REQUIRES_SEPARATE_OBSERVATION')
+        else:
+            history = observe_tonkatsu_reheat(job, safety_events, expected['product_count'])
+            core = history.segments[-1].core
     if core is None:
         unresolved.append('CORE_SERIES_MISSING_STALE_OR_INCONSISTENT')
     recipe = job.get('recipe_version')
@@ -318,8 +263,6 @@ def _observe(job, raws):
     recorded_process = job.get('process_assessment_status')
     if type(recorded_process) is not str or recorded_process not in {'NORMAL', 'WARNING', 'FAILED', 'INSUFFICIENT_DATA'}:
         recorded_process = 'NOT_RECORDED'
-    if job.get('pending_tonkatsu_reheat') or job.get('latest_tonkatsu_reheat'):
-        unresolved.append('REHEAT_TIMELINE_REQUIRES_SEPARATE_OBSERVATION')
     return ObservedTonkatsuBatch(
         job_id=job['job_id'], profile=profile, cooking_seconds=seconds, load_kg=load,
         sample_count=len(during), minimum_sample_c=min(row[2] for row in during),
@@ -331,5 +274,5 @@ def _observe(job, raws):
         recorded_safety_status=job['safety_status'] if job.get('safety_status') in {'PASSED', 'FAILED'} else 'NOT_MEASURED',
         core_summary=core, batch_facts=facts, reference_recipe_version=recipe,
         recorded_process_status=recorded_process, controller_summary=controller,
-        unresolved=tuple(sorted(set(unresolved))),
+        unresolved=tuple(sorted(set(unresolved))), reheat_history=history,
     )

@@ -11,18 +11,24 @@ from foodtech_contracts.tonkatsu_prior_history import fryer_stream
 from foodtech_contracts.collection_evidence import MAX_RECEIPT_RECORDS, matches_snapshot
 from foodtech_contracts.tonkatsu_observed_inputs import observe_tonkatsu_batch
 from foodtech_contracts.tonkatsu_source_quality import QUALITY_PREFIX, verify_source_quality
+from foodtech_contracts.tonkatsu_safety_observation import MAX_SAFETY_EVENTS
 
 RECEIPT_PREFIX = "COLLECTION#RECEIPT#"
 
 
-def _read_rows(table, stream, prefix, limit):
+def _read_rows(table, stream, prefix, limit, *, fields=()):
     paginator = table.meta.client.get_paginator("query")
     rows = []
+    projection = {}
+    if fields:
+        names = {f"#field{index}": field for index, field in enumerate(fields)}
+        projection = {"ProjectionExpression": ", ".join(names), "ExpressionAttributeNames": names}
     pages = paginator.paginate(
         TableName=table.name,
         KeyConditionExpression=Key("pk").eq(stream) & Key("sk").begins_with(prefix),
         ConsistentRead=True,
         PaginationConfig={"PageSize": min(limit + 1, 100)},
+        **projection,
     )
     last_key = ""
     for page in pages:
@@ -54,7 +60,14 @@ def _revision_matches(table, stream, revision):
     )
 
 
-def observe_scoped_tonkatsu_source(*, table, job, scoped_stream, expected_revision):
+def read_scoped_safety_events(cooking, job):
+    return _read_rows(cooking, job["pk"], "EVENT#SAFETY#", MAX_SAFETY_EVENTS, fields=(
+        "pk", "sk", "domain", "trigger", "from_status", "to_status", "probes",
+        "segment", "reheat_segment_id", "occurred_at",
+    ))
+
+
+def observe_scoped_tonkatsu_source(*, table, job, scoped_stream, expected_revision, safety_events=None):
     """Read a fixed source revision with receipt and immutable quality evidence."""
     if type(expected_revision) is not int or not 1 <= expected_revision <= MAX_RECEIPT_RECORDS:
         raise ValueError("bounded fryer source revision required")
@@ -72,7 +85,7 @@ def observe_scoped_tonkatsu_source(*, table, job, scoped_stream, expected_revisi
     if receipt is None:
         raise ValueError("complete fryer collection evidence unavailable")
     verify_source_quality(scoped_stream, raws, receipt, projections)
-    observed = observe_tonkatsu_batch(job, raws)
+    observed = observe_tonkatsu_batch(job, raws, safety_events=safety_events)
     if not _revision_matches(table, scoped_stream, expected_revision):
         raise ValueError("fryer source revision changed")
     return observed

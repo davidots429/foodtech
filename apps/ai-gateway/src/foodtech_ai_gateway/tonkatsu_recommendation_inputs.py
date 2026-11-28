@@ -23,7 +23,9 @@ def build_tonkatsu_inputs(current, prior):
             raise ValueError("verified fryer evidence unavailable")
     if current.job_id == prior.job_id or current.profile != prior.profile:
         raise ValueError("comparable fryer jobs required")
-    return Evidence("PARTIAL", prior.recorded_safety_status, True, False), prior.as_baseline(), {
+    # A successful recheck does not turn the original failed duration into a passing baseline.
+    baseline_safety = "FAILED" if prior.reheat_history else prior.recorded_safety_status
+    return Evidence("PARTIAL", baseline_safety, True, False), prior.as_baseline(), {
         "basis": "AUTHORIZED_SYNTHETIC_FRYER_BATCHES",
         "same_reference_recipe_version": (
             current.reference_recipe_version == prior.reference_recipe_version

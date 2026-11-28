@@ -131,6 +131,79 @@ class ObservedTonkatsuTests(unittest.TestCase):
         self.job['latest_tonkatsu_reheat']={'private':'not-for-model'}
         self.assertIn('REHEAT_TIMELINE_REQUIRES_SEPARATE_OBSERVATION',self.observe().unresolved)
 
+    def reheat_fixture(self):
+        self.job["pk"] = "scoped-job"
+
+        def event(version, trigger, before, after, time, **fields):
+            return {"pk": self.job["pk"], "sk": f"EVENT#SAFETY#{version:012d}", "domain": "SAFETY_STATUS",
+                    "trigger": trigger, "from_status": before, "to_status": after,
+                    "occurred_at": self.iso(time), **fields}
+
+        def probes(lifted, temperature):
+            rows = copy.deepcopy(self.job["core_check"])
+            for row in rows:
+                row["measurement_start"] = self.iso(lifted)
+                row["measurement_end"] = self.iso(lifted + 60)
+            rows[0]["samples"][30]["celsius"] = temperature
+            return rows
+
+        first = {"segment_id": str(uuid4()), "item_ids": ["0", "1"], "started_at": self.iso(371),
+                 "lifted_at": self.iso(421), "duration_seconds": "50.0", "previous_safety_version": Decimal(3),
+                 "reason": "private-reheat-reason"}
+        second = {**first, "segment_id": str(uuid4()), "started_at": self.iso(490),
+                  "lifted_at": self.iso(515), "duration_seconds": "25", "previous_safety_version": Decimal(6)}
+        final = probes(515, "76")
+        events = [
+            event(3, "CORE_CHECK", "NOT_MEASURED", "FAILED", 365, probes=probes(300, "74"), reheat_segment_id=None),
+            event(4, "TONKATSU_REHEATED", "FAILED", "INCOMPLETE", 425, segment=first),
+            event(5, "CORE_CHECK", "INCOMPLETE", "INCOMPLETE", 482, probes=probes(421, None),
+                  reheat_segment_id=first["segment_id"]),
+            event(6, "CORE_CHECK", "INCOMPLETE", "FAILED", 483, probes=probes(421, "74.9"),
+                  reheat_segment_id=first["segment_id"]),
+            event(7, "TONKATSU_REHEATED", "FAILED", "INCOMPLETE", 520, segment=second),
+            event(8, "CORE_CHECK", "INCOMPLETE", "PASSED", 580, probes=final, reheat_segment_id=second["segment_id"]),
+        ]
+        self.job.update(safety_version=Decimal(8), core_check_safety_version=Decimal(8), core_check=copy.deepcopy(final),
+                        latest_tonkatsu_reheat=copy.deepcopy(second), pending_tonkatsu_reheat=None)
+        return events
+
+    def test_two_reheats_preserve_original_failure_and_final_assessment(self):
+        result = observe_tonkatsu_batch(self.job, self.raws, safety_events=self.reheat_fixture())
+        history = result.model_context()["reheat_history"]
+        self.assertEqual(history["initial_safety_status"], "FAILED")
+        self.assertEqual(history["initial_core_observation"]["minimum_celsius"], "74")
+        segments = history["additional_heat_segments"]
+        self.assertEqual([(x["duration_seconds"], x["incomplete_rechecks"], x["safety_status"]) for x in segments],
+                         [("50", 1, "FAILED"), ("25", 0, "PASSED")])
+        self.assertEqual(result.recorded_safety_status, "PASSED")
+        self.assertTrue(result.core_series_consistent)
+        self.assertEqual(result.core_summary.minimum_celsius, Decimal(75))
+        self.assertEqual(result.cooking_seconds, 300)
+        self.assertNotIn("REHEAT_TIMELINE_REQUIRES_SEPARATE_OBSERVATION", result.unresolved)
+        self.assertNotIn("private-reheat-reason", str(result.model_context()))
+        self.assertNotIn(self.job["latest_tonkatsu_reheat"]["segment_id"], str(result.model_context()))
+
+    def test_inconsistent_reheat_history_blocks_observation(self):
+        for kind in ("gap", "foreign", "duration", "wrong_products", "stale_latest", "pending", "updated_core"):
+            self.setUp()
+            events = self.reheat_fixture()
+            if kind == "gap":
+                del events[2]
+            elif kind == "foreign":
+                events[4]["pk"] = "another-job"
+            elif kind == "duration":
+                events[1]["segment"]["duration_seconds"] = "49"
+            elif kind == "wrong_products":
+                events[5]["probes"][0]["item_id"] = "replacement"
+            elif kind == "stale_latest":
+                self.job["latest_tonkatsu_reheat"] = events[1]["segment"]
+            elif kind == "pending":
+                self.job["pending_tonkatsu_reheat"] = self.job["latest_tonkatsu_reheat"]
+            elif kind == "updated_core":
+                self.job["core_check"][1]["samples"][1]["celsius"] = "76"
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "^synthetic fryer observation unavailable$"):
+                observe_tonkatsu_batch(self.job, self.raws, safety_events=events)
+
     def test_inconsistent_job_binding_thickness_time_load_or_foreign_raw_is_rejected(self):
         for kind in ('thickness','time','load','batch','duplicate','foreign','protocol','nonfinite'):
             self.setUp()
