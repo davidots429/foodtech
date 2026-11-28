@@ -418,3 +418,11 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 `provisionTonkatsuRecipeAccess=true`로 개발용 `FoodtechTonkatsuRecipeAccess-dev`를 합성할 수 있다. 같은 계정에 있는 서로 다른 Gateway·업무 API 역할의 ARN을 전달한다. 스택은 브로커·위임 읽기 역할, 읽기 권한 경계, 각 역할에 부착하는 추가 정책을 정의한다. 리소스 적용에는 별도 검토가 필요하다.
 
 위임 읽기는 합성 돈까스 원천 파티션과 UUID 모양의 조리작업 파티션만 허용한다. 브로커가 현재·직전 작업의 정확한 키를 세션 정책으로 좁히고, Gateway와 업무 API는 보호된 기록의 버전·계정 상태를 조건 검사한다. 이 추가 정책에 대한 합성 검사는 기존 정책과 결합한 실제 권한, 고객별 격리, 배포된 작업의 접근 성공 여부까지 확인하지 않는다.
+
+### 돈까스 권고 브로커의 수동 Task 후보
+
+`provisionTonkatsuBrokerTask=true`로 개발용 `FoodtechTonkatsuBrokerTask-dev`를 합성할 수 있다. 전용 브로커·실행 역할과 브로커 RoleId, ECR 이미지 digest, TLS 번들의 ARN과 불변 버전 및 사설 Gateway HTTPS 주소를 전달한다. 이미지와 TLS를 바꾸면 새 정의를 검토한다.
+
+브로커는 비루트 사용자로 읽기 전용 루트에서 실행한다. 작업 종료 시 사라지는 별도 볼륨을 TLS 파일에 사용하며 전용 로그 그룹을 참조한다. 사설 서브넷과 보안 그룹의 인바운드·아웃바운드, 역할과 비밀 값, 이미지 게시, Task 실행과 시험 종료는 별도 준비가 필요하다.
+
+`provisionTonkatsuBrokerExecution=true`로 실행 역할과 7일 보존 로그 그룹을 별도로 합성한다. 역할은 브로커 이미지 저장소와 자기 로그 스트림, 지정된 TLS 번들의 읽기 및 해당 번들에 대한 Secrets Manager 경유 복호화만 허용한다. 이 역할을 브로커의 업무 데이터 조회 역할과 분리한다.

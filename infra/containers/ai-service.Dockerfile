@@ -20,5 +20,7 @@ ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY infra/containers/ai_service_entrypoint.py /app/ai_service_entrypoint.py
+RUN install -d -m 0700 -o 10001 -g 10001 /run/foodtech-tls
+VOLUME ["/run/foodtech-tls"]
 USER 10001:10001
 ENTRYPOINT ["python", "/app/ai_service_entrypoint.py"]
