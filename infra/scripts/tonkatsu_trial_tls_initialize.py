@@ -37,12 +37,15 @@ class Destination:
 
 
 def reviewed_plan(document):
-    if type(document) is not dict or set(document) != {"request_id", "broker_host", "gateway_host", "stacks", "stores"}:
+    required = {"request_id", "broker_host", "gateway_host", "stacks", "stores"}
+    if type(document) is not dict or set(document) not in (required, required | {"records_host"}):
         raise ValueError("unexpected reviewed plan fields")
     token = UUID(document["request_id"])
     if token.version != 4 or str(token) != document["request_id"]:
         raise ValueError("canonical reviewed request UUID required")
-    verify_hostnames(document["broker_host"], document["gateway_host"])
+    if "records_host" in document and document["records_host"] is None:
+        raise ValueError("reviewed records hostname required")
+    verify_hostnames(document["broker_host"], document["gateway_host"], document.get("records_host"))
     hashes = document["stacks"]
     if type(hashes) is not dict or set(hashes) != {BROKER_STACK, PEER_STACK} or any(
         not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value) for value in hashes.values()
@@ -109,7 +112,7 @@ def initialize(sdk, plan, progress, *, apply=False):
     token = plan["request_id"]
     candidate_stage = "foodtech-tonkatsu-trial-" + token
     required_stages = ("AWSCURRENT", candidate_stage)
-    hosts = {name: plan[name] for name in ("broker_host", "gateway_host")}
+    hosts = {name: plan[name] for name in ("broker_host", "gateway_host", "records_host") if name in plan}
     for stack, digest in plan["stacks"].items():
         progress["phase"] = "stack_metadata"
         _verify_stack(cf, stack, digest, [target for target in stores if target.stack == stack])
