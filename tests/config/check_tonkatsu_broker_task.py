@@ -74,16 +74,17 @@ def validate(template, account):
         assert not re.fullmatch(parameter["AllowedPattern"], rejected)
 
 
-def validate_execution(template, account):
+def validate_execution(template, account, service="broker"):
+    prefix = service.title()
     region = "ap-southeast-2"
-    log_group = "/foodtech/dev/tonkatsu-broker"
+    log_group = f"/foodtech/dev/tonkatsu-{service}"
     resources = {key: value for key, value in template["Resources"].items() if key != "CDKMetadata"}
     assert sorted(resource["Type"] for resource in resources.values()) == [
         "AWS::IAM::Policy", "AWS::IAM::Role", "AWS::Logs::LogGroup",
     ]
     role_id, role = next((key, resource["Properties"]) for key, resource in resources.items()
                          if resource["Type"] == "AWS::IAM::Role")
-    assert role["RoleName"] == "foodtech-tonkatsu-broker-execution-dev"
+    assert role["RoleName"] == f"foodtech-tonkatsu-{service}-execution-dev"
     assert "ManagedPolicyArns" not in role and "Policies" not in role
     assert role["AssumeRolePolicyDocument"]["Statement"] == [
         {"Action": "sts:AssumeRole", "Effect": "Allow", "Principal": {"Service": "ecs-tasks.amazonaws.com"},
@@ -96,8 +97,8 @@ def validate_execution(template, account):
     policy = next(resource["Properties"] for resource in resources.values() if resource["Type"] == "AWS::IAM::Policy")
     assert policy["Roles"] == [{"Ref": role_id}]
     regional = {"aws:RequestedRegion": region}
-    secret = {"Ref": "BrokerTlsBundleArn"}
-    key = {"Ref": "BrokerTlsKeyArn"}
+    secret = {"Ref": f"{prefix}TlsBundleArn"}
+    key = {"Ref": f"{prefix}TlsKeyArn"}
 
     def allow(action, resource, condition=None):
         return {"Effect": "Allow", "Action": action, "Resource": resource,
@@ -106,20 +107,27 @@ def validate_execution(template, account):
     assert policy["PolicyDocument"]["Statement"] == [
         allow("ecr:GetAuthorizationToken", "*"),
         allow(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
-              f"arn:aws:ecr:{region}:{account}:repository/foodtech/tonkatsu-broker-dev"),
+              f"arn:aws:ecr:{region}:{account}:repository/foodtech/tonkatsu-{service}-dev"),
         allow(["logs:CreateLogStream", "logs:PutLogEvents"],
-              f"arn:aws:logs:{region}:{account}:log-group:{log_group}:log-stream:broker/broker/*"),
+              f"arn:aws:logs:{region}:{account}:log-group:{log_group}:log-stream:{service}/{service}/*"),
         allow("secretsmanager:GetSecretValue", secret,
               {"StringEquals": regional, "Bool": {"aws:SecureTransport": "true"}}),
         allow("kms:Decrypt", key, {"StringEquals": {**regional,
               "kms:ViaService": f"secretsmanager.{region}.amazonaws.com", "kms:EncryptionContext:SecretARN": secret}}),
     ]
-    for name in ("BrokerTlsBundleArn", "BrokerTlsKeyArn"):
+    for name in (f"{prefix}TlsBundleArn", f"{prefix}TlsKeyArn"):
         assert "Default" not in template["Parameters"][name]
+    pattern = template["Parameters"][f"{prefix}TlsBundleArn"]["AllowedPattern"]
+    root = f"arn:aws:secretsmanager:{region}:{account}:secret:foodtech/"
+    other = "gateway" if service == "broker" else "broker"
+    assert re.fullmatch(pattern, root + f"tonkatsu-{service}-dev/tls-aB1234")
+    assert not re.fullmatch(pattern, root + f"tonkatsu-{other}-dev/tls-aB1234")
 
 
 
 if __name__ == "__main__":
     validate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2])
     validate_execution(json.loads(Path(sys.argv[3]).read_text()), sys.argv[2])
-    print("Tonkatsu broker task and execution access checks passed")
+    if len(sys.argv) == 5:
+        validate_execution(json.loads(Path(sys.argv[4]).read_text()), sys.argv[2], "gateway")
+    print("Tonkatsu broker Task and separate execution access checks passed")
