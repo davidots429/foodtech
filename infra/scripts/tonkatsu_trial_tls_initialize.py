@@ -1,4 +1,4 @@
-"""Inspect or explicitly initialize three reviewed development Tonkatsu TLS Secrets."""
+"""Inspect or explicitly initialize reviewed development Tonkatsu TLS Secrets."""
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +15,7 @@ from tonkatsu_trial_tls_material import generate, verify_bundles, verify_hostnam
 
 BROKER_STACK = "FoodtechTonkatsuBrokerTls-dev"
 PEER_STACK = "FoodtechTonkatsuPeerTls-dev"
+INFERENCE_STACK = "FoodtechTonkatsuInferenceTls-dev"
 DESTINATIONS = (
     ("business-api", PEER_STACK, "BusinessApi"), ("broker", BROKER_STACK, "Broker"),
     ("gateway", PEER_STACK, "Gateway"),
@@ -38,24 +39,30 @@ class Destination:
 
 def reviewed_plan(document):
     required = {"request_id", "broker_host", "gateway_host", "stacks", "stores"}
-    if type(document) is not dict or set(document) not in (required, required | {"records_host"}):
+    if type(document) is not dict or set(document) not in (
+        required, required | {"records_host"}, required | {"records_host", "inference_host"},
+    ):
         raise ValueError("unexpected reviewed plan fields")
     token = UUID(document["request_id"])
     if token.version != 4 or str(token) != document["request_id"]:
         raise ValueError("canonical reviewed request UUID required")
-    if "records_host" in document and document["records_host"] is None:
-        raise ValueError("reviewed records hostname required")
-    verify_hostnames(document["broker_host"], document["gateway_host"], document.get("records_host"))
+    optional_hosts = ("records_host", "inference_host")
+    if any(host in document and document[host] is None for host in optional_hosts):
+        raise ValueError("reviewed optional hostnames must be explicit")
+    verify_hostnames(document["broker_host"], document["gateway_host"], *(document.get(host) for host in optional_hosts))
+    expected = DESTINATIONS
+    if "inference_host" in document:
+        expected += (("inference", INFERENCE_STACK, "Inference"),)
     hashes = document["stacks"]
-    if type(hashes) is not dict or set(hashes) != {BROKER_STACK, PEER_STACK} or any(
+    if type(hashes) is not dict or set(hashes) != {entry[1] for entry in expected} or any(
         not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value) for value in hashes.values()
     ):
-        raise ValueError("both reviewed template hashes required")
+        raise ValueError("reviewed template hashes for every destination required")
     stores = document["stores"]
-    if type(stores) is not dict or set(stores) != {entry[0] for entry in DESTINATIONS}:
-        raise ValueError("three reviewed TLS stores required")
+    if type(stores) is not dict or set(stores) != {entry[0] for entry in expected}:
+        raise ValueError("reviewed TLS stores for every destination required")
     destinations = []
-    for role, stack, prefix in DESTINATIONS:
+    for role, stack, prefix in expected:
         row = stores[role]
         if type(row) is not dict or set(row) != {"arn", "key"}:
             raise ValueError("TLS Secret and key references required")
@@ -112,7 +119,7 @@ def initialize(sdk, plan, progress, *, apply=False):
     token = plan["request_id"]
     candidate_stage = "foodtech-tonkatsu-trial-" + token
     required_stages = ("AWSCURRENT", candidate_stage)
-    hosts = {name: plan[name] for name in ("broker_host", "gateway_host", "records_host") if name in plan}
+    hosts = {name: plan[name] for name in ("broker_host", "gateway_host", "records_host", "inference_host") if name in plan}
     for stack, digest in plan["stacks"].items():
         progress["phase"] = "stack_metadata"
         _verify_stack(cf, stack, digest, [target for target in stores if target.stack == stack])
@@ -137,6 +144,8 @@ def initialize(sdk, plan, progress, *, apply=False):
         progress["phase"] = "generate"
         material = generate(**hosts)
         expected = (material.business_api, material.broker, material.gateway)
+        if material.inference is not None:
+            expected += (material.inference,)
         for store, value in zip(stores, expected, strict=True):
             progress["phase"] = "write_" + store.role
             if inspect_target(store):

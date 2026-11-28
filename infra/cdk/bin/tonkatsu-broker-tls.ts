@@ -73,3 +73,16 @@ export class TonkatsuPeerTlsStack extends Stack {
     this.templateOptions.metadata = { AWSToolsMetrics: { AWSAgentToolkit: "aws-cloudformation@3" } };
   }
 }
+
+export class TonkatsuInferenceTlsStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string) {
+    super(scope, id, props);
+    if (stage !== "dev" || this.region !== "ap-southeast-2" || Token.isUnresolved(this.account) ||
+        !/^\d{12}$/.test(this.account)) {
+      throw new Error("Tonkatsu inference TLS requires dev and an explicit regional account");
+    }
+    createTlsStore(this, "Inference", "foodtech/tonkatsu-inference-dev/tls", "inference host");
+    this.templateOptions.description = "Empty isolated development Tonkatsu inference TLS store and key";
+    this.templateOptions.metadata = { AWSToolsMetrics: { AWSAgentToolkit: "aws-cloudformation@3" } };
+  }
+}

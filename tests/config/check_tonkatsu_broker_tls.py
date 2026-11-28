@@ -74,4 +74,9 @@ if __name__ == "__main__":
     tls, task, execution = (json.loads(Path(path).read_text()) for path in sys.argv[1:4])
     check_broker(tls, task, execution, sys.argv[4])
     check_peers(json.loads(Path(sys.argv[5]).read_text()), sys.argv[4])
-    print("Three empty Tonkatsu TLS stores, dedicated keys and broker Task ARN contracts verified")
+    if len(sys.argv) == 7:
+        inference = json.loads(Path(sys.argv[6]).read_text())
+        assert set(inference["Resources"]) - {"CDKMetadata"} == {"InferenceTlsKey", "InferenceTlsBundle"}
+        assert set(inference["Outputs"]) == {"InferenceTlsBundleArn", "InferenceTlsKeyArn"}
+        check_store(inference, "Inference", "foodtech/tonkatsu-inference-dev/tls", sys.argv[4])
+    print("Empty Tonkatsu TLS stores, dedicated keys and broker Task ARN contracts verified")
