@@ -64,11 +64,7 @@ def configuration(argv):
         raise ValueError('reviewed request, template and bounds required')
     if not hasattr(signal, 'SIGALRM'):
         raise ValueError('this bounded operator command requires a POSIX host')
-    forbidden = ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN',
-        'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_ROLE_ARN', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
-        'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'BOTO_CONFIG')
-    if any(os.getenv(name) for name in forbidden) or any(os.getenv(name, 'foodtech') != 'foodtech' for name in ('AWS_PROFILE', 'AWS_DEFAULT_PROFILE')):
-        raise ValueError('only the reviewed foodtech login profile is allowed')
+    verify_operator_environment()
     stores = []
     for kind in ('mock', 'collector'):
         arn, key = getattr(options, f'{kind}_secret_arn'), getattr(options, f'{kind}_key_arn')
@@ -79,6 +75,14 @@ def configuration(argv):
     if stores[0].key == stores[1].key:
         raise ValueError('independent storage keys required')
     return options, stores
+
+
+def verify_operator_environment():
+    forbidden = ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN',
+        'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_ROLE_ARN', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+        'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'BOTO_CONFIG')
+    if any(os.getenv(name) for name in forbidden) or any(os.getenv(name, 'foodtech') != 'foodtech' for name in ('AWS_PROFILE', 'AWS_DEFAULT_PROFILE')):
+        raise ValueError('only the reviewed foodtech login profile is allowed')
 
 
 class VerifiedOperator:
@@ -169,7 +173,7 @@ def verify_stack(cf, stores, template_hash):
                 raise ValueError('resource ownership or readiness differs')
 
 
-def verify_store(sm, kms, store, request_id, progress):
+def verify_store(sm, kms, store, request_id, progress, *, policy_factory=expected_policy, required_stages=("AWSCURRENT",)):
     description = sm.describe_secret(SecretId=store.arn)
     tags = {item['Key']: item['Value'] for item in description.get('Tags', [])}
     if description.get('ARN') != store.arn or description.get('Name') != store.name or description.get('KmsKeyId') != store.key or \
@@ -184,7 +188,7 @@ def verify_store(sm, kms, store, request_id, progress):
     if not kms.get_key_rotation_status(KeyId=store.key).get('KeyRotationEnabled'):
         raise ValueError('key rotation must be enabled')
     actual = json.loads(kms.get_key_policy(KeyId=store.key, PolicyName='default')['Policy'])
-    if policy_shape(actual) != policy_shape(expected_policy(store)):
+    if policy_shape(actual) != policy_shape(policy_factory(store)):
         raise ValueError('key policy differs from review')
     versions = []
     # This API has NextToken/MaxResults but no packaged SDK paginator model.
@@ -197,28 +201,30 @@ def verify_store(sm, kms, store, request_id, progress):
             versions.append(item)
             if len(versions) > 1:
                 raise ValueError('existing versions require separate reconciliation')
-    if versions and (versions[0].get('VersionId') != request_id or versions[0].get('VersionStages') != ['AWSCURRENT']):
+    if versions and (versions[0].get('VersionId') != request_id or set(versions[0].get('VersionStages') or []) != set(required_stages)):
         raise ValueError('foreign or noncurrent initialization must not be overwritten')
     return bool(versions)
 
 
-def read_value(sm, store, request_id):
+def read_value(sm, store, request_id, *, required_stages=("AWSCURRENT",)):
     result = sm.get_secret_value(SecretId=store.arn, VersionId=request_id)
     if result.get('ARN') != store.arn or result.get('Name') != store.name or result.get('VersionId') != request_id or \
-            result.get('VersionStages') != ['AWSCURRENT'] or not isinstance(result.get('SecretString'), str):
+            set(result.get('VersionStages') or []) != set(required_stages) or not isinstance(result.get('SecretString'), str):
         raise ValueError('unexpected value version')
     return json.loads(result['SecretString'])
 
 
-def write_value(sm, store, request_id, value, progress):
+def write_value(sm, store, request_id, value, progress, *, candidate_stage=None):
     payload = json.dumps(value, sort_keys=True, separators=(',', ':'))
     if len(payload.encode()) > 65536:
         raise ValueError('material exceeds Secret size limit')
     progress['attempted_secret_writes'] += 1
-    result = sm.put_secret_value(SecretId=store.arn, ClientRequestToken=request_id, SecretString=payload)
+    stage_options = {"VersionStages": [candidate_stage]} if candidate_stage else {}
+    required_stages = {"AWSCURRENT", candidate_stage} if candidate_stage else {"AWSCURRENT"}
+    result = sm.put_secret_value(SecretId=store.arn, ClientRequestToken=request_id, SecretString=payload, **stage_options)
     progress['acknowledged_secret_writes'] += 1
     if result.get('ARN') != store.arn or result.get('Name') != store.name or result.get('VersionId') != request_id or \
-            result.get('VersionStages') != ['AWSCURRENT']:
+            set(result.get('VersionStages') or []) != required_stages:
         raise ValueError('unexpected upload receipt; reconcile before retrying')
 
 
