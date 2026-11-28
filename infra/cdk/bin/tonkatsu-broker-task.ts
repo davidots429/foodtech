@@ -9,8 +9,8 @@ const logGroupName = "/foodtech/dev/tonkatsu-broker";
 const repositoryName = "foodtech/tonkatsu-broker-dev";
 export const tonkatsuBrokerTlsName = `${repositoryName}/tls`;
 
-function tlsBundlePattern(region: string, account: string): string {
-  return `^arn:aws:secretsmanager:${region}:${account}:secret:${tonkatsuBrokerTlsName}-[A-Za-z0-9]{6}$`;
+function tlsBundlePattern(region: string, account: string, name = tonkatsuBrokerTlsName): string {
+  return `^arn:aws:secretsmanager:${region}:${account}:secret:${name}-[A-Za-z0-9]{6}$`;
 }
 
 const tlsFields = {
@@ -107,25 +107,28 @@ export class TonkatsuBrokerTaskStack extends Stack {
   }
 }
 
-export class TonkatsuBrokerExecutionStack extends Stack {
-  constructor(scope: Construct, id: string, props: StackProps, stage: string) {
+class TonkatsuExecutionStack extends Stack {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string, service: "broker" | "gateway") {
     super(scope, id, props);
     if (stage !== "dev" || Token.isUnresolved(this.account) ||
         !/^\d{12}$/.test(this.account) || this.region !== "ap-southeast-2") {
-      throw new Error("Tonkatsu broker execution access requires dev and an explicit regional account");
+      throw new Error(`Tonkatsu ${service} execution access requires dev and an explicit regional account`);
     }
-    const secret = new CfnParameter(this, "BrokerTlsBundleArn", {
-      type: "String", allowedPattern: tlsBundlePattern(this.region, this.account),
+    const prefix = service === "broker" ? "Broker" : "Gateway";
+    const repository = `foodtech/tonkatsu-${service}-dev`;
+    const logGroup = `/foodtech/dev/tonkatsu-${service}`;
+    const secret = new CfnParameter(this, `${prefix}TlsBundleArn`, {
+      type: "String", allowedPattern: tlsBundlePattern(this.region, this.account, `${repository}/tls`),
     });
-    const key = new CfnParameter(this, "BrokerTlsKeyArn", {
+    const key = new CfnParameter(this, `${prefix}TlsKeyArn`, {
       type: "String",
       allowedPattern: `^arn:aws:kms:${this.region}:${this.account}:key/[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$`,
     });
-    const group = new logs.LogGroup(this, "BrokerLogs", {
-      logGroupName, retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN,
+    const group = new logs.LogGroup(this, `${prefix}Logs`, {
+      logGroupName: logGroup, retention: logs.RetentionDays.ONE_WEEK, removalPolicy: RemovalPolicy.RETAIN,
     });
-    const role = new iam.Role(this, "BrokerExecutionRole", {
-      roleName: executionRoleName,
+    const role = new iam.Role(this, `${prefix}ExecutionRole`, {
+      roleName: `foodtech-tonkatsu-${service}-execution-dev`,
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com").withConditions({
         StringEquals: { "aws:SourceAccount": this.account },
         ArnLike: { "aws:SourceArn": `arn:aws:ecs:${this.region}:${this.account}:*` },
@@ -138,10 +141,10 @@ export class TonkatsuBrokerExecutionStack extends Stack {
     };
     allow(["ecr:GetAuthorizationToken"], ["*"]);
     allow(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"], [
-      `arn:aws:ecr:${this.region}:${this.account}:repository/${repositoryName}`,
+      `arn:aws:ecr:${this.region}:${this.account}:repository/${repository}`,
     ]);
     allow(["logs:CreateLogStream", "logs:PutLogEvents"], [
-      `arn:aws:logs:${this.region}:${this.account}:log-group:${logGroupName}:log-stream:broker/broker/*`,
+      `arn:aws:logs:${this.region}:${this.account}:log-group:${logGroup}:log-stream:${service}/${service}/*`,
     ]);
     allow(["secretsmanager:GetSecretValue"], [secret.valueAsString], {
       StringEquals: regional, Bool: { "aws:SecureTransport": "true" },
@@ -150,9 +153,21 @@ export class TonkatsuBrokerExecutionStack extends Stack {
       ...regional, "kms:ViaService": `secretsmanager.${this.region}.amazonaws.com`,
       "kms:EncryptionContext:SecretARN": secret.valueAsString,
     } });
-    new CfnOutput(this, "BrokerExecutionRoleArn", { value: role.roleArn });
-    new CfnOutput(this, "BrokerLogGroupName", { value: group.logGroupName });
-    this.templateOptions.description = "Broker execution role and log group for one image repository and TLS bundle";
+    new CfnOutput(this, `${prefix}ExecutionRoleArn`, { value: role.roleArn });
+    new CfnOutput(this, `${prefix}LogGroupName`, { value: group.logGroupName });
+    this.templateOptions.description = `${prefix} execution role and log group for one image repository and TLS bundle`;
     this.templateOptions.metadata = { AWSToolsMetrics: { AWSAgentToolkit: "aws-cloudformation@3" } };
+  }
+}
+
+export class TonkatsuBrokerExecutionStack extends TonkatsuExecutionStack {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string) {
+    super(scope, id, props, stage, "broker");
+  }
+}
+
+export class TonkatsuGatewayExecutionStack extends TonkatsuExecutionStack {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string) {
+    super(scope, id, props, stage, "gateway");
   }
 }
