@@ -26,6 +26,7 @@ import { CombiRecipeReadAccessStack } from "./combi-read-access.js";
 import { TonkatsuBusinessTaskRoleStack } from "./tonkatsu-business-task-role.js";
 import { TonkatsuBusinessTaskStack } from "./tonkatsu-business-task.js";
 import { TonkatsuGatewayTaskStack } from "./tonkatsu-gateway-task.js";
+import { TonkatsuPrivateServicesStack } from "./tonkatsu-private-services.js";
 import { TonkatsuPrivateNetworkStack } from "./tonkatsu-private-network.js";
 import { TonkatsuInferenceTaskStack } from "./tonkatsu-inference-task.js";
 import { TonkatsuGatewayTaskRoleStack } from "./tonkatsu-gateway-task-role.js";
@@ -137,6 +138,12 @@ if (app.node.tryGetContext("provisionCombiExecutionReadAccess") === "true") {
   const access = new CombiExecutionReadAccessStack(app, `FoodtechCombiExecutionReadAccess-${stage}`, { env }, stage);
   Tags.of(access).add("Project", "foodtech");
   Tags.of(access).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionTonkatsuPrivateServices") === "true") {
+  const services = new TonkatsuPrivateServicesStack(app, `FoodtechTonkatsuPrivateServices-${stage}`, { env }, stage);
+  Tags.of(services).add("Project", "foodtech");
+  Tags.of(services).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionTonkatsuPrivateNetwork") === "true") {

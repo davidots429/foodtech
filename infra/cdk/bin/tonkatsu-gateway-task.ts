@@ -1,6 +1,7 @@
 import { CfnOutput, CfnParameter, CfnRule, Fn, Stack, StackProps, Token } from "aws-cdk-lib";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import { Construct } from "constructs";
+import { tonkatsuListenerHealth } from "./tonkatsu-private-services.js";
 
 const invocationFields = {
   SERVER_CERT: "server_cert_pem",
@@ -67,6 +68,7 @@ export class TonkatsuGatewayTaskStack extends Stack {
       privileged: false, stopTimeout: 30, linuxParameters: { capabilities: { drop: ["ALL"] } },
       mountPoints: [{ sourceVolume: `${name}-tls`, containerPath: directory, readOnly: false }],
       portMappings: [{ containerPort: port, protocol: "tcp" }],
+      healthCheck: tonkatsuListenerHealth(port),
       environment: Object.entries({ ...common, ...environment }).map(([envName, value]) => ({ name: envName, value })),
       secrets: Object.entries(fields).map(([suffix, field]) => ({
         name: `FOODTECH_TONKATSU_${suffix}_PEM`,

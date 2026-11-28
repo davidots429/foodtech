@@ -3,6 +3,7 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
 import { Construct } from "constructs";
+import { tonkatsuListenerHealth } from "./tonkatsu-private-services.js";
 
 const executionRoleName = "foodtech-tonkatsu-broker-execution-dev";
 const logGroupName = "/foodtech/dev/tonkatsu-broker";
@@ -89,6 +90,7 @@ export class TonkatsuBrokerTaskStack extends Stack {
         linuxParameters: { capabilities: { drop: ["ALL"] } },
         mountPoints: [{ sourceVolume: "broker-tls", containerPath: tlsDirectory, readOnly: false }],
         portMappings: [{ containerPort: 8446, protocol: "tcp" }],
+        healthCheck: tonkatsuListenerHealth(8446),
         environment: Object.entries(variables).map(([name, value]) => ({ name, value })),
         secrets: Object.entries(tlsFields).map(([suffix, key]) => ({
           name: `FOODTECH_TONKATSU_${suffix}_PEM`,
