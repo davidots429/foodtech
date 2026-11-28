@@ -144,10 +144,10 @@ def _recipe_binding(body: RecipeJobRequest) -> dict:
     return result
 
 
-async def _recipe_gateway(path: str, body: dict) -> dict:
-    url, ca, cert, key = _gateway_settings()
+async def _recipe_gateway(path: str, body: dict, *, tonkatsu: bool = False) -> dict:
     try:
-        async with _client(ca, cert, key) as client:
+        url, connection = _recipe_gateway_connection(tonkatsu=tonkatsu)
+        async with connection as client:
             result = await client.post(f"{url}{path}", json=body)
             if result.status_code == 409:
                 raise HTTPException(409, "요청 또는 전환 고지를 다시 확인해 주세요.")
@@ -174,7 +174,7 @@ async def tonkatsu_recipe_request(request: Request, body: TonkatsuJobRequest):
         raise HTTPException(409, "조리 기록이 변경되었거나 권고에 사용할 수 없습니다.")
     response = await _recipe_gateway("/internal/ai/tonkatsu-recipe-requests", {
         **body.model_dump(mode="json"), "tenant_id": session.subject, "auth_epoch": session.epoch,
-    })
+    }, tonkatsu=True)
     if type(response) is not dict or response.get("state") != "PENDING":
         raise HTTPException(502, "돈까스 권고 요청을 처리하지 못했습니다.")
     try:
@@ -250,9 +250,9 @@ async def _recipe_record_data(request: Request, execution_id: UUID, job_id: UUID
             raise HTTPException(404, "돈까스 조리작업을 찾을 수 없습니다.", headers={"Cache-Control": "no-store"})
         payload_request["auth_epoch"] = identity[1]
         resource = "tonkatsu-recipe-review-context" if include_review_scope else "tonkatsu-" + resource
-    url, ca, cert, key = _gateway_settings()
     try:
-        async with _client(ca, cert, key) as client:
+        url, connection = _recipe_gateway_connection(tonkatsu=tonkatsu)
+        async with connection as client:
             result = await client.post(f'{url}/internal/ai/{resource}/{execution_id}', json=payload_request)
             if result.status_code == 404:
                 raise HTTPException(404, '해당 조리작업의 권고 실행 기록을 찾을 수 없습니다.', headers={'Cache-Control': 'no-store'})
@@ -458,6 +458,17 @@ async def tonkatsu_candidate_cooking_job(request: Request, review_version: int, 
 async def invoke_recipe_execution(request: Request, execution_id: UUID):
     from .recipe_invocation import invoke_customer_recipe
     return await invoke_customer_recipe(request, execution_id)
+
+
+def _recipe_gateway_connection(*, tonkatsu: bool):
+    if tonkatsu:
+        from .tonkatsu_gateway_records import configured_tonkatsu_records_connection
+
+        private = configured_tonkatsu_records_connection()
+        if private is not None:
+            return private
+    url, ca, cert, key = _gateway_settings()
+    return url, _client(ca, cert, key)
 
 
 def _gateway_settings() -> tuple[str, str, str, str]:

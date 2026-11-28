@@ -4,10 +4,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import httpx
+
+from foodtech_business_api.main import app as business_app
+from foodtech_business_api.tonkatsu_gateway_records import ENV_PREFIX
 
 from combi_tls_fixture import certificates
 from foodtech_ai_gateway.serve_tonkatsu_business import business_server_config
@@ -66,3 +69,45 @@ class TonkatsuBusinessListenerTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.post(path, json=self.body)
                 self.assertEqual(response.status_code, 401)
         self.read.assert_not_called()
+
+    async def test_customer_request_and_status_cross_the_pinned_private_connection(self):
+        session = SimpleNamespace(subject="synthetic-customer", epoch=2, csrf="fixture")
+        job = {"version": 3, "menu": "TONKATSU", "provenance": "SYNTHETIC",
+               "status": "COMPLETED", "equipment_profile": "synthetic-fryer-approved-v2"}
+        read = AsyncMock(side_effect=[
+            (session, None, None, job, None),
+            (session, None, None, {**job, "version": 4}, None),
+            (session, None, None, job, None),
+            (session, None, None, job, None),
+            (session, None, None, job, None),
+        ])
+        self.read.return_value = {
+            "execution_id": self.execution_id, "job_id": self.body["job_id"], "job_version": 3, "state": "PENDING",
+            "result_available": False, "execution_available": False, "source_current": True,
+        }
+        base = "/api/customer/ai/tonkatsu-recipe-"
+        customer_input = {key: value for key, value in self.creation_body.items() if key not in {"tenant_id", "auth_epoch"}}
+        async with listening(None, self.certs, server_config=self.configuration) as (url, _):
+            cert, key = self.certs["business"]
+            env = {ENV_PREFIX + suffix: value for suffix, value in {
+                "ENABLED": "true", "URL": url, "SERVER_CERT": self.certs["server"][0],
+                "CLIENT_CERT": cert, "CLIENT_KEY": key,
+            }.items()}
+            async with httpx.AsyncClient(base_url="http://local",
+                                         transport=httpx.ASGITransport(app=business_app)) as client:
+                with (patch.dict("os.environ", env),
+                      patch("foodtech_business_api.cooking._read", read),
+                      patch("foodtech_business_api.ai._gateway_settings") as loopback):
+                    created = await client.post(base + "requests", json=customer_input)
+                    status = await client.get(base + f"executions/{self.execution_id}/status",
+                                              params={"job_id": self.body["job_id"]})
+                    self.assertEqual((created.status_code, status.status_code), (201, 200))
+                    self.assertEqual(status.json()["state"], "PENDING")
+                    loopback.assert_not_called()
+                    with patch.dict("os.environ", {ENV_PREFIX + "URL": "http://127.0.0.1"}):
+                        unavailable = await client.get(base + f"executions/{self.execution_id}/status",
+                                                       params={"job_id": self.body["job_id"]})
+                    self.assertEqual(unavailable.status_code, 503)
+                    loopback.assert_not_called()
+        self.create.assert_called_once()
+        self.read.assert_called_once()

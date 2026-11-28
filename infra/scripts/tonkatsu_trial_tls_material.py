@@ -71,17 +71,19 @@ def _matching_pair(lane, server_host, client_uri, begins, expires):
     return _public_pem(ca), server, client
 
 
-def verify_hostnames(broker_host, gateway_host):
-    for host in (broker_host, gateway_host):
+def verify_hostnames(broker_host, gateway_host, records_host=None):
+    hosts = (broker_host, gateway_host) if records_host is None else (broker_host, gateway_host, records_host)
+    for host in hosts:
         if not isinstance(host, str) or len(host) > 253 or not re.fullmatch(rf"{_LABEL}(?:[.]{_LABEL})*[.]internal", host):
             raise ValueError("reviewed private service hostname required")
-    if broker_host == gateway_host:
-        raise ValueError("broker and Gateway require distinct private hostnames")
+    if len(set(hosts)) != len(hosts):
+        raise ValueError("trial endpoints require distinct private hostnames")
 
 
-def generate(*, broker_host: str, gateway_host: str, now: datetime | None = None) -> TonkatsuTrialTlsMaterial:
-    """Return three bundles for a bounded trial, without serializing either CA key."""
-    verify_hostnames(broker_host, gateway_host)
+def generate(*, broker_host: str, gateway_host: str, records_host: str | None = None,
+             now: datetime | None = None) -> TonkatsuTrialTlsMaterial:
+    """Return three bundles for a bounded trial, without serializing CA keys."""
+    verify_hostnames(broker_host, gateway_host, records_host)
     if now is None:
         now = datetime.now(timezone.utc)
     if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
@@ -107,16 +109,30 @@ def generate(*, broker_host: str, gateway_host: str, now: datetime | None = None
         "server_cert_pem": gateway_server[0], "server_key_pem": gateway_server[1],
         "broker_ca_pem": broker_ca, "broker_cert_pem": broker_client[0],
     }
+    if records_host is not None:
+        records_ca, records_server, records_client = _matching_pair(
+            "Foodtech synthetic BFF to Gateway records", records_host, _BFF_ID, begins, expires,
+        )
+        business_api.update(records_server_cert_pem=records_server[0], records_client_cert_pem=records_client[0],
+                            records_client_key_pem=records_client[1])
+        gateway.update(records_server_cert_pem=records_server[0], records_server_key_pem=records_server[1],
+                       records_client_ca_pem=records_ca, records_client_cert_pem=records_client[0])
     return TonkatsuTrialTlsMaterial(business_api, broker, gateway, expires)
 
-def verify_bundles(business_api, broker, gateway, *, broker_host, gateway_host):
+def verify_bundles(business_api, broker, gateway, *, broker_host, gateway_host, records_host=None):
     """Return an expiry and public pins only after verifying all three recovered bundles."""
-    verify_hostnames(broker_host, gateway_host)
+    verify_hostnames(broker_host, gateway_host, records_host)
+    business_keys = {"broker_server_cert_pem", "bff_cert_pem", "bff_key_pem"}
+    gateway_keys = {"server_cert_pem", "server_key_pem", "broker_ca_pem", "broker_cert_pem"}
+    if records_host is not None:
+        business_keys.update({"records_server_cert_pem", "records_client_cert_pem", "records_client_key_pem"})
+        gateway_keys.update({"records_server_cert_pem", "records_server_key_pem", "records_client_ca_pem",
+                             "records_client_cert_pem"})
     required = (
-        (business_api, {"broker_server_cert_pem", "bff_cert_pem", "bff_key_pem"}),
+        (business_api, business_keys),
         (broker, {"broker_server_cert_pem", "broker_server_key_pem", "bff_ca_pem", "bff_cert_pem",
                   "gateway_server_cert_pem", "broker_client_cert_pem", "broker_client_key_pem"}),
-        (gateway, {"server_cert_pem", "server_key_pem", "broker_ca_pem", "broker_cert_pem"}),
+        (gateway, gateway_keys),
     )
     if any(type(bundle) is not dict or set(bundle) != keys or
            any(type(value) is not str or not 1 <= len(value) <= 65536 for value in bundle.values())
@@ -134,6 +150,13 @@ def verify_bundles(business_api, broker, gateway, *, broker_host, gateway_host):
         (gateway["broker_ca_pem"], gateway_host, _BROKER_ID, gateway["server_cert_pem"],
          gateway["server_key_pem"], broker["broker_client_cert_pem"], broker["broker_client_key_pem"]),
     )
+    if records_host is not None:
+        for field in ("records_server_cert_pem", "records_client_cert_pem"):
+            if business_api[field] != gateway[field]:
+                raise ValueError("TLS records pins differ")
+        lanes += ((gateway["records_client_ca_pem"], records_host, _BFF_ID, gateway["records_server_cert_pem"],
+                   gateway["records_server_key_pem"], business_api["records_client_cert_pem"],
+                   business_api["records_client_key_pem"]),)
     now = datetime.now(timezone.utc)
     bounds, public_keys, pins = set(), set(), []
     for ca_pem, host, uri, server_pem, server_key, client_pem, client_key in lanes:
@@ -160,7 +183,7 @@ def verify_bundles(business_api, broker, gateway, *, broker_host, gateway_host):
             public_keys.add(cert.public_key().public_bytes(serialization.Encoding.DER,
                                                           serialization.PublicFormat.SubjectPublicKeyInfo))
         pins.extend(cert.fingerprint(hashes.SHA256()).hex() for cert in (server, client))
-    if len(bounds) != 1 or len(public_keys) != 6:
+    if len(bounds) != 1 or len(public_keys) != 3 * len(lanes):
         raise ValueError("TLS lifetime or key separation differs")
     begins, expires = bounds.pop()
     if not begins <= now < expires or expires - begins != timedelta(hours=3, minutes=5):

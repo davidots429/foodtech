@@ -31,7 +31,7 @@ class TonkatsuRequestTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([call.args[1] for call in read.await_args_list], [body["job_id"], body["prior_job_id"]])
                 self.assertTrue(all(call.kwargs["write"] for call in read.await_args_list))
                 gateway.assert_awaited_once_with("/internal/ai/tonkatsu-recipe-requests",
-                    {**body, "tenant_id": session.subject, "auth_epoch": session.epoch})
+                    {**body, "tenant_id": session.subject, "auth_epoch": session.epoch}, tonkatsu=True)
                 read.side_effect = [(session, None, None, row, None) for row in (current, {**prior, "version": 4})]
                 gateway.reset_mock()
                 stale = await http.post(path, json=body)

@@ -1,4 +1,5 @@
 """Exercise metadata-only inspection, recovery and incomplete writes without using AWS."""
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -70,6 +71,27 @@ class TonkatsuTlsInitializationTests(unittest.TestCase):
         self.assertEqual(self.client.put_secret_value.call_count, 3)
         self.assertEqual(self.client.get_secret_value.call_count, 6)
         self.assertNotIn("PRIVATE KEY", str(second))
+
+    def test_records_link_recovers_with_its_own_pins_and_no_broker_key_change(self):
+        self.plan["records_host"] = "records.foodtech.internal"
+        first = self.run_controlled(apply=True)
+        second = self.run_controlled(apply=True)
+        self.assertEqual(first["hosts"]["records_host"], "records.foodtech.internal")
+        self.assertEqual(len(set(first["leaf_fingerprints_sha256"])), 6)
+        self.assertEqual(first["leaf_fingerprints_sha256"], second["leaf_fingerprints_sha256"])
+        self.assertTrue(second["recovered_existing"])
+        self.assertEqual(self.client.put_secret_value.call_count, 3)
+        business, broker, gateway = [json.loads(value) for value in self.versions.values()]
+        self.assertNotIn("records_client_key_pem", broker)
+        self.assertNotIn("records_client_key_pem", gateway)
+        self.assertNotIn("records_server_key_pem", business)
+        self.assertNotEqual(gateway["records_client_ca_pem"], gateway["broker_ca_pem"])
+        business_arn = next(iter(self.versions))
+        business["records_client_cert_pem"] = business["bff_cert_pem"]
+        self.versions[business_arn] = json.dumps(business)
+        with self.assertRaisesRegex(ValueError, "TLS records pins differ"):
+            self.run_controlled(apply=True)
+        self.assertEqual(self.client.put_secret_value.call_count, 3)
 
     def test_partial_registration_cannot_write_or_read_more(self):
         self.versions[next(iter(self.stores))] = "contents do not matter"
