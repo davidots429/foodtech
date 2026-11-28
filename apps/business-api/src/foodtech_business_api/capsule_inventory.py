@@ -13,6 +13,7 @@ import boto3
 from boto3.dynamodb.types import Binary, TypeDeserializer, TypeSerializer
 
 from .capsule_metadata import validate_key_metadata, validate_tenant_scope, validate_user_key_id
+from .dynamodb_restore_verification import aware_timestamp, verify_restored_table
 
 class CapsuleInventoryError(Exception):
     pass
@@ -155,7 +156,7 @@ class CapsuleInventory:
 class RestoredCapsuleInventory(CapsuleInventory):
     """Read only the Link Capsule table of a specific isolated recovery set."""
 
-    def __init__(self, restored_table_arn: str, allowed_purposes: frozenset[str], *, recovery_id: str, client):
+    def __init__(self, restored_table_arn: str, allowed_purposes: frozenset[str], *, recovery_id: str, source_table_arn: str, restore_at, client):
         try:
             if not isinstance(recovery_id, str) or str(UUID(recovery_id)) != recovery_id:
                 raise ValueError
@@ -164,8 +165,19 @@ class RestoredCapsuleInventory(CapsuleInventory):
         pattern = rf"arn:aws:dynamodb:ap-southeast-2:[0-9]{{12}}:table/foodtech-link-capsule-restore-{recovery_id}"
         if not isinstance(restored_table_arn, str) or not re.fullmatch(pattern, restored_table_arn) or client is None:
             raise ValueError("explicit isolated Capsule table and recovery client required")
+        prefix = restored_table_arn.split(':table/', 1)[0]
+        expected_source = rf'{prefix}:table/foodtech-link-capsule-[a-z0-9-]{{1,32}}'
+        if not isinstance(source_table_arn, str) or not re.fullmatch(expected_source, source_table_arn) or \
+                not aware_timestamp(restore_at):
+            raise ValueError("explicit same-account source Capsule and restore point required")
         super().__init__(restored_table_arn, allowed_purposes, client=client)
+        self.source_table_arn, self.restore_at = source_table_arn, restore_at
         self.restored_table_arn = restored_table_arn
+
+    def stage(self, locator: str, request_id: str, stage_entry: Callable[[str, bytes, dict[str, str]], None]) -> InventoryResult:
+        verify_restored_table(self.client, source_arn=self.source_table_arn,
+            restored_arn=self.restored_table_arn, restore_at=self.restore_at)
+        return super().stage(locator, request_id, stage_entry)
 
     def _matches_scope(self, value: dict, request_id: str) -> bool:
         return (value["state"] == "ACTIVE" and "deletion_request_id" not in value

@@ -1,5 +1,6 @@
 import copy
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ import boto3
 from boto3.dynamodb.types import TypeSerializer
 from botocore.stub import ANY, Stubber
 
+from foodtech_business_api.dynamodb_restore_verification import DynamoRestoreVerificationError
 from foodtech_business_api.source_grant_contract import SourceGrantConflict
 from foodtech_business_api.source_grant_reconciliation import SourceGrantReconciliation
 
@@ -133,9 +135,22 @@ class ReconciliationTests(unittest.TestCase):
 
 
     def configure_restored_auth(self):
+        self.restore_at = datetime(2026, 11, 28, 10, 0, tzinfo=timezone.utc)
         self.auth = self.arn.replace('foodtech-source-access-restore-', 'foodtech-auth-sessions-restore-')
         self.worker = SourceGrantReconciliation(inventory=self.inventory, client=self.client,
-            restored_catalog_arn=self.arn, restored_auth_arn=self.auth, clock=lambda: 100)
+            restored_catalog_arn=self.arn, restored_auth_arn=self.auth, restore_at=self.restore_at, clock=lambda: 100)
+
+    def restore_pair(self, stub, changed_auth=None):
+        for restored, source in (
+            (self.arn, self.inventory.cipher.source_table_arn),
+            (self.auth, self.arn.split(':table/', 1)[0] + ':table/' + self.inventory.store.auth_table),
+        ):
+            changes = changed_auth if restored == self.auth else None
+            row = {'TableArn': restored, 'TableStatus': 'ACTIVE', 'RestoreSummary': {
+                'SourceTableArn': source, 'RestoreInProgress': False, 'RestoreDateTime': self.restore_at}}
+            if changes is not None:
+                row.update(changes)
+            stub.add_response('describe_table', {'Table': row}, {'TableName': restored})
 
     def auth_response(self, stub, references=None):
         item = {'pk': 'USER#' + self.subject}
@@ -157,12 +172,14 @@ class ReconciliationTests(unittest.TestCase):
                 lambda params, calls=calls, **_: calls.append(copy.deepcopy(params)))
         with Stubber(self.client) as stub:
             self.lease(stub)
+            self.restore_pair(stub)
             self.auth_response(stub, restored)
             stub.add_response('transact_write_items', {})
             stub.add_response('transact_write_items', {})
             self.lease(stub)
             result = self.worker.delete_page(**self.scope)
             self.lease(stub)
+            self.restore_pair(stub)
             self.auth_response(stub, restored)
             stub.add_response('transact_get_items', {'Responses': [{}, {}]})
             self.auth_response(stub, restored)
@@ -191,12 +208,14 @@ class ReconciliationTests(unittest.TestCase):
         self.references = {source: grant}
         with Stubber(self.client) as stub:
             self.lease(stub)
+            self.restore_pair(stub)
             self.auth_response(stub, {'JEYUK#jeyuk-other': grant})
             with self.assertRaisesRegex(SourceGrantConflict, 'conflicting bindings'):
                 self.worker.delete_page(**self.scope)
             stub.assert_no_pending_responses()
         with Stubber(self.client) as stub:
             self.lease(stub)
+            self.restore_pair(stub)
             self.auth_response(stub, {source: grant})
             stub.add_response('transact_get_items', {'Responses': [{}]})
             self.auth_response(stub, {})
@@ -212,6 +231,31 @@ class ReconciliationTests(unittest.TestCase):
             with self.subTest(arn=arn), self.assertRaises(ValueError):
                 SourceGrantReconciliation(inventory=self.inventory, client=self.client,
                     restored_catalog_arn=self.arn, restored_auth_arn=arn, clock=lambda: 100)
+
+
+    def test_wrong_restore_timestamp_source_or_incomplete_metadata_stops_before_data_reads(self):
+        self.configure_restored_auth()
+        for summary in (
+            {'SourceTableArn': self.inventory.cipher.source_table_arn, 'RestoreInProgress': False,
+             'RestoreDateTime': self.restore_at},
+            {'SourceTableArn': self.worker.source_auth_arn, 'RestoreInProgress': False,
+             'RestoreDateTime': self.restore_at + timedelta(seconds=1)},
+            {'SourceTableArn': self.worker.source_auth_arn, 'RestoreInProgress': True,
+             'RestoreDateTime': self.restore_at},
+        ):
+            with self.subTest(summary=summary), Stubber(self.client) as stub:
+                self.lease(stub)
+                self.restore_pair(stub, {'RestoreSummary': summary})
+                with self.assertRaises(DynamoRestoreVerificationError):
+                    self.worker.delete_page(**self.scope)
+                stub.assert_no_pending_responses()
+
+    def test_unqualified_restore_time_is_rejected_before_access(self):
+        self.configure_restored_auth()
+        for value in (None, self.restore_at.replace(tzinfo=None), '2026-11-28T10:00Z'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'restore point'):
+                SourceGrantReconciliation(inventory=self.inventory, client=self.client,
+                    restored_catalog_arn=self.arn, restored_auth_arn=self.auth, restore_at=value, clock=lambda: 100)
 
 
 if __name__ == '__main__':

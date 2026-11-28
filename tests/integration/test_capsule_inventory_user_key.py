@@ -1,11 +1,13 @@
 """Exercise the restricted inventory-to-crypto contract without AWS resources."""
 import base64
 import unittest
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import Mock
 
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_business_api.capsule_inventory import CapsuleInventory, CapsuleInventoryError, RestoredCapsuleInventory
+from foodtech_business_api.dynamodb_restore_verification import DynamoRestoreVerificationError
 from foodtech_business_api.recovery_registry_inventory import RecoveryRegistryLocators, VersionedTombstone
 from foodtech_capsule_crypto.contract import Entry, Envelope
 from foodtech_capsule_crypto.deletion_plan import EncryptedTarget, prepare_targets, prepare_from_inventory, prepare_from_resolved_inventory
@@ -138,6 +140,8 @@ class RestoredCapsuleTests(unittest.TestCase):
         self.restore = "ffc4a4dd-81fe-4049-8130-0e44f44320a0"
         self.locator = "A" * 43
         self.registry_arn = "arn:aws:dynamodb:ap-southeast-2:123456789012:table/foodtech-deletion-registry-dev"
+        self.restore_at = datetime(2026, 11, 28, 10, 0, tzinfo=timezone.utc)
+        self.source_capsule_arn = "arn:aws:dynamodb:ap-southeast-2:123456789012:table/foodtech-link-capsule-dev"
         self.capsule_arn = (
             f"arn:aws:dynamodb:ap-southeast-2:123456789012:table/foodtech-link-capsule-restore-{self.restore}"
         )
@@ -183,9 +187,16 @@ class RestoredCapsuleTests(unittest.TestCase):
             self.registry, live_registry_arn=self.registry_arn, recovery_cipher=self.cipher,
         )
 
-    def worker(self, client, *, arn=None):
-        inventory = RestoredCapsuleInventory(arn or self.capsule_arn, self.purposes,
-                                             recovery_id=self.restore, client=client)
+    def worker(self, client, *, arn=None, actual_time=None):
+        capsule_arn = arn or self.capsule_arn
+        client.describe_table = Mock(return_value={"Table": {
+            "TableArn": capsule_arn, "TableStatus": "ACTIVE", "RestoreSummary": {
+                "SourceTableArn": self.source_capsule_arn, "RestoreInProgress": False,
+                "RestoreDateTime": actual_time or self.restore_at,
+            },
+        }})
+        inventory = RestoredCapsuleInventory(capsule_arn, self.purposes, recovery_id=self.restore,
+            source_table_arn=self.source_capsule_arn, restore_at=self.restore_at, client=client)
         return RestoredCapsulePlanWorker(
             locators=self.locators, inventory=inventory, tenant_resolver=self.resolver, key_map=self.key_map,
             approved_tenant_purposes=self.tenant_purposes, kms_client=self.kms,
@@ -232,6 +243,17 @@ class RestoredCapsuleTests(unittest.TestCase):
         action = Mock()
         with self.assertRaisesRegex(ValueError, "changed during recovery"):
             self.worker(Client(self.meta, self.row)).use_targets(self.expected, action)
+        action.assert_not_called()
+
+
+    def test_capsule_restored_at_another_time_fails_before_reading_items(self):
+        self.table.get_item.side_effect = [self.sealed, {"Item": self.registry_row}]
+        client = Mock(wraps=Client(self.meta, self.row))
+        action = Mock()
+        worker = self.worker(client, actual_time=self.restore_at - timedelta(seconds=1))
+        with self.assertRaises(DynamoRestoreVerificationError):
+            worker.use_targets(self.expected, action)
+        client.get_item.assert_not_called()
         action.assert_not_called()
 
 
