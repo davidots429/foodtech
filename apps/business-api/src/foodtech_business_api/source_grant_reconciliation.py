@@ -12,6 +12,12 @@ from uuid import UUID, uuid5
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 from .source_grant_contract import SourceGrantConflict
+from .source_grant_inventory import MAX_GRANTS
+
+
+def validate_restore_page(start, limit):
+    if type(start) is not int or not 0 <= start <= MAX_GRANTS or type(limit) is not int or not 1 <= limit <= 20:
+        raise ValueError('invalid source restoration page')
 
 
 class SourceGrantReconciliation:
@@ -28,7 +34,7 @@ class SourceGrantReconciliation:
                                            inventory.store.registry_table, inventory.store.progress_table}:
             raise ValueError('restore table must differ from live storage')
         self.inventory, self.client, self.clock = inventory, client, clock
-        self.restored_arn, self.table = restored_catalog_arn, name
+        self.restored_arn = self.table = restored_catalog_arn
         self.serializer, self.decoder = TypeSerializer(), TypeDeserializer()
 
     def _encode(self, values):
@@ -79,8 +85,7 @@ class SourceGrantReconciliation:
 
     def delete_page(self, *, subject, request_id, reconciliation_id, expected_version, start=0, limit=20):
         """Bounded idempotent deletes; canceled/changed holds fail in each transaction."""
-        if type(start) is not int or not 0 <= start <= 2000 or type(limit) is not int or not 1 <= limit <= 20:
-            raise ValueError('invalid source restoration page')
+        validate_restore_page(start, limit)
         hold = self._lease(request_id, reconciliation_id, expected_version)
         totals = {}
         def action(references):

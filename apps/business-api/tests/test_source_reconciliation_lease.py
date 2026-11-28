@@ -157,5 +157,91 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(reconciliation.delete_page.call_args.kwargs['expected_version'], 5)
 
 
+    def retired_session(self, references):
+        subject = str(uuid4())
+
+        def use_scope(*, request_id, action):
+            self.assertEqual(request_id, self.request)
+            action(subject, bytearray(b'archived-head'))
+
+        def use_references(*, subject: str, request_id, action):
+            self.assertEqual(subject, archived_subject)
+            self.assertEqual(request_id, self.request)
+            action(references)
+
+        archived_subject = subject
+        inventory = SimpleNamespace(catalog_table='foodtech-source-access-dev',
+            cipher=SimpleNamespace(source_table_arn='arn:aws:dynamodb:ap-southeast-2:123456789012:table/foodtech-source-access-dev'),
+            store=SimpleNamespace(registry_table=self.store.registry_table, auth_table='auth', progress_table='progress'),
+            use_references=Mock(side_effect=use_references), use_retired_scope=Mock(side_effect=use_scope))
+        worker = SourceGrantReconciliation(inventory=inventory, client=self.client,
+                                          restored_catalog_arn=self.arn, clock=lambda: 100)
+        row = {'pk': 'REGISTRY', 'sk': 'REQ#' + self.request, 'request_id': self.request,
+            'status': 'RECONCILING', 'version': 4, 'reconciliation_id': self.restore,
+            'reconciliation_hold_until': 200, 'source_grant_restore_table_arn': self.arn}
+        lease_read = {'Item': self.store._encode(row)}
+        return SourceGrantRestoreSession(leases=self.store, reconciliation=worker), inventory, lease_read
+
+    def test_retired_page_reapplies_and_observes_under_exact_hold(self):
+        grant = str(uuid4())
+        session, inventory, lease = self.retired_session({'JEYUK#jeyuk-restore': grant})
+        writes, reads = [], []
+        self.client.meta.events.register('before-parameter-build.dynamodb.TransactWriteItems',
+                                        lambda params, **_: writes.append(copy.deepcopy(params)))
+        self.client.meta.events.register('before-parameter-build.dynamodb.TransactGetItems',
+                                        lambda params, **_: reads.append(copy.deepcopy(params)))
+        for observed, expected in (({}, 'CATALOG_EMPTY_OBSERVED'),
+                                   ({'Item': {'pk': {'S': 'GRANT#' + grant}}}, 'RESIDUAL_FOUND')):
+            with self.subTest(expected=expected), Stubber(self.client) as stub:
+                stub.add_response('get_item', lease)
+                stub.add_response('get_item', lease)
+                stub.add_response('transact_write_items', {})
+                stub.add_response('get_item', lease)
+                stub.add_response('get_item', lease)
+                stub.add_response('transact_get_items', {'Responses': [observed]})
+                stub.add_response('get_item', lease)
+                result = session.advance_retired(**self.scope, start=0)
+                stub.assert_no_pending_responses()
+            self.assertEqual(result['source_progress']['next_index'], 1)
+            self.assertEqual(result['source_observation']['state'], expected)
+            self.assertFalse(result['restore_promotion_allowed'])
+            condition, delete = writes[-1]['TransactItems']
+            self.assertEqual(condition['ConditionCheck']['ExpressionAttributeValues'][':version'], {'N': '4'})
+            self.assertEqual(delete['Delete']['TableName'], self.arn)
+            self.assertEqual(reads[-1]['TransactItems'][0]['Get']['TableName'], self.arn)
+            self.assertEqual(delete['Delete']['Key'], reads[-1]['TransactItems'][0]['Get']['Key'])
+        self.assertEqual(inventory.use_retired_scope.call_count, 2)
+        self.assertEqual(self.params, [])
+
+    def test_partial_page_defers_residual_check(self):
+        session, _, lease = self.retired_session({'JEYUK#one': str(uuid4()), 'JEYUK#two': str(uuid4())})
+        with Stubber(self.client) as stub:
+            stub.add_response('get_item', lease)
+            stub.add_response('get_item', lease)
+            stub.add_response('transact_write_items', {})
+            stub.add_response('get_item', lease)
+            result = session.advance_retired(**self.scope, start=0, limit=1)
+            stub.assert_no_pending_responses()
+        self.assertEqual(result['source_progress']['next_index'], 1)
+        self.assertIsNone(result['source_observation'])
+
+    def test_missing_lease_skips_archive_and_changed_lease_prevents_deletion(self):
+        session, inventory, lease = self.retired_session({'JEYUK#jeyuk-restore': str(uuid4())})
+        with Stubber(self.client) as stub:
+            stub.add_response('get_item', {})
+            with self.assertRaises(SourceGrantConflict):
+                session.advance_retired(**self.scope, start=0)
+            stub.assert_no_pending_responses()
+        inventory.use_retired_scope.assert_not_called()
+        with Stubber(self.client) as stub:
+            stub.add_response('get_item', lease)
+            stub.add_response('get_item', lease)
+            stub.add_client_error('transact_write_items', service_error_code='TransactionCanceledException')
+            with self.assertRaises(SourceGrantConflict):
+                session.advance_retired(**self.scope, start=0)
+            stub.assert_no_pending_responses()
+        self.assertEqual(self.params, [])
+
+
 if __name__ == '__main__':
     unittest.main()

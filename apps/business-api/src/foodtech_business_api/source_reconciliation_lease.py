@@ -11,6 +11,7 @@ from uuid import UUID
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
 from .source_grant_contract import SourceGrantConflict
+from .source_grant_reconciliation import validate_restore_page
 from .subject_identity import valid_subject
 
 MAX_HOLD_SECONDS = 600
@@ -174,3 +175,31 @@ class SourceGrantRestoreSession:
     def observe(self, *, subject, request_id, reconciliation_id, expected_version):
         return self.reconciliation.observe_empty(subject=subject, request_id=request_id,
             reconciliation_id=reconciliation_id, expected_version=expected_version)
+
+
+    def advance_retired(self, *, request_id, reconciliation_id, expected_version, start, limit=20):
+        """Reapply the next archived page under an owned hold, without an Auth record.
+
+        When the final page is acknowledged, a separate read verifies every
+        archived key in the restored catalog. A failure preserves the hold and
+        the caller can retry the same page while the hold remains valid.
+        """
+        validate_restore_page(start, limit)
+        scope = {'request_id': request_id, 'reconciliation_id': reconciliation_id,
+                 'expected_version': expected_version}
+        self.leases.recover(**scope)
+        result = None
+
+        def use(subject, _head):
+            nonlocal result
+            progress = self.reconciliation.delete_page(subject=subject, **scope, start=start, limit=limit)
+            observation = None
+            if progress['references_exhausted']:
+                observation = self.reconciliation.observe_empty(subject=subject, **scope)
+            result = {'source_progress': progress, 'source_observation': observation,
+                      'restore_promotion_allowed': False}
+
+        self.reconciliation.inventory.use_retired_scope(request_id=request_id, action=use)
+        if result is None:
+            raise SourceGrantConflict('archived source restoration scope unavailable')
+        return result
