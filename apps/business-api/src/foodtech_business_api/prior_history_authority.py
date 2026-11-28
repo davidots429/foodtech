@@ -21,6 +21,8 @@ from uuid import UUID
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 
+from foodtech_contracts.tonkatsu_prior_history import TonkatsuPriorHistoryWitness, fryer_stream
+
 from .source_read_authority import _integer
 from .subject_identity import valid_subject
 
@@ -113,6 +115,14 @@ class DynamoPriorHistoryAuthority:
         return account, writers, coverage, history
 
     def observe(self, *, owner, auth_epoch, current_job_id, prior_job_id, job_versions):
+        return self._observe(owner=owner, auth_epoch=auth_epoch, current_job_id=current_job_id,
+            prior_job_id=prior_job_id, job_versions=job_versions, fryer=False)
+
+    def observe_tonkatsu(self, *, owner, auth_epoch, current_job_id, prior_job_id, job_versions):
+        return self._observe(owner=owner, auth_epoch=auth_epoch, current_job_id=current_job_id,
+            prior_job_id=prior_job_id, job_versions=job_versions, fryer=True)
+
+    def _observe(self, *, owner, auth_epoch, current_job_id, prior_job_id, job_versions, fryer):
         if not valid_subject(owner) or type(auth_epoch) is not int or not 0 <= auth_epoch < 2**63 or \
                 not _uuid(current_job_id) or not _uuid(prior_job_id) or current_job_id == prior_job_id or \
                 type(job_versions) is not tuple or len(job_versions) != 2 or \
@@ -155,7 +165,9 @@ class DynamoPriorHistoryAuthority:
         result = self.client.transact_get_items(TransactItems=[{'Get': {'TableName': self.cooking,
             'Key': self._encode({'pk': 'SCOPE#USER#' + owner + '#JOB#' + job_id, 'sk': 'META'}),
             'ProjectionExpression': 'pk, sk, job_id, owner_subject, #version, created_at, menu, provenance, '
-                'equipment_profile, source_binding, #status, actual_placed_at, actual_lifted_at',
+                'equipment_profile, source_binding, #status, actual_placed_at, actual_lifted_at' +
+                (', latest_tonkatsu_reheat.started_at, latest_tonkatsu_reheat.lifted_at, pending_tonkatsu_reheat.segment_id'
+                 if fryer else ''),
             'ExpressionAttributeNames': {'#version': 'version', '#status': 'status'}}} for job_id in ids])
         try:
             responses = result['Responses']
@@ -169,6 +181,24 @@ class DynamoPriorHistoryAuthority:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise PriorHistoryUnavailable('history metadata unavailable') from None
+        if fryer:
+            streams = _fryer_order(jobs, current_job_id, prior_job_id, job_versions)
+        else:
+            self._jeyuk_order(jobs, current_job_id, prior_job_id, job_versions)
+        roster_hash = hashlib.sha256(json.dumps(sorted(listed.items()), separators=(',', ':')).encode('ascii')).hexdigest()
+        coverage, revision = before[2], int(before[3]['revision'])
+        if int(coverage['coverage_revision']) == revision and coverage['baseline_roster_sha256'] != roster_hash:
+            raise PriorHistoryUnavailable('baseline roster proof mismatch')
+        if self._controls(owner, auth_epoch) != before:
+            raise PriorHistoryUnavailable('history or protected coverage changed')
+        witness = PriorHistoryWitness(owner, current_job_id, prior_job_id, job_versions, auth_epoch, revision,
+            int(before[1]['version']), int(coverage['version']), before[1]['generation'], roster_hash, before[1]['manifest_sha256'],
+            int(coverage['coverage_revision']), coverage['baseline_roster_sha256'], coverage['proof_sha256'])
+
+        return TonkatsuPriorHistoryWitness(witness, streams) if fryer else witness
+
+    @staticmethod
+    def _jeyuk_order(jobs, current_job_id, prior_job_id, job_versions):
         current, prior = jobs[current_job_id], jobs[prior_job_id]
         start, previous_start, previous_end = (_instant(current.get('actual_placed_at')),
             _instant(prior.get('actual_placed_at')), _instant(prior.get('actual_lifted_at')))
@@ -208,15 +238,16 @@ class DynamoPriorHistoryAuthority:
         latest = max((placed for placed, _ in eligible), default=None)
         if [job_id for placed, job_id in eligible if placed == latest] != [prior_job_id]:
             raise PriorHistoryUnavailable('selected job is not uniquely immediately prior')
-        roster_hash = hashlib.sha256(json.dumps(sorted(listed.items()), separators=(',', ':')).encode('ascii')).hexdigest()
-        coverage, revision = before[2], int(before[3]['revision'])
-        if int(coverage['coverage_revision']) == revision and coverage['baseline_roster_sha256'] != roster_hash:
-            raise PriorHistoryUnavailable('baseline roster proof mismatch')
-        if self._controls(owner, auth_epoch) != before:
-            raise PriorHistoryUnavailable('history or protected coverage changed')
-        return PriorHistoryWitness(owner, current_job_id, prior_job_id, job_versions, auth_epoch, revision,
-            int(before[1]['version']), int(coverage['version']), before[1]['generation'], roster_hash, before[1]['manifest_sha256'],
-            int(coverage['coverage_revision']), coverage['baseline_roster_sha256'], coverage['proof_sha256'])
+
+    def revalidate_tonkatsu(self, witness):
+        if type(witness) is not TonkatsuPriorHistoryWitness:
+            raise ValueError('typed fryer history witness required')
+        history = witness.history
+        current = self.observe_tonkatsu(owner=history.owner, auth_epoch=history.auth_epoch,
+            current_job_id=history.current_job_id, prior_job_id=history.prior_job_id, job_versions=history.job_versions)
+        if current != witness:
+            raise PriorHistoryUnavailable('fryer history witness changed')
+        return current
 
     def revalidate(self, witness):
         """Re-observe the whole authoritative scope; no cached proof is sufficient."""
@@ -228,3 +259,63 @@ class DynamoPriorHistoryAuthority:
         if current != witness:
             raise PriorHistoryUnavailable('prior history witness changed')
         return current
+
+
+def _fryer_interval(row):
+    placed = _instant(row.get('actual_placed_at'))
+    lifted = _instant(row.get('actual_lifted_at'))
+    if placed is None or lifted is None or placed >= lifted or row.get('pending_tonkatsu_reheat') is not None:
+        raise PriorHistoryUnavailable('unresolved fryer interval')
+    reheat = row.get('latest_tonkatsu_reheat')
+    if reheat is None:
+        return placed, lifted
+    if not isinstance(reheat, dict):
+        raise PriorHistoryUnavailable('invalid fryer reheat interval')
+    started = _instant(reheat.get('started_at'))
+    ended = _instant(reheat.get('lifted_at'))
+    if started is None or ended is None or not lifted <= started < ended:
+        raise PriorHistoryUnavailable('invalid fryer reheat interval')
+    return placed, ended
+
+
+def _fryer_order(jobs, current_id, prior_id, versions):
+    current, prior = jobs[current_id], jobs[prior_id]
+    selected = (current, prior)
+    if any(row.get('menu') != 'TONKATSU' or row.get('provenance') != 'SYNTHETIC' or
+           row.get('equipment_profile') != 'synthetic-fryer-approved-v2' or
+           row.get('status') not in {'COMPLETED', 'FAILED'} for row in selected):
+        raise PriorHistoryUnavailable('comparable fryer jobs unavailable')
+    if tuple(_integer(row.get('version'), 1) for row in selected) != versions:
+        raise PriorHistoryUnavailable('fryer job version changed')
+    try:
+        streams = tuple(fryer_stream(row.get('source_binding')) for row in selected)
+    except ValueError:
+        raise PriorHistoryUnavailable('fryer job source unavailable') from None
+    start, _ = _fryer_interval(current)
+    previous_start, previous_end = _fryer_interval(prior)
+    if streams[0] == streams[1] or not previous_start < previous_end <= start:
+        raise PriorHistoryUnavailable('comparable fryer interval unavailable')
+    for key, row in jobs.items():
+        if key in (current_id, prior_id):
+            continue
+        binding = row.get('source_binding')
+        same_device = isinstance(binding, dict) and binding.get('device_id') == 'mockprofile-100-a-001'
+        if not same_device and row.get('menu') not in (None, 'TONKATSU') and row.get('equipment_profile') not in (
+            None, 'synthetic-fryer', 'synthetic-fryer-approved-v2'
+        ):
+            continue
+        placed = _instant(row.get('actual_placed_at'))
+        if placed is None and row.get('actual_placed_at') is None and row.get('status') in {'PENDING', 'READY'}:
+            continue
+        if placed is not None and placed > start:
+            continue
+        if not same_device and isinstance(binding, dict) and binding.get('source_id') == 'synthetic-rest' and (
+            isinstance(binding.get('device_id'), str) and binding['device_id'].startswith('mockprofile-')
+        ):
+            continue
+        if not same_device or placed is None or placed >= previous_start:
+            raise PriorHistoryUnavailable('selected fryer job is not uniquely immediately prior')
+        _, other_end = _fryer_interval(row)
+        if other_end > previous_start:
+            raise PriorHistoryUnavailable('overlapping fryer history')
+    return streams

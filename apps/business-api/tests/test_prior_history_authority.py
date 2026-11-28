@@ -168,3 +168,66 @@ class AuthorityTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def fryer_fixture(self):
+        from foodtech_contracts.tonkatsu_prior_history import fryer_stream
+
+        for job_id, row in self.jobs.items():
+            row.update(menu="TONKATSU", equipment_profile="synthetic-fryer-approved-v2")
+            row["source_binding"].update(device_id="mockprofile-100-a-001", batch_id=f"batch-a-{job_id}")
+        self.jobs[self.current]["status"] = "COMPLETED"
+        return tuple(fryer_stream(self.jobs[job_id]["source_binding"]) for job_id in (self.current, self.prior))
+
+    def test_fryer_witness_derives_separate_streams_and_requires_typed_revalidation(self):
+        streams = self.fryer_fixture()
+        with Stubber(self.client) as stub:
+            self.observation(stub)
+            self.observation(stub)
+            witness = self.authority.observe_tonkatsu(**self.scope)
+            self.assertEqual(witness.streams, streams)
+            self.assertEqual(self.authority.revalidate_tonkatsu(witness), witness)
+            with self.assertRaises(ValueError):
+                self.authority.revalidate(witness)
+            for stream in streams:
+                self.assertNotIn(stream, repr(witness))
+            stub.assert_no_pending_responses()
+
+    def test_fryer_rejects_skipped_job_overlapping_reheat_and_reused_source(self):
+        self.fryer_fixture()
+        for scenario in ("skipped", "reheat", "reused", "mixed-menu"):
+            with self.subTest(scenario=scenario), Stubber(self.client) as stub:
+                saved = copy.deepcopy(self.jobs)
+                scope = dict(self.scope)
+                if scenario == "skipped":
+                    scope["prior_job_id"] = self.older
+                elif scenario == "reheat":
+                    self.jobs[self.older]["latest_tonkatsu_reheat"] = {
+                        "started_at": "2026-01-01T23:59:00Z", "lifted_at": "2026-01-02T00:01:00Z",
+                    }
+                elif scenario == "reused":
+                    self.jobs[self.prior]["source_binding"] = self.jobs[self.current]["source_binding"]
+                else:
+                    self.jobs[self.prior]["menu"] = "JEYUK"
+                self.control(stub)
+                self.listing(stub)
+                self.metadata(stub)
+                with self.assertRaises(PriorHistoryUnavailable):
+                    self.authority.observe_tonkatsu(**scope)
+                stub.assert_no_pending_responses()
+                self.jobs = saved
+
+    def test_fryer_revalidation_rejects_mutated_stream_or_history_revision(self):
+        self.fryer_fixture()
+        with Stubber(self.client) as stub:
+            self.observation(stub)
+            witness = self.authority.observe_tonkatsu(**self.scope)
+            self.jobs[self.prior]["source_binding"]["batch_id"] = "batch-a-changed"
+            self.observation(stub)
+            with self.assertRaisesRegex(PriorHistoryUnavailable, "witness changed"):
+                self.authority.revalidate_tonkatsu(witness)
+            after = copy.deepcopy(self.controls)
+            after[2]["revision"] += 1
+            self.observation(stub, after)
+            with self.assertRaisesRegex(PriorHistoryUnavailable, "coverage changed"):
+                self.authority.observe_tonkatsu(**self.scope)
+            stub.assert_no_pending_responses()
