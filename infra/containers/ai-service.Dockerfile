@@ -11,7 +11,7 @@ COPY apps/standardization-worker apps/standardization-worker
 COPY packages/contracts packages/contracts
 ARG FOODTECH_PACKAGE
 RUN case "$FOODTECH_PACKAGE" in \
-      foodtech-ai-gateway|foodtech-credential-registration) ;; \
+      foodtech-ai-gateway|foodtech-credential-registration|foodtech-business-api) ;; \
       *) echo "Unsupported package" >&2; exit 1 ;; \
     esac && uv sync --locked --no-dev --no-editable --package "$FOODTECH_PACKAGE"
 
