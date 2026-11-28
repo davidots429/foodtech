@@ -148,3 +148,41 @@ class CombiHistoryCoverageTests(unittest.TestCase):
             with self.assertRaises(CombiHistoryCoverageUnavailable):self.recover()
         self.client.user=copy.deepcopy(original);self.client.user['suspended']=True
         with self.assertRaises(CombiHistoryCoverageUnavailable):self.recover()
+
+    def test_registered_receipt_is_consumed_by_existing_full_prior_history_authority(self):
+        from datetime import datetime,timezone
+        import hashlib
+        from test_combi_prior_history import HistoryClient
+        from foodtech_business_api.combi_prior_history import DynamoCombiPriorHistoryAuthority
+        from foodtech_business_api.prior_history_authority import PriorHistoryUnavailable
+        from foodtech_contracts.combi_execution_binding import CombiExecutionBinding
+        self.now=int(datetime(2026,11,29,tzinfo=timezone.utc).timestamp())
+        self.client.writer.update(verified_at=self.now-100,valid_until=self.now+100)
+        prior,current=self.store.ids
+        for day,meal in enumerate((prior,current),27):
+            pk=f'SCOPE#USER#{OWNER}#COMBI_MEAL#{meal}';meta=self.store.items[pk,'META']
+            meta['source']={'device_id':'synthetic-combi-device','raw_sha256':hashlib.sha256(meal.encode()).hexdigest()}
+            rice=self.store.items[pk,'JOB#RICE#'+meta['rice_cooking_job_id']]
+            rice.update(status='UNLOADED',active_cooking_started_at=f'2026-11-{day}T00:00:00Z',
+                        food_unloaded_at=f'2026-11-{day}T00:30:00Z')
+        self.register()
+        reader=HistoryClient(OWNER);reader.items=copy.deepcopy(self.store.items)
+        for row in (self.client.user,self.client.writer,
+                    {'pk':f'SCOPE#USER#{OWNER}#COMBI_MEALS','sk':'HISTORY#REVISION','revision':3},
+                    *self.store.listing[0]['Items']):
+            reader.items[row['pk'],row.get('sk')]=copy.deepcopy(row)
+        current_meta=self.store.items[f'SCOPE#USER#{OWNER}#COMBI_MEAL#{current}','META']
+        prior_meta=self.store.items[f'SCOPE#USER#{OWNER}#COMBI_MEAL#{prior}','META']
+        binding=CombiExecutionBinding('RICE',current,int(current_meta['version']),current_meta['rice_cooking_job_id'],
+            current_meta['source']['raw_sha256'],prior,int(prior_meta['version']),prior_meta['rice_cooking_job_id'],
+            prior_meta['source']['raw_sha256'],2)
+        authority=DynamoCombiPriorHistoryAuthority(auth_table=self.registrar.auth,cooking_table=self.registrar.cooking,
+            account_id='123456789012',client=reader,clock=lambda:self.now)
+        witness=authority.observe(owner=OWNER,binding=binding)
+        coverage=self.client.user[COVERAGE_FIELD]
+        self.assertEqual(witness.coverage_proof_sha256,coverage['proof_sha256'])
+        self.assertEqual(witness.baseline_roster_sha256,coverage['baseline_roster_sha256'])
+        self.assertEqual(authority.revalidate(witness),witness)
+        reader.items[CONTROL_KEY,None]['state']='UNVERIFIED'
+        with self.assertRaises(PriorHistoryUnavailable):authority.observe(owner=OWNER,binding=binding)
+        self.assertFalse(any(kind=='check' for kind,_ in reader.calls))
