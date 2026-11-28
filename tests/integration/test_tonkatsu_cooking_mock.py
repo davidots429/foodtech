@@ -108,6 +108,7 @@ class TonkatsuCookingMockTests(unittest.TestCase):
             generated=json.loads(probe_output.read_text(),parse_float=Decimal)
             job={'job_id':str(uuid4()),'menu':'TONKATSU','provenance':'SYNTHETIC','status':'COMPLETED',
                 'equipment_profile':'synthetic-fryer-approved-v2','thickness_profile':'STANDARD','thickness_cm':'1.25',
+                'recipe_version':'synthetic-tonkatsu-baseline-v1',
                 'actual_cooking_seconds':300,'actual_placed_at':iso(10),'actual_lifted_at':iso(310),
                 'tonkatsu_batch':batch('STANDARD',[160]*4,'PARTIAL'),'tonkatsu_batch_version':1,'actual_load_kg':'0.64',
                 'safety_status':'PASSED','safety_version':1,'core_check_safety_version':1,'core_check':generated['probes'],
@@ -121,6 +122,7 @@ class TonkatsuCookingMockTests(unittest.TestCase):
                    'provenance':'SYNTHETIC','raw':json.dumps(record)} for index,record in enumerate(records,1)]
             observed=observe_tonkatsu_batch(job,rows)
             self.assertEqual(observed.unresolved,());self.assertTrue(observed.core_series_consistent)
+            self.assertEqual(observed.reference_recipe_version,job['recipe_version'])
             self.assertEqual(observed.preplacement_age_us,1000000)
             self.assertEqual(observed.controller_summary.recoveries,((1000000,31000000,36000000),))
             self.assertEqual(observed.model_context()['initial_context_status'],'DECLARED_UNVERIFIED')
