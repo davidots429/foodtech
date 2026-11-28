@@ -1,7 +1,7 @@
 """Fence account enrollment against concurrent final account retirement.
 
 Read the fence BEFORE fresh Cognito verification, then condition the initial
-Put on that exact generation. Retirement advances it atomically with removal
+Conditional creation on that exact generation. Retirement advances it atomically with removal
 of the old subject. The control item has no user identifiers and no TTL.
 
 Bootstrap is an explicit maintenance operation before enabling enrollment.
@@ -61,19 +61,22 @@ class DynamoPrincipalEnrollment:
         """Caller must just have rechecked Cognito AFTER reading the fence."""
         _subject(subject)
         expected_generation = _integer(expected_generation)
-        record = {'pk': f'USER#{subject}', 'epoch': 0, 'suspended': False}
+        user_key = {'pk': f'USER#{subject}'}
         try:
             self.table.meta.client.transact_write_items(TransactItems=[
                 {'ConditionCheck': {'TableName': self.table.name, 'Key': {'pk': self.fence_key},
                     'ConditionExpression': '#generation = :observed AND #state = :open AND attribute_not_exists(expires)',
                     'ExpressionAttributeNames': {'#generation': 'generation', '#state': 'state'},
                     'ExpressionAttributeValues': {':observed': expected_generation, ':open': 'OPEN'}}},
-                {'Put': {'TableName': self.table.name, 'Item': record,
-                         'ConditionExpression': 'attribute_not_exists(pk)'}},
+                {'Update': {'TableName': self.table.name, 'Key': user_key,
+                            'ConditionExpression': 'attribute_not_exists(pk)',
+                            'UpdateExpression': 'SET #epoch = :initial',
+                            'ExpressionAttributeNames': {'#epoch': 'epoch'},
+                            'ExpressionAttributeValues': {':initial': 0}}},
             ])
         except self.table.meta.client.exceptions.TransactionCanceledException:
             raise PrincipalEnrollmentConflict('account or enrollment generation changed') from None
-        return self.table.get_item(Key={'pk': record['pk']}, ConsistentRead=True).get('Item')
+        return self.table.get_item(Key=user_key, ConsistentRead=True).get('Item')
 
 
 class DynamoPrincipalRetirement:

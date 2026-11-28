@@ -1465,10 +1465,13 @@ class DynamoCookingStore:
                      "ConditionExpression": "#version = :expected",
                      "ExpressionAttributeNames": {"#version": "version"},
                      "ExpressionAttributeValues": {":expected": {"N": str(expected_version)}}}},
-            {"Put": {"TableName": self.table.name,
-                     "Item": self._item({"pk": stream_pk, "sk": "BINDING", "job_pk": pk,
-                                         "job_id": meta["job_id"]}),
-                     "ConditionExpression": "attribute_not_exists(pk)"}},
+            {"Update": {"TableName": self.table.name,
+                        "Key": self._item({"pk": stream_pk, "sk": "BINDING"}),
+                        "ConditionExpression": "attribute_not_exists(pk)",
+                        "UpdateExpression": "SET job_pk = :job_pk, job_id = :job_id",
+                        "ExpressionAttributeValues": self._item({
+                            ":job_pk": pk, ":job_id": meta["job_id"],
+                        })}},
             self._history_update(pk),
         ]
         try:

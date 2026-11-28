@@ -39,15 +39,15 @@ def validate(template, account):
     assert len(tables["foodtech-data-flow-dev"]) == 1
     auth = tables["foodtech-auth-sessions-dev"]
     enrollment, = [(keys, conditions) for actions, keys, conditions in auth
-                   if actions == {"dynamodb:PutItem"}]
+                   if actions == {"dynamodb:UpdateItem"}]
     assert len(enrollment[0]) == 1 and enrollment[0][0].startswith("USER#")
-    assert set(enrollment[1]["ForAllValues:StringEquals"]["dynamodb:Attributes"]) == {"pk", "epoch", "suspended"}
+    assert set(enrollment[1]["ForAllValues:StringEquals"]["dynamodb:Attributes"]) == {"pk", "epoch"}
     assert enrollment[1]["StringEquals"]["dynamodb:EnclosingOperation"] == "TransactWriteItems"
     for actions, keys, condition in auth:
         if keys == ("FLOW#*",) or keys == ("SESSION#*",):
             assert "dynamodb:ConditionCheckItem" not in actions
             continue
-        assert not actions.intersection({"dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Scan"})
+        assert not actions.intersection({"dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Scan"})
     cooking = tables["foodtech-cooking-jobs-dev"]
     for actions, keys, condition in cooking:
         if actions != {"dynamodb:GetItem", "dynamodb:Query"}:
@@ -55,7 +55,7 @@ def validate(template, account):
             assert enclosing == (None if actions == {"dynamodb:ConditionCheckItem"} else "TransactWriteItems")
             assert condition["StringEqualsIfExists"] == {"dynamodb:ReturnValues": "NONE"}
         if any(key.startswith("STREAM#") for key in keys):
-            assert actions == {"dynamodb:PutItem"}
+            assert actions == {"dynamodb:UpdateItem"}
             assert set(condition["ForAllValues:StringEquals"]["dynamodb:Attributes"]) == {"pk", "sk", "job_pk", "job_id"}
     pool, = [item for item in statements if item["Resource"] == {"Ref": "CustomerUserPoolArn"}]
     assert pool["Action"] == "cognito-idp:AdminGetUser"

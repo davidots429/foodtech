@@ -46,8 +46,8 @@ export class TonkatsuBusinessTaskRoleStack extends Stack {
         StringEqualsIfExists: failure,
       });
     };
-    const putAttributes = (name: string, keys: string[], attributes: string[]) => {
-      allow(["dynamodb:PutItem"], [table(name)], {
+    const updateAttributes = (name: string, keys: string[], attributes: string[]) => {
+      allow(["dynamodb:UpdateItem"], [table(name)], {
         "ForAllValues:StringLike": { "dynamodb:LeadingKeys": keys },
         "ForAllValues:StringEquals": { "dynamodb:Attributes": attributes },
         Null: { "dynamodb:LeadingKeys": "false", "dynamodb:Attributes": "false" },
@@ -66,7 +66,7 @@ export class TonkatsuBusinessTaskRoleStack extends Stack {
     items(auth, ["GetItem", "PutItem", "UpdateItem", "DeleteItem"], ["SESSION#*"]);
     items(auth, ["GetItem"], [user, enrollment]);
     checkItems(auth, [user, enrollment]);
-    putAttributes(auth, [user], ["pk", "epoch", "suspended"]);
+    updateAttributes(auth, [user], ["pk", "epoch"]);
 
     const jobs = [`SCOPE#USER#${subject}#JOB#${subject}`, `SCOPE#USER#${subject}#JOBS`];
     const aggregates = `SCOPE#USER#${subject}#AGGREGATE#*`;
@@ -74,7 +74,7 @@ export class TonkatsuBusinessTaskRoleStack extends Stack {
     items("cooking-jobs", ["PutItem", "UpdateItem", "DeleteItem"], [...jobs, aggregates], true);
     checkItems("cooking-jobs", [...jobs, aggregates]);
     const streams = ["?", "??"].map(length => `STREAM#14:synthetic-rest|21:mockprofile-100-a-001|${length}:batch-a-*`);
-    putAttributes("cooking-jobs", streams, ["pk", "sk", "job_pk", "job_id"]);
+    updateAttributes("cooking-jobs", streams, ["pk", "sk", "job_pk", "job_id"]);
     items("data-flow", ["GetItem", "Query"], streams);
     // Protected review adds independent condition checks through TonkatsuRecipeAccessStack.
     allow(["cognito-idp:AdminGetUser"], [pool.valueAsString], { StringEquals: regional });

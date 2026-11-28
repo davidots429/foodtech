@@ -92,7 +92,7 @@ class EnrollmentWireTests(unittest.TestCase):
                 store.fence()
             stub.assert_no_pending_responses()
 
-    def test_initial_put_is_conditioned_on_generation_and_nonexistence(self):
+    def test_initial_update_is_conditioned_on_generation_and_nonexistence(self):
         store = DynamoPrincipalEnrollment(table=self.table)
         observed = []
         original = self.resource.meta.client.transact_write_items
@@ -106,9 +106,12 @@ class EnrollmentWireTests(unittest.TestCase):
             with self.assertRaises(PrincipalEnrollmentConflict):
                 store.enroll(subject=self.subject, expected_generation=4)
             stub.assert_no_pending_responses()
-        check, put = observed[0]['TransactItems']
+        check, update = observed[0]['TransactItems']
         self.assertEqual(check['ConditionCheck']['ExpressionAttributeValues'][':observed'], 4)
-        self.assertEqual(put['Put']['ConditionExpression'], 'attribute_not_exists(pk)')
+        self.assertEqual(update['Update']['Key'], {'pk': f'USER#{self.subject}'})
+        self.assertEqual(update['Update']['ConditionExpression'], 'attribute_not_exists(pk)')
+        self.assertEqual(update['Update']['ExpressionAttributeNames'], {'#epoch': 'epoch'})
+        self.assertEqual(update['Update']['ExpressionAttributeValues'], {':initial': 0})
 
     def test_cognito_identity_must_be_absent_before_retirement_transaction(self):
         class NotFound(Exception):
