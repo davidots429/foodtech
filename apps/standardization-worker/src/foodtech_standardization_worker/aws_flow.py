@@ -11,6 +11,8 @@ from boto3.dynamodb.conditions import Attr
 from boto3.dynamodb.types import TypeSerializer
 from foodtech_contracts import decode_record, dedup_key, legacy_dedup_key, payload_hash
 
+from foodtech_contracts.tonkatsu_source_quality import quality_evidence
+
 from .process import Assessment, Finding, QUALITY_RULE_VERSION, assess
 from .process_bridge import DynamoProcessBridge
 from .jeyuk_aws import DynamoJeyukProcessor
@@ -114,6 +116,14 @@ class DynamoStandardizationWorker:
                             "assessment_sk": "ASSESSMENT#v1", **asdict(finding)}
             writes.append({"Put": {"TableName": self.table.name, "Item": self._marshal(finding_item),
                                    "ConditionExpression": "attribute_not_exists(pk)"}})
+        projection = quality_evidence(raw_item, assessment_item)
+        if projection is not None:
+            writes.append({"Put": {
+                "TableName": self.table.name,
+                "Item": self._marshal(projection),
+                "ConditionExpression": "attribute_not_exists(pk)",
+                "ReturnValuesOnConditionCheckFailure": "NONE",
+            }})
         try:
             self.ddb.transact_write_items(TransactItems=writes)
         except self.ddb.exceptions.TransactionCanceledException:

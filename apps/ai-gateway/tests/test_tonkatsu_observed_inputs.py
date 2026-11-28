@@ -118,3 +118,62 @@ class ObservedTonkatsuTests(unittest.TestCase):
             elif kind=='protocol':self.job['source_binding']['device_id']='mockprofile-110-a-001'
             else:self.change(0,measurements={'temperatureCelsius':float('nan'),'speedRpm':0,'elapsedSeconds':0})
             with self.assertRaisesRegex(ValueError,'^synthetic fryer observation unavailable$'):self.observe()
+
+    def test_scoped_source_reader_matches_receipt_and_rejects_revision_race(self):
+        from unittest.mock import Mock
+        from foodtech_contracts import payload_hash
+        from foodtech_contracts.collection_evidence import CompletionTracker
+        from foodtech_contracts.tonkatsu_source_quality import quality_evidence
+        from foodtech_ai_gateway.tonkatsu_source_observation import observe_scoped_tonkatsu_source
+
+        tracker = CompletionTracker(0, "mockprofile-100", "mockprofile-100-a-001")
+        stream = self.raws[0]["pk"]
+        evidence = []
+        for raw in self.raws:
+            event = str(uuid4())
+            raw.update(sk=f"RAW#{event}", ingestion_event_id=event,
+                       source_id="synthetic-rest", device_id="mockprofile-100-a-001")
+            record = json.loads(raw["raw"])
+            record["extensions"]["tonkatsuSamples"] = {
+                "schemaVersion": "tonkatsu-controller-samples-v1", "sampleIntervalSeconds": 1,
+                "samples": [
+                    {"second": (record["sequenceNumber"] - 1) * 5 + index + 1,
+                     "observedAt": self.iso(record["measurements"]["elapsedSeconds"] - 9 + index),
+                     "oilTemperatureCelsius": record["measurements"]["temperatureCelsius"],
+                     "calibrationStatus": "OK"} for index in range(5)
+                ],
+            }
+            raw["raw"] = json.dumps(record)
+            tracker.record(raw["raw"], record)
+            evidence.append(quality_evidence(raw, {
+                "pk": f"EVENT#{event}", "sk": "ASSESSMENT#v1", "source_pk": stream,
+                "raw_sk": raw["sk"], "ingestion_event_id": event, "payload_hash": payload_hash(record),
+                "quality_status": "VALID", "dedup_status": "UNIQUE", "finding_codes": [],
+            }))
+        count = len(self.raws)
+        receipt = {"pk": stream, "sk": "COLLECTION#RECEIPT#test",
+                   **tracker.finish(next_cursor=count, complete=True, completion_explicit=True)}
+        raws, markers = [sorted(rows, key=lambda row: row["sk"]) for rows in (self.raws, evidence)]
+        table = Mock(name="data")
+        revision = {"Item": {"pk": stream, "sk": "SOURCE#REVISION", "revision": Decimal(count)}}
+        paginator = table.meta.client.get_paginator.return_value
+
+        for mode in ("complete", "changed", "missing", "foreign"):
+            with self.subTest(mode=mode):
+                table.get_item.side_effect = [
+                    revision,
+                    revision if mode != "changed" else {"Item": {**revision["Item"], "revision": count + 1}},
+                ]
+                items = markers if mode != "missing" else markers[:-1]
+                raw_page = raws if mode != "foreign" else [{**raws[0], "pk": "foreign"}]
+                paginator.paginate.side_effect = [
+                    iter([{"Items": raw_page}]), iter([{"Items": [receipt]}]), iter([{"Items": items}]),
+                ]
+                request = dict(table=table, job=self.job, scoped_stream=stream, expected_revision=count)
+                if mode == "complete":
+                    result = observe_scoped_tonkatsu_source(**request)
+                    self.assertEqual(result.unresolved, ())
+                    self.assertEqual(result.preplacement_age_us, 1_000_000)
+                else:
+                    with self.assertRaises(ValueError):
+                        observe_scoped_tonkatsu_source(**request)
