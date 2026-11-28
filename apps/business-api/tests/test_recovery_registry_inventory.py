@@ -4,13 +4,19 @@ from unittest.mock import Mock
 from uuid import UUID
 
 import boto3
+from boto3.dynamodb.types import Binary
 from botocore.stub import Stubber
 
 from foodtech_business_api.recovery_registry_inventory import (
     RecoveryRegistryInventory,
     RecoveryRegistryInventoryError,
+    RecoveryRegistryLocators,
+    VersionedTombstone,
 )
 from foodtech_contracts.recovery_reconciliation import Tombstone
+
+from foodtech_business_api.deletion_registry_recovery_cipher import DeletionRegistryRecoveryCipher
+from test_deletion_registry_recovery_cipher import Providers, SDK
 
 
 ARN = "arn:aws:dynamodb:ap-southeast-2:123456789012:table/foodtech-deletion-registry-dev"
@@ -100,3 +106,62 @@ class RecoveryRegistryInventoryTests(unittest.TestCase):
         for table in (ARN.rsplit("/", 1)[-1], ARN.replace("deletion-registry", "source-access-restore")):
             with self.subTest(table=table), self.assertRaises(ValueError):
                 RecoveryRegistryInventory(self.dynamodb, live_registry_arn=table)
+
+
+class RecoveryRegistryLocatorTests(unittest.TestCase):
+    def setUp(self):
+        self.dynamodb = Mock()
+        self.table = self.dynamodb.Table.return_value
+        self.row = item(1, "COMPLETED", 3)
+        self.expected = VersionedTombstone(Tombstone(self.row["request_id"], "COMPLETED"), 3)
+        self.metadata = {"Item": self.row}
+        self.encrypted = {"Item": {**self.row, "encrypted_user_id": Binary(b"user"),
+                                   "encrypted_capsule_locator": Binary(b"locator")}}
+        self.sdk = SDK(self.row["request_id"])
+        self.cipher = DeletionRegistryRecoveryCipher(
+            "arn:aws:kms:ap-southeast-2:123456789012:key/abcd", "dev",
+            kms_client=object(), sdk=self.sdk, providers=Providers(),
+        )
+        self.locators = RecoveryRegistryLocators(self.dynamodb, live_registry_arn=ARN, recovery_cipher=self.cipher)
+
+    def test_ciphertext_lookup_and_recheck_only_pass_buffers_to_internal_action(self):
+        self.table.get_item.side_effect = [self.encrypted, self.metadata]
+        seen = []
+
+        def use(user, locator):
+            self.assertEqual(self.table.get_item.call_count, 2)
+            self.assertEqual(bytes(user), self.sdk.values[b"user"])
+            self.assertEqual(bytes(locator), self.sdk.values[b"locator"])
+            seen.extend((user, locator))
+
+        self.assertIsNone(self.locators.use(self.expected, use))
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(all(not any(buffer) for buffer in seen))
+        first, last = (entry.kwargs for entry in self.table.get_item.call_args_list)
+        for params in (first, last):
+            self.assertIs(params["ConsistentRead"], True)
+            self.assertEqual(params["Key"], {key: self.row[key] for key in ("pk", "sk")})
+        self.assertIn("encrypted_capsule_locator", first["ProjectionExpression"])
+        self.assertNotIn("encrypted_capsule_locator", last["ProjectionExpression"])
+
+    def test_changed_missing_or_malformed_entry_stops_before_decryption(self):
+        cipher = Mock()
+        locators = RecoveryRegistryLocators(self.dynamodb, live_registry_arn=ARN, recovery_cipher=cipher)
+        for response in ({}, {"Item": {**self.encrypted["Item"], "version": Decimal(4)}},
+                         {"Item": {**self.encrypted["Item"], "status": "RECONCILING"}},
+                         {"Item": {**self.encrypted["Item"], "encrypted_capsule_locator": None}},
+                         {"Item": {**self.encrypted["Item"], "encrypted_user_id": b""}}):
+            with self.subTest(response=response):
+                self.table.get_item.return_value = response
+                with self.assertRaises(RecoveryRegistryInventoryError):
+                    locators.use(self.expected, Mock())
+        cipher.use.assert_not_called()
+
+    def test_change_during_decryption_stops_internal_action(self):
+        self.table.get_item.side_effect = [
+            self.encrypted, {"Item": {**self.row, "version": Decimal(4)}},
+        ]
+        action = Mock()
+        with self.assertRaisesRegex(ValueError, "unable to recover deletion registry locators"):
+            self.locators.use(self.expected, action)
+        action.assert_not_called()
