@@ -15,6 +15,7 @@ from .cooking_store import Conflict, DynamoCookingStore, MemoryCookingStore, _ap
 
 PREFIX = 'RECIPE_REVIEW#VERSION#'
 CURRENT = 'RECIPE_REVIEW#CURRENT'
+FRYER_SOURCE_CONTRACT = "tonkatsu-guarded-source-v1"
 
 
 def _integer(value, *, minimum=0):
@@ -33,7 +34,9 @@ def _scope(pk):
 def validate_review(record):
     fields = {'schema_version', 'version', 'request_id', 'execution_id', 'job_id', 'job_version',
               'proposal_digest', 'proposal', 'decision', 'reason', 'reviewed_at'}
-    if type(record) is not dict or set(record) != fields or record['schema_version'] != 'recipe-review-v1':
+    if type(record) is not dict or set(record) not in (fields, fields | {"source_contract"}) or (
+        record['schema_version'] != 'recipe-review-v1'
+    ):
         raise ValueError('invalid recipe review record')
     _integer(record['version'], minimum=1)
     _integer(record['job_version'], minimum=1)
@@ -51,6 +54,8 @@ def validate_review(record):
     proposal = validated_recipe_proposal(record['proposal'])
     if record['proposal_digest'] != recipe_proposal_digest(proposal):
         raise ValueError('recipe review proposal changed')
+    if "source_contract" in record and (record["source_contract"] != FRYER_SOURCE_CONTRACT or proposal["menu"] != "TONKATSU"):
+        raise ValueError("invalid review source contract")
     return {**record, 'proposal': proposal}
 
 
@@ -147,6 +152,8 @@ class RecipeReviewStore:
         if record['job_id'] != job_id or record['job_version'] != expected_job_version or \
                 record['version'] != expected_review_version + 1:
             raise ValueError('invalid recipe review binding')
+        if (record.get("source_contract") == FRYER_SOURCE_CONTRACT) != (fryer_conditions is not None):
+            raise Conflict
         if fryer_conditions is not None:
             if type(fryer_conditions) is not TonkatsuTransactionConditions or not isinstance(self.store, DynamoCookingStore):
                 raise ValueError("atomic fryer review storage required")

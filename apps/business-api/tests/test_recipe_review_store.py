@@ -191,7 +191,8 @@ class RecipeReviewStoreTests(unittest.TestCase):
         self.assertEqual(parse_fryer_review_scope(wire), scope)
         conditions = TonkatsuTransactionConditions(scope=scope, account=wire["account"], stage=wire["stage"], clock=lambda: 1000)
         proposal = {**PROPOSAL, "menu": "TONKATSU", "data": {"temperature_c": "170", "duration_seconds": 300}}
-        value = {**record(), "proposal": proposal, "proposal_digest": recipe_proposal_digest(proposal)}
+        value = {**record(), "proposal": proposal, "proposal_digest": recipe_proposal_digest(proposal),
+                 "source_contract": "tonkatsu-guarded-source-v1"}
         self.assertEqual(RecipeReviewStore(cooking).save(PK, 3, 0, value, 5, fryer_conditions=conditions), value)
         actions = cooking.client.transact_write_items.call_args.kwargs["TransactItems"]
         model = get_session().get_service_model("dynamodb").operation_model("TransactWriteItems")

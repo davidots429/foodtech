@@ -368,7 +368,7 @@ async def tonkatsu_review(request: Request, execution_id: UUID, body: RecipeRevi
 async def _save_recipe_review(request, execution_id, body, *, tonkatsu):
     from .cooking import _now, _read, _store_call
     from .cooking_store import Conflict
-    from .recipe_review_store import RecipeReviewStore
+    from .recipe_review_store import FRYER_SOURCE_CONTRACT, RecipeReviewStore
     before, _, _, _, _ = await _read(request, str(body.job_id), write=True)
     identity = (before.subject, before.epoch, before.csrf)
     lookup = {"tonkatsu": True, "include_review_scope": True} if tonkatsu else {}
@@ -382,6 +382,8 @@ async def _save_recipe_review(request, execution_id, body, *, tonkatsu):
         'request_id': str(body.request_id), 'execution_id': str(execution_id), 'job_id': str(body.job_id),
         'job_version': body.expected_job_version, 'proposal_digest': body.proposal_digest,
         'proposal': payload['proposal'], 'decision': body.decision, 'reason': body.reason, 'reviewed_at': _now()}
+    if tonkatsu:
+        value["source_contract"] = FRYER_SOURCE_CONTRACT
     try:
         reviews = RecipeReviewStore(store)
         if tonkatsu and "fryer_conditions" not in payload:
@@ -439,6 +441,13 @@ async def recipe_candidate(request: Request, review_version: int, job_id: UUID):
 async def candidate_cooking_job(request: Request, review_version: int, body: CandidateJobRequest, job_id: UUID):
     from .recipe_candidate_jobs import create_candidate_job
     return await create_candidate_job(request, job_id, review_version, body)
+
+
+@router.post("/tonkatsu-recipe-candidates/{review_version}/cooking-jobs", status_code=201)
+async def tonkatsu_candidate_cooking_job(request: Request, review_version: int, body: CandidateJobRequest, job_id: UUID):
+    from .recipe_candidate_jobs import create_candidate_job
+
+    return await create_candidate_job(request, job_id, review_version, body, tonkatsu=True)
 
 
 @router.post('/recipe-executions/{execution_id}/invoke')

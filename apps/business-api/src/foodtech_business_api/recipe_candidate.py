@@ -27,7 +27,8 @@ def build_candidate(review, job):
             'review_request_id': review['request_id'], 'execution_id': review['execution_id'],
             'job_id': review['job_id'], 'job_version': review['job_version'],
             'proposal_digest': review['proposal_digest'], 'proposal': copy.deepcopy(review['proposal']),
-            'created_at': review['reviewed_at']}
+            'created_at': review['reviewed_at'],
+            **({"source_contract": review["source_contract"]} if "source_contract" in review else {})}
 
 
 def validate_candidate(candidate, review):
