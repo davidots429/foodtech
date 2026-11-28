@@ -1,10 +1,10 @@
-"""Verify that the broker publisher only targets its private registry."""
+"""Verify that each publisher only targets its private registry."""
 import json
 from pathlib import Path
 import sys
 
 
-def validate(template):
+def validate(template, service="broker"):
     resources = {name: resource for name, resource in template["Resources"].items() if name != "CDKMetadata"}
     assert sorted(resource["Type"] for resource in resources.values()) == [
         "AWS::ECR::Repository", "AWS::IAM::Policy", "AWS::IAM::Role",
@@ -12,13 +12,13 @@ def validate(template):
     ecr_id, ecr = next((name, resource) for name, resource in resources.items()
                        if resource["Type"] == "AWS::ECR::Repository")
     assert ecr["DeletionPolicy"] == ecr["UpdateReplacePolicy"] == "Retain"
-    assert ecr["Properties"]["RepositoryName"] == "foodtech/tonkatsu-broker-dev"
+    assert ecr["Properties"]["RepositoryName"] == f"foodtech/tonkatsu-{service}-dev"
     assert ecr["Properties"]["ImageTagMutability"] == "IMMUTABLE"
     assert ecr["Properties"]["EncryptionConfiguration"] == {"EncryptionType": "AES256"}
     assert ecr["Properties"]["ImageScanningConfiguration"] == {"ScanOnPush": True}
     role_id, role = next((name, resource["Properties"]) for name, resource in resources.items()
                          if resource["Type"] == "AWS::IAM::Role")
-    assert role["RoleName"] == "foodtech-tonkatsu-broker-publish-dev" and role["MaxSessionDuration"] == 3600
+    assert role["RoleName"] == f"foodtech-tonkatsu-{service}-publish-dev" and role["MaxSessionDuration"] == 3600
     assert "ManagedPolicyArns" not in role and "Policies" not in role
     assert role["AssumeRolePolicyDocument"]["Statement"] == [{
         "Action": "sts:AssumeRoleWithWebIdentity", "Effect": "Allow",
@@ -50,4 +50,6 @@ def validate(template):
 
 if __name__ == "__main__":
     validate(json.loads(Path(sys.argv[1]).read_text()))
-    print("Tonkatsu broker publishing definition checks passed")
+    if len(sys.argv) == 3:
+        validate(json.loads(Path(sys.argv[2]).read_text()), "gateway")
+    print("Tonkatsu publishing definitions verified")

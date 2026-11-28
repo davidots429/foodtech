@@ -55,6 +55,38 @@ class TonkatsuBrokerPublisherTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 verify(self.env, {"repositories": [{**self.repository, field: replacement}]})
 
+    def test_gateway_destination_rejects_broker_identity_and_repository(self):
+        gateway_env = {**self.env, "PUBLISH_ROLE_ARN": self.env["PUBLISH_ROLE_ARN"].replace("broker", "gateway")}
+        gateway_repo = {key: value.replace("tonkatsu-broker", "tonkatsu-gateway") if isinstance(value, str) else value
+                        for key, value in self.repository.items()}
+        self.assertEqual(publish.manifest(gateway_env, "sha256:" + "f" * 64, service="gateway")["workload"],
+                         "tonkatsu-gateway")
+        self.assertEqual(publish.verify_repository(gateway_env, {"repositories": [gateway_repo]}, service="gateway"),
+                         {"repository_verified": True})
+        for environment, repository in ((self.env, gateway_repo), (gateway_env, self.repository)):
+            with self.assertRaises(ValueError):
+                publish.verify_repository(environment, {"repositories": [repository]}, service="gateway")
+        self.assertNotEqual(publish.WORKFLOW, publish.workflow("gateway"))
+
+    def test_gateway_workflow_has_no_broker_role_or_destination(self):
+        source = (ROOT / ".github/workflows/publish-tonkatsu-gateway-image.yml").read_text()
+        self.assertNotIn("TONKATSU_BROKER", source)
+        self.assertNotIn("foodtech/tonkatsu-broker-dev", source)
+        workflow = yaml.load(source, Loader=yaml.BaseLoader)
+        self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
+        self.assertEqual(workflow["on"]["workflow_dispatch"]["inputs"]["operation"]["default"], "inspect")
+        job, = workflow["jobs"].values()
+        build = next(step for step in job["steps"] if step.get("uses", "").startswith("docker/build-push-action"))
+        self.assertEqual(build["with"]["build-args"], "FOODTECH_PACKAGE=foodtech-ai-gateway")
+        self.assertIn("foodtech_ai_gateway.serve_tonkatsu", source)
+        for step in job["steps"]:
+            if "aws " in step.get("run", "") or step.get("uses", "").startswith(("aws-actions/", "docker/")):
+                self.assertEqual(step["if"], "inputs.operation == 'publish'")
+            if "run" in step:
+                subprocess.run(["bash", "-n"], input=step["run"], text=True, check=True)
+        for mode in ("inspect", "target", "verify-repository", "manifest"):
+            self.assertIn(f"tonkatsu_broker_publish.py {mode} --service gateway", source)
+
     def test_workflow_guards_and_build_precede_credentials_and_login(self):
         workflow = yaml.load((ROOT / '.github/workflows/publish-tonkatsu-broker-image.yml').read_text(), Loader=yaml.BaseLoader)
         self.assertEqual(set(workflow['on']), {'workflow_dispatch'})
