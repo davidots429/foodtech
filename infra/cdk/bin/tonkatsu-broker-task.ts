@@ -108,17 +108,19 @@ export class TonkatsuBrokerTaskStack extends Stack {
 }
 
 class TonkatsuExecutionStack extends Stack {
-  constructor(scope: Construct, id: string, props: StackProps, stage: string, service: "broker" | "gateway") {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string, service: "broker" | "gateway" | "business-api") {
     super(scope, id, props);
     if (stage !== "dev" || Token.isUnresolved(this.account) ||
         !/^\d{12}$/.test(this.account) || this.region !== "ap-southeast-2") {
       throw new Error(`Tonkatsu ${service} execution access requires dev and an explicit regional account`);
     }
-    const prefix = service === "broker" ? "Broker" : "Gateway";
-    const repository = `foodtech/tonkatsu-${service}-dev`;
+    const prefix = { broker: "Broker", gateway: "Gateway", "business-api": "BusinessApi" }[service];
+    const imageService = service === "business-api" ? "broker" : service;
+    const repository = `foodtech/tonkatsu-${imageService}-dev`;
+    const secretName = `foodtech/tonkatsu-${service}-dev/tls`;
     const logGroup = `/foodtech/dev/tonkatsu-${service}`;
     const secret = new CfnParameter(this, `${prefix}TlsBundleArn`, {
-      type: "String", allowedPattern: tlsBundlePattern(this.region, this.account, `${repository}/tls`),
+      type: "String", allowedPattern: tlsBundlePattern(this.region, this.account, secretName),
     });
     const key = new CfnParameter(this, `${prefix}TlsKeyArn`, {
       type: "String",
@@ -169,5 +171,11 @@ export class TonkatsuBrokerExecutionStack extends TonkatsuExecutionStack {
 export class TonkatsuGatewayExecutionStack extends TonkatsuExecutionStack {
   constructor(scope: Construct, id: string, props: StackProps, stage: string) {
     super(scope, id, props, stage, "gateway");
+  }
+}
+
+export class TonkatsuBusinessExecutionStack extends TonkatsuExecutionStack {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string) {
+    super(scope, id, props, stage, "business-api");
   }
 }

@@ -75,7 +75,8 @@ def validate(template, account):
 
 
 def validate_execution(template, account, service="broker"):
-    prefix = service.title()
+    prefix = "BusinessApi" if service == "business-api" else service.title()
+    image_service = "broker" if service == "business-api" else service
     region = "ap-southeast-2"
     log_group = f"/foodtech/dev/tonkatsu-{service}"
     resources = {key: value for key, value in template["Resources"].items() if key != "CDKMetadata"}
@@ -107,7 +108,7 @@ def validate_execution(template, account, service="broker"):
     assert policy["PolicyDocument"]["Statement"] == [
         allow("ecr:GetAuthorizationToken", "*"),
         allow(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
-              f"arn:aws:ecr:{region}:{account}:repository/foodtech/tonkatsu-{service}-dev"),
+              f"arn:aws:ecr:{region}:{account}:repository/foodtech/tonkatsu-{image_service}-dev"),
         allow(["logs:CreateLogStream", "logs:PutLogEvents"],
               f"arn:aws:logs:{region}:{account}:log-group:{log_group}:log-stream:{service}/{service}/*"),
         allow("secretsmanager:GetSecretValue", secret,
@@ -119,15 +120,15 @@ def validate_execution(template, account, service="broker"):
         assert "Default" not in template["Parameters"][name]
     pattern = template["Parameters"][f"{prefix}TlsBundleArn"]["AllowedPattern"]
     root = f"arn:aws:secretsmanager:{region}:{account}:secret:foodtech/"
-    other = "gateway" if service == "broker" else "broker"
     assert re.fullmatch(pattern, root + f"tonkatsu-{service}-dev/tls-aB1234")
-    assert not re.fullmatch(pattern, root + f"tonkatsu-{other}-dev/tls-aB1234")
+    for other in {"broker", "gateway", "business-api"} - {service}:
+        assert not re.fullmatch(pattern, root + f"tonkatsu-{other}-dev/tls-aB1234")
 
 
 
 if __name__ == "__main__":
     validate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2])
     validate_execution(json.loads(Path(sys.argv[3]).read_text()), sys.argv[2])
-    if len(sys.argv) == 5:
-        validate_execution(json.loads(Path(sys.argv[4]).read_text()), sys.argv[2], "gateway")
+    for path, service in zip(sys.argv[4:], ("gateway", "business-api")):
+        validate_execution(json.loads(Path(path).read_text()), sys.argv[2], service)
     print("Tonkatsu broker Task and separate execution access checks passed")

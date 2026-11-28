@@ -108,7 +108,8 @@ class TonkatsuBrokerPublisherTests(unittest.TestCase):
             if 'aws ' in s.get('run', '') or s.get('uses', '').startswith(('aws-actions/', 'docker/')):
                 self.assertEqual(s['if'], "inputs.operation == 'publish'")
             if 'run' in s:subprocess.run(['bash', '-n'], input=s['run'], text=True, check=True)
-        for value in ("foodtech_business_api.serve_tonkatsu_broker", "/run/foodtech-tls",
+        for value in ("foodtech_business_api.serve_tonkatsu_broker",
+                      "foodtech_business_api.serve_tonkatsu_business_api", "/run/foodtech-tls",
                       "--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges"):
             self.assertIn(value, steps[guards]["run"])
         self.assertEqual(steps[build]["with"]["build-args"], "FOODTECH_PACKAGE=foodtech-business-api")

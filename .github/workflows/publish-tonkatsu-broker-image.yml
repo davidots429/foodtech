@@ -76,13 +76,13 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/davidots429/foodtech
             org.opencontainers.image.revision=${{ github.sha }}
-      - name: Verify broker entry point and private TLS volume before obtaining AWS credentials
+      - name: Verify broker entry point, customer API entry point and private TLS volume before obtaining AWS credentials
         if: inputs.operation == 'publish'
         env:
           TAG: ${{ steps.target.outputs.tag }}
         run: |
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-tonkatsu-broker:$TAG" \
-            -c 'import pathlib, stat, tempfile; import foodtech_business_api.serve_tonkatsu_broker; path = pathlib.Path("/run/foodtech-tls"); assert stat.S_IMODE(path.stat().st_mode) == 0o700; tempfile.TemporaryDirectory(dir=path).cleanup()'
+            -c 'import pathlib, stat, tempfile; import foodtech_business_api.serve_tonkatsu_broker; import foodtech_business_api.serve_tonkatsu_business_api; path = pathlib.Path("/run/foodtech-tls"); assert stat.S_IMODE(path.stat().st_mode) == 0o700; tempfile.TemporaryDirectory(dir=path).cleanup()'
       - name: Obtain short-lived Tonkatsu broker publishing credentials
         uses: aws-actions/configure-aws-credentials@v6.3.1
         if: inputs.operation == 'publish'
