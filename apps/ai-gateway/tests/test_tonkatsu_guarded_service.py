@@ -12,7 +12,10 @@ from foodtech_ai_gateway.policy import Budget, Caller, Execution, Feature, Model
 from foodtech_ai_gateway.service import GatewayService
 from foodtech_ai_gateway.tonkatsu_read_handoff import ReceivedTonkatsuReads
 from foodtech_contracts.tonkatsu_controller_samples import TonkatsuControllerSummary
-from foodtech_contracts.tonkatsu_observed_inputs import ObservedTonkatsuBatch, TonkatsuBatchFacts, TonkatsuCoreSummary
+from foodtech_contracts.quality_score import SCORE_ITEMS
+from foodtech_contracts.tonkatsu_observed_inputs import (
+    ObservedTonkatsuBatch, TonkatsuBatchFacts, TonkatsuCoreSummary, TonkatsuQualitySummary,
+)
 
 
 class GuardedTonkatsuServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -50,10 +53,14 @@ class GuardedTonkatsuServiceTests(unittest.IsolatedAsyncioTestCase):
                                           Decimal("4.0"), Decimal("8.00")),
             reference_recipe_version="private-recipe-version",
             recorded_process_status="NORMAL", controller_summary=summary, unresolved=(),
+            quality_summary=TonkatsuQualitySummary(
+                "CURRENT", 1, tuple((item, 4) for item in SCORE_ITEMS), Decimal("80.00"), "QUALITY_PASSED", True, 2,
+            ),
         )
         self.prior = replace(self.current, job_id=self.execution.prior_job_id, recorded_safety_status="FAILED",
                              core_summary=TonkatsuCoreSummary(2, Decimal("74.9"), 1),
-                             reference_recipe_version="private-prior-version")
+                             reference_recipe_version="private-prior-version",
+                             quality_summary=TonkatsuQualitySummary("BLOCKED_BY_SAFETY"))
 
     async def execute(self):
         with patch.object(ReceivedTonkatsuReads, "observe_inputs", return_value=(self.current, self.prior)):
@@ -84,6 +91,8 @@ class GuardedTonkatsuServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(context["same_reference_recipe_version"])
             self.assertEqual(context["current"]["batch"]["product_weights_g"], [160, 160])
             self.assertEqual(context["immediately_prior"]["core_observation"]["probes_below_limit"], 1)
+            self.assertEqual(context["current"]["quality_observation"]["status"], "CURRENT")
+            self.assertEqual(context["immediately_prior"]["quality_observation"], {"status": "BLOCKED_BY_SAFETY"})
 
     async def test_incomplete_observation_denied_before_reservation(self):
         self.current = replace(self.current, unresolved=("REHEAT_TIMELINE_REQUIRES_SEPARATE_OBSERVATION",))

@@ -2,6 +2,7 @@
 import asyncio
 import hmac
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import boto3
@@ -17,6 +18,7 @@ from foodtech_contracts.tonkatsu_execution_binding import parse_tonkatsu_binding
 from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
 
 from .tonkatsu_transaction_conditions import TonkatsuTransactionConditions
+from .tonkatsu_quality_inputs import observe_tonkatsu_quality
 from .tonkatsu_source_observation import observe_scoped_tonkatsu_source
 
 REGION = "ap-southeast-2"
@@ -66,8 +68,10 @@ class ReceivedTonkatsuReads:
                 or job.get("job_id") != reference.job_id
                 or history_integer(job.get("version")) != reference.job_version):
                 raise TonkatsuHandoffDenied("stored fryer job changed")
-            result.append(observe_scoped_tonkatsu_source(table=data, job=job, scoped_stream=stream,
-                                                         expected_revision=reference.source_revision))
+            observed = observe_scoped_tonkatsu_source(table=data, job=job, scoped_stream=stream,
+                                                       expected_revision=reference.source_revision)
+            quality = observe_tonkatsu_quality(cooking, job, observed)
+            result.append(replace(observed, quality_summary=quality))
         self._check_scope()
         return tuple(result)
 

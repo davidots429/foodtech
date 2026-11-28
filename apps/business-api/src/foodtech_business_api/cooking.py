@@ -8,12 +8,13 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from foodtech_contracts import stream_binding_key
+from foodtech_contracts.quality_score import SCORE_ITEMS, summarize_quality_scores
 from foodtech_contracts.validation_changes import compare_jeyuk_context, recorded_safety_change
 from foodtech_contracts.cooking_live_time import observe as observe_live_time
 from foodtech_contracts.tonkatsu_process import (RULE_VERSION, TEMPERATURE_RULE_VERSION,
@@ -34,10 +35,6 @@ JEYUK_QUALITY_REASONS = frozenset({
     "UNDERCOOKED", "EXCESS_MOISTURE", "OVERCOOKED", "UNEVEN_COOK", "BAD_SMELL",
     "BURNT_BOTTOM", "UNEVEN_MIX", "INGREDIENT_DAMAGE", "SAUCE_NOT_COATED",
 })
-SCORE_ITEMS = (
-    "ingredient_condition", "preparation", "taste", "texture", "appearance",
-    "aroma", "temperature_suitability",
-)
 TRANSITIONS = {
     ("PENDING", "PREHEAT_COMPLETED"): "READY",
     ("READY", "PREHEAT_CONDITION_LOST"): "PENDING",
@@ -1458,8 +1455,7 @@ async def complete_assessment(job_id: str, request: Request, body: CompletedAsse
         raise HTTPException(422, "최초 평가와 수정·재평가 유형이 일치하지 않습니다.")
     if current_version > 0 and not body.reason:
         raise HTTPException(422, "수정·재평가 사유가 필요합니다.")
-    total = sum(body.scores.values())
-    score = (Decimal(total) / Decimal(35) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    _, total, score = summarize_quality_scores(body.scores)
     score_passed = min(body.scores.values()) >= 3 and score >= 60
     if old["menu"] == "JEYUK" and body.quality_decision == "QUALITY_PASSED" and not score_passed:
         raise HTTPException(422, "품질 합격 점수 기준에 미달한 평가는 통과시킬 수 없습니다.")

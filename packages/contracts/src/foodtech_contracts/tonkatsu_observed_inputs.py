@@ -84,6 +84,27 @@ class TonkatsuCoreSummary:
 
 
 @dataclass(frozen=True)
+class TonkatsuQualitySummary:
+    status: str
+    version: int | None = None
+    scores: tuple[tuple[str, int], ...] = ()
+    score_percent: Decimal | None = None
+    quality_status: str | None = None
+    quality_target: bool | None = None
+    actual_portions: int | None = None
+
+    def model_context(self):
+        if self.status == "BLOCKED_BY_SAFETY":
+            return {"status": self.status}
+        return {
+            "status": self.status, "version": self.version, "scale_version": "tonkatsu-common-v1",
+            "scores": dict(self.scores), "score_percent": str(self.score_percent),
+            "quality_status": self.quality_status, "quality_target": self.quality_target,
+            "actual_portions": self.actual_portions,
+        }
+
+
+@dataclass(frozen=True)
 class ObservedTonkatsuBatch:
     job_id: str = field(repr=False)
     profile: str
@@ -107,6 +128,7 @@ class ObservedTonkatsuBatch:
     recorded_process_status: str
     controller_summary: TonkatsuControllerSummary | None = field(repr=False)
     unresolved: tuple[str, ...]
+    quality_summary: TonkatsuQualitySummary | None = None
 
     @property
     def core_series_consistent(self):
@@ -130,6 +152,7 @@ class ObservedTonkatsuBatch:
             'oil_cooked_mass_kg': number(self.oil_cooked_mass_kg),
             'recorded_safety_status': self.recorded_safety_status,
             'recorded_process_status': self.recorded_process_status,
+            'quality_observation': self.quality_summary.model_context() if self.quality_summary else None,
             'cooking_time_status': cooking_time_status(self.profile, self.cooking_seconds),
             'batch': self.batch_facts.model_context(),
             'core_observation': self.core_summary.model_context() if self.core_summary else None,
