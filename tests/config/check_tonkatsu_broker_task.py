@@ -74,6 +74,52 @@ def validate(template, account):
         assert not re.fullmatch(parameter["AllowedPattern"], rejected)
 
 
+def validate_execution(template, account):
+    region = "ap-southeast-2"
+    log_group = "/foodtech/dev/tonkatsu-broker"
+    resources = {key: value for key, value in template["Resources"].items() if key != "CDKMetadata"}
+    assert sorted(resource["Type"] for resource in resources.values()) == [
+        "AWS::IAM::Policy", "AWS::IAM::Role", "AWS::Logs::LogGroup",
+    ]
+    role_id, role = next((key, resource["Properties"]) for key, resource in resources.items()
+                         if resource["Type"] == "AWS::IAM::Role")
+    assert role["RoleName"] == "foodtech-tonkatsu-broker-execution-dev"
+    assert "ManagedPolicyArns" not in role and "Policies" not in role
+    assert role["AssumeRolePolicyDocument"]["Statement"] == [
+        {"Action": "sts:AssumeRole", "Effect": "Allow", "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+         "Condition": {"StringEquals": {"aws:SourceAccount": account},
+                       "ArnLike": {"aws:SourceArn": f"arn:aws:ecs:{region}:{account}:*"}}},
+    ]
+    logs = next(resource for resource in resources.values() if resource["Type"] == "AWS::Logs::LogGroup")
+    assert logs["DeletionPolicy"] == logs["UpdateReplacePolicy"] == "Retain"
+    assert logs["Properties"]["LogGroupName"] == log_group and logs["Properties"]["RetentionInDays"] == 7
+    policy = next(resource["Properties"] for resource in resources.values() if resource["Type"] == "AWS::IAM::Policy")
+    assert policy["Roles"] == [{"Ref": role_id}]
+    regional = {"aws:RequestedRegion": region}
+    secret = {"Ref": "BrokerTlsBundleArn"}
+    key = {"Ref": "BrokerTlsKeyArn"}
+
+    def allow(action, resource, condition=None):
+        return {"Effect": "Allow", "Action": action, "Resource": resource,
+                "Condition": condition or {"StringEquals": regional}}
+
+    assert policy["PolicyDocument"]["Statement"] == [
+        allow("ecr:GetAuthorizationToken", "*"),
+        allow(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+              f"arn:aws:ecr:{region}:{account}:repository/foodtech/tonkatsu-broker-dev"),
+        allow(["logs:CreateLogStream", "logs:PutLogEvents"],
+              f"arn:aws:logs:{region}:{account}:log-group:{log_group}:log-stream:broker/broker/*"),
+        allow("secretsmanager:GetSecretValue", secret,
+              {"StringEquals": regional, "Bool": {"aws:SecureTransport": "true"}}),
+        allow("kms:Decrypt", key, {"StringEquals": {**regional,
+              "kms:ViaService": f"secretsmanager.{region}.amazonaws.com", "kms:EncryptionContext:SecretARN": secret}}),
+    ]
+    for name in ("BrokerTlsBundleArn", "BrokerTlsKeyArn"):
+        assert "Default" not in template["Parameters"][name]
+
+
+
 if __name__ == "__main__":
     validate(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2])
-    print("Tonkatsu broker task definition checks passed")
+    validate_execution(json.loads(Path(sys.argv[3]).read_text()), sys.argv[2])
+    print("Tonkatsu broker task and execution access checks passed")
