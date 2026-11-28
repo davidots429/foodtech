@@ -114,6 +114,23 @@ class ReceivedTonkatsuReads:
         return (conditions.bind_execution_update(execution_update, completed_calls=completed_calls),
                 [] if failure else conditions.source_checks())
 
+    def verification_checks(self, *, execution_id, completed_calls):
+        if self._resource is None or execution_id != self._scope.execution_id:
+            raise TonkatsuHandoffDenied("fryer transaction scope unavailable")
+        self._frame.validate(self._scope)
+        role = re.fullmatch(ROLE_PATTERN, self._frame.role)
+        conditions = TonkatsuTransactionConditions(scope=self._scope, account=role[1], stage=role[2],
+            clock=self._frame.live_timestamp)
+        return [
+            *conditions.source_checks(),
+            {"ConditionCheck": {
+                "TableName": "foodtech-ai-execution-registry-" + role[2],
+                "Key": {"pk": {"S": "EXEC#" + execution_id}, "sk": {"S": "META"}},
+                **conditions.execution_predicate(completed_calls=completed_calls),
+                "ReturnValuesOnConditionCheckFailure": "NONE",
+            }},
+        ]
+
     def close(self):
         if self._resource is not None:
             _close(self._resource.meta.client)

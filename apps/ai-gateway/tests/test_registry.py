@@ -751,6 +751,16 @@ class RegistryTests(unittest.TestCase):
             validate_parameters({"TransactItems": TransactItems, "ClientRequestToken": ClientRequestToken}, operation.input_shape)
             source_checks = [action["ConditionCheck"] for action in TransactItems if "ConditionCheck" in action
                              and action["ConditionCheck"]["TableName"] != self.registry.table_name]
+            if all("ConditionCheck" in action for action in TransactItems):
+                self.assertEqual(len(source_checks), 9)
+                self.assertEqual(len(TransactItems), 10)
+                execution_check = TransactItems[-1]["ConditionCheck"]
+                self.assertEqual(execution_check["TableName"], self.registry.table_name)
+                self.assertEqual(execution_check["Key"]["pk"], {"S": key})
+                self.assertIn("tonkatsu_binding", execution_check["ExpressionAttributeNames"].values())
+                if source_changed:
+                    raise TransactionCanceledException()
+                return
             history_checks_present.append(len(source_checks))
             updates = [action["Update"] for action in TransactItems if "Update" in action
                        and action["Update"]["Key"]["pk"] == {"S": key}]
@@ -782,6 +792,11 @@ class RegistryTests(unittest.TestCase):
         self.registry.reserve_local_retry(execution, 2, tonkatsu_source_guard=guard)
         self.assertEqual(self.registry.tonkatsu_execution(execution_id, guard, completed_calls=2), execution)
         reserved_rows = deepcopy(self.resource.table.items)
+        self.assertTrue(self.registry.verify_tonkatsu_execution(execution, guard, completed_calls=2))
+        source_changed = True
+        self.assertFalse(self.registry.verify_tonkatsu_execution(execution, guard, completed_calls=2))
+        self.assertEqual(self.resource.table.items, reserved_rows)
+        source_changed = False
         self.registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal(0), response_text="verified",
                              expected_execution=execution, tonkatsu_source_guard=guard)
         self.assertEqual(self.resource.table.items[key, "RESULT"]["response_text"], "verified")

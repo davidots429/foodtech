@@ -473,6 +473,19 @@ class DynamoRegistry:
         item = self._verified_tonkatsu_item(execution_id, guard, completed_calls)
         return self._execution_from_item(item, verified_fryer=True)
 
+    def verify_tonkatsu_execution(self, execution, guard, *, completed_calls):
+        if self.tonkatsu_execution(execution.execution_id, guard, completed_calls=completed_calls) != execution:
+            return False
+        checks = guard.verification_checks(execution_id=execution.execution_id, completed_calls=completed_calls)
+        if (checks[0]["ConditionCheck"]["TableName"] != self.auth_table
+            or checks[-1]["ConditionCheck"]["TableName"] != self.table_name):
+            return False
+        try:
+            self.client.transact_write_items(TransactItems=checks, ClientRequestToken=str(uuid4()))
+        except self.client.exceptions.TransactionCanceledException:
+            return False
+        return True
+
     def _fryer_transaction(self, execution, guard, update, completed_calls, *, failure=False):
         try:
             guarded_update, checks = guard.guard_transaction(update, execution_id=execution.execution_id,
