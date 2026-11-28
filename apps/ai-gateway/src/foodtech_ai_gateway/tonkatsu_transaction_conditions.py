@@ -42,6 +42,12 @@ class _Condition:
         self.values[token] = self.serializer.serialize(False)
         self.terms.append(f"(attribute_not_exists({attribute}) OR {attribute} = {token})")
 
+    def missing_or_null(self, path):
+        attribute = self._path(path)
+        token = f":fryer{len(self.values)}"
+        self.values[token] = self.serializer.serialize(None)
+        self.terms.append(f"(attribute_not_exists({attribute}) OR {attribute} = {token})")
+
     def fields(self):
         return {"ConditionExpression": " AND ".join(self.terms), "ExpressionAttributeNames": self.names,
                 "ExpressionAttributeValues": self.values}
@@ -91,8 +97,11 @@ class TonkatsuTransactionConditions:
             "job_id": current.job_id, "job_version": current.job_version,
             "prior_job_id": prior.job_id, "prior_job_version": prior.job_version,
             "tonkatsu_binding": {"schema_version": BINDING_SCHEMA, **asdict(scope.binding)},
-            "estimated_cost_usd": 0,
+            "estimated_cost_usd": 0, "external_transfer_approved": False,
         })
+        for field in ("combi_binding", "jeyuk_source_revision", "prior_source_revision", "comparison_id",
+                      "credential_id", "external_transfer_consent_id"):
+            condition.missing_or_null(field)
         if completed_calls:
             condition.compare("reserved_provider", "ollama")
         if completed_calls > 1:

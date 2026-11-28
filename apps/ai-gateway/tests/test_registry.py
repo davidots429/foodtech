@@ -701,5 +701,107 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(self.resource.table.items, before)
 
 
+    def test_fryer_reserve_retry_and_finish_use_one_guarded_transaction(self):
+        from copy import deepcopy
+        from datetime import timedelta
+        from dataclasses import asdict
+        from unittest.mock import Mock
+        from uuid import uuid4
+
+        from foodtech_ai_gateway.tonkatsu_read_handoff import ReceivedTonkatsuReads
+        from foodtech_contracts.prior_history_witness import PriorHistoryWitness
+        from foodtech_contracts.tonkatsu_execution_binding import BINDING_SCHEMA, TonkatsuExecutionBinding, TonkatsuJobReference
+        from foodtech_contracts.tonkatsu_prior_history import TonkatsuPriorHistoryWitness, fryer_stream
+        from foodtech_contracts.tonkatsu_read_handoff import TonkatsuReadHandoff, scope_sha256
+        from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
+
+        self.registry.table_name = "foodtech-ai-execution-registry-dev"
+        execution_id = str(uuid4())
+        current, prior = str(uuid4()), str(uuid4())
+        binding = TonkatsuExecutionBinding(TonkatsuJobReference(current, 2, 7), TonkatsuJobReference(prior, 3, 8), 0)
+        history = PriorHistoryWitness("tenant-a", current, prior, (2, 3), 0, 2, 3, 4, str(uuid4()),
+                                      "a" * 64, "b" * 64, 2, "a" * 64, "c" * 64)
+        streams = tuple(fryer_stream({"source_id": "synthetic-rest", "device_id": "mockprofile-100-a-001",
+                                      "batch_id": f"batch-a-{suffix}"}) for suffix in ("one", "two"))
+        now = NOW
+        witness = TonkatsuPriorHistoryWitness(history, streams, int(NOW.timestamp()) - 60,
+                                              int(NOW.timestamp()) + 300)
+        scope = TonkatsuReadScope(execution_id, 1, binding, witness)
+        frame = TonkatsuReadHandoff(scope_digest=scope_sha256(scope),
+            role="arn:aws:iam::123456789012:role/foodtech-tonkatsu-source-read-dev",
+            assumed_role="arn:aws:sts::123456789012:assumed-role/foodtech-tonkatsu-source-read-dev/tonkatsu-" + uuid4().hex,
+            expires=NOW + timedelta(seconds=120), credentials=("synthetic-access", "synthetic-secret", "synthetic-token"),
+            clock=lambda: now)
+        guard = ReceivedTonkatsuReads(frame, scope, lambda: scope, Mock(), "dev")
+        self.registry.create_execution(Execution(execution_id, "tenant-a", Feature.RECIPE_CORRECTION, "local-model",
+            None, "SYNTHETIC", Decimal(0), job_id=current, job_version=2, prior_job_id=prior, prior_job_version=3))
+        key = "EXEC#" + execution_id
+        self.resource.table.items[key, "META"]["tonkatsu_binding"] = {"schema_version": BINDING_SCHEMA, **asdict(binding)}
+        self.resource.table.items["LIMIT#2026-11#TENANT#tenant-a", "META"]["calls_remaining"] = 3
+        self.registry.auth_table = "foodtech-auth-sessions-dev"
+        self.registry.model("local-model")
+        self.registry.budget("tenant-a", "ollama")
+        execution = self.registry.tonkatsu_execution(execution_id, guard, completed_calls=0)
+        original = self.client.transact_write_items
+        history_checks_present = []
+        source_changed = False
+        operation = get_session().get_service_model("dynamodb").operation_model("TransactWriteItems")
+
+        def transact(*, TransactItems, ClientRequestToken):
+            validate_parameters({"TransactItems": TransactItems, "ClientRequestToken": ClientRequestToken}, operation.input_shape)
+            source_checks = [action["ConditionCheck"] for action in TransactItems if "ConditionCheck" in action
+                             and action["ConditionCheck"]["TableName"] != self.registry.table_name]
+            history_checks_present.append(len(source_checks))
+            updates = [action["Update"] for action in TransactItems if "Update" in action
+                       and action["Update"]["Key"]["pk"] == {"S": key}]
+            self.assertEqual(len(updates), 1)
+            self.assertIn("tonkatsu_binding", updates[0]["ExpressionAttributeNames"].values())
+            if source_checks:
+                self.assertEqual(len(source_checks), 9)
+                self.assertEqual(sum(check["Key"]["pk"] == {"S": "USER#tenant-a"} for check in source_checks), 1)
+                self.assertEqual(sum(check["TableName"] == "foodtech-data-flow-dev" for check in source_checks), 2)
+                if source_changed:
+                    raise TransactionCanceledException()
+            # The existing in-memory writer applies registry mutations after
+            # this fixture supplies the outcome of the external conditions.
+            registry_items = [action for action in TransactItems if "ConditionCheck" not in action
+                              or action["ConditionCheck"]["TableName"] == self.registry.table_name]
+            original(TransactItems=registry_items, ClientRequestToken=ClientRequestToken)
+
+        self.client.transact_write_items = transact
+        before = deepcopy(self.resource.table.items)
+        source_changed = True
+        with self.assertRaises(RegistryConflict):
+            self.registry.reserve(execution, "ollama", tonkatsu_source_guard=guard)
+        self.assertEqual(self.resource.table.items, before)
+        source_changed = False
+        self.registry.reserve(execution, "ollama", tonkatsu_source_guard=guard)
+        self.registry.model("local-model")
+        self.registry.budget("tenant-a", "ollama")
+        self.assertEqual(self.registry.tonkatsu_execution(execution_id, guard, completed_calls=1), execution)
+        self.registry.reserve_local_retry(execution, 2, tonkatsu_source_guard=guard)
+        self.assertEqual(self.registry.tonkatsu_execution(execution_id, guard, completed_calls=2), execution)
+        reserved_rows = deepcopy(self.resource.table.items)
+        self.registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal(0), response_text="verified",
+                             expected_execution=execution, tonkatsu_source_guard=guard)
+        self.assertEqual(self.resource.table.items[key, "RESULT"]["response_text"], "verified")
+        self.assertNotIn(("ACTIVE#tenant-a", key), self.resource.table.items)
+        # Replay the same fixture from its reserved state to test the race and failure branch.
+        self.resource.table.items = reserved_rows
+        source_changed = True
+        with self.assertRaises(RegistryConflict):
+            self.registry.finish(execution_id, succeeded=True, actual_cost_usd=Decimal(0), response_text="stale",
+                                 expected_execution=execution, tonkatsu_source_guard=guard)
+        self.assertNotIn((key, "RESULT"), self.resource.table.items)
+        now += timedelta(seconds=130)
+        self.registry.finish(execution_id, succeeded=False, actual_cost_usd=Decimal(0), error_code="SOURCE_SCOPE_CHANGED",
+                             expected_execution=execution, tonkatsu_source_guard=guard)
+        result = self.resource.table.items[key, "RESULT"]
+        self.assertEqual(result["state"], "FAILED")
+        self.assertIsNone(result["response_text"])
+        self.assertNotIn(("ACTIVE#tenant-a", key), self.resource.table.items)
+        self.assertEqual(history_checks_present, [9, 9, 9, 9, 9, 0])
+
+
 if __name__ == "__main__":
     unittest.main()

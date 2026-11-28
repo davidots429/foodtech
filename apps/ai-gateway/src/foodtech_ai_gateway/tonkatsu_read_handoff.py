@@ -13,6 +13,7 @@ from starlette.requests import ClientDisconnect
 from foodtech_contracts.combi_history_witness import history_integer
 from foodtech_contracts.tonkatsu_read_handoff import CONTENT_TYPE, MAX_BYTES, ROLE_PATTERN, TonkatsuReadHandoff
 
+from foodtech_contracts.tonkatsu_execution_binding import parse_tonkatsu_binding
 from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
 
 from .tonkatsu_transaction_conditions import TonkatsuTransactionConditions
@@ -70,17 +71,48 @@ class ReceivedTonkatsuReads:
         self._check_scope()
         return tuple(result)
 
-    def guard_transaction(self, execution_update, *, execution_id, completed_calls):
-        # After reservation the original PENDING version is gone. Each builder
-        # uses that original version to require the exact next stored state.
-        if self._resource is None or execution_id != self._scope.execution_id:
+    def matches_stored(self, item, *, completed_calls):
+        if self._resource is None or type(completed_calls) is not int or not 0 <= completed_calls <= 3:
+            return False
+        scope = self._scope
+        try:
+            return (
+                item["pk"] == "EXEC#" + scope.execution_id and item["sk"] == "META"
+                and item["execution_id"] == scope.execution_id
+                and item["tenant_id"] == scope.history.history.owner
+                and history_integer(item["version"], 1, 2**63 - 1) == scope.execution_version + completed_calls
+                and item["state"] == ("RESERVED" if completed_calls else "PENDING")
+                and (not completed_calls or item.get("reserved_provider") == "ollama")
+                and (history_integer(item.get("retry_count"), 1, 2) == completed_calls - 1
+                    if completed_calls > 1 else "retry_count" not in item)
+                and parse_tonkatsu_binding(item["tonkatsu_binding"]) == scope.binding
+                and item["feature"] == "RECIPE_CORRECTION" and item["data_classification"] == "SYNTHETIC"
+                and item["job_id"] == scope.binding.current.job_id
+                and history_integer(item["job_version"]) == scope.binding.current.job_version
+                and item["prior_job_id"] == scope.binding.prior.job_id
+                and history_integer(item["prior_job_version"]) == scope.binding.prior.job_version
+                and item["estimated_cost_usd"] == 0 and type(item["estimated_cost_usd"]) is not bool
+                and item["external_transfer_approved"] is False
+                and all(item.get(key) is None for key in ("combi_binding", "jeyuk_source_revision",
+                    "prior_source_revision", "comparison_id", "credential_id", "external_transfer_consent_id"))
+            )
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            return False
+
+    def guard_transaction(self, execution_update, *, execution_id, completed_calls, failure=False):
+        # A failure can close its own reservation after expiry or source change.
+        # Its EXEC predicate still requires the exact reserved state and binding.
+        if self._resource is None or execution_id != self._scope.execution_id or (
+            failure and completed_calls not in (1, 2, 3)
+        ):
             raise TonkatsuHandoffDenied("fryer transaction scope unavailable")
-        self._frame.validate(self._scope)
+        if not failure:
+            self._frame.validate(self._scope)
         role = re.fullmatch(ROLE_PATTERN, self._frame.role)
         conditions = TonkatsuTransactionConditions(scope=self._scope, account=role[1], stage=role[2],
             clock=self._frame.live_timestamp)
         return (conditions.bind_execution_update(execution_update, completed_calls=completed_calls),
-                conditions.source_checks())
+                [] if failure else conditions.source_checks())
 
     def close(self):
         if self._resource is not None:
