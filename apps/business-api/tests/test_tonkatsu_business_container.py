@@ -1,8 +1,11 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from foodtech_business_api.serve_tonkatsu_business_api import main
+import httpx
+from starlette.responses import JSONResponse
+
+from foodtech_business_api.serve_tonkatsu_business_api import CustomerSurface, main
 
 
 class TonkatsuBusinessContainerTests(unittest.TestCase):
@@ -28,7 +31,7 @@ class TonkatsuBusinessContainerTests(unittest.TestCase):
         with patch.dict(os.environ, self.env, clear=True):
             main()
         self.run_server.assert_called_once_with(
-            "foodtech_business_api.main:app", host="127.0.0.1", port=8080, proxy_headers=False, access_log=False,
+            "foodtech_business_api.serve_tonkatsu_business_api:app", host="127.0.0.1", port=8080, proxy_headers=False, access_log=False,
         )
 
     def test_missing_private_records_mode_or_invalid_port_never_starts_the_api(self):
@@ -38,3 +41,25 @@ class TonkatsuBusinessContainerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     main()
         self.run_server.assert_not_called()
+
+
+class CustomerSurfaceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_customer_paths_reach_the_business_application(self):
+        async def handler(scope, receive, send):
+            response = JSONResponse({"path": scope["path"]})
+            await response(scope, receive, send)
+
+        downstream = AsyncMock(side_effect=handler)
+        async with httpx.AsyncClient(base_url="http://local", transport=httpx.ASGITransport(
+            app=CustomerSurface(downstream)
+        )) as client:
+            for path in ("/api/auth/customer/login", "/api/auth/customer/callback",
+                         "/api/customer/session/refresh", "/api/customer/ai/tonkatsu-recipe-requests"):
+                self.assertEqual((await client.get(path)).json(), {"path": path})
+            for path in ("/api/auth/admin/login", "/api/auth/admin/password", "/api/admin/me",
+                         "/api/auth/customer-derived/login", "/api/customer-admin/me", "/docs", "/openapi.json"):
+                with self.subTest(path=path):
+                    response = await client.get(path)
+                    self.assertEqual(response.status_code, 404)
+                    self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(downstream.await_count, 4)

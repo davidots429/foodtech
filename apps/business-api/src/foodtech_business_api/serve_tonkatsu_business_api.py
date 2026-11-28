@@ -2,8 +2,33 @@
 import os
 
 import uvicorn
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .auth import Settings
+from .main import app as business_app
+
+
+class CustomerSurface:
+    def __init__(self, downstream: ASGIApp) -> None:
+        self.downstream = downstream
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            await self.downstream(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        path = scope.get("path", "")
+        if path.startswith(("/api/customer/", "/api/auth/customer/")):
+            await self.downstream(scope, receive, send)
+            return
+        response = JSONResponse({"detail": "Not Found"}, status_code=404, headers={"Cache-Control": "no-store"})
+        await response(scope, receive, send)
+
+
+app = CustomerSurface(business_app)
 
 
 def main() -> None:
@@ -18,7 +43,7 @@ def main() -> None:
     port = int(os.getenv("FOODTECH_TONKATSU_BUSINESS_PORT", "8080"))
     if not 1 <= port <= 65535:
         raise ValueError("invalid business API port")
-    uvicorn.run("foodtech_business_api.main:app",
+    uvicorn.run("foodtech_business_api.serve_tonkatsu_business_api:app",
                 host=os.getenv("FOODTECH_TONKATSU_BUSINESS_BIND_HOST", "127.0.0.1"),
                 port=port, proxy_headers=False, access_log=False)
 
