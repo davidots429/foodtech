@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID,NameOID
 
 
-def certificates(directory, *, broker_uri="urn:foodtech:service:combi-read-broker"):
+def certificates(directory, *, broker_uri="urn:foodtech:service:combi-read-broker", server_dns=None):
     now=datetime.now(timezone.utc)
     def ca(name):
         key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
@@ -26,7 +26,9 @@ def certificates(directory, *, broker_uri="urn:foodtech:service:combi-read-broke
         builder=x509.CertificateBuilder().subject_name(subject).issuer_name(issuer[1].subject).public_key(key.public_key()).serial_number(
             x509.random_serial_number()).not_valid_before(now-timedelta(minutes=1)).not_valid_after(now+timedelta(days=1)).add_extension(
             x509.BasicConstraints(ca=False,path_length=None),critical=True).add_extension(x509.ExtendedKeyUsage([usage]),critical=False)
-        if server: builder=builder.add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]),critical=False)
+        if server:
+            san = x509.DNSName(server_dns) if server_dns else x509.IPAddress(ipaddress.ip_address('127.0.0.1'))
+            builder = builder.add_extension(x509.SubjectAlternativeName([san]), critical=False)
         elif uri: builder=builder.add_extension(x509.SubjectAlternativeName([x509.UniformResourceIdentifier(uri)]),critical=False)
         cert=builder.sign(issuer[0],hashes.SHA256())
         cp,kp=directory/(name+'.pem'),directory/(name+'.key')

@@ -82,7 +82,7 @@ jobs:
           TAG: ${{ steps.target.outputs.tag }}
         run: |
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python "foodtech-tonkatsu-gateway:$TAG" \
-            -c 'import pathlib, stat, tempfile; import foodtech_ai_gateway.serve_tonkatsu; path = pathlib.Path("/run/foodtech-tls"); assert stat.S_IMODE(path.stat().st_mode) == 0o700; tempfile.TemporaryDirectory(dir=path).cleanup()'
+            -c 'import pathlib, stat, tempfile; import foodtech_ai_gateway.serve_tonkatsu; import foodtech_ai_gateway.serve_tonkatsu_business; import foodtech_ai_gateway.serve_tonkatsu_inference; path = pathlib.Path("/run/foodtech-tls"); assert stat.S_IMODE(path.stat().st_mode) == 0o700; tempfile.TemporaryDirectory(dir=path).cleanup()'
       - name: Obtain short-lived Tonkatsu Gateway publishing credentials
         uses: aws-actions/configure-aws-credentials@v6.3.1
         if: inputs.operation == 'publish'

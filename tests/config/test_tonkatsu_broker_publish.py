@@ -78,7 +78,8 @@ class TonkatsuBrokerPublisherTests(unittest.TestCase):
         job, = workflow["jobs"].values()
         build = next(step for step in job["steps"] if step.get("uses", "").startswith("docker/build-push-action"))
         self.assertEqual(build["with"]["build-args"], "FOODTECH_PACKAGE=foodtech-ai-gateway")
-        self.assertIn("foodtech_ai_gateway.serve_tonkatsu", source)
+        for entrypoint in ("serve_tonkatsu", "serve_tonkatsu_business", "serve_tonkatsu_inference"):
+            self.assertIn(f"import foodtech_ai_gateway.{entrypoint};", source)
         for step in job["steps"]:
             if "aws " in step.get("run", "") or step.get("uses", "").startswith(("aws-actions/", "docker/")):
                 self.assertEqual(step["if"], "inputs.operation == 'publish'")
