@@ -159,7 +159,7 @@ class AuthorityTests(unittest.TestCase):
             stub.assert_no_pending_responses()
 
     def test_query_bound_is_a_rejection_not_a_truncated_history_proof(self):
-        with Stubber(self.client) as stub, patch('foodtech_business_api.prior_history_authority.MAX_JOBS', 2):
+        with Stubber(self.client) as stub, patch('foodtech_contracts.dynamo_prior_history.MAX_JOBS', 2):
             self.control(stub); self.listing(stub)
             with self.assertRaises(PriorHistoryUnavailable):
                 self.authority.observe(**self.scope)
@@ -233,12 +233,16 @@ class AuthorityTests(unittest.TestCase):
     def test_fryer_read_scope_joins_execution_history_reverse_bindings_and_source_versions(self):
         from foodtech_business_api.recipe_scope import RecipeScopeDenied
         from foodtech_business_api.tonkatsu_read_scope import DynamoTonkatsuReadScope
+        from foodtech_contracts.dynamo_tonkatsu_scope import DynamoTonkatsuReadScope as GatewayResolver
+        from foodtech_contracts.dynamo_tonkatsu_scope import TonkatsuScopeUnavailable
         from foodtech_contracts.tonkatsu_execution_binding import BINDING_SCHEMA
 
         streams = self.fryer_fixture()
         execution_id = str(uuid4())
         resolver = DynamoTonkatsuReadScope(execution_table="foodtech-ai-execution-registry-dev",
                                            data_table="foodtech-data-flow-dev", history=self.authority)
+        gateway = GatewayResolver(execution_table=resolver.execution_table, data_table=resolver.data_table,
+                                  history=self.authority)
         row = {
             "pk": f"EXEC#{execution_id}", "sk": "META", "execution_id": execution_id,
             "tenant_id": self.owner, "feature": "RECIPE_CORRECTION", "data_classification": "SYNTHETIC",
@@ -295,11 +299,27 @@ class AuthorityTests(unittest.TestCase):
                         resolver.resolve(**request)
                 stub.assert_no_pending_responses()
 
+        with Stubber(self.client) as stub:
+            execution(stub, row)
+            self.observation(stub)
+            links(stub)
+            self.observation(stub)
+            links(stub)
+            execution(stub, row)
+            from_registry = gateway.resolve_execution(execution_id)
+            self.assertEqual(from_registry, scope)
+            stub.assert_no_pending_responses()
+
+        with Stubber(self.client) as stub:
+            execution(stub, {**row, "state": "RESERVED"})
+            with self.assertRaises(TonkatsuScopeUnavailable):
+                gateway.resolve_execution(execution_id)
+            stub.assert_no_pending_responses()
 
     def test_fryer_broker_limits_table_keys_and_withholds_lease_after_scope_change(self):
         from datetime import datetime, timezone, timedelta
         from unittest.mock import Mock
-        from dataclasses import replace
+        from dataclasses import dataclass, replace
 
         from foodtech_business_api.tonkatsu_read_broker import TonkatsuReadBroker
         from foodtech_business_api.tonkatsu_read_scope import DynamoTonkatsuReadScope, TonkatsuReadScope
@@ -374,12 +394,26 @@ class AuthorityTests(unittest.TestCase):
         resource = consumer_session.resource.return_value
         cooking_table = resource.Table.return_value
         cooking_table.get_item.side_effect = [
-            {"Item": {"pk": pk, "sk": "META", "owner_subject": self.owner, "job_id": job, "version": 1}}
+            response
             for pk, job in zip(scope.job_partitions, (self.current, self.prior))
+            for response in (
+                {"Item": {"pk": pk, "sk": "META", "owner_subject": self.owner, "job_id": job, "version": 1,
+                          "safety_status": "FAILED", "evaluation_blocked": True}},
+                {},
+            )
         ]
+
+        @dataclass(frozen=True)
+        class TestSourceObservation:
+            name: str
+            recorded_safety_status: str = "FAILED"
+            quality_summary: object = None
+
         with patch("foodtech_ai_gateway.tonkatsu_read_handoff.observe_scoped_tonkatsu_source",
-                   side_effect=["current-input", "prior-input"]) as observe:
-            self.assertEqual(reads.observe_inputs(), ("current-input", "prior-input"))
+                   side_effect=[TestSourceObservation("current-input"), TestSourceObservation("prior-input")]) as observe:
+            observations = reads.observe_inputs()
+            self.assertEqual(tuple(row.name for row in observations), ("current-input", "prior-input"))
+            self.assertTrue(all(row.quality_summary.status == "BLOCKED_BY_SAFETY" for row in observations))
             self.assertEqual([call.kwargs["scoped_stream"] for call in observe.call_args_list], list(streams))
             self.assertEqual([call.kwargs["expected_revision"] for call in observe.call_args_list], [8, 7])
         from botocore.validate import validate_parameters
