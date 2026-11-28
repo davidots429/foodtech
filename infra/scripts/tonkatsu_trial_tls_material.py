@@ -8,6 +8,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from cryptography.x509.verification import PolicyBuilder, Store
 
 _BROKER_ID = "urn:foodtech:service:tonkatsu-read-broker"
 _BFF_ID = "urn:foodtech:service:business-api"
@@ -70,13 +71,17 @@ def _matching_pair(lane, server_host, client_uri, begins, expires):
     return _public_pem(ca), server, client
 
 
-def generate(*, broker_host: str, gateway_host: str, now: datetime | None = None) -> TonkatsuTrialTlsMaterial:
-    """Return three bundles for a bounded trial, without serializing either CA key."""
+def verify_hostnames(broker_host, gateway_host):
     for host in (broker_host, gateway_host):
         if not isinstance(host, str) or len(host) > 253 or not re.fullmatch(rf"{_LABEL}(?:[.]{_LABEL})*[.]internal", host):
             raise ValueError("reviewed private service hostname required")
     if broker_host == gateway_host:
         raise ValueError("broker and Gateway require distinct private hostnames")
+
+
+def generate(*, broker_host: str, gateway_host: str, now: datetime | None = None) -> TonkatsuTrialTlsMaterial:
+    """Return three bundles for a bounded trial, without serializing either CA key."""
+    verify_hostnames(broker_host, gateway_host)
     if now is None:
         now = datetime.now(timezone.utc)
     if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
@@ -103,3 +108,68 @@ def generate(*, broker_host: str, gateway_host: str, now: datetime | None = None
         "broker_ca_pem": broker_ca, "broker_cert_pem": broker_client[0],
     }
     return TonkatsuTrialTlsMaterial(business_api, broker, gateway, expires)
+
+def verify_bundles(business_api, broker, gateway, *, broker_host, gateway_host):
+    """Return an expiry and public pins only after verifying all three recovered bundles."""
+    verify_hostnames(broker_host, gateway_host)
+    required = (
+        (business_api, {"broker_server_cert_pem", "bff_cert_pem", "bff_key_pem"}),
+        (broker, {"broker_server_cert_pem", "broker_server_key_pem", "bff_ca_pem", "bff_cert_pem",
+                  "gateway_server_cert_pem", "broker_client_cert_pem", "broker_client_key_pem"}),
+        (gateway, {"server_cert_pem", "server_key_pem", "broker_ca_pem", "broker_cert_pem"}),
+    )
+    if any(type(bundle) is not dict or set(bundle) != keys or
+           any(type(value) is not str or not 1 <= len(value) <= 65536 for value in bundle.values())
+           for bundle, keys in required):
+        raise ValueError("unexpected TLS bundle fields")
+    if (business_api["bff_cert_pem"], business_api["broker_server_cert_pem"],
+            broker["gateway_server_cert_pem"], broker["broker_client_cert_pem"]) != (
+            broker["bff_cert_pem"], broker["broker_server_cert_pem"],
+            gateway["server_cert_pem"], gateway["broker_cert_pem"]):
+        raise ValueError("TLS bundle pins differ")
+
+    lanes = (
+        (broker["bff_ca_pem"], broker_host, _BFF_ID, broker["broker_server_cert_pem"],
+         broker["broker_server_key_pem"], business_api["bff_cert_pem"], business_api["bff_key_pem"]),
+        (gateway["broker_ca_pem"], gateway_host, _BROKER_ID, gateway["server_cert_pem"],
+         gateway["server_key_pem"], broker["broker_client_cert_pem"], broker["broker_client_key_pem"]),
+    )
+    now = datetime.now(timezone.utc)
+    bounds, public_keys, pins = set(), set(), []
+    for ca_pem, host, uri, server_pem, server_key, client_pem, client_key in lanes:
+        ca, server, client = (_certificate(pem) for pem in (ca_pem, server_pem, client_pem))
+        ca.verify_directly_issued_by(ca)
+        if ca.extensions.get_extension_for_class(x509.BasicConstraints).value != x509.BasicConstraints(ca=True, path_length=0):
+            raise ValueError("unexpected TLS authority scope")
+        verifier = PolicyBuilder().store(Store([ca])).time(now)
+        verifier.build_server_verifier(x509.DNSName(host)).verify(server, [])
+        verifier.build_client_verifier().verify(client, [])
+        for leaf, key, usage, san in (
+            (server, server_key, ExtendedKeyUsageOID.SERVER_AUTH, x509.DNSName(host)),
+            (client, client_key, ExtendedKeyUsageOID.CLIENT_AUTH, x509.UniformResourceIdentifier(uri)),
+        ):
+            private_key = serialization.load_pem_private_key(key.encode("ascii"), password=None)
+            if not isinstance(private_key, rsa.RSAPrivateKey) or private_key.key_size != 2048 or (
+                private_key.public_key().public_numbers() != leaf.public_key().public_numbers()
+                or leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value != x509.SubjectAlternativeName([san])
+                or list(leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value) != [usage]
+            ):
+                raise ValueError("TLS identity or private key differs")
+        for cert in (ca, server, client):
+            bounds.add((cert.not_valid_before_utc, cert.not_valid_after_utc))
+            public_keys.add(cert.public_key().public_bytes(serialization.Encoding.DER,
+                                                          serialization.PublicFormat.SubjectPublicKeyInfo))
+        pins.extend(cert.fingerprint(hashes.SHA256()).hex() for cert in (server, client))
+    if len(bounds) != 1 or len(public_keys) != 6:
+        raise ValueError("TLS lifetime or key separation differs")
+    begins, expires = bounds.pop()
+    if not begins <= now < expires or expires - begins != timedelta(hours=3, minutes=5):
+        raise ValueError("unexpected TLS trial lifetime")
+    return {"expires_at": expires.isoformat(), "leaf_fingerprints_sha256": pins}
+
+
+def _certificate(value):
+    certificates = x509.load_pem_x509_certificates(value.encode("ascii"))
+    if len(certificates) != 1:
+        raise ValueError("exactly one certificate required")
+    return certificates[0]

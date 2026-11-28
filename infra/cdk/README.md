@@ -433,6 +433,8 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 
 시연용 TLS 번들은 `infra/scripts/tonkatsu_trial_tls_material.py`에서 만든다. 검토된 서로 다른 두 사설 DNS 이름에 서버 인증서를 묶고, BFF→브로커와 브로커→Gateway의 인증 기관 및 키를 분리한다. 2시간 시험과 준비 여유를 위해 3시간 동안 유효한 인증서를 만든다. 생성 함수는 값을 메모리로 반환한다. 실제 저장·버전 고정은 검토된 초기화 절차에서 진행한다.
 
+`infra/scripts/tonkatsu_trial_tls_initialize.py --reviewed-plan <파일>`의 기본 모드는 메타데이터만 조회한다. 계획은 검토한 요청 UUID, 브로커와 Gateway 사설 DNS 이름, 보호된 두 스택의 canonical 템플릿 해시와 서비스별 Secret·KMS ARN으로 구성한다. 승인된 초기 등록에서 `--apply`를 지정하면 세 빈 저장소에 같은 요청 UUID로 기록하고, 세 버전을 정확히 다시 읽어 인증서 관계를 확인한 뒤 공개 pin과 버전 ID를 출력한다. 같은 요청의 세 버전이 이미 있으면 재검증하며, 일부만 있을 때는 등록을 중단한다. Task 정의는 확인된 버전 ID 세 개를 함께 고정한다.
+
 ### 돈까스 브로커 이미지 게시 후보
 
 `provisionTonkatsuBrokerPublishing=true`로 개발용 `FoodtechTonkatsuBrokerPublishing-dev`를 합성한다. 기존 GitHub OIDC 공급자와 수동 inspect에서 관찰한 정확한 main 주체를 전달한다. 스택은 암호화된 불변 ECR 이미지 저장소 하나와 여기만 쓸 수 있는 게시 역할을 정의한다.
