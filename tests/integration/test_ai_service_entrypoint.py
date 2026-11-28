@@ -45,6 +45,9 @@ class AiServiceEntrypointTests(unittest.TestCase):
         modes = (
             ("tonkatsu-gateway", "foodtech_ai_gateway.serve_tonkatsu",
              ("SERVER_CERT", "SERVER_KEY", "BROKER_CA", "BROKER_CERT")),
+            ("tonkatsu-business-api", "foodtech_business_api.serve_tonkatsu_business_api",
+             ("BROKER_SERVER_CERT", "BFF_CERT", "BFF_KEY",
+              "GATEWAY_RECORDS_SERVER_CERT", "GATEWAY_RECORDS_CLIENT_CERT", "GATEWAY_RECORDS_CLIENT_KEY")),
             ("tonkatsu-business-gateway", "foodtech_ai_gateway.serve_tonkatsu_business",
              ("BUSINESS_GATEWAY_SERVER_CERT", "BUSINESS_GATEWAY_SERVER_KEY",
               "BUSINESS_GATEWAY_CLIENT_CA", "BUSINESS_GATEWAY_CLIENT_CERT")),
