@@ -68,8 +68,24 @@ def tonkatsu_tls_paths(*names: str) -> dict[str, str]:
 def main() -> None:
     service = os.environ["FOODTECH_SERVICE"]
     module, paths = service_settings()[service]
+    probe = os.environ.pop("FOODTECH_TONKATSU_TRANSPORT_PROBE", "false")
+    if probe not in ("false", "true") or (
+        probe == "true" and service not in {"tonkatsu-business-api", "tonkatsu-broker", "tonkatsu-gateway"}
+    ):
+        raise ValueError("Invalid transport probe mode")
     if service == "tonkatsu-gateway" and "FOODTECH_TONKATSU_OLLAMA_PRIVATE_ORIGIN" in os.environ:
         paths.update(tonkatsu_tls_paths("OLLAMA_SERVER_CERT", "OLLAMA_CLIENT_CERT", "OLLAMA_CLIENT_KEY"))
+    if probe == "true":
+        needed = {
+            "tonkatsu-business-api": ("BROKER_SERVER_CERT", "BFF_CERT", "BFF_KEY", "GATEWAY_RECORDS_SERVER_CERT",
+                                      "GATEWAY_RECORDS_CLIENT_CERT", "GATEWAY_RECORDS_CLIENT_KEY"),
+            "tonkatsu-broker": ("GATEWAY_SERVER_CERT", "BROKER_CLIENT_CERT", "BROKER_CLIENT_KEY"),
+            "tonkatsu-gateway": ("OLLAMA_SERVER_CERT", "OLLAMA_CLIENT_CERT", "OLLAMA_CLIENT_KEY"),
+        }
+        required = tonkatsu_tls_paths(*needed[service])
+        for unused in paths.keys() - required.keys():
+            os.environ.pop(unused, None)
+        paths = required
     materials = {}
     for secret_name, path_name in paths.items():
         material = os.environ.pop(secret_name).encode("utf-8")
@@ -85,7 +101,8 @@ def main() -> None:
         with os.fdopen(fd, "wb") as output:
             output.write(material)
         os.environ[path_name] = path
-    os.execvpe("python", ["python", "-m", module], os.environ)
+    command = ["python", "/app/tonkatsu_transport_probe.py"] if probe == "true" else ["python", "-m", module]
+    os.execvpe("python", command, os.environ)
 
 
 if __name__ == "__main__":

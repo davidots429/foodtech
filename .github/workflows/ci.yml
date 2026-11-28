@@ -82,6 +82,11 @@ jobs:
             CDK_DEFAULT_ACCOUNT=111122223333 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechTonkatsuPrivateNetwork-dev --strict --no-lookups -c provisionTonkatsuPrivateNetwork=true -c tonkatsuPrivateNetworkMode="$mode" --output "/tmp/foodtech-tonkatsu-network-$mode" > /dev/null
           done
           python3 ../../tests/config/check_tonkatsu_private_network.py /tmp/foodtech-tonkatsu-network-isolated/FoodtechTonkatsuPrivateNetwork-dev.template.json /tmp/foodtech-tonkatsu-network-managed-login/FoodtechTonkatsuPrivateNetwork-dev.template.json
+      - name: Check Tonkatsu private transport probe definitions
+        working-directory: infra/cdk
+        run: |
+          CDK_DEFAULT_ACCOUNT=111122223333 npx cdk --app 'node --import tsx bin/app.ts' synth FoodtechTonkatsuPrivateProbe-dev --strict --no-lookups -c provisionTonkatsuPrivateProbe=true --output /tmp/foodtech-tonkatsu-probe > /dev/null
+          python3 ../../tests/config/check_tonkatsu_private_probe.py /tmp/foodtech-tonkatsu-probe/FoodtechTonkatsuPrivateProbe-dev.template.json
       - name: Check opt-in runtime foundation
         working-directory: infra/cdk
         run: |

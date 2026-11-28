@@ -6,7 +6,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as discovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 
-const namespaceName = "tonkatsu.foodtech.internal";
+export const namespaceName = "tonkatsu.foodtech.internal";
 const serviceNames = ["business-api", "broker", "gateway", "inference"];
 
 export class TonkatsuPrivateNetworkStack extends Stack {

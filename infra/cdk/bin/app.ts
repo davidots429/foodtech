@@ -27,6 +27,7 @@ import { TonkatsuBusinessTaskRoleStack } from "./tonkatsu-business-task-role.js"
 import { TonkatsuBusinessTaskStack } from "./tonkatsu-business-task.js";
 import { TonkatsuGatewayTaskStack } from "./tonkatsu-gateway-task.js";
 import { TonkatsuPrivateServicesStack } from "./tonkatsu-private-services.js";
+import { TonkatsuPrivateProbeStack } from "./tonkatsu-private-probe.js";
 import { TonkatsuPrivateNetworkStack } from "./tonkatsu-private-network.js";
 import { TonkatsuInferenceTaskStack } from "./tonkatsu-inference-task.js";
 import { TonkatsuGatewayTaskRoleStack } from "./tonkatsu-gateway-task-role.js";
@@ -144,6 +145,12 @@ if (app.node.tryGetContext("provisionTonkatsuPrivateServices") === "true") {
   const services = new TonkatsuPrivateServicesStack(app, `FoodtechTonkatsuPrivateServices-${stage}`, { env }, stage);
   Tags.of(services).add("Project", "foodtech");
   Tags.of(services).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionTonkatsuPrivateProbe") === "true") {
+  const probes = new TonkatsuPrivateProbeStack(app, `FoodtechTonkatsuPrivateProbe-${stage}`, { env }, stage);
+  Tags.of(probes).add("Project", "foodtech");
+  Tags.of(probes).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionTonkatsuPrivateNetwork") === "true") {
