@@ -1,9 +1,14 @@
 """Bounded calls to the local Ollama generation API."""
 
 from dataclasses import dataclass
+import json
 from urllib.parse import urlparse
 
 import httpx
+
+from .tonkatsu_ollama_tls import TonkatsuInferenceTLS
+
+TONKATSU_INFERENCE_MODEL = "llama3.1:8b"
 
 CHAT_SYSTEM = ("스마트키친 조리 의사결정 지원 대화입니다. 이전 대화는 참고 자료입니다. "
                "확인되지 않은 측정값을 만들지 말고, 안전 이상은 현장 운영자 확인을 안내하세요. "
@@ -28,11 +33,19 @@ class OllamaResult:
 
 class OllamaClient:
     def __init__(self, base_url: str = "http://127.0.0.1:11434", *, timeout: float = 180,
-                 transport: httpx.AsyncBaseTransport | None = None):
-        parsed = urlparse(base_url)
-        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or \
-                parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query:
-            raise ValueError("Ollama must be bound to the local loopback address")
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 private_tls: TonkatsuInferenceTLS | None = None):
+        self.verify = True
+        self.private = private_tls is not None
+        if private_tls is not None:
+            if transport is not None:
+                raise ValueError("private inference requires the native TLS transport")
+            self.verify = private_tls.context(base_url)
+        else:
+            parsed = urlparse(base_url)
+            if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or \
+                    parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query:
+                raise ValueError("Ollama must be bound to the local loopback address")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.transport = transport
@@ -50,16 +63,25 @@ class OllamaClient:
                                              "format": schema}, chat=True)
 
     async def _request(self, endpoint: str, body: dict, *, chat: bool) -> OllamaResult:
+        if self.private and (endpoint != "chat" or not isinstance(body.get("format"), dict)
+                             or body.get("model") != TONKATSU_INFERENCE_MODEL):
+            raise OllamaFailure("OLLAMA_PRIVATE_REQUEST_INVALID")
         try:
             async with httpx.AsyncClient(timeout=self.timeout, trust_env=False,
-                                         transport=self.transport) as client:
-                response = await client.post(
-                    f"{self.base_url}/api/{endpoint}",
-                    json={**body, "stream": False,
-                          "options": {"num_ctx": 4096, "num_predict": 128}},
-                )
-            response.raise_for_status()
-            value = response.json()
+                                         transport=self.transport, verify=self.verify, follow_redirects=False) as client:
+                async with client.stream(
+                    "POST", f"{self.base_url}/api/{endpoint}", headers={"Accept-Encoding": "identity"},
+                    json={**body, "stream": False, "options": {"num_ctx": 4096, "num_predict": 128}},
+                ) as response:
+                    response.raise_for_status()
+                    if self.private and response.headers.get("Content-Encoding", "identity") != "identity":
+                        raise OllamaFailure("OLLAMA_RESPONSE_INVALID")
+                    payload = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(payload) + len(chunk) > 131072:
+                            raise OllamaFailure("OLLAMA_RESPONSE_TOO_LARGE")
+                        payload.extend(chunk)
+            value = json.loads(payload)
             message = value.get("message") if isinstance(value, dict) and chat else None
             text = message.get("content") if isinstance(message, dict) else value.get("response") if isinstance(value, dict) and not chat else None
             if not isinstance(value, dict) or value.get("done") is not True or \

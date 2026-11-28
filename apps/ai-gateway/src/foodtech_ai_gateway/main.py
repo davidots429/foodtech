@@ -518,12 +518,16 @@ async def tonkatsu_recipe_request(request: Request, body: TonkatsuRequest):
 
 @app.post("/internal/ai/tonkatsu-recipe-executions/{execution_id}/invoke")
 async def invoke_tonkatsu_recipe_execution(request: Request, execution_id: UUID):
-    from .tonkatsu_invocation import invoke_observed_tonkatsu
+    from .tonkatsu_invocation import configured_tonkatsu_ollama, invoke_observed_tonkatsu
     from .tonkatsu_read_handoff import require_tonkatsu_transport
 
     require_tonkatsu_transport(request)
-    ollama = getattr(request.app.state, "ollama_client", None) or OllamaClient(
-        os.getenv("FOODTECH_OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
+
+    try:
+        ollama = getattr(request.app.state, "ollama_client", None) or configured_tonkatsu_ollama()
+    except ValueError:
+        raise HTTPException(503, "TONKATSU_MODEL_CONNECTION_UNAVAILABLE",
+                            headers={"Cache-Control": "no-store"}) from None
     return await invoke_observed_tonkatsu(request, execution_id, ollama=ollama)
 
 

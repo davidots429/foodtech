@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 import os
 from uuid import NAMESPACE_URL, uuid5
 
+from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
+
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -25,6 +28,23 @@ from .tonkatsu_read_handoff import receive_internal_tonkatsu_handoff, require_to
 
 
 _HEADERS = {"Cache-Control": "no-store"}
+
+
+def configured_tonkatsu_ollama():
+    from .ollama import OllamaClient
+    from .tonkatsu_ollama_tls import TonkatsuInferenceTLS
+
+    prefix = "FOODTECH_TONKATSU_OLLAMA_"
+    origin = os.getenv(prefix + "PRIVATE_ORIGIN")
+    if origin is None:
+        return OllamaClient(os.getenv("FOODTECH_OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
+    try:
+        return OllamaClient(origin, private_tls=TonkatsuInferenceTLS(
+            os.environ[prefix + "SERVER_CERT"], os.environ[prefix + "CLIENT_CERT"],
+            os.environ[prefix + "CLIENT_KEY"],
+        ))
+    except (KeyError, OSError, ValueError, UnsupportedAlgorithm, x509.ExtensionNotFound, x509.DuplicateExtension):
+        raise ValueError("private inference endpoint configuration unavailable") from None
 
 
 def _scope_resolver(role, client, registry):

@@ -45,6 +45,8 @@ class AiServiceEntrypointTests(unittest.TestCase):
         modes = (
             ("tonkatsu-gateway", "foodtech_ai_gateway.serve_tonkatsu",
              ("SERVER_CERT", "SERVER_KEY", "BROKER_CA", "BROKER_CERT")),
+            ("tonkatsu-inference", "foodtech_ai_gateway.serve_tonkatsu_inference",
+             ("INFERENCE_SERVER_CERT", "INFERENCE_SERVER_KEY", "INFERENCE_CLIENT_CA", "INFERENCE_CLIENT_CERT")),
             ("tonkatsu-business-api", "foodtech_business_api.serve_tonkatsu_business_api",
              ("BROKER_SERVER_CERT", "BFF_CERT", "BFF_KEY",
               "GATEWAY_RECORDS_SERVER_CERT", "GATEWAY_RECORDS_CLIENT_CERT", "GATEWAY_RECORDS_CLIENT_KEY")),
@@ -78,6 +80,21 @@ class AiServiceEntrypointTests(unittest.TestCase):
                     self.assertEqual(path.read_text(), material)
                     self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
                     self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+
+    def test_configured_private_inference_needs_separate_client_tls_files(self):
+        prefix = "FOODTECH_TONKATSU_"
+        env = {"FOODTECH_SERVICE": "tonkatsu-gateway", prefix + "OLLAMA_PRIVATE_ORIGIN": "https://ollama.test.internal:8448"}
+        for name in ("SERVER_CERT", "SERVER_KEY", "BROKER_CA", "BROKER_CERT", "OLLAMA_SERVER_CERT", "OLLAMA_CLIENT_CERT"):
+            env[prefix + name + "_PEM"] = "-----BEGIN TEST-----\n"
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(entrypoint.tempfile, "mkdtemp") as mkdir,
+            patch.object(entrypoint.os, "execvpe") as execute,
+        ):
+            with self.assertRaisesRegex(KeyError, "OLLAMA_CLIENT_KEY_PEM"):
+                entrypoint.main()
+            mkdir.assert_not_called()
+            execute.assert_not_called()
 
     def test_missing_tonkatsu_peer_pin_never_starts_the_listener(self):
         env = {"FOODTECH_SERVICE": "tonkatsu-gateway"}

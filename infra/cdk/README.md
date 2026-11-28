@@ -446,3 +446,7 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 `provisionTonkatsuGatewayExecution=true`는 Gateway의 전용 ECS 실행 역할과 7일 로그 그룹을 정의한다. Gateway ECR 이미지 가져오기, Gateway 컨테이너 로그 기록, Gateway TLS Secret의 조회와 해당 키의 문맥 제한 복호화만 허용한다. AI Gateway의 업무 역할과 이미지 게시 역할은 별도다.
 
 `provisionTonkatsuBusinessExecution=true`는 고객 API의 전용 ECS 실행 역할과 7일 로그 그룹을 정의한다. 브로커 게시 이미지에서 고객 API 진입점을 함께 검증한다. 고객 API 실행 역할은 해당 이미지를 가져오고 고객 API 로그와 전용 TLS 번들에만 접근한다. 배포에서 각 컨테이너의 업무 역할은 구분한다.
+
+`provisionTonkatsuGatewayTask=true`는 개발 환경의 Gateway 브로커 호출 리스너(8445)와 고객 기록 리스너(8447)의 Fargate Task 정의를 합성한다. 둘은 같은 Gateway 업무 역할과 고정 이미지 digest를 사용하고 TLS 파일 볼륨과 로그 스트림은 각각 갖는다. Gateway TLS의 고정 Secret 버전은 브로커·기록 TLS 필드와 별도 추론 클라이언트의 `inference_server_cert_pem`, `inference_client_cert_pem`, `inference_client_key_pem`을 포함해야 한다.
+
+추론은 검토된 `*.internal:8448` 주소로만 연결한다. 추론 호스트는 Gateway 업무 역할과 분리한다. `tonkatsu-inference` 컨테이너 모드 또는 `foodtech_ai_gateway.serve_tonkatsu_inference` 모듈로 사설 mTLS 릴레이를 실행하고, 같은 호스트의 loopback에 승인된 `llama3.1:8b` Ollama를 실행한다. 릴레이는 전용 URI `urn:foodtech:service:tonkatsu-gateway-inference`의 정확한 클라이언트 인증서와 독립된 TLS 서버 인증서가 필요하다. AWS 모델 호스트·사설 네트워크·인증서 등록은 배포 시 별도로 검토한다.

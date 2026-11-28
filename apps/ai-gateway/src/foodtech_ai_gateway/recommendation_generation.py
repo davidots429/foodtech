@@ -21,6 +21,26 @@ _FIELDS = {
 }
 
 
+def _schema(fields):
+    return {
+        "type": "object",
+        "properties": {name: ({"type": kind} if isinstance(kind, str) else kind) for name, kind in fields.items()},
+        "required": list(fields),
+        "additionalProperties": False,
+    }
+
+
+def tonkatsu_model_request(messages, schema) -> bool:
+    return (
+        schema == _schema(_FIELDS[TonkatsuBaseline])
+        and isinstance(messages, list) and len(messages) == 2
+        and messages[0] == {"role": "system", "content": _SYSTEM}
+        and isinstance(messages[1], dict) and set(messages[1]) == {"role", "content"}
+        and messages[1]["role"] == "user" and isinstance(messages[1]["content"], str)
+        and len(messages[1]["content"].encode("utf-8")) <= 8192
+    )
+
+
 async def generate_candidate(
     invoke: Callable[[list[dict], dict], Awaitable[str]], *, evidence: Evidence,
     baseline: TonkatsuBaseline | JeyukBaseline | CombiBaseline, context: dict,
@@ -48,8 +68,7 @@ async def generate_candidate(
         fields['pan_positions']['items']['properties']['rack']['maximum'] = baseline.rack_count
         if baseline.menu == 'MACKEREL' and baseline.humidity_available is False:
             fields['transition_duration_seconds']['minimum'] = 180
-    schema = {"type": "object", "properties": {name: ({"type": kind} if isinstance(kind, str) else kind) for name, kind in fields.items()},
-              "required": list(fields), "additionalProperties": False}
+    schema = _schema(fields)
     messages = [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": encoded}]
     for attempt in range(1, MAX_ATTEMPTS + 1):
         result = validate(await invoke(messages, schema), evidence, baseline)

@@ -145,9 +145,10 @@ class TonkatsuExecutionStack extends Stack {
     allow(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"], [
       `arn:aws:ecr:${this.region}:${this.account}:repository/${repository}`,
     ]);
-    allow(["logs:CreateLogStream", "logs:PutLogEvents"], [
-      `arn:aws:logs:${this.region}:${this.account}:log-group:${logGroup}:log-stream:${service}/${service}/*`,
-    ]);
+    const streamNames = service === "gateway" ? ["gateway", "records"] : [service];
+    allow(["logs:CreateLogStream", "logs:PutLogEvents"], streamNames.map(name =>
+      `arn:aws:logs:${this.region}:${this.account}:log-group:${logGroup}:log-stream:${name}/${name}/*`
+    ));
     allow(["secretsmanager:GetSecretValue"], [secret.valueAsString], {
       StringEquals: regional, Bool: { "aws:SecureTransport": "true" },
     });

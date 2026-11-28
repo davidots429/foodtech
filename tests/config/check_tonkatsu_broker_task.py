@@ -105,12 +105,14 @@ def validate_execution(template, account, service="broker"):
         return {"Effect": "Allow", "Action": action, "Resource": resource,
                 "Condition": condition or {"StringEquals": regional}}
 
+    log_resources = f"arn:aws:logs:{region}:{account}:log-group:{log_group}:log-stream:{service}/{service}/*"
+    if service == "gateway":
+        log_resources = [log_resources, f"arn:aws:logs:{region}:{account}:log-group:{log_group}:log-stream:records/records/*"]
     assert policy["PolicyDocument"]["Statement"] == [
         allow("ecr:GetAuthorizationToken", "*"),
         allow(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
               f"arn:aws:ecr:{region}:{account}:repository/foodtech/tonkatsu-{image_service}-dev"),
-        allow(["logs:CreateLogStream", "logs:PutLogEvents"],
-              f"arn:aws:logs:{region}:{account}:log-group:{log_group}:log-stream:{service}/{service}/*"),
+        allow(["logs:CreateLogStream", "logs:PutLogEvents"], log_resources),
         allow("secretsmanager:GetSecretValue", secret,
               {"StringEquals": regional, "Bool": {"aws:SecureTransport": "true"}}),
         allow("kms:Decrypt", key, {"StringEquals": {**regional,

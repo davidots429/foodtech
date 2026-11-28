@@ -31,6 +31,11 @@ def service_settings():
             "foodtech_ai_gateway.serve_tonkatsu",
             tonkatsu_tls_paths("SERVER_CERT", "SERVER_KEY", "BROKER_CA", "BROKER_CERT"),
         ),
+        "tonkatsu-inference": (
+            "foodtech_ai_gateway.serve_tonkatsu_inference",
+            tonkatsu_tls_paths("INFERENCE_SERVER_CERT", "INFERENCE_SERVER_KEY",
+                               "INFERENCE_CLIENT_CA", "INFERENCE_CLIENT_CERT"),
+        ),
         "tonkatsu-business-api": (
             "foodtech_business_api.serve_tonkatsu_business_api",
             {
@@ -63,6 +68,8 @@ def tonkatsu_tls_paths(*names: str) -> dict[str, str]:
 def main() -> None:
     service = os.environ["FOODTECH_SERVICE"]
     module, paths = service_settings()[service]
+    if service == "tonkatsu-gateway" and "FOODTECH_TONKATSU_OLLAMA_PRIVATE_ORIGIN" in os.environ:
+        paths.update(tonkatsu_tls_paths("OLLAMA_SERVER_CERT", "OLLAMA_CLIENT_CERT", "OLLAMA_CLIENT_KEY"))
     materials = {}
     for secret_name, path_name in paths.items():
         material = os.environ.pop(secret_name).encode("utf-8")
