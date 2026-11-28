@@ -166,8 +166,6 @@ class AuthorityTests(unittest.TestCase):
             stub.assert_no_pending_responses()
 
 
-if __name__ == '__main__':
-    unittest.main()
 
     def fryer_fixture(self):
         from foodtech_contracts.tonkatsu_prior_history import fryer_stream
@@ -231,3 +229,72 @@ if __name__ == '__main__':
             with self.assertRaisesRegex(PriorHistoryUnavailable, "coverage changed"):
                 self.authority.observe_tonkatsu(**self.scope)
             stub.assert_no_pending_responses()
+
+    def test_fryer_read_scope_joins_execution_history_reverse_bindings_and_source_versions(self):
+        from foodtech_business_api.recipe_scope import RecipeScopeDenied
+        from foodtech_business_api.tonkatsu_read_scope import DynamoTonkatsuReadScope
+        from foodtech_contracts.tonkatsu_execution_binding import BINDING_SCHEMA
+
+        streams = self.fryer_fixture()
+        execution_id = str(uuid4())
+        resolver = DynamoTonkatsuReadScope(execution_table="foodtech-ai-execution-registry-dev",
+                                           data_table="foodtech-data-flow-dev", history=self.authority)
+        row = {
+            "pk": f"EXEC#{execution_id}", "sk": "META", "execution_id": execution_id,
+            "tenant_id": self.owner, "feature": "RECIPE_CORRECTION", "data_classification": "SYNTHETIC",
+            "state": "PENDING", "version": 2,
+            "job_id": self.current, "job_version": 1, "prior_job_id": self.prior, "prior_job_version": 1,
+            "tonkatsu_binding": {
+                "schema_version": BINDING_SCHEMA, "auth_epoch": 2,
+                "current": {"job_id": self.current, "job_version": 1, "source_revision": 8},
+                "prior": {"job_id": self.prior, "job_version": 1, "source_revision": 7},
+            },
+        }
+
+        def links(stub, *, foreign=False, stale=False):
+            items = []
+            for stream, job_id, revision in zip(streams, (self.current, self.prior), (8, 7)):
+                owner = "foreign" if foreign else self.owner
+                items.append({"Item": self.encode({"pk": stream, "sk": "BINDING",
+                    "job_id": job_id, "job_pk": f"SCOPE#USER#{owner}#JOB#{job_id}"})})
+                items.append({"Item": self.encode({"pk": stream, "sk": "SOURCE#REVISION",
+                                                   "revision": revision + int(stale)})})
+            stub.add_response("transact_get_items", {"Responses": items}, expected_params={"TransactItems": [
+                {"Get": {"TableName": table, "Key": self.encode({"pk": stream, "sk": sort}),
+                         "ProjectionExpression": ANY, **extra}}
+                for stream in streams for table, sort, extra in (
+                    (self.authority.cooking, "BINDING", {}),
+                    (resolver.data_table, "SOURCE#REVISION", {"ExpressionAttributeNames": {"#revision": "revision"}}),
+                )
+            ]})
+
+        def execution(stub, payload):
+            stub.add_response("get_item", {"Item": self.encode(payload)}, expected_params={
+                "TableName": resolver.execution_table, "Key": self.encode({"pk": row["pk"], "sk": "META"}),
+                "ProjectionExpression": ANY, "ExpressionAttributeNames": ANY, "ConsistentRead": True,
+            })
+
+        for scenario in ("stable", "foreign-owner", "foreign-link", "source-race", "execution-race"):
+            with self.subTest(scenario=scenario), Stubber(self.client) as stub:
+                execution(stub, {**row, "tenant_id": "foreign"} if scenario == "foreign-owner" else row)
+                if scenario != "foreign-owner":
+                    self.observation(stub)
+                    links(stub, foreign=scenario == "foreign-link")
+                    if scenario != "foreign-link":
+                        self.observation(stub)
+                        links(stub, stale=scenario == "source-race")
+                        if scenario != "source-race":
+                            execution(stub, {**row, "version": 3} if scenario == "execution-race" else row)
+                request = {"owner": self.owner, "epoch": 2, "execution_id": execution_id}
+                if scenario == "stable":
+                    scope = resolver.resolve(**request)
+                    self.assertEqual(scope.history.streams, streams)
+                    self.assertEqual(scope.execution_version, 2)
+                else:
+                    with self.assertRaises(RecipeScopeDenied):
+                        resolver.resolve(**request)
+                stub.assert_no_pending_responses()
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -278,12 +278,14 @@ class DynamoRegistry:
 
     def execution(self, execution_id: str) -> Execution | None:
         item = self._get("EXEC", execution_id)
-        if not item:
+        if not item or item.get("tonkatsu_binding") is not None:
             return None
         return self._execution_from_item(item)
 
     @staticmethod
     def _execution_from_item(item: dict) -> Execution:
+        if item.get("tonkatsu_binding") is not None:
+            raise RegistryConflict("fryer execution requires its dedicated guarded path")
         fields = {name: item.get(name) if name in {"job_id", "job_version", "comparison_id", "prior_job_id", "prior_job_version", "jeyuk_source_revision", "prior_source_revision", "combi_binding"} else item[name]
                   for name in Execution.__dataclass_fields__}
         for name in ("job_version", "prior_job_version", "jeyuk_source_revision", "prior_source_revision"):
@@ -301,7 +303,7 @@ class DynamoRegistry:
     def execution_snapshot(self, execution_id: str) -> ExecutionSnapshot | None:
         """Read execution, state and version from the same consistent item."""
         item = self._get("EXEC", execution_id)
-        if not item:
+        if not item or item.get("tonkatsu_binding") is not None:
             return None
         version = item.get('version')
         if isinstance(version, bool) or not isinstance(version, (int, Decimal)) or \
@@ -446,6 +448,8 @@ class DynamoRegistry:
         # Determine Combi from storage too: omitting the caller binding must not
         # turn a protected execution into an ordinary reservation.
         item = self._get('EXEC', execution.execution_id)
+        if item and item.get("tonkatsu_binding") is not None:
+            raise RegistryConflict("fryer execution requires its dedicated guarded path")
         if execution.combi_binding is not None or (item and item.get('combi_binding') is not None):
             try:
                 matches = item is not None and item['state'] == state and item['version'] == version and \

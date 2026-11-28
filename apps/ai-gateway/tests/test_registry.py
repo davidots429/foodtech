@@ -687,5 +687,19 @@ class RegistryTests(unittest.TestCase):
         model.structured_chat.assert_not_called()
 
 
+    def test_stored_fryer_binding_cannot_use_unscoped_registry_operations(self):
+        import copy
+
+        ordinary = self.registry.execution("run-1")
+        row = self.resource.table.items[("EXEC#run-1", "META")]
+        row["tonkatsu_binding"] = {"schema_version": "tonkatsu-execution-binding-v1"}
+        before = copy.deepcopy(self.resource.table.items)
+        self.assertIsNone(self.registry.execution("run-1"))
+        self.assertIsNone(self.registry.execution_snapshot("run-1"))
+        with self.assertRaisesRegex(RegistryConflict, "dedicated guarded path"):
+            self.registry.reserve(ordinary, "ollama")
+        self.assertEqual(self.resource.table.items, before)
+
+
 if __name__ == "__main__":
     unittest.main()
