@@ -118,6 +118,7 @@ export class TonkatsuPrivateNetworkStack extends Stack {
     ]);
     if (managedLogin) {
       const authAccess = securityGroup("AuthAccess", "Customer BFF refresh encryption VPC endpoint");
+      new CfnOutput(this, "AuthAccessSecurityGroupId", { value: authAccess.securityGroupId });
       const refreshKey = new CfnParameter(this, "AuthRefreshKeyArn", {
         type: "String", allowedPattern: `^arn:aws:kms:${this.region}:${this.account}:key/[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$`,
       });
@@ -157,7 +158,7 @@ export class TonkatsuPrivateNetworkStack extends Stack {
     new CfnOutput(this, "ClusterArn", { value: cluster.attrArn });
     new CfnOutput(this, "IsolatedSubnetId", { value: vpc.isolatedSubnets[0].subnetId });
     new CfnOutput(this, "BusinessSubnetId", { value: managedLogin ? vpc.privateSubnets[0].subnetId : vpc.isolatedSubnets[0].subnetId });
-    for (const [name, group] of Object.entries({ Tester: tester, Business: business, Broker: broker, Gateway: gateway, Inference: inference })) {
+    for (const [name, group] of Object.entries({ Tester: tester, Business: business, Broker: broker, Gateway: gateway, Inference: inference, ImageAccess: imageAccess, WorkflowAccess: workflowAccess })) {
       new CfnOutput(this, `${name}SecurityGroupId`, { value: group.securityGroupId });
     }
     this.templateOptions.description = `Development Tonkatsu private network with ${mode} egress and no running tasks`;

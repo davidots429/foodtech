@@ -466,3 +466,7 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 `provisionTonkatsuPrivateServices=true`는 검토한 네 태스크 리비전을 사설 네트워크의 역할별 서브넷·보안 그룹·Cloud Map 서비스에 연결한다. 스택의 기본 `DesiredCountPerService=0`에서 태스크는 정지 상태다. 승인된 시험에서 값 1로 전환하고 종료 시 0을 복원한다. 추론→Gateway→Broker→BFF 순서로 준비되며 서비스별 지정 서브넷 한 곳과 보안 그룹 한 개를 사용한다. 공인 IP와 ECS Exec을 비활성화한다.
 
 리스너 준비 점검은 각 컨테이너 내부의 고정 포트를 확인한다. Ollama는 승인 모델 조회 점검을 먼저 수행한다. 포트 점검과 Cloud Map 등록은 mTLS 인증, 역할의 실제 서비스 접근, 고객 로그인과 종단간 응답에 대한 검증과 별개다.
+
+사설 시연 스택과 서비스가 생성되어 있고 태스크 수가 0일 때 `infra/scripts/tonkatsu_trial_preflight.py --reviewed-plan <plan.json>`으로 배포 전 메타데이터를 읽어 대조한다. 계획에는 `network_mode`, 네 태스크·네트워크·서비스·세 TLS 스택의 canonical JSON SHA-256을 담은 `templates`, 브로커·Gateway·Ollama의 `image_digests`, 등록한 단일 `tls_version`을 넣는다. canonical 해시는 키를 정렬하고 공백을 제거한 ASCII JSON의 SHA-256이다. 도구는 `foodtech` 로그인 프로파일만 사용하고 결과에는 확인 단계와 수량을 기록한다.
+
+사설 서브넷과 서비스별 인바운드, ECS 연결, 고정 이미지와 TLS 버전 메타데이터를 검증한다. 실제 실행 전에는 발급된 인증서의 검토 기록, 이미지 스캔 및 시험 비용·종료 계획을 별도로 확인한다.
