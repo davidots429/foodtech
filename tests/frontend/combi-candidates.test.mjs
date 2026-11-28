@@ -26,7 +26,8 @@ test('changed lineage, fields, programme, approval and timestamp cannot become a
 test('historical candidate receipt stays unapplied and cannot advertise adoption',()=>{
  const parsed=parseCombiCandidateReceipt({...receipt,current_meal_version:4,current_review_version:2},scope,review);
  assert.equal(parsed.candidate.review_version,1);assert.equal(parsed.adoption_available,false);
- for(const change of [{adoption_available:true},{current_review_version:0},{current_meal_version:true},{secret:'private-marker'}])
+ assert.equal(parseCombiCandidateReceipt({...receipt,adoption_available:true},scope,review).adoption_available,true);
+ for(const change of [{adoption_available:true,current_meal_version:4},{current_review_version:0},{current_meal_version:true},{secret:'private-marker'}])
   assert.throws(()=>parseCombiCandidateReceipt({...receipt,...change},scope,review));
 });
 test('candidate controls separate explicit preservation from application and rejected records',()=>{

@@ -16,6 +16,7 @@ from .auth_store import Session, get_store
 from .combi_owned_observations import CombiObservationUnavailable, read_owned_combi_observation
 from .cooking import _context, _store_call
 from .recipe_scope import _require_principal_record, RecipeScopeDenied
+from .combi_candidate_meal import CandidateMealRequest
 
 router = APIRouter(prefix='/api/customer/ai/combi', tags=['ai-combi'])
 
@@ -359,7 +360,9 @@ async def _candidate_response(request, meal_id, menu, review_version, body=None)
         if value is None:
             raise HTTPException(404, '이 검토에 저장된 후보 버전이 없습니다.', headers={'Cache-Control':'no-store'})
         return JSONResponse({'candidate':value, 'current_meal_version':meta['version'],
-            'current_review_version':pointer['version'], 'adoption_available':False},
+            'current_review_version':pointer['version'], 'adoption_available':bool(
+                meta['version'] == value['job_version'] and pointer['version'] == value['review_version'] and
+                pointer['review']['decision'] == 'APPROVE')},
             status_code=200 if body is None else 201, headers={'Cache-Control':'no-store'})
     except Conflict:
         raise HTTPException(409, '현재 승인 검토 또는 식사배치가 변경되었습니다. 이력을 확인해 주세요.',
@@ -381,3 +384,37 @@ async def combi_recipe_candidate(request: Request, meal_id: UUID, menu: Literal[
 async def combi_preserve_candidate(request: Request, body: CombiCandidatePreservation,
                                    review_version: int = Path(ge=1, le=2**53-1)):
     return await _candidate_response(request, body.meal_id, body.menu, review_version, body)
+
+
+@router.post('/recipe-candidates/{review_version}/meals', status_code=201)
+async def create_candidate_meal(request: Request, body: CandidateMealRequest,
+                                review_version: int = Path(ge=1, le=2**53-1)):
+    from .combi_candidate_meal_store import CombiCandidateMealStore
+    from .combi_meal import read_meal_for_subject
+    from .cooking_store import Conflict
+    from .cooking import _now
+    session, store = await _context(request, write=True)
+    session = Session(session.surface, session.subject, None, session.csrf, session.expires, session.epoch)
+    try:
+        await _require_principal_record(session)
+        adapter = CombiCandidateMealStore(store)
+        created = await _store_call(store, adapter.create, session.subject, review_version, body, _now(), session.epoch)
+        # Re-read the exact immutable request even when creation's response was
+        # lost. Do not require a later changed source to still be current when
+        # returning an already-created owned target, and never reset its state.
+        await _store_call(store, adapter._reconcile, session.subject, review_version, body)
+        meal = await read_meal_for_subject(store, session.subject, body.request_id)
+        await _same_session(request, session)
+        return JSONResponse({'schema_version':'combi-candidate-meal-receipt-v1',
+            'request_id':str(body.request_id), 'meal_id':str(body.request_id),
+            'request_hash':meal['meal']['recipe_candidate_selection']['request_hash'],
+            'created':created, 'meal':meal}, status_code=201 if created else 200,
+            headers={'Cache-Control':'no-store'})
+    except Conflict:
+        raise HTTPException(409, '승인·원천·계정 또는 같은 요청의 새 배치가 변경되었습니다. 다시 확인해 주세요.',
+                            headers={'Cache-Control':'no-store'}) from None
+    except RecipeScopeDenied:
+        raise HTTPException(401, '로그인 상태가 변경되었습니다.', headers={'Cache-Control':'no-store'}) from None
+    except (ValueError, KeyError, TypeError, BotoCoreError, ClientError):
+        raise HTTPException(503, '새 배치 생성 여부를 확인하지 못했습니다. 같은 요청으로 확인·재시도해 주세요.',
+                            headers={'Cache-Control':'no-store'}) from None

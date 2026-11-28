@@ -36,8 +36,9 @@ export function parseCombiCandidate(raw: unknown, scope: CombiScope, review: Com
 }
 export function parseCombiCandidateReceipt(raw: unknown, scope: CombiScope, review: CombiReview) {
   if (!object(raw) || Object.keys(raw).sort().join() !== ["adoption_available", "candidate", "current_meal_version", "current_review_version"].join() ||
-    raw.adoption_available !== false || !integer(raw.current_meal_version) || !integer(raw.current_review_version) ||
-    raw.current_review_version < review.version) return fail();
+    typeof raw.adoption_available !== "boolean" || !integer(raw.current_meal_version) || !integer(raw.current_review_version) ||
+    raw.current_review_version < review.version || (raw.adoption_available &&
+      (raw.current_meal_version !== review.job_version || raw.current_review_version !== review.version))) return fail();
   return { candidate: parseCombiCandidate(raw.candidate, scope, review), current_meal_version: raw.current_meal_version,
-    current_review_version: raw.current_review_version, adoption_available: false as const };
+    current_review_version: raw.current_review_version, adoption_available: raw.adoption_available as boolean };
 }

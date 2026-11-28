@@ -45,6 +45,8 @@ class CombiCandidateMealStore:
                     (str(body.request_id),str(body.meal_id),body.expected_meal_version,body.menu,version):
                 raise ValueError
             candidate = validate_combi_candidate(selection['candidate'], selection['review'])
+            if selection['request_hash'] != request_hash(body, candidate):
+                raise ValueError
             expected = candidate_meal_records(body, candidate, selection['review'], meta['created_at'])
             if selection != expected[0]['recipe_candidate_selection'] or \
                     selection['source_job_id'] != candidate['job_id'] or \

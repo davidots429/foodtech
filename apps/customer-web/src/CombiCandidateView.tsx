@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CombiCandidateMeal } from "./CombiCandidateMeal";
 import { api } from "./cookingApi";
 import { CombiProposalDetails } from "./CombiProposalDetails";
 import { parseCombiCandidateReceipt } from "./combiCandidate";
@@ -6,8 +7,8 @@ import type { CombiReview } from "./combiReview";
 import type { CombiScope } from "./combiRecipeResult";
 
 type Receipt = ReturnType<typeof parseCombiCandidateReceipt>;
-export function CombiCandidateView({ scope, review, csrf, canPreserve = false }: {
-  scope: CombiScope; review: CombiReview; csrf: string; canPreserve?: boolean;
+export function CombiCandidateView({ scope, review, csrf, canPreserve = false, onCreated }: {
+  scope: CombiScope; review: CombiReview; csrf: string; canPreserve?: boolean; onCreated?: (id: string) => Promise<void>;
 }) {
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -55,6 +56,7 @@ export function CombiCandidateView({ scope, review, csrf, canPreserve = false }:
         장비 규모: {receipt.candidate.equipment_size === "MEDIUM_FIXED_RACK_10" ? "중형 고정 랙 10단" : "대형 이동 랙 20단"}</p>
       {historical && <p>이후 배치 또는 검토가 변경되었습니다. 과거 후보이며 승인이 자동 복원되지 않습니다.</p>}
       <details><summary>보존된 후보의 조리조건</summary><CombiProposalDetails proposal={receipt.candidate.proposal} reviewed /></details>
+      {receipt.adoption_available && !historical && <CombiCandidateMeal key={receipt.candidate.candidate_id} candidate={receipt.candidate} review={review} csrf={csrf} onCreated={onCreated} />}
     </>}
   </div>;
 }

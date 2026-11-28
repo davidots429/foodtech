@@ -37,7 +37,7 @@ class CombiCandidateApiTests(fixtures.CombiResultFixtures):
         body=await self.approve();before=copy.deepcopy(self.store.items);calls=len(self.requests)
         response=await self.preserve(body)
         self.assertEqual(response.status_code,201,response.text)
-        self.assertFalse(response.json()['adoption_available'])
+        self.assertTrue(response.json()['adoption_available'])
         candidate=response.json()['candidate']
         self.assertEqual(candidate['status'],'CANDIDATE_NOT_APPLIED');self.assertIsNone(candidate['base_recipe_version'])
         self.assertEqual(candidate['meal_id'],self.meal_id);self.assertEqual(candidate['menu'],'RICE')

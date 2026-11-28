@@ -1,0 +1,270 @@
+{
+  "input": {
+    "request_id": "cb82261d-700e-480e-809b-90feecaf17fe",
+    "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+    "menu": "RICE",
+    "expected_meal_version": 3,
+    "proposal_digest": "c2a4ee3df220bd766c1eabcc3c383551b39cb0f07a49bf726f0b9f149d973128",
+    "confirmed_pan_positions": [
+      {
+        "rack": 1,
+        "shelf": 1
+      }
+    ],
+    "acknowledged": true,
+    "new_meal": {
+      "equipment_size": "MEDIUM_FIXED_RACK_10",
+      "rack_count": 1,
+      "pan_count": 1,
+      "dry_rice_kg": "2",
+      "drained_rice_kg": "2.4",
+      "added_water_kg": "2",
+      "pan_tare_kg": "1",
+      "rack_tare_kg": "0"
+    }
+  },
+  "candidate": {
+    "schema_version": "combi-recipe-candidate-v1",
+    "candidate_id": "combi-cde7c878-3c37-4026-958b-75d8e28f916f-rice-r1",
+    "status": "CANDIDATE_NOT_APPLIED",
+    "provenance": "SYNTHETIC",
+    "base_recipe_version": null,
+    "equipment_size": "MEDIUM_FIXED_RACK_10",
+    "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+    "menu": "RICE",
+    "job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+    "job_version": 3,
+    "execution_id": "e0669462-c0a0-4ab7-85c0-e984fedff5ea",
+    "review_version": 1,
+    "review_request_id": "8c881188-0afa-4208-89ca-d1f385173c5a",
+    "proposal_digest": "c2a4ee3df220bd766c1eabcc3c383551b39cb0f07a49bf726f0b9f149d973128",
+    "proposal": {
+      "status": "NEEDS_REVIEW",
+      "schema_version": "synthetic-combi-recommendation-output-v1",
+      "guard_version": "synthetic-combi-recommendation-guard-v1",
+      "menu": "RICE",
+      "data": {
+        "temperature_c": "100",
+        "duration_seconds": 1740,
+        "climate_setpoint_percent": "100",
+        "fan_level": 4,
+        "pan_positions": [
+          {
+            "rack": 1,
+            "shelf": 1
+          }
+        ],
+        "effective_water_ratio": "1.22",
+        "soak_seconds": 1800,
+        "drain_seconds": 300
+      }
+    },
+    "reviewed_at": "2026-11-28T01:00:00Z",
+    "recorded_at": "2026-11-28T02:00:00Z"
+  },
+  "review": {
+    "schema_version": "combi-recipe-review-v1",
+    "version": 1,
+    "request_id": "8c881188-0afa-4208-89ca-d1f385173c5a",
+    "execution_id": "e0669462-c0a0-4ab7-85c0-e984fedff5ea",
+    "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+    "menu": "RICE",
+    "job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+    "job_version": 3,
+    "proposal_digest": "c2a4ee3df220bd766c1eabcc3c383551b39cb0f07a49bf726f0b9f149d973128",
+    "proposal": {
+      "status": "NEEDS_REVIEW",
+      "schema_version": "synthetic-combi-recommendation-output-v1",
+      "guard_version": "synthetic-combi-recommendation-guard-v1",
+      "menu": "RICE",
+      "data": {
+        "temperature_c": "100",
+        "duration_seconds": 1740,
+        "climate_setpoint_percent": "100",
+        "fan_level": 4,
+        "pan_positions": [
+          {
+            "rack": 1,
+            "shelf": 1
+          }
+        ],
+        "effective_water_ratio": "1.22",
+        "soak_seconds": 1800,
+        "drain_seconds": 300
+      }
+    },
+    "decision": "APPROVE",
+    "reason": "\ud569\uc131 \uc870\uac74\uc744 \uac80\ud1a0\ud588\uc2b5\ub2c8\ub2e4.",
+    "reviewed_at": "2026-11-28T01:00:00Z"
+  },
+  "receipt": {
+    "schema_version": "combi-candidate-meal-receipt-v1",
+    "request_id": "cb82261d-700e-480e-809b-90feecaf17fe",
+    "meal_id": "cb82261d-700e-480e-809b-90feecaf17fe",
+    "request_hash": "d599a364f3ab98b8daf7700f5b2170f1efaa44c2ca8bb266a1111d481e2ed9c4",
+    "created": true,
+    "meal": {
+      "meal": {
+        "sk": "META",
+        "meal_batch_id": "cb82261d-700e-480e-809b-90feecaf17fe",
+        "rice_cooking_job_id": "70b6b95f-0710-5cda-a264-7aebffb9afdd",
+        "mode_transition_id": "29b94eef-3dfa-5ff3-8e83-d2c675848dc1",
+        "mackerel_cooking_job_id": "f1956d95-f8bd-56e1-92a5-8ba06515ab2c",
+        "provenance": "SYNTHETIC",
+        "equipment_size": "MEDIUM_FIXED_RACK_10",
+        "status": "PREPARING_RICE",
+        "version": 1,
+        "created_at": "2026-11-28T02:30:00Z",
+        "rice_recipe_version": "combi-cde7c878-3c37-4026-958b-75d8e28f916f-rice-r1",
+        "recipe_candidate_selection": {
+          "schema_version": "combi-candidate-selection-v1",
+          "request_id": "cb82261d-700e-480e-809b-90feecaf17fe",
+          "request_hash": "d599a364f3ab98b8daf7700f5b2170f1efaa44c2ca8bb266a1111d481e2ed9c4",
+          "source_meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+          "source_meal_version": 3,
+          "source_job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+          "menu": "RICE",
+          "review_version": 1,
+          "candidate": {
+            "schema_version": "combi-recipe-candidate-v1",
+            "candidate_id": "combi-cde7c878-3c37-4026-958b-75d8e28f916f-rice-r1",
+            "status": "CANDIDATE_NOT_APPLIED",
+            "provenance": "SYNTHETIC",
+            "base_recipe_version": null,
+            "equipment_size": "MEDIUM_FIXED_RACK_10",
+            "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+            "menu": "RICE",
+            "job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+            "job_version": 3,
+            "execution_id": "e0669462-c0a0-4ab7-85c0-e984fedff5ea",
+            "review_version": 1,
+            "review_request_id": "8c881188-0afa-4208-89ca-d1f385173c5a",
+            "proposal_digest": "c2a4ee3df220bd766c1eabcc3c383551b39cb0f07a49bf726f0b9f149d973128",
+            "proposal": {
+              "status": "NEEDS_REVIEW",
+              "schema_version": "synthetic-combi-recommendation-output-v1",
+              "guard_version": "synthetic-combi-recommendation-guard-v1",
+              "menu": "RICE",
+              "data": {
+                "temperature_c": "100",
+                "duration_seconds": 1740,
+                "climate_setpoint_percent": "100",
+                "fan_level": 4,
+                "pan_positions": [
+                  {
+                    "rack": 1,
+                    "shelf": 1
+                  }
+                ],
+                "effective_water_ratio": "1.22",
+                "soak_seconds": 1800,
+                "drain_seconds": 300
+              }
+            },
+            "reviewed_at": "2026-11-28T01:00:00Z",
+            "recorded_at": "2026-11-28T02:00:00Z"
+          },
+          "review": {
+            "schema_version": "combi-recipe-review-v1",
+            "version": 1,
+            "request_id": "8c881188-0afa-4208-89ca-d1f385173c5a",
+            "execution_id": "e0669462-c0a0-4ab7-85c0-e984fedff5ea",
+            "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+            "menu": "RICE",
+            "job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+            "job_version": 3,
+            "proposal_digest": "c2a4ee3df220bd766c1eabcc3c383551b39cb0f07a49bf726f0b9f149d973128",
+            "proposal": {
+              "status": "NEEDS_REVIEW",
+              "schema_version": "synthetic-combi-recommendation-output-v1",
+              "guard_version": "synthetic-combi-recommendation-guard-v1",
+              "menu": "RICE",
+              "data": {
+                "temperature_c": "100",
+                "duration_seconds": 1740,
+                "climate_setpoint_percent": "100",
+                "fan_level": 4,
+                "pan_positions": [
+                  {
+                    "rack": 1,
+                    "shelf": 1
+                  }
+                ],
+                "effective_water_ratio": "1.22",
+                "soak_seconds": 1800,
+                "drain_seconds": 300
+              }
+            },
+            "decision": "APPROVE",
+            "reason": "\ud569\uc131 \uc870\uac74\uc744 \uac80\ud1a0\ud588\uc2b5\ub2c8\ub2e4.",
+            "reviewed_at": "2026-11-28T01:00:00Z"
+          }
+        }
+      },
+      "rice": {
+        "sk": "JOB#RICE#70b6b95f-0710-5cda-a264-7aebffb9afdd",
+        "job_id": "70b6b95f-0710-5cda-a264-7aebffb9afdd",
+        "meal_batch_id": "cb82261d-700e-480e-809b-90feecaf17fe",
+        "menu": "RICE",
+        "status": "PENDING",
+        "program_mode": "STEAM",
+        "program_celsius": "100",
+        "climate_setpoint_percent": "100",
+        "fan_level": 4,
+        "target_program_seconds": 1740,
+        "process_status": "NOT_MEASURED",
+        "safety_status": "NOT_MEASURED",
+        "quality_status": "PENDING",
+        "dry_rice_kg": "2",
+        "drained_rice_kg": "2.4",
+        "added_water_kg": "2",
+        "absorbed_and_residual_water_kg": "0.4",
+        "effective_water_kg": "2.4",
+        "effective_water_ratio": "1.2",
+        "water_ratio_status": "NORMAL",
+        "target_added_water_kg": "2.04",
+        "rack_count": 1,
+        "pan_count": 1,
+        "ingredient_kg": "4.4",
+        "pan_tare_kg": "1",
+        "rack_tare_kg": "0",
+        "payload_kg": "5.4",
+        "gross_kg": "5.4",
+        "load_basis": "PAYLOAD_ONLY",
+        "load_ratio": "0.09",
+        "planned_pan_positions": [
+          {
+            "rack": 1,
+            "shelf": 1
+          }
+        ],
+        "target_effective_water_ratio": "1.22",
+        "target_soaking_seconds": 1800,
+        "target_draining_seconds": 300
+      },
+      "transition": {
+        "sk": "TRANSITION#29b94eef-3dfa-5ff3-8e83-d2c675848dc1",
+        "transition_id": "29b94eef-3dfa-5ff3-8e83-d2c675848dc1",
+        "meal_batch_id": "cb82261d-700e-480e-809b-90feecaf17fe",
+        "status": "PENDING",
+        "mackerel_load_allowed": false
+      },
+      "mackerel": {
+        "sk": "JOB#MACKEREL#f1956d95-f8bd-56e1-92a5-8ba06515ab2c",
+        "job_id": "f1956d95-f8bd-56e1-92a5-8ba06515ab2c",
+        "meal_batch_id": "cb82261d-700e-480e-809b-90feecaf17fe",
+        "menu": "MACKEREL",
+        "status": "PENDING",
+        "program_mode": "DRY_HEAT",
+        "program_celsius": "220",
+        "climate_setpoint_percent": "10",
+        "fan_level": 3,
+        "target_program_seconds": 720,
+        "process_status": "NOT_MEASURED",
+        "safety_status": "NOT_MEASURED",
+        "quality_status": "PENDING"
+      },
+      "events": []
+    }
+  }
+}

@@ -20,13 +20,14 @@ from foodtech_contracts.combi_mackerel_live import observe as observe_mackerel_l
 from foodtech_contracts.combi_transition_live import observe as observe_transition_live
 from foodtech_contracts.combi_live_events import events_for
 from foodtech_contracts.combi_sampling import selection_issues
+from foodtech_contracts.combi_candidate_layout import installed_rack_count
 from foodtech_contracts.combi_probe import summarize as summarize_probe
 from foodtech_contracts.combi_quality_load import classify as classify_quality_load
 
 from .cooking import SCORE_ITEMS, _context, _now, _store_call
 from .cooking_store import Conflict
 from .combi_quality_sample import current_quality
-from .combi_candidate_guards import transition_minimum, require_fresh_rice_preparation
+from .combi_candidate_guards import transition_minimum, require_fresh_rice_preparation, selected_programme, require_candidate_transition
 
 router = APIRouter(prefix="/api/customer/combi-meals", tags=["combi-meals"])
 
@@ -85,6 +86,7 @@ class MealEvent(BaseModel):
     event: Literal["RICE_STARTED", "RICE_PROGRAM_COMPLETED", "RICE_UNLOADED", "MODE_TRANSITION_STARTED",
                    "MACKEREL_STARTED", "MACKEREL_PROGRAM_COMPLETED", "MACKEREL_UNLOADED"]
     observed_at: datetime
+    candidate_rack_order: list[str] | None = Field(default=None, min_length=1, max_length=2)
     products: list[MackerelProduct] | None = Field(default=None, min_length=1, max_length=200)
     pan_tare_kg: Decimal | None = Field(default=None, ge=0, max_digits=7, decimal_places=2)
 
@@ -828,7 +830,16 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
         raise HTTPException(422, "고등어 투입 단계에서만 제품을 기록할 수 있습니다.")
     if body.event != "MACKEREL_STARTED" and body.pan_tare_kg is not None:
         raise HTTPException(422, "고등어 투입 단계에서만 팬 총중량을 기록할 수 있습니다.")
+    if body.event != "MACKEREL_STARTED" and body.candidate_rack_order is not None:
+        raise HTTPException(422, "후보 적용 고등어 투입 단계에서만 랙 순서를 기록할 수 있습니다.")
     if body.event == "MACKEREL_STARTED":
+        try:
+            adopted = selected_programme(old, rows, 'MACKEREL')
+            require_candidate_transition(old, rows, observed)
+        except (ValueError, KeyError, TypeError, ArithmeticError):
+            raise HTTPException(409, "후보의 새 전환 조건·관측·감사 기록을 먼저 확인해 주세요.") from None
+        if adopted is None and body.candidate_rack_order is not None:
+            raise HTTPException(422, "후보를 적용한 고등어 작업에만 랙 순서를 기록할 수 있습니다.")
         transition = rows.get(f"TRANSITION#{old['mode_transition_id']}")
         if not transition or transition.get("status") != "DRY_HEAT_READY" or not transition.get("mackerel_load_allowed"):
             raise HTTPException(409, "건열 전환 준비를 먼저 확인해야 합니다.")
@@ -848,8 +859,16 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
             raise HTTPException(422, "장비의 랙·선반·팬 위치 또는 팬당 제품 수를 확인해 주세요.")
         if body.pan_tare_kg is None:
             raise HTTPException(422, "고등어 적재에 사용하는 빈 팬의 총중량(kg)이 필요합니다.")
-        rack_tare = Decimal(15) * len(racks) if old['equipment_size'] == 'LARGE_ROLL_IN_RACK_20' else Decimal(0)
-        load = oven_load(old['equipment_size'], len(racks), len(pan_locations),
+        rack_count = len(racks)
+        if adopted is not None:
+            try:
+                rack_count = installed_rack_count(old['equipment_size'], adopted['pan_positions'],
+                    [item.model_dump(mode='json') for item in products], body.candidate_rack_order)
+            except (ValueError, KeyError, TypeError):
+                raise HTTPException(422, "설치된 랙의 순서와 실제 팬 위치가 후보 배치도와 일치해야 합니다.") from None
+            updated['candidate_rack_order'] = list(body.candidate_rack_order)
+        rack_tare = Decimal(15) * rack_count if old['equipment_size'] == 'LARGE_ROLL_IN_RACK_20' else Decimal(0)
+        load = oven_load(old['equipment_size'], rack_count, len(pan_locations),
                         sum((item.mass_kg for item in products), Decimal(0)), body.pan_tare_kg, rack_tare)
         if load.violations:
             raise HTTPException(422, {"code": "PROFILE_REJECTED", "violations": load.violations})
@@ -889,6 +908,8 @@ async def advance_meal(meal_id: UUID, request: Request, body: MealEvent) -> dict
              "to_status": next_status, "observed_at": at, "recorded_at": _now(), "actor": session.subject}
     if body.event == 'MACKEREL_STARTED':
         event['load_snapshot'] = updated['load_snapshot'].copy()
+        if 'candidate_rack_order' in updated:
+            event['candidate_rack_order'] = list(updated['candidate_rack_order'])
     try:
         await _store_call(store, store.advance_meal, pk, body.expected_version, meta, updated, event, session.epoch)
     except Conflict as exc:

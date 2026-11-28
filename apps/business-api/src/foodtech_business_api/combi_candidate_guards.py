@@ -83,3 +83,31 @@ def require_fresh_rice_preparation(meta, rows, observed):
             number(step['target_added_water_kg']) != water.target_added_water_kg or \
             number(step['effective_water_ratio']) != water.effective_water_ratio:
         raise ValueError('fresh water observation unavailable')
+
+
+def require_candidate_transition(meta, rows, observed):
+    data = selected_programme(meta, rows, 'MACKEREL')
+    if data is None:
+        return
+    from foodtech_contracts.combi_transition import TransitionSample, assess_transition
+    step = rows[f"TRANSITION#{meta['mode_transition_id']}"]
+    result = assess_transition([TransitionSample(**{**sample,
+        'chamber_celsius': Decimal(sample['chamber_celsius']),
+        'climate_setpoint_percent': Decimal(sample['climate_setpoint_percent']),
+        'humidity_percent': Decimal(sample['humidity_percent']) if sample['humidity_percent'] is not None else None})
+        for sample in step['samples']], humidity_supported=step['humidity_supported'],
+        vent_supported=step['vent_supported'], minimum_seconds=data['transition_duration_seconds'])
+    started = datetime.fromisoformat(step['started_at'].replace('Z','+00:00'))
+    through = datetime.fromisoformat(step['observed_through'].replace('Z','+00:00'))
+    if result['status'] != 'DRY_HEAT_READY' or any(step.get(k) != v for k,v in result.items()) or \
+            (through-started).total_seconds() != len(step['samples']) or not started <= through <= observed:
+        raise ValueError('fresh transition evidence does not satisfy the adopted target')
+    events = [row for row in rows.values() if row.get('event') in
+              {'MODE_TRANSITION_ASSESSED','TRANSITION_SOURCE_ASSESSED','TRANSITION_SOURCE_REASSESSED'}]
+    if not events:
+        raise ValueError('fresh transition audit required')
+    event = max(events,key=lambda row:row['sk'])
+    if event.get('assessment') != result or event.get('observed_at') != step['observed_through'] or \
+            datetime.fromisoformat(event['recorded_at'].replace('Z','+00:00')) < \
+            datetime.fromisoformat(meta['created_at'].replace('Z','+00:00')):
+        raise ValueError('fresh transition audit mismatch')

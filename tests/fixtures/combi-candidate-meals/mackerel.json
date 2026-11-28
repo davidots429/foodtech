@@ -1,0 +1,260 @@
+{
+  "input": {
+    "request_id": "3829fcaa-439e-4256-a7a3-ec1cacd381f0",
+    "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+    "menu": "MACKEREL",
+    "expected_meal_version": 3,
+    "proposal_digest": "2a2ed40ca21ca96c0d0e9abe8162c290176f09fa7986c62694195c2698bdd066",
+    "confirmed_pan_positions": [
+      {
+        "rack": 1,
+        "shelf": 2
+      }
+    ],
+    "acknowledged": true,
+    "new_meal": {
+      "equipment_size": "MEDIUM_FIXED_RACK_10",
+      "rack_count": 1,
+      "pan_count": 1,
+      "dry_rice_kg": "2",
+      "drained_rice_kg": "2.4",
+      "added_water_kg": "2",
+      "pan_tare_kg": "1",
+      "rack_tare_kg": "0"
+    }
+  },
+  "candidate": {
+    "schema_version": "combi-recipe-candidate-v1",
+    "candidate_id": "combi-cde7c878-3c37-4026-958b-75d8e28f916f-mackerel-r1",
+    "status": "CANDIDATE_NOT_APPLIED",
+    "provenance": "SYNTHETIC",
+    "base_recipe_version": null,
+    "equipment_size": "MEDIUM_FIXED_RACK_10",
+    "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+    "menu": "MACKEREL",
+    "job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+    "job_version": 3,
+    "execution_id": "e0669462-c0a0-4ab7-85c0-e984fedff5ea",
+    "review_version": 1,
+    "review_request_id": "792be67b-8d69-4a20-bd04-b913e9c2a820",
+    "proposal_digest": "2a2ed40ca21ca96c0d0e9abe8162c290176f09fa7986c62694195c2698bdd066",
+    "proposal": {
+      "status": "NEEDS_REVIEW",
+      "schema_version": "synthetic-combi-recommendation-output-v1",
+      "guard_version": "synthetic-combi-recommendation-guard-v1",
+      "menu": "MACKEREL",
+      "data": {
+        "temperature_c": "220",
+        "climate_setpoint_percent": "10",
+        "fan_level": 3,
+        "duration_seconds": 750,
+        "pan_positions": [
+          {
+            "rack": 1,
+            "shelf": 2
+          }
+        ],
+        "transition_duration_seconds": 180
+      }
+    },
+    "reviewed_at": "2026-11-28T01:00:00Z",
+    "recorded_at": "2026-11-28T02:00:00Z"
+  },
+  "review": {
+    "schema_version": "combi-recipe-review-v1",
+    "version": 1,
+    "request_id": "792be67b-8d69-4a20-bd04-b913e9c2a820",
+    "execution_id": "e0669462-c0a0-4ab7-85c0-e984fedff5ea",
+    "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+    "menu": "MACKEREL",
+    "job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+    "job_version": 3,
+    "proposal_digest": "2a2ed40ca21ca96c0d0e9abe8162c290176f09fa7986c62694195c2698bdd066",
+    "proposal": {
+      "status": "NEEDS_REVIEW",
+      "schema_version": "synthetic-combi-recommendation-output-v1",
+      "guard_version": "synthetic-combi-recommendation-guard-v1",
+      "menu": "MACKEREL",
+      "data": {
+        "temperature_c": "220",
+        "climate_setpoint_percent": "10",
+        "fan_level": 3,
+        "duration_seconds": 750,
+        "pan_positions": [
+          {
+            "rack": 1,
+            "shelf": 2
+          }
+        ],
+        "transition_duration_seconds": 180
+      }
+    },
+    "decision": "APPROVE",
+    "reason": "\ud569\uc131 \uc870\uac74\uc744 \uac80\ud1a0\ud588\uc2b5\ub2c8\ub2e4.",
+    "reviewed_at": "2026-11-28T01:00:00Z"
+  },
+  "receipt": {
+    "schema_version": "combi-candidate-meal-receipt-v1",
+    "request_id": "3829fcaa-439e-4256-a7a3-ec1cacd381f0",
+    "meal_id": "3829fcaa-439e-4256-a7a3-ec1cacd381f0",
+    "request_hash": "b9a99b203d6615f50bae4c472ae9d7c047dc9c7c8912843a36c2caf12c144c08",
+    "created": true,
+    "meal": {
+      "meal": {
+        "sk": "META",
+        "meal_batch_id": "3829fcaa-439e-4256-a7a3-ec1cacd381f0",
+        "rice_cooking_job_id": "4bea64a7-3a94-53b8-8beb-55da5377042d",
+        "mode_transition_id": "85ab50ab-f4b8-56a5-92e6-92c76943fe81",
+        "mackerel_cooking_job_id": "efb87edb-9383-5b9a-b45f-6d52fb52f559",
+        "provenance": "SYNTHETIC",
+        "equipment_size": "MEDIUM_FIXED_RACK_10",
+        "status": "PREPARING_RICE",
+        "version": 1,
+        "created_at": "2026-11-28T02:30:00Z",
+        "mackerel_recipe_version": "combi-cde7c878-3c37-4026-958b-75d8e28f916f-mackerel-r1",
+        "recipe_candidate_selection": {
+          "schema_version": "combi-candidate-selection-v1",
+          "request_id": "3829fcaa-439e-4256-a7a3-ec1cacd381f0",
+          "request_hash": "b9a99b203d6615f50bae4c472ae9d7c047dc9c7c8912843a36c2caf12c144c08",
+          "source_meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+          "source_meal_version": 3,
+          "source_job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+          "menu": "MACKEREL",
+          "review_version": 1,
+          "candidate": {
+            "schema_version": "combi-recipe-candidate-v1",
+            "candidate_id": "combi-cde7c878-3c37-4026-958b-75d8e28f916f-mackerel-r1",
+            "status": "CANDIDATE_NOT_APPLIED",
+            "provenance": "SYNTHETIC",
+            "base_recipe_version": null,
+            "equipment_size": "MEDIUM_FIXED_RACK_10",
+            "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+            "menu": "MACKEREL",
+            "job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+            "job_version": 3,
+            "execution_id": "e0669462-c0a0-4ab7-85c0-e984fedff5ea",
+            "review_version": 1,
+            "review_request_id": "792be67b-8d69-4a20-bd04-b913e9c2a820",
+            "proposal_digest": "2a2ed40ca21ca96c0d0e9abe8162c290176f09fa7986c62694195c2698bdd066",
+            "proposal": {
+              "status": "NEEDS_REVIEW",
+              "schema_version": "synthetic-combi-recommendation-output-v1",
+              "guard_version": "synthetic-combi-recommendation-guard-v1",
+              "menu": "MACKEREL",
+              "data": {
+                "temperature_c": "220",
+                "climate_setpoint_percent": "10",
+                "fan_level": 3,
+                "duration_seconds": 750,
+                "pan_positions": [
+                  {
+                    "rack": 1,
+                    "shelf": 2
+                  }
+                ],
+                "transition_duration_seconds": 180
+              }
+            },
+            "reviewed_at": "2026-11-28T01:00:00Z",
+            "recorded_at": "2026-11-28T02:00:00Z"
+          },
+          "review": {
+            "schema_version": "combi-recipe-review-v1",
+            "version": 1,
+            "request_id": "792be67b-8d69-4a20-bd04-b913e9c2a820",
+            "execution_id": "e0669462-c0a0-4ab7-85c0-e984fedff5ea",
+            "meal_id": "cde7c878-3c37-4026-958b-75d8e28f916f",
+            "menu": "MACKEREL",
+            "job_id": "378a48db-92d9-481a-a85f-b2c94d0b4893",
+            "job_version": 3,
+            "proposal_digest": "2a2ed40ca21ca96c0d0e9abe8162c290176f09fa7986c62694195c2698bdd066",
+            "proposal": {
+              "status": "NEEDS_REVIEW",
+              "schema_version": "synthetic-combi-recommendation-output-v1",
+              "guard_version": "synthetic-combi-recommendation-guard-v1",
+              "menu": "MACKEREL",
+              "data": {
+                "temperature_c": "220",
+                "climate_setpoint_percent": "10",
+                "fan_level": 3,
+                "duration_seconds": 750,
+                "pan_positions": [
+                  {
+                    "rack": 1,
+                    "shelf": 2
+                  }
+                ],
+                "transition_duration_seconds": 180
+              }
+            },
+            "decision": "APPROVE",
+            "reason": "\ud569\uc131 \uc870\uac74\uc744 \uac80\ud1a0\ud588\uc2b5\ub2c8\ub2e4.",
+            "reviewed_at": "2026-11-28T01:00:00Z"
+          }
+        }
+      },
+      "rice": {
+        "sk": "JOB#RICE#4bea64a7-3a94-53b8-8beb-55da5377042d",
+        "job_id": "4bea64a7-3a94-53b8-8beb-55da5377042d",
+        "meal_batch_id": "3829fcaa-439e-4256-a7a3-ec1cacd381f0",
+        "menu": "RICE",
+        "status": "PENDING",
+        "program_mode": "STEAM",
+        "program_celsius": "100",
+        "climate_setpoint_percent": "100",
+        "fan_level": 4,
+        "target_program_seconds": 1800,
+        "process_status": "NOT_MEASURED",
+        "safety_status": "NOT_MEASURED",
+        "quality_status": "PENDING",
+        "dry_rice_kg": "2",
+        "drained_rice_kg": "2.4",
+        "added_water_kg": "2",
+        "absorbed_and_residual_water_kg": "0.4",
+        "effective_water_kg": "2.4",
+        "effective_water_ratio": "1.2",
+        "water_ratio_status": "NORMAL",
+        "target_added_water_kg": "2.00",
+        "rack_count": 1,
+        "pan_count": 1,
+        "ingredient_kg": "4.4",
+        "pan_tare_kg": "1",
+        "rack_tare_kg": "0",
+        "payload_kg": "5.4",
+        "gross_kg": "5.4",
+        "load_basis": "PAYLOAD_ONLY",
+        "load_ratio": "0.09"
+      },
+      "transition": {
+        "sk": "TRANSITION#85ab50ab-f4b8-56a5-92e6-92c76943fe81",
+        "transition_id": "85ab50ab-f4b8-56a5-92e6-92c76943fe81",
+        "meal_batch_id": "3829fcaa-439e-4256-a7a3-ec1cacd381f0",
+        "status": "PENDING",
+        "mackerel_load_allowed": false,
+        "target_duration_seconds": 180
+      },
+      "mackerel": {
+        "sk": "JOB#MACKEREL#efb87edb-9383-5b9a-b45f-6d52fb52f559",
+        "job_id": "efb87edb-9383-5b9a-b45f-6d52fb52f559",
+        "meal_batch_id": "3829fcaa-439e-4256-a7a3-ec1cacd381f0",
+        "menu": "MACKEREL",
+        "status": "PENDING",
+        "program_mode": "DRY_HEAT",
+        "program_celsius": "220",
+        "climate_setpoint_percent": "10",
+        "fan_level": 3,
+        "target_program_seconds": 750,
+        "process_status": "NOT_MEASURED",
+        "safety_status": "NOT_MEASURED",
+        "quality_status": "PENDING",
+        "planned_pan_positions": [
+          {
+            "rack": 1,
+            "shelf": 2
+          }
+        ]
+      },
+      "events": []
+    }
+  }
+}
