@@ -11,8 +11,8 @@ from uuid import UUID
 
 from .profile100 import canonical_record, decode_record, stream_binding_key
 from .collection_evidence import MAX_RECEIPT_RECORDS
-from .tonkatsu_batch import batch as check_batch
-from .tonkatsu_process import TIME_BANDS, thickness_profile
+from .tonkatsu_batch import MAX_BATCH_G, PROFILE, WEIGHT_TOLERANCE_G, batch as check_batch
+from .tonkatsu_process import TIME_BANDS, cooking_time_status, thickness_profile
 from .recommendation_output import TonkatsuBaseline
 from .tonkatsu_controller_samples import observe_controller, TonkatsuControllerSummary
 
@@ -43,6 +43,47 @@ def _instant(value):
 
 
 @dataclass(frozen=True)
+class TonkatsuBatchFacts:
+    thickness_cm: Decimal
+    product_weights_g: tuple[int, ...]
+    batch_mode: str
+    batch_rule_version: str
+    rated_capacity_kg: Decimal
+    load_percent: Decimal
+
+    def model_context(self):
+        maximum_count, target_weight = PROFILE[thickness_profile(self.thickness_cm)[1]]
+        return {
+            "product_classification": "NON_MINCED_PORK_LOIN_RAW",
+            "thickness_cm": str(self.thickness_cm),
+            "product_weights_g": list(self.product_weights_g),
+            "product_count": len(self.product_weights_g),
+            "batch_mode": self.batch_mode,
+            "batch_rule_version": self.batch_rule_version,
+            "rated_capacity_kg": str(self.rated_capacity_kg),
+            "load_percent": str(self.load_percent),
+            "maximum_product_count": maximum_count,
+            "target_product_weight_g": target_weight,
+            "product_weight_tolerance_g": WEIGHT_TOLERANCE_G,
+            "maximum_batch_mass_kg": str(Decimal(MAX_BATCH_G) / 1000),
+        }
+
+
+@dataclass(frozen=True)
+class TonkatsuCoreSummary:
+    probe_count: int
+    minimum_celsius: Decimal
+    probes_below_limit: int
+
+    def model_context(self):
+        return {
+            "probe_count": self.probe_count, "minimum_celsius": str(self.minimum_celsius),
+            "probes_below_limit": self.probes_below_limit,
+            "observed_span_seconds": 60, "samples_per_probe": 61,
+        }
+
+
+@dataclass(frozen=True)
 class ObservedTonkatsuBatch:
     job_id: str = field(repr=False)
     profile: str
@@ -60,9 +101,16 @@ class ObservedTonkatsuBatch:
     oil_batches_since_change: int | None
     oil_cooked_mass_kg: Decimal | None
     recorded_safety_status: str
-    core_series_consistent: bool
+    core_summary: TonkatsuCoreSummary | None
+    batch_facts: TonkatsuBatchFacts
+    reference_recipe_version: str | None = field(repr=False)
+    recorded_process_status: str
     controller_summary: TonkatsuControllerSummary | None = field(repr=False)
     unresolved: tuple[str, ...]
+
+    @property
+    def core_series_consistent(self):
+        return self.core_summary is not None
 
     def as_baseline(self):
         return TonkatsuBaseline(self.profile, self.cooking_seconds)
@@ -81,6 +129,10 @@ class ObservedTonkatsuBatch:
             'oil_batches_since_change': self.oil_batches_since_change,
             'oil_cooked_mass_kg': number(self.oil_cooked_mass_kg),
             'recorded_safety_status': self.recorded_safety_status,
+            'recorded_process_status': self.recorded_process_status,
+            'cooking_time_status': cooking_time_status(self.profile, self.cooking_seconds),
+            'batch': self.batch_facts.model_context(),
+            'core_observation': self.core_summary.model_context() if self.core_summary else None,
             'core_series_consistent': self.core_series_consistent,
             'controller_observation': self.controller_summary.model_context() if self.controller_summary else None,
             'unresolved': list(self.unresolved)}
@@ -93,37 +145,43 @@ def observe_tonkatsu_batch(job, raws):
         raise ValueError('synthetic fryer observation unavailable') from None
 
 
-def _core_consistent(job, count):
-    """Recheck recorded samples; do not certify probe truth or grant safety."""
+def _core_summary(job, count):
+    """Summarize each calibrated series before checking the stored decision."""
     try:
         if _integer(job['core_check_safety_version'], 1, 10**18) != _integer(job['safety_version'], 1, 10**18):
-            return False
+            return None
         probes = job['core_check']
         if type(probes) is not list or len(probes) != count:
-            return False
-        ids = set(); probe_ids = set(); removals = set(); below = False
+            return None
+        ids, probe_ids, removals = set(), set(), set()
+        minima = []
         lifted = _instant(job['actual_lifted_at'])
         for probe in probes:
             item = probe['item_id']
             if type(item) is not str or not 1 <= len(item) <= 80 or item in ids or probe.get('calibration_status') != 'OK':
-                return False
+                return None
             probe_id = probe.get('probe_id')
             removal = _integer(probe.get('removal_sequence'), 1, count)
             if type(probe_id) is not str or not 1 <= len(probe_id) <= 80 or probe_id in probe_ids or removal in removals or \
                     _instant(probe.get('measurement_start')) != lifted or \
                     _instant(probe.get('measurement_end')) != lifted + timedelta(seconds=60):
-                return False
+                return None
             ids.add(item); probe_ids.add(probe_id); removals.add(removal)
             samples = probe['samples']
             if type(samples) is not list or len(samples) != 61:
-                return False
+                return None
+            temperatures = []
             for second, sample in enumerate(samples):
                 if _integer(sample['at_second'], 0, 60) != second:
-                    return False
-                below |= _number(sample['celsius'], Decimal('-273.15'), Decimal(300)) < 75
-        return job.get('safety_status') == ('FAILED' if below else 'PASSED')
+                    return None
+                temperatures.append(_number(sample['celsius'], Decimal('-273.15'), Decimal(300)))
+            minima.append(min(temperatures))
+        below = sum(temperature < 75 for temperature in minima)
+        if job.get('safety_status') != ('FAILED' if below else 'PASSED'):
+            return None
+        return TonkatsuCoreSummary(count, min(minima), below)
     except (KeyError, TypeError, ValueError, AttributeError, ArithmeticError):
-        return False
+        return None
 
 
 def _observe(job, raws):
@@ -133,8 +191,8 @@ def _observe(job, raws):
             job.get('status') not in {'COMPLETED', 'FAILED'}:
         raise ValueError('unsupported recorded fryer job')
     profile = job.get('thickness_profile')
-    if type(profile) is not str or profile not in TIME_BANDS or thickness_profile(
-            _number(job['thickness_cm'], Decimal('0.01'), Decimal(10)))[1] != profile:
+    thickness = _number(job['thickness_cm'], Decimal('0.01'), Decimal(10))
+    if type(profile) is not str or profile not in TIME_BANDS or thickness_profile(thickness)[1] != profile:
         raise ValueError('inconsistent recorded thickness')
     seconds = _integer(job['actual_cooking_seconds'], 1, 86400)
     placed, lifted = _instant(job['actual_placed_at']), _instant(job['actual_lifted_at'])
@@ -223,13 +281,32 @@ def _observe(job, raws):
     if initial.get('storage_state') in {'CHILLED', 'FROZEN', 'OTHER'}:
         storage = initial['storage_state']
     else: unresolved.append('STORAGE_STATE_UNAVAILABLE')
-    consistent = _core_consistent(job, expected['product_count'])
-    if not consistent: unresolved.append('CORE_SERIES_MISSING_STALE_OR_INCONSISTENT')
+    if storage not in {'CHILLED', 'UNKNOWN'}:
+        unresolved.append('STORAGE_OUTSIDE_SYNTHETIC_SCENARIO')
+    core = _core_summary(job, expected['product_count'])
+    if core is None:
+        unresolved.append('CORE_SERIES_MISSING_STALE_OR_INCONSISTENT')
+    recipe = job.get('recipe_version')
+    if type(recipe) is not str or not 1 <= len(recipe) <= 80 or not recipe.strip():
+        recipe = None
+        unresolved.append('REFERENCE_RECIPE_VERSION_UNAVAILABLE')
+    facts = TonkatsuBatchFacts(thickness, tuple(weights), expected['mode'], expected['rule_version'],
+                              Decimal(expected['rated_capacity_kg']), Decimal(expected['load_percent']))
+    recorded_process = job.get('process_assessment_status')
+    if type(recorded_process) is not str or recorded_process not in {'NORMAL', 'WARNING', 'FAILED', 'INSUFFICIENT_DATA'}:
+        recorded_process = 'NOT_RECORDED'
     if job.get('pending_tonkatsu_reheat') or job.get('latest_tonkatsu_reheat'):
         unresolved.append('REHEAT_TIMELINE_REQUIRES_SEPARATE_OBSERVATION')
-    return ObservedTonkatsuBatch(job['job_id'], profile, seconds, load, len(during),
-        min(x[2] for x in during), max(x[2] for x in during), during[-1][2],
-        preload_value, age, values['ingredient_temperature_c'], storage,
-        values['oil_capacity_l'], values['oil_batches_since_change'], values['oil_cooked_mass_kg'],
-        job['safety_status'] if job.get('safety_status') in {'PASSED', 'FAILED'} else 'NOT_MEASURED',
-        consistent, controller, tuple(sorted(set(unresolved))))
+    return ObservedTonkatsuBatch(
+        job_id=job['job_id'], profile=profile, cooking_seconds=seconds, load_kg=load,
+        sample_count=len(during), minimum_sample_c=min(row[2] for row in during),
+        maximum_sample_c=max(row[2] for row in during), last_sample_c=during[-1][2],
+        preplacement_sample_c=preload_value, preplacement_age_us=age,
+        ingredient_temperature_c=values['ingredient_temperature_c'], storage_state=storage,
+        oil_capacity_l=values['oil_capacity_l'], oil_batches_since_change=values['oil_batches_since_change'],
+        oil_cooked_mass_kg=values['oil_cooked_mass_kg'],
+        recorded_safety_status=job['safety_status'] if job.get('safety_status') in {'PASSED', 'FAILED'} else 'NOT_MEASURED',
+        core_summary=core, batch_facts=facts, reference_recipe_version=recipe,
+        recorded_process_status=recorded_process, controller_summary=controller,
+        unresolved=tuple(sorted(set(unresolved))),
+    )

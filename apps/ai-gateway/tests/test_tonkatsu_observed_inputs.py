@@ -16,7 +16,8 @@ class ObservedTonkatsuTests(unittest.TestCase):
         self.iso=lambda seconds:(placed+timedelta(seconds=seconds)).isoformat()
         self.job={'job_id':str(uuid4()),'owner_subject':'private-owner-marker','notes':'private-notes-marker',
             'menu':'TONKATSU','provenance':'SYNTHETIC','equipment_profile':'synthetic-fryer-approved-v2',
-            'status':'COMPLETED','thickness_profile':'STANDARD','thickness_cm':'1.25',
+            'status':'COMPLETED','recipe_version':'private-recipe-version',
+            'process_assessment_status':'NORMAL','thickness_profile':'STANDARD','thickness_cm':'1.25',
             'actual_cooking_seconds':Decimal(300),'actual_placed_at':self.iso(0),'actual_lifted_at':self.iso(300),
             'tonkatsu_batch':batch('STANDARD',[160,160],'PARTIAL'),'tonkatsu_batch_version':Decimal(2),
             'actual_load_kg':'0.32','safety_status':'PASSED','safety_version':Decimal(3),'core_check_safety_version':Decimal(3),
@@ -51,8 +52,30 @@ class ObservedTonkatsuTests(unittest.TestCase):
         context=value.model_context()
         self.assertEqual(context['initial_context_status'],'DECLARED_UNVERIFIED')
         self.assertNotIn('completeness',context);self.assertNotIn('critical_data_valid',context)
-        for marker in ('private-owner','private-notes','private-oil','private-extension',self.job['job_id']):
+        self.assertEqual(context['batch'], {
+            'product_classification':'NON_MINCED_PORK_LOIN_RAW','thickness_cm':'1.25',
+            'product_weights_g':[160,160],'product_count':2,'batch_mode':'PARTIAL',
+            'batch_rule_version':'tonkatsu-batch-v2','rated_capacity_kg':'4.0','load_percent':'8.00',
+            'maximum_product_count':15,'target_product_weight_g':160,'product_weight_tolerance_g':5,
+            'maximum_batch_mass_kg':'2.5',
+        })
+        self.assertEqual(context['recorded_process_status'], 'NORMAL')
+        self.assertEqual(context['cooking_time_status'], 'NORMAL')
+        self.assertEqual(context['core_observation'], {
+            'probe_count':2,'minimum_celsius':'75','probes_below_limit':0,'observed_span_seconds':60,'samples_per_probe':61,
+        })
+        for marker in ('private-owner','private-notes','private-oil','private-extension','private-recipe','synthetic-probe',self.job['job_id']):
             self.assertNotIn(marker,json.dumps(context));self.assertNotIn(marker,repr(value))
+
+    def test_missing_recipe_invalid_cold_state_and_arbitrary_process_label(self):
+        self.job['recipe_version'] = '  '
+        self.job['tonkatsu_initial_context']['storage_state'] = 'FROZEN'
+        self.job['process_assessment_status'] = 'private-arbitrary-process'
+        result = self.observe()
+        self.assertIn('REFERENCE_RECIPE_VERSION_UNAVAILABLE', result.unresolved)
+        self.assertIn('STORAGE_OUTSIDE_SYNTHETIC_SCENARIO', result.unresolved)
+        self.assertEqual(result.recorded_process_status, 'NOT_RECORDED')
+        self.assertNotIn('private-arbitrary-process', str(result.model_context()))
 
     def test_missing_or_stale_initial_context_is_never_filled_from_defaults(self):
         self.job['tonkatsu_initial_context']['batch_version']=1
@@ -87,6 +110,8 @@ class ObservedTonkatsuTests(unittest.TestCase):
         self.assertFalse(self.observe().core_series_consistent)
         self.job['core_check'][1]['samples'][30]['celsius']='74.9'
         value=self.observe();self.assertTrue(value.core_series_consistent)
+        self.assertEqual(value.core_summary.minimum_celsius, Decimal('74.9'))
+        self.assertEqual(value.core_summary.probes_below_limit, 1)
         self.assertEqual(value.recorded_safety_status,'FAILED');self.assertEqual(value.unresolved,('EXPLICIT_1HZ_CONTROLLER_SAMPLES_MISSING',))
 
     def test_missing_preplacement_and_interval_end_are_reported_without_temperature_interpolation(self):
