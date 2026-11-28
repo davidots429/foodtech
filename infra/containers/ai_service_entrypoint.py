@@ -31,6 +31,13 @@ def service_settings():
             "foodtech_ai_gateway.serve_tonkatsu",
             tonkatsu_tls_paths("SERVER_CERT", "SERVER_KEY", "BROKER_CA", "BROKER_CERT"),
         ),
+        "tonkatsu-business-gateway": (
+            "foodtech_ai_gateway.serve_tonkatsu_business",
+            tonkatsu_tls_paths(
+                "BUSINESS_GATEWAY_SERVER_CERT", "BUSINESS_GATEWAY_SERVER_KEY",
+                "BUSINESS_GATEWAY_CLIENT_CA", "BUSINESS_GATEWAY_CLIENT_CERT",
+            ),
+        ),
         "tonkatsu-broker": (
             "foodtech_business_api.serve_tonkatsu_broker",
             tonkatsu_tls_paths(

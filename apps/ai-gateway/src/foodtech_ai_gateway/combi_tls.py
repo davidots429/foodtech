@@ -24,6 +24,10 @@ BROKER_URI = 'urn:foodtech:service:combi-read-broker'
 
 
 def broker_leaf_pin(path, *, broker_uri=BROKER_URI, clock=lambda: datetime.now(timezone.utc)):
+    return client_leaf_pin(path, client_uri=broker_uri, clock=clock)
+
+
+def client_leaf_pin(path, *, client_uri, clock=lambda: datetime.now(timezone.utc)):
     try:
         with Path(path).open('rb') as stream: raw = stream.read(65537)
         if len(raw) > 65536: raise ValueError
@@ -36,12 +40,12 @@ def broker_leaf_pin(path, *, broker_uri=BROKER_URI, clock=lambda: datetime.now(t
         usage = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
         uris = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.UniformResourceIdentifier)
         now = clock()
-        if list(usage) != [ExtendedKeyUsageOID.CLIENT_AUTH] or uris != [broker_uri] or \
+        if list(usage) != [ExtendedKeyUsageOID.CLIENT_AUTH] or uris != [client_uri] or \
                 type(now) is not datetime or now.utcoffset() is None or not cert.not_valid_before_utc <= now < cert.not_valid_after_utc:
             raise ValueError
         return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
     except (ValueError, TypeError, OSError, x509.ExtensionNotFound, x509.DuplicateExtension, UnsupportedAlgorithm):
-        raise ValueError('broker certificate unavailable') from None
+        raise ValueError('peer certificate unavailable') from None
 
 
 def pinned_http_protocol(pin, *, state_key=TLS_PEER_STATE_KEY):
