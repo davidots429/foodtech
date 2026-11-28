@@ -23,6 +23,7 @@ from .tonkatsu_source_observation import observe_scoped_tonkatsu_source, read_sc
 
 REGION = "ap-southeast-2"
 TLS_PEER_KEY = "foodtech_tonkatsu_peer_sha256"
+TLS_PIN_APP_KEY = "tonkatsu_broker_peer_sha256"
 
 
 class TonkatsuHandoffDenied(ValueError):
@@ -49,6 +50,10 @@ class ReceivedTonkatsuReads:
 
     def __reduce_ex__(self, protocol):
         raise TypeError("received fryer reads cannot be serialized")
+
+    @property
+    def owner(self):
+        return self._scope.history.history.owner
 
     def _check_scope(self):
         if self._resource is None or self._resolve_scope() != self._scope:
@@ -195,7 +200,7 @@ def _accept(raw, *, resolve_scope, expected_role, expected_role_id, session_fact
 
 
 def require_tonkatsu_transport(request):
-    expected = getattr(request.app.state, "tonkatsu_broker_peer_sha256", None)
+    expected = getattr(request.app.state, TLS_PIN_APP_KEY, None)
     state = request.scope.get("state")
     received = state.get(TLS_PEER_KEY) if type(state) is dict else None
     if not (

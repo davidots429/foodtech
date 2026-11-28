@@ -437,6 +437,17 @@ async def execution_status(request: Request, execution_id: str, tenant_id: str) 
             "settlement_status": result.get("settlement_status") if result else None}, headers={'Cache-Control': 'no-store'})
 
 
+@app.post("/internal/ai/tonkatsu-recipe-executions/{execution_id}/invoke")
+async def invoke_tonkatsu_recipe_execution(request: Request, execution_id: UUID):
+    from .tonkatsu_invocation import invoke_observed_tonkatsu
+    from .tonkatsu_read_handoff import require_tonkatsu_transport
+
+    require_tonkatsu_transport(request)
+    ollama = getattr(request.app.state, "ollama_client", None) or OllamaClient(
+        os.getenv("FOODTECH_OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
+    return await invoke_observed_tonkatsu(request, execution_id, ollama=ollama)
+
+
 @app.post('/internal/ai/combi-recipe-executions/{execution_id}/invoke')
 async def invoke_combi_recipe_execution(request: Request, execution_id: UUID):
     from .combi_read_handoff import require_combi_transport

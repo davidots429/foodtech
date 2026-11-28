@@ -22,11 +22,11 @@ import test_combi_read_handoff as read_fixture
 
 
 @asynccontextmanager
-async def listening(app, certs, *, other_server=False, same_key=False):
+async def listening(app, certs, *, other_server=False, same_key=False, server_config=combi_server_config):
     listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(16)
     port=listener.getsockname()[1]
     cert,key=certs['other_server_same_key' if same_key else 'other_server' if other_server else 'server']
-    config=combi_server_config(app,server_cert=cert,server_key=key,broker_ca=certs['ca'],broker_certificate=certs['broker'][0],port=port)
+    config=server_config(app,server_cert=cert,server_key=key,broker_ca=certs['ca'],broker_certificate=certs['broker'][0],port=port)
     server=uvicorn.Server(config);task=asyncio.create_task(server.serve(sockets=[listener]))
     loop=asyncio.get_running_loop();previous=loop.get_exception_handler()
     def expected_rejection(loop,context):
