@@ -382,7 +382,42 @@ class AuthorityTests(unittest.TestCase):
             self.assertEqual(reads.observe_inputs(), ("current-input", "prior-input"))
             self.assertEqual([call.kwargs["scoped_stream"] for call in observe.call_args_list], list(streams))
             self.assertEqual([call.kwargs["expected_revision"] for call in observe.call_args_list], [8, 7])
+        from botocore.validate import validate_parameters
+
+        update = {"Update": {"TableName": resolver.execution_table,
+            "Key": self.encode({"pk": "EXEC#" + scope.execution_id, "sk": "META"}),
+            "UpdateExpression": "SET #state = :next", "ConditionExpression": "#state = :before",
+            "ExpressionAttributeNames": {"#state": "state"},
+            "ExpressionAttributeValues": self.encode({":before": "PENDING", ":next": "RESERVED"})}}
+        pending, checks = reads.guard_transaction(update, execution_id=scope.execution_id, completed_calls=0)
+        reserved, same_checks = reads.guard_transaction(update, execution_id=scope.execution_id, completed_calls=2)
+        self.assertEqual(update["Update"]["ConditionExpression"], "#state = :before")
+        self.assertTrue(pending["Update"]["ConditionExpression"].startswith("(#state = :before) AND ("))
+        self.assertEqual(checks, same_checks)
+        self.assertNotEqual(pending, reserved)
+        shape = self.client.meta.service_model.operation_model("TransactWriteItems").input_shape
+        validate_parameters({"TransactItems": [pending, *checks]}, shape)
+        actual_keys = [(operation["ConditionCheck"]["TableName"],
+                        operation["ConditionCheck"]["Key"]["pk"]["S"],
+                        operation["ConditionCheck"]["Key"].get("sk", {}).get("S"))
+                       for operation in checks]
+        self.assertEqual(len(actual_keys), len(set(actual_keys)))
+        self.assertEqual(actual_keys[:3], [
+            (self.authority.auth, "USER#" + self.owner, None),
+            (self.authority.auth, "CONTROL#COOKING_HISTORY_WRITERS", None),
+            (self.authority.cooking, f"SCOPE#USER#{self.owner}#JOBS", "HISTORY#REVISION"),
+        ])
+        for stream, ref in zip(streams, (binding.current, binding.prior), strict=True):
+            key = (resolver.data_table, stream, "SOURCE#REVISION")
+            revision = checks[actual_keys.index(key)]["ConditionCheck"]
+            self.assertEqual(revision["ExpressionAttributeValues"], {":fryer0": {"N": str(ref.source_revision)}})
+        for operation in checks:
+            self.assertEqual(operation["ConditionCheck"]["ReturnValuesOnConditionCheckFailure"], "NONE")
+        with self.assertRaises(ValueError):
+            reads.guard_transaction(update, execution_id=str(uuid4()), completed_calls=0)
         reads.close()
+        with self.assertRaises(ValueError):
+            reads.guard_transaction(update, execution_id=scope.execution_id, completed_calls=0)
         consumer_session.resource.return_value.meta.client.close.assert_called_once()
         self.assertNotIn(self.owner.encode(), wire)
         self.assertNotIn(b"synthetic-secret", repr(frame).encode())

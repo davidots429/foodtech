@@ -71,6 +71,10 @@ class TonkatsuReadHandoff:
             raise ValueError("invalid fryer handoff credentials")
         self._last_time = now
 
+    def live_timestamp(self):
+        self.validate()
+        return self._last_time.timestamp()
+
     def _sdk_credentials(self):
         self.validate()
         return dict(zip(("aws_access_key_id", "aws_secret_access_key", "aws_session_token"), self.__credentials))

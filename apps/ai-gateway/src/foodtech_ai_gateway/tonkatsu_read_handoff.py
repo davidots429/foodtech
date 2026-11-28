@@ -15,6 +15,7 @@ from foodtech_contracts.tonkatsu_read_handoff import CONTENT_TYPE, MAX_BYTES, RO
 
 from foodtech_contracts.tonkatsu_read_scope import TonkatsuReadScope
 
+from .tonkatsu_transaction_conditions import TonkatsuTransactionConditions
 from .tonkatsu_source_observation import observe_scoped_tonkatsu_source
 
 REGION = "ap-southeast-2"
@@ -68,6 +69,18 @@ class ReceivedTonkatsuReads:
                                                          expected_revision=reference.source_revision))
         self._check_scope()
         return tuple(result)
+
+    def guard_transaction(self, execution_update, *, execution_id, completed_calls):
+        # After reservation the original PENDING version is gone. Each builder
+        # uses that original version to require the exact next stored state.
+        if self._resource is None or execution_id != self._scope.execution_id:
+            raise TonkatsuHandoffDenied("fryer transaction scope unavailable")
+        self._frame.validate(self._scope)
+        role = re.fullmatch(ROLE_PATTERN, self._frame.role)
+        conditions = TonkatsuTransactionConditions(scope=self._scope, account=role[1], stage=role[2],
+            clock=self._frame.live_timestamp)
+        return (conditions.bind_execution_update(execution_update, completed_calls=completed_calls),
+                conditions.source_checks())
 
     def close(self):
         if self._resource is not None:
