@@ -296,5 +296,68 @@ class AuthorityTests(unittest.TestCase):
                 stub.assert_no_pending_responses()
 
 
+    def test_fryer_broker_limits_table_keys_and_withholds_lease_after_scope_change(self):
+        from datetime import datetime, timezone, timedelta
+        from unittest.mock import Mock
+        from dataclasses import replace
+
+        from foodtech_business_api.tonkatsu_read_broker import TonkatsuReadBroker
+        from foodtech_business_api.tonkatsu_read_scope import DynamoTonkatsuReadScope, TonkatsuReadScope
+        from foodtech_business_api.recipe_scope import RecipeScopeDenied
+        from foodtech_contracts.tonkatsu_execution_binding import TonkatsuExecutionBinding, TonkatsuJobReference
+
+        streams = self.fryer_fixture()
+        with Stubber(self.client) as stub:
+            self.observation(stub)
+            witness = self.authority.observe_tonkatsu(**self.scope)
+        binding = TonkatsuExecutionBinding(TonkatsuJobReference(self.current, 1, 8),
+                                           TonkatsuJobReference(self.prior, 1, 7), 2)
+        scope = TonkatsuReadScope(str(uuid4()), 1, binding, witness)
+        resolver = DynamoTonkatsuReadScope(execution_table="foodtech-ai-execution-registry-dev",
+                                           data_table="foodtech-data-flow-dev", history=self.authority)
+        now = datetime.fromtimestamp(1000, timezone.utc)
+        session_factory = Mock()
+        session = session_factory.return_value
+        session.get_credentials.return_value.method = "explicit"
+        sts = Mock()
+        role_name = "foodtech-tonkatsu-source-read-dev"
+
+        def assume(**request):
+            return {"AssumedRoleUser": {"Arn": "arn:aws:sts::123456789012:assumed-role/" +
+                                                role_name + "/" + request["RoleSessionName"]},
+                    "Credentials": {"AccessKeyId": "synthetic", "SecretAccessKey": "synthetic",
+                                    "SessionToken": "synthetic", "Expiration": now + timedelta(seconds=900)}}
+
+        sts.assume_role.side_effect = assume
+        broker = TonkatsuReadBroker(account="123456789012", stage="dev",
+            read_role_arn="arn:aws:iam::123456789012:role/" + role_name, sts=sts,
+            resolver=resolver, session_factory=session_factory, clock=lambda: now)
+        args = {"owner": self.owner, "epoch": 2, "execution_id": scope.execution_id}
+        with patch.object(resolver, "resolve", side_effect=[scope, replace(scope, execution_version=2)]):
+            with self.assertRaises(RecipeScopeDenied):
+                broker.issue(**args)
+        session_factory.assert_not_called()
+        with patch.object(resolver, "resolve", return_value=scope):
+            verified, lease = broker.issue(**args)
+            self.assertEqual(verified, scope)
+            self.assertEqual(lease.expires_at.timestamp(), 1100)
+            lease.resource(verified)
+        request = sts.assume_role.call_args.kwargs
+        self.assertEqual(request["DurationSeconds"], 900)
+        policy = json.loads(request["Policy"])
+        cooking, data = policy["Statement"]
+        for statement, expected in ((cooking, (*scope.job_partitions, *streams)), (data, streams)):
+            self.assertEqual(statement["Action"], ["dynamodb:GetItem", "dynamodb:Query"])
+            self.assertEqual(statement["Condition"]["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"], list(expected))
+            self.assertEqual(statement["Condition"]["Null"], {"dynamodb:LeadingKeys": "false"})
+        self.assertTrue(cooking["Resource"].endswith(":table/foodtech-cooking-jobs-dev"))
+        self.assertTrue(data["Resource"].endswith(":table/foodtech-data-flow-dev"))
+        now += timedelta(seconds=100)
+        with self.assertRaises(RecipeScopeDenied):
+            lease.resource(scope)
+        lease.close()
+        session.resource.return_value.meta.client.close.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()

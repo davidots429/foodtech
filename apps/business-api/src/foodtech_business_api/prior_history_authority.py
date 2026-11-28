@@ -195,7 +195,10 @@ class DynamoPriorHistoryAuthority:
             int(before[1]['version']), int(coverage['version']), before[1]['generation'], roster_hash, before[1]['manifest_sha256'],
             int(coverage['coverage_revision']), coverage['baseline_roster_sha256'], coverage['proof_sha256'])
 
-        return TonkatsuPriorHistoryWitness(witness, streams) if fryer else witness
+        if not fryer:
+            return witness
+        return TonkatsuPriorHistoryWitness(witness, streams,
+            int(before[1]['verified_at']), int(before[1]['valid_until']))
 
     @staticmethod
     def _jeyuk_order(jobs, current_job_id, prior_job_id, job_versions):

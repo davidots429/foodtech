@@ -2,6 +2,7 @@
 import re
 from dataclasses import dataclass, field
 
+from .combi_history_witness import history_integer
 from .prior_history_witness import PriorHistoryWitness
 from .profile100 import stream_binding_key
 
@@ -24,6 +25,8 @@ def fryer_stream(binding):
 class TonkatsuPriorHistoryWitness:
     history: PriorHistoryWitness = field(repr=False)
     streams: tuple[str, str] = field(repr=False)
+    writer_verified_at: int
+    writer_valid_until: int
 
     def __post_init__(self):
         if (
@@ -31,6 +34,12 @@ class TonkatsuPriorHistoryWitness:
             or len(self.streams) != 2 or self.streams[0] == self.streams[1]
         ):
             raise ValueError("invalid private fryer history observation")
+        if (
+            type(self.writer_verified_at) is not int or type(self.writer_valid_until) is not int
+            or history_integer(self.writer_verified_at, 1, 2**63 - 1) >=
+                history_integer(self.writer_valid_until, 1, 2**63 - 1)
+        ):
+            raise ValueError("invalid fryer writer verification window")
         for stream in self.streams:
             if type(stream) is not str or stream != fryer_stream({
                 "source_id": _SOURCE, "device_id": _DEVICE,
