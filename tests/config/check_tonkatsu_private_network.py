@@ -92,6 +92,12 @@ def validate(template, managed_login):
     assert {row["Name"] for row in rows("AWS::ServiceDiscovery::Service")} == {
         "business-api", "broker", "gateway", "inference",
     }
+    assert rows("AWS::Route53::RecordSet") == [{
+        "HostedZoneId": {"Fn::GetAtt": ["Namespace", "HostedZoneId"]},
+        "Name": "records.tonkatsu.foodtech.internal.", "Type": "CNAME", "TTL": "10",
+        "ResourceRecords": ["gateway.tonkatsu.foodtech.internal."],
+    }]
+    assert template["Outputs"]["RecordsHost"]["Value"] == "records.tonkatsu.foodtech.internal"
     assert template["Outputs"]["BusinessSubnetId"] != template["Outputs"]["IsolatedSubnetId"] if managed_login else (
         template["Outputs"]["BusinessSubnetId"] == template["Outputs"]["IsolatedSubnetId"]
     )
