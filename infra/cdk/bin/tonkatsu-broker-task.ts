@@ -108,15 +108,14 @@ export class TonkatsuBrokerTaskStack extends Stack {
 }
 
 class TonkatsuExecutionStack extends Stack {
-  constructor(scope: Construct, id: string, props: StackProps, stage: string, service: "broker" | "gateway" | "business-api") {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string, service: "broker" | "gateway" | "business-api" | "inference") {
     super(scope, id, props);
     if (stage !== "dev" || Token.isUnresolved(this.account) ||
         !/^\d{12}$/.test(this.account) || this.region !== "ap-southeast-2") {
       throw new Error(`Tonkatsu ${service} execution access requires dev and an explicit regional account`);
     }
-    const prefix = { broker: "Broker", gateway: "Gateway", "business-api": "BusinessApi" }[service];
-    const imageService = service === "business-api" ? "broker" : service;
-    const repository = `foodtech/tonkatsu-${imageService}-dev`;
+    const prefix = { broker: "Broker", gateway: "Gateway", "business-api": "BusinessApi", inference: "Inference" }[service];
+    const images = service === "inference" ? ["gateway", "ollama"] : [service === "business-api" ? "broker" : service];
     const secretName = `foodtech/tonkatsu-${service}-dev/tls`;
     const logGroup = `/foodtech/dev/tonkatsu-${service}`;
     const secret = new CfnParameter(this, `${prefix}TlsBundleArn`, {
@@ -142,10 +141,11 @@ class TonkatsuExecutionStack extends Stack {
       role.addToPolicy(new iam.PolicyStatement({ actions, resources, conditions }));
     };
     allow(["ecr:GetAuthorizationToken"], ["*"]);
-    allow(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"], [
-      `arn:aws:ecr:${this.region}:${this.account}:repository/${repository}`,
-    ]);
-    const streamNames = service === "gateway" ? ["gateway", "records"] : [service];
+    allow(["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"], images.map(image =>
+      `arn:aws:ecr:${this.region}:${this.account}:repository/foodtech/tonkatsu-${image}-dev`
+    ));
+    const streamNames = { broker: ["broker"], gateway: ["gateway", "records"],
+      "business-api": ["business-api"], inference: ["relay", "ollama"] }[service];
     allow(["logs:CreateLogStream", "logs:PutLogEvents"], streamNames.map(name =>
       `arn:aws:logs:${this.region}:${this.account}:log-group:${logGroup}:log-stream:${name}/${name}/*`
     ));
@@ -158,7 +158,8 @@ class TonkatsuExecutionStack extends Stack {
     } });
     new CfnOutput(this, `${prefix}ExecutionRoleArn`, { value: role.roleArn });
     new CfnOutput(this, `${prefix}LogGroupName`, { value: group.logGroupName });
-    this.templateOptions.description = `${prefix} execution role and log group for one image repository and TLS bundle`;
+    const imageScope = service === "inference" ? "the relay and Ollama repositories" : "one image repository";
+    this.templateOptions.description = `${prefix} execution role and log group for ${imageScope} and TLS bundle`;
     this.templateOptions.metadata = { AWSToolsMetrics: { AWSAgentToolkit: "aws-cloudformation@3" } };
   }
 }
@@ -178,5 +179,11 @@ export class TonkatsuGatewayExecutionStack extends TonkatsuExecutionStack {
 export class TonkatsuBusinessExecutionStack extends TonkatsuExecutionStack {
   constructor(scope: Construct, id: string, props: StackProps, stage: string) {
     super(scope, id, props, stage, "business-api");
+  }
+}
+
+export class TonkatsuInferenceExecutionStack extends TonkatsuExecutionStack {
+  constructor(scope: Construct, id: string, props: StackProps, stage: string) {
+    super(scope, id, props, stage, "inference");
   }
 }
