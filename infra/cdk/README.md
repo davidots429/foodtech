@@ -426,3 +426,9 @@ probe 키 부재 확인·최대 시도 횟수·Task 관찰/중지 한도·현재
 브로커는 비루트 사용자로 읽기 전용 루트에서 실행한다. 작업 종료 시 사라지는 별도 볼륨을 TLS 파일에 사용하며 전용 로그 그룹을 참조한다. 사설 서브넷과 보안 그룹의 인바운드·아웃바운드, 역할과 비밀 값, 이미지 게시, Task 실행과 시험 종료는 별도 준비가 필요하다.
 
 `provisionTonkatsuBrokerExecution=true`로 실행 역할과 7일 보존 로그 그룹을 별도로 합성한다. 역할은 브로커 이미지 저장소와 자기 로그 스트림, 지정된 TLS 번들의 읽기 및 해당 번들에 대한 Secrets Manager 경유 복호화만 허용한다. 이 역할을 브로커의 업무 데이터 조회 역할과 분리한다.
+
+### 돈까스 브로커 이미지 게시 후보
+
+`provisionTonkatsuBrokerPublishing=true`로 개발용 `FoodtechTonkatsuBrokerPublishing-dev`를 합성한다. 기존 GitHub OIDC 공급자와 수동 inspect에서 관찰한 정확한 main 주체를 전달한다. 스택은 암호화된 불변 ECR 이미지 저장소 하나와 여기만 쓸 수 있는 게시 역할을 정의한다.
+
+`Publish Tonkatsu broker image` 워크플로는 검토한 전체 커밋 SHA가 일치할 때만 게시 모드로 진행한다. AWS 자격증명을 얻기 전에 브로커 이미지와 TLS 볼륨을 확인하고, 실제 저장소 설정을 대조한 뒤 게시된 digest를 기록한다.
