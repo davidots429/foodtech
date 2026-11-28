@@ -1,0 +1,120 @@
+"""Pure recorded facts; no SDK, model calls, permissions or attestation."""
+import copy
+from datetime import datetime,timedelta,timezone
+from decimal import Decimal
+import json
+import unittest
+from uuid import uuid4
+from foodtech_contracts import stream_binding_key
+from foodtech_contracts.tonkatsu_batch import batch
+from foodtech_contracts.tonkatsu_observed_inputs import observe_tonkatsu_batch
+
+
+class ObservedTonkatsuTests(unittest.TestCase):
+    def setUp(self):
+        placed=datetime(2026,11,28,tzinfo=timezone.utc)
+        self.iso=lambda seconds:(placed+timedelta(seconds=seconds)).isoformat()
+        self.job={'job_id':str(uuid4()),'owner_subject':'private-owner-marker','notes':'private-notes-marker',
+            'menu':'TONKATSU','provenance':'SYNTHETIC','equipment_profile':'synthetic-fryer-approved-v2',
+            'status':'COMPLETED','thickness_profile':'STANDARD','thickness_cm':'1.25',
+            'actual_cooking_seconds':Decimal(300),'actual_placed_at':self.iso(0),'actual_lifted_at':self.iso(300),
+            'tonkatsu_batch':batch('STANDARD',[160,160],'PARTIAL'),'tonkatsu_batch_version':Decimal(2),
+            'actual_load_kg':'0.32','safety_status':'PASSED','safety_version':Decimal(3),'core_check_safety_version':Decimal(3),
+            'core_check':[{'item_id':str(i),'calibration_status':'OK','probe_id':f'synthetic-probe-{i}',
+                           'removal_sequence':Decimal(i+1),'measurement_start':self.iso(300),'measurement_end':self.iso(360),
+                           'samples':[{'at_second':Decimal(s),'celsius':'75'} for s in range(61)]} for i in range(2)],
+            'source_binding':{'source_id':'synthetic-rest','device_id':'mockprofile-100-a-001','batch_id':'batch-a-observed'},
+            'tonkatsu_initial_context':{'schema_version':'tonkatsu-initial-context-v1','provenance':'SYNTHETIC',
+                'status':'DECLARED_UNVERIFIED','batch_version':Decimal(2),'product_classification':'NON_MINCED_PORK_LOIN_RAW',
+                'ingredient_temperature_c':'4','temperature_observed_at':self.iso(-15),'storage_state':'CHILLED',
+                'oil_capacity_l':'10','oil_batches_since_change':Decimal(1),'oil_cooked_mass_kg':'2',
+                'oil_changed_at':self.iso(-86400),'notes':'private-oil-note'}}
+        self.job['tonkatsu_batch']['product_weights_g']=[Decimal(160),Decimal(160)]
+        self.raws=[]
+        for sequence,second in enumerate(range(-5,306,5),1):
+            record={'schemaVersion':'1.0','sourceId':'synthetic-rest','deviceId':'mockprofile-100-a-001',
+                'batchId':'batch-a-observed','recordId':f'rec-a-observed-{sequence}','sequenceNumber':sequence,
+                'eventTime':self.iso(second),'deviceStatus':'running','extensions':{'private':'private-extension'},
+                'measurements':{'temperatureCelsius':170 if second<0 else 169,'speedRpm':0,'elapsedSeconds':second+5}}
+            self.raws.append({'pk':stream_binding_key(**self.job['source_binding']), 'sk':f'RAW#{sequence:06d}',
+                              'provenance':'SYNTHETIC','raw':json.dumps(record)})
+    def observe(self):return observe_tonkatsu_batch(self.job,self.raws)
+    def change(self,index,**kwargs):
+        value=json.loads(self.raws[index]['raw']);value.update(kwargs);self.raws[index]['raw']=json.dumps(value)
+
+    def test_actual_duration_load_point_samples_and_declared_values_are_preserved_without_identity(self):
+        value=self.observe()
+        self.assertEqual(value.unresolved,('EXPLICIT_1HZ_CONTROLLER_SAMPLES_MISSING',))
+        self.assertEqual((value.sample_count,value.cooking_seconds,value.load_kg),(61,300,Decimal('.32')))
+        self.assertEqual((value.preplacement_sample_c,value.preplacement_age_us),(Decimal(170),5000000))
+        self.assertEqual((value.as_baseline().profile,value.as_baseline().previous_duration_seconds),('STANDARD',300))
+        context=value.model_context()
+        self.assertEqual(context['initial_context_status'],'DECLARED_UNVERIFIED')
+        self.assertNotIn('completeness',context);self.assertNotIn('critical_data_valid',context)
+        for marker in ('private-owner','private-notes','private-oil','private-extension',self.job['job_id']):
+            self.assertNotIn(marker,json.dumps(context));self.assertNotIn(marker,repr(value))
+
+    def test_missing_or_stale_initial_context_is_never_filled_from_defaults(self):
+        self.job['tonkatsu_initial_context']['batch_version']=1
+        value=self.observe()
+        self.assertIsNone(value.ingredient_temperature_c);self.assertIsNone(value.oil_capacity_l)
+        self.assertEqual(value.storage_state,'UNKNOWN');self.assertIn('INITIAL_CONTEXT_MISSING_OR_STALE',value.unresolved)
+
+    def test_unknown_fields_future_initial_values_and_invalid_numeric_inputs_remain_unresolved(self):
+        initial=self.job['tonkatsu_initial_context'];initial['temperature_observed_at']=self.iso(1)
+        initial['oil_capacity_l']='NaN';initial['oil_batches_since_change']=True;initial['storage_state']='unknown-private-text'
+        value=self.observe()
+        self.assertIsNone(value.oil_capacity_l);self.assertIsNone(value.oil_batches_since_change)
+        self.assertIn('TEMPERATURE_OBSERVED_AT_UNAVAILABLE',value.unresolved)
+        self.assertNotIn('unknown-private-text',str(value.model_context()))
+
+    def test_all_core_probes_and_current_safety_version_are_required(self):
+        for kind in ('missing','calibration','duplicate','sample-gap','version','nonfinite','probe-id','time'):
+            self.setUp()
+            if kind=='missing':self.job['core_check'].pop()
+            elif kind=='calibration':self.job['core_check'][0]['calibration_status']='EXPIRED'
+            elif kind=='duplicate':self.job['core_check'][1]['item_id']='0'
+            elif kind=='sample-gap':self.job['core_check'][0]['samples'][1]['at_second']=2
+            elif kind=='version':self.job['core_check_safety_version']=2
+            elif kind=='probe-id':self.job['core_check'][0]['probe_id']=None
+            elif kind=='time':self.job['core_check'][0]['measurement_start']=self.iso(299)
+            else:self.job['core_check'][0]['samples'][1]['celsius']='Infinity'
+            value=self.observe();self.assertFalse(value.core_series_consistent)
+            self.assertIn('CORE_SERIES_MISSING_STALE_OR_INCONSISTENT',value.unresolved)
+
+    def test_recorded_failure_requires_a_measured_below_threshold_and_is_not_hidden(self):
+        self.job['safety_status']='FAILED'
+        self.assertFalse(self.observe().core_series_consistent)
+        self.job['core_check'][1]['samples'][30]['celsius']='74.9'
+        value=self.observe();self.assertTrue(value.core_series_consistent)
+        self.assertEqual(value.recorded_safety_status,'FAILED');self.assertEqual(value.unresolved,('EXPLICIT_1HZ_CONTROLLER_SAMPLES_MISSING',))
+
+    def test_missing_preplacement_and_interval_end_are_reported_without_temperature_interpolation(self):
+        self.raws=self.raws[1:-2]
+        value=self.observe()
+        self.assertIsNone(value.preplacement_sample_c);self.assertIsNone(value.preplacement_age_us)
+        self.assertIn('PREPLACEMENT_TEMPERATURE_NOT_CAPTURED',value.unresolved)
+        self.assertIn('SOURCE_DOES_NOT_BRACKET_COOKING_INTERVAL',value.unresolved)
+
+    def test_gapped_cadence_or_stopped_device_cannot_become_complete(self):
+        self.raws.pop(3);self.change(1,deviceStatus='stopped')
+        value=self.observe()
+        self.assertIn('SOURCE_SEQUENCE_OR_CADENCE_GAP',value.unresolved)
+        self.assertIn('SOURCE_DEVICE_NOT_RUNNING_OR_ERROR',value.unresolved)
+
+    def test_reheat_is_not_mistaken_for_original_cooking_and_safety_context(self):
+        self.job['latest_tonkatsu_reheat']={'private':'not-for-model'}
+        self.assertIn('REHEAT_TIMELINE_REQUIRES_SEPARATE_OBSERVATION',self.observe().unresolved)
+
+    def test_inconsistent_job_binding_thickness_time_load_or_foreign_raw_is_rejected(self):
+        for kind in ('thickness','time','load','batch','duplicate','foreign','protocol','nonfinite'):
+            self.setUp()
+            if kind=='thickness':self.job['thickness_cm']='0.8'
+            elif kind=='time':self.job['actual_cooking_seconds']=300.1
+            elif kind=='load':self.job['actual_load_kg']='.5'
+            elif kind=='batch':self.change(0,batchId='batch-a-other')
+            elif kind=='duplicate':self.raws[1]=copy.deepcopy(self.raws[0])
+            elif kind=='foreign':self.raws[0]['pk']='foreign-private'
+            elif kind=='protocol':self.job['source_binding']['device_id']='mockprofile-110-a-001'
+            else:self.change(0,measurements={'temperatureCelsius':float('nan'),'speedRpm':0,'elapsedSeconds':0})
+            with self.assertRaisesRegex(ValueError,'^synthetic fryer observation unavailable$'):self.observe()
