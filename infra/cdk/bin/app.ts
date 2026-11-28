@@ -23,6 +23,7 @@ import { SourceGrantDeletionAccessStack } from "./source-grant-deletion-access.j
 import { RecipeSourceAccessStack, RecipeSourceCatalogStack } from "./recipe-source-access.js";
 import { RecipeHistoryAccessStack } from "./recipe-history-access.js";
 import { CombiRecipeReadAccessStack } from "./combi-read-access.js";
+import { TonkatsuBusinessTaskRoleStack } from "./tonkatsu-business-task-role.js";
 import { TonkatsuBusinessTaskStack } from "./tonkatsu-business-task.js";
 import { TonkatsuRecipeAccessStack } from "./tonkatsu-access.js";
 import { TonkatsuBrokerExecutionStack, TonkatsuBrokerTaskStack, TonkatsuBusinessExecutionStack, TonkatsuGatewayExecutionStack } from "./tonkatsu-broker-task.js";
@@ -138,6 +139,12 @@ if (app.node.tryGetContext("provisionTonkatsuBrokerTls") === "true") {
   const tls = new TonkatsuBrokerTlsStack(app, `FoodtechTonkatsuBrokerTls-${stage}`, { env, terminationProtection: true }, stage);
   Tags.of(tls).add("Project", "foodtech");
   Tags.of(tls).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionTonkatsuBusinessTaskRole") === "true") {
+  const businessRole = new TonkatsuBusinessTaskRoleStack(app, `FoodtechTonkatsuBusinessTaskRole-${stage}`, { env }, stage);
+  Tags.of(businessRole).add("Project", "foodtech");
+  Tags.of(businessRole).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionTonkatsuBusinessTask") === "true") {

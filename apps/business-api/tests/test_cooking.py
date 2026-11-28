@@ -954,8 +954,11 @@ class DynamoTransactionContractTests(unittest.TestCase):
         self.assertEqual(len(writes), 4)
         self.assertEqual(writes[0]["ConditionCheck"]["TableName"], "auth-table")
         self.assertEqual(writes[1]["Put"]["ConditionExpression"], "#version = :expected")
-        self.assertEqual(writes[2]["Put"]["ConditionExpression"], "attribute_not_exists(pk)")
-        self.assertEqual(writes[2]["Put"]["Item"]["pk"], {"S": stream_pk})
+        self.assertEqual(writes[2]["Update"]["ConditionExpression"], "attribute_not_exists(pk)")
+        self.assertEqual(writes[2]["Update"]["Key"], {"pk": {"S": stream_pk}, "sk": {"S": "BINDING"}})
+        self.assertEqual(writes[2]["Update"]["ExpressionAttributeValues"], {
+            ":job_pk": {"S": "SCOPE#USER#one#JOB#job"}, ":job_id": {"S": "job"},
+        })
         self.assertEqual(writes[3]["Update"]["Key"]["sk"], {"S": "HISTORY#REVISION"})
 
     def test_dynamodb_numeric_fields_match_local_api_types(self):
