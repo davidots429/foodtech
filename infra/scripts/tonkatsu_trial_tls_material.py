@@ -12,6 +12,7 @@ from cryptography.x509.verification import PolicyBuilder, Store
 
 _BROKER_ID = "urn:foodtech:service:tonkatsu-read-broker"
 _BFF_ID = "urn:foodtech:service:business-api"
+_INFERENCE_CLIENT_ID = "urn:foodtech:service:tonkatsu-gateway-inference"
 _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 
 
@@ -21,6 +22,7 @@ class TonkatsuTrialTlsMaterial:
     broker: dict[str, str]
     gateway: dict[str, str]
     expires_at: datetime
+    inference: dict[str, str] | None = None
 
     def __repr__(self):
         return "TonkatsuTrialTlsMaterial(redacted)"
@@ -71,8 +73,10 @@ def _matching_pair(lane, server_host, client_uri, begins, expires):
     return _public_pem(ca), server, client
 
 
-def verify_hostnames(broker_host, gateway_host, records_host=None):
-    hosts = (broker_host, gateway_host) if records_host is None else (broker_host, gateway_host, records_host)
+def verify_hostnames(broker_host, gateway_host, records_host=None, inference_host=None):
+    if inference_host is not None and records_host is None:
+        raise ValueError("inference requires the separate records listener")
+    hosts = (broker_host, gateway_host, *(host for host in (records_host, inference_host) if host is not None))
     for host in hosts:
         if not isinstance(host, str) or len(host) > 253 or not re.fullmatch(rf"{_LABEL}(?:[.]{_LABEL})*[.]internal", host):
             raise ValueError("reviewed private service hostname required")
@@ -81,9 +85,9 @@ def verify_hostnames(broker_host, gateway_host, records_host=None):
 
 
 def generate(*, broker_host: str, gateway_host: str, records_host: str | None = None,
-             now: datetime | None = None) -> TonkatsuTrialTlsMaterial:
-    """Return three bundles for a bounded trial, without serializing CA keys."""
-    verify_hostnames(broker_host, gateway_host, records_host)
+             inference_host: str | None = None, now: datetime | None = None) -> TonkatsuTrialTlsMaterial:
+    """Return role-specific bundles for a bounded trial, without serializing CA keys."""
+    verify_hostnames(broker_host, gateway_host, records_host, inference_host)
     if now is None:
         now = datetime.now(timezone.utc)
     if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
@@ -117,11 +121,23 @@ def generate(*, broker_host: str, gateway_host: str, records_host: str | None = 
                             records_client_key_pem=records_client[1])
         gateway.update(records_server_cert_pem=records_server[0], records_server_key_pem=records_server[1],
                        records_client_ca_pem=records_ca, records_client_cert_pem=records_client[0])
-    return TonkatsuTrialTlsMaterial(business_api, broker, gateway, expires)
+    inference = None
+    if inference_host is not None:
+        inference_ca, inference_server, inference_client = _matching_pair(
+            "Foodtech synthetic Gateway to inference", inference_host, _INFERENCE_CLIENT_ID, begins, expires,
+        )
+        gateway.update(inference_server_cert_pem=inference_server[0], inference_client_cert_pem=inference_client[0],
+                       inference_client_key_pem=inference_client[1])
+        inference = {
+            "inference_server_cert_pem": inference_server[0], "inference_server_key_pem": inference_server[1],
+            "inference_client_ca_pem": inference_ca, "inference_client_cert_pem": inference_client[0],
+        }
+    return TonkatsuTrialTlsMaterial(business_api, broker, gateway, expires, inference)
 
-def verify_bundles(business_api, broker, gateway, *, broker_host, gateway_host, records_host=None):
-    """Return an expiry and public pins only after verifying all three recovered bundles."""
-    verify_hostnames(broker_host, gateway_host, records_host)
+def verify_bundles(business_api, broker, gateway, inference=None, *,
+                   broker_host, gateway_host, records_host=None, inference_host=None):
+    """Return an expiry and public pins only after verifying all recovered bundles."""
+    verify_hostnames(broker_host, gateway_host, records_host, inference_host)
     business_keys = {"broker_server_cert_pem", "bff_cert_pem", "bff_key_pem"}
     gateway_keys = {"server_cert_pem", "server_key_pem", "broker_ca_pem", "broker_cert_pem"}
     if records_host is not None:
@@ -134,6 +150,12 @@ def verify_bundles(business_api, broker, gateway, *, broker_host, gateway_host, 
                   "gateway_server_cert_pem", "broker_client_cert_pem", "broker_client_key_pem"}),
         (gateway, gateway_keys),
     )
+    if inference_host is not None:
+        gateway_keys.update({"inference_server_cert_pem", "inference_client_cert_pem", "inference_client_key_pem"})
+        required += ((inference, {"inference_server_cert_pem", "inference_server_key_pem",
+                                 "inference_client_ca_pem", "inference_client_cert_pem"}),)
+    elif inference is not None:
+        raise ValueError("unexpected inference bundle")
     if any(type(bundle) is not dict or set(bundle) != keys or
            any(type(value) is not str or not 1 <= len(value) <= 65536 for value in bundle.values())
            for bundle, keys in required):
@@ -157,6 +179,13 @@ def verify_bundles(business_api, broker, gateway, *, broker_host, gateway_host, 
         lanes += ((gateway["records_client_ca_pem"], records_host, _BFF_ID, gateway["records_server_cert_pem"],
                    gateway["records_server_key_pem"], business_api["records_client_cert_pem"],
                    business_api["records_client_key_pem"]),)
+    if inference_host is not None:
+        for field in ("inference_server_cert_pem", "inference_client_cert_pem"):
+            if gateway[field] != inference[field]:
+                raise ValueError("TLS inference pins differ")
+        lanes += ((inference["inference_client_ca_pem"], inference_host, _INFERENCE_CLIENT_ID,
+                   inference["inference_server_cert_pem"], inference["inference_server_key_pem"],
+                   gateway["inference_client_cert_pem"], gateway["inference_client_key_pem"]),)
     now = datetime.now(timezone.utc)
     bounds, public_keys, pins = set(), set(), []
     for ca_pem, host, uri, server_pem, server_key, client_pem, client_key in lanes:

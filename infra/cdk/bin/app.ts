@@ -29,7 +29,7 @@ import { TonkatsuGatewayTaskStack } from "./tonkatsu-gateway-task.js";
 import { TonkatsuGatewayTaskRoleStack } from "./tonkatsu-gateway-task-role.js";
 import { TonkatsuRecipeAccessStack } from "./tonkatsu-access.js";
 import { TonkatsuBrokerExecutionStack, TonkatsuBrokerTaskStack, TonkatsuBusinessExecutionStack, TonkatsuGatewayExecutionStack } from "./tonkatsu-broker-task.js";
-import { TonkatsuBrokerTlsStack, TonkatsuPeerTlsStack } from "./tonkatsu-broker-tls.js";
+import { TonkatsuBrokerTlsStack, TonkatsuInferenceTlsStack, TonkatsuPeerTlsStack } from "./tonkatsu-broker-tls.js";
 import { CombiExecutionReadAccessStack } from "./combi-execution-access.js";
 import { CombiExecutionReadProbeStack } from "./combi-execution-probe.js";
 import { SourceGrantRuntimeStack } from "./source-grant-runtime.js";
@@ -129,6 +129,12 @@ if (app.node.tryGetContext("provisionCombiExecutionReadAccess") === "true") {
   const access = new CombiExecutionReadAccessStack(app, `FoodtechCombiExecutionReadAccess-${stage}`, { env }, stage);
   Tags.of(access).add("Project", "foodtech");
   Tags.of(access).add("Environment", stage);
+}
+
+if (app.node.tryGetContext("provisionTonkatsuInferenceTls") === "true") {
+  const tls = new TonkatsuInferenceTlsStack(app, `FoodtechTonkatsuInferenceTls-${stage}`, { env, terminationProtection: true }, stage);
+  Tags.of(tls).add("Project", "foodtech");
+  Tags.of(tls).add("Environment", stage);
 }
 
 if (app.node.tryGetContext("provisionTonkatsuPeerTls") === "true") {

@@ -93,6 +93,33 @@ class TonkatsuTlsInitializationTests(unittest.TestCase):
             self.run_controlled(apply=True)
         self.assertEqual(self.client.put_secret_value.call_count, 3)
 
+    def test_inference_registration_has_separate_gateway_and_host_keys(self):
+        self.plan["records_host"] = "records.foodtech.internal"
+        self.plan["inference_host"] = "inference.foodtech.internal"
+        self.plan["stacks"][initializer.INFERENCE_STACK] = "e" * 64
+        self.plan["stores"]["inference"] = {
+            "arn": f"arn:aws:secretsmanager:{initializer.REGION}:{initializer.ACCOUNT}:secret:foodtech/tonkatsu-inference-dev/tls-Ab1234",
+            "key": f"arn:aws:kms:{initializer.REGION}:{initializer.ACCOUNT}:key/{uuid4()}",
+        }
+        self.stores = {row.arn: row for row in initializer.reviewed_plan(self.plan)}
+        first = self.run_controlled(apply=True)
+        second = self.run_controlled(apply=True)
+        self.assertEqual(len(set(first["leaf_fingerprints_sha256"])), 8)
+        self.assertEqual(first["leaf_fingerprints_sha256"], second["leaf_fingerprints_sha256"])
+        self.assertEqual(self.client.put_secret_value.call_count, 4)
+        self.assertNotIn("PRIVATE KEY", str(second))
+        business, broker, gateway, inference = [json.loads(value) for value in self.versions.values()]
+        self.assertTrue(all(not any(key.startswith("inference_") for key in bundle) for bundle in (business, broker)))
+        self.assertNotIn("inference_server_key_pem", gateway)
+        self.assertNotIn("inference_client_key_pem", inference)
+        self.assertNotEqual(inference["inference_client_ca_pem"], gateway["records_client_ca_pem"])
+        inference_arn = self.plan["stores"]["inference"]["arn"]
+        inference["inference_client_cert_pem"] = gateway["broker_cert_pem"]
+        self.versions[inference_arn] = json.dumps(inference)
+        with self.assertRaisesRegex(ValueError, "TLS inference pins differ"):
+            self.run_controlled(apply=True)
+        self.assertEqual(self.client.put_secret_value.call_count, 4)
+
     def test_partial_registration_cannot_write_or_read_more(self):
         self.versions[next(iter(self.stores))] = "contents do not matter"
         with self.assertRaisesRegex(ValueError, "partial TLS registration"):
